@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% import "macros.html" as macros %}
+{% block title %}{{ site_name }}{% endblock title %}
+{% block content %}
+<header class="hero">
+  <h1 class="hero-title">{{ site_name }}</h1>
+  <p class="hero-lead">Documentation generated from EmmyLua annotations.</p>
+  <div class="hero-search-hint">
+    Press <kbd>/</kbd> or <kbd>Ctrl</kbd>+<kbd>K</kbd> to search, or browse below.
+  </div>
+  <div class="stat-cards">
+    {% if nav.types | length > 0 %}
+    <a class="stat-card" href="#types">
+      <span class="stat-num">{{ nav.types | length }}</span>
+      <span class="stat-label">Types</span>
+    </a>
+    {% endif %}
+    {% if nav.modules | length > 0 %}
+    <a class="stat-card" href="#modules">
+      <span class="stat-num">{{ nav.modules | length }}</span>
+      <span class="stat-label">Modules</span>
+    </a>
+    {% endif %}
+    {% if nav.globals | length > 0 %}
+    <a class="stat-card" href="#globals">
+      <span class="stat-num">{{ nav.globals | length }}</span>
+      <span class="stat-label">Globals</span>
+    </a>
+    {% endif %}
+  </div>
+</header>
+
+{{ macros::index_section(id="types", title="Types", groups=nav.type_groups) }}
+{{ macros::index_section(id="modules", title="Modules", groups=nav.module_groups) }}
+{{ macros::index_section(id="globals", title="Globals", groups=nav.global_groups) }}
+{% endblock content %}

@@ -1,6 +1,6 @@
 use super::*;
 use crate::context::{ServerContext, ServerContextSnapshot};
-use emmylua_code_analysis::{Emmyrc, FileId, file_path_to_uri};
+use emmylua_code_analysis::{Emmyrc, file_path_to_uri};
 use lsp_server::{Connection, Message};
 use lsp_types::{
     ClientCapabilities, DidChangeWatchedFilesClientCapabilities, PublishDiagnosticsParams,
@@ -148,6 +148,7 @@ async fn file_text(snapshot: &ServerContextSnapshot, uri: &Uri) -> Option<String
 }
 
 // Run the same initialization path that startup uses for a single workspace root.
+#[allow(dead_code)]
 async fn run_init_analysis(snapshot: &ServerContextSnapshot, workspace_root: PathBuf) {
     init_analysis(
         snapshot.analysis(),
@@ -159,29 +160,6 @@ async fn run_init_analysis(snapshot: &ServerContextSnapshot, workspace_root: Pat
         Vec::new(),
     )
     .await;
-}
-
-// Read the generated remote schema file and confirm it is fully resolved.
-async fn resolved_remote_schema(snapshot: &ServerContextSnapshot) -> (FileId, String) {
-    let analysis = snapshot.analysis().read().await;
-    let vfs = analysis.compilation.get_db().get_vfs();
-    let remote_file_ids = vfs
-        .get_all_file_ids()
-        .into_iter()
-        .filter(|file_id| vfs.is_remote_file(file_id))
-        .collect::<Vec<_>>();
-    assert_eq!(remote_file_ids.len(), 1);
-
-    let remote_file_id = remote_file_ids[0];
-    let remote_content = vfs
-        .get_file_content(&remote_file_id)
-        .cloned()
-        .expect("resolved schema content should be present");
-    assert!(remote_content.contains("auto-generated from JSON Schema"));
-    assert!(remote_content.contains("---@field name"));
-    assert!(!analysis.check_schema_update());
-
-    (remote_file_id, remote_content)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -458,53 +436,6 @@ async fn apply_workspace_reload_preserves_unsaved_open_text_across_membership_ch
         Some(unsaved_text)
     );
 
-    snapshot
-        .file_diagnostic()
-        .cancel_workspace_diagnostic()
-        .await;
-    context.close().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn init_analysis_preserves_resolved_schema_files_on_startup() {
-    // Create a workspace that resolves a schema through the normal `---@schema` path.
-    let workspace = TestWorkspace::new();
-    let schema_path = workspace.write_file_with_contents(
-        "schemas/config.schema.json",
-        r#"{
-            "title": "Config",
-            "type": "object",
-            "properties": {
-                "name": { "type": "string" }
-            }
-        }"#,
-    );
-    let schema_uri = file_path_to_uri(&schema_path).unwrap();
-    workspace.write_file_with_contents(
-        "lua/main.lua",
-        &format!(
-            "---@schema {}\nlocal config = {{}}\nreturn config\n",
-            schema_uri.as_str()
-        ),
-    );
-
-    // Build a normal server context so the test exercises the real startup flow.
-    let (server, _client) = Connection::memory();
-    let context = ServerContext::new(server, ClientCapabilities::default());
-    let snapshot = context.snapshot();
-
-    // The first init should discover the schema and materialize a generated remote file.
-    run_init_analysis(&snapshot, workspace.root.clone()).await;
-    let first_resolution = resolved_remote_schema(&snapshot).await;
-
-    // Remove the source schema to prove the second init is reusing preserved state.
-    fs::remove_file(&schema_path).unwrap();
-
-    // A second init should keep the already-resolved remote schema alive.
-    run_init_analysis(&snapshot, workspace.root.clone()).await;
-    assert_eq!(resolved_remote_schema(&snapshot).await, first_resolution);
-
-    // Clean up background diagnostic work started by init_analysis.
     snapshot
         .file_diagnostic()
         .cancel_workspace_diagnostic()

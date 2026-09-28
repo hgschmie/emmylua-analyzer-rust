@@ -156,7 +156,18 @@ fn get_text_edit_range_in_string(
     }
 
     if text.ends_with('"') || text.ends_with('\'') {
-        end_offset -= 1;
+        end_offset = end_offset.saturating_sub(1);
+    }
+
+    if end_offset <= start_offset {
+        let pos = builder
+            .semantic_model
+            .get_document()
+            .to_lsp_position(start_offset.into())?;
+        return Some(lsp_types::Range {
+            start: pos,
+            end: pos,
+        });
     }
 
     let new_text_range = TextRange::new(start_offset.into(), end_offset.into());

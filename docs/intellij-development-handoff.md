@@ -1,8 +1,49 @@
 # EmmyLua IntelliJ development handoff
 
-Checkpoint: September 27, 2026. Implementation and runtime validation were done
-September 25. This document is local development documentation on
-`work/intellij-modules`, not part of the upstream resolver PR.
+Updated: September 27, 2026. This document is local development documentation on
+`work/intellij-modules`, not part of the upstream resolver PR. The original
+0.24.0 implementation and IntelliJ runtime validation were done September 25.
+
+## Current main-based development baseline
+
+The user requested moving development onto upstream `main`; the 0.24.0 baseline
+is now historical. Upstream `main` was fetched and remains at
+`aaaca68425d9362876228649b0b8d92f07654daa` (analyzer/server 0.25.1).
+`work/intellij-modules` merges the reviewed fix branch through `07cbc7ce`,
+including all 16 review follow-ups. This preserves the published development
+history. Its source tree matches `fix/workspace-relative-module-resolution`;
+only this handoff and `AGENTS.md` are development-only files.
+
+The repository now lives at `$WORKSPACE/upstream/emmylua-analyzer-rust`.
+There is no identified requirement to retain the old analyzer baseline.
+
+Validation of the merged source tree, using Rust/Cargo 1.98.1:
+
+- Analysis tests: 1,104 passed. Server tests: 215 passed, one existing ignored.
+- Formatting and Clippy passed; Clippy warnings are confined to unchanged files.
+- Native arm64 release build passed; `target/release/emmylua_ls --version`
+  reports `emmylua_ls 0.25.1`.
+- The existing multi-module protocol harness passed all 12 checks against this
+  release binary: local and cross-mod definitions/types, plus FMTK locale
+  completion and create/delete behavior. Actual IntelliJ UI was not rerun.
+
+This run used the lockfile, offline Cargo with `CARGO_HOME=target/review-cargo`
+(resolved to an absolute path), and the repository-local `target` directory.
+Logs are `target/intellij-main-{tests,clippy,release,protocol}.log`.
+Protocol results and traffic are under `target/intellij-main-protocol/evidence`.
+To repeat that harness from the repository root:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 EMMY_LS="$PWD/target/release/emmylua_ls" \
+FACTORIO_TEST_ROOT="$PWD/target/intellij-main-protocol" \
+python3 /Users/henning/ai/fmtk/intellij-factorio/scripts/test-module-services.py
+```
+
+Downstream packaging remains pinned to the earlier 0.24.0 source. Its existing
+ZIP and IntelliJ acceptance evidence do not validate the new 0.25.1 baseline.
+The packaging script also still references `spike/emmy-analyzer-source`; update
+that external repository's path and both source pins when rebuilding the plugin.
+This branch update does not install or publish a new plugin.
 
 ## Goal and current result
 
@@ -28,9 +69,11 @@ The task is no longer waiting for approval to implement this fix.
 Local workspace: `/Users/henning/ai/fmtk` (called `$WORKSPACE` below).
 All paths in this table are relative to it.
 
-| Repository | Working branch | Relevant checkpoint |
+The following table records the historical baseline before the main-based merge:
+
+| Repository | Working branch | Historical checkpoint |
 | --- | --- | --- |
-| `spike/emmy-analyzer-source` (this repository) | `work/intellij-modules` | `75629641053563189106266dc53739c8346f391a`: signed resolver backport onto tag `0.24.0` (`bb4f4f0ad7a7aff0b9a5f59e44626cb0497ecd84`) |
+| `upstream/emmylua-analyzer-rust` (this repository) | `work/intellij-modules` | `75629641053563189106266dc53739c8346f391a`: signed resolver backport onto tag `0.24.0` (`bb4f4f0ad7a7aff0b9a5f59e44626cb0497ecd84`) |
 | Same Rust repository, upstream review | `fix/workspace-relative-module-resolution` | `966a16d7` (abbreviated): signed generic fix based on upstream main `aaaca68425d9362876228649b0b8d92f07654daa`, version 0.25.1 |
 | `Intellij-EmmyLua2` | `work/patched-build` | `3152701`: pinned patched server packaging; also contains the earlier JVM `aarch64`/`arm64` selection fix |
 | `intellij-factorio` | `work/initial-plugin` | `14177e5`: pins the patched analyzer and records multi-module acceptance; module implementation was `42126dc` |
@@ -40,11 +83,12 @@ Current Rust remotes, read locally on September 27:
 
 - `origin`: `git@github.com:hgschmie/emmylua-analyzer-rust.git` (user fork).
 - `upstream`: `git@github.com:EmmyLuaLs/emmylua-analyzer-rust.git`.
-- `work/intellij-modules` tracks `origin/work/intellij-modules`; before this
-  documentation change, both pointed at `75629641`.
-- The local PR branch exists separately. No PR URL or submission status has
-  been verified in this handoff. Do not repeat the earlier claim that nothing
-  has been pushed: the development remote-tracking branch now exists.
+- `work/intellij-modules` tracks `origin/work/intellij-modules`; the origin
+  tracking ref remains at `75629641` at this checkpoint. The local branch also
+  includes the handoff and the main-based merge.
+- The upstream PR is [#1266](https://github.com/EmmyLuaLs/emmylua-analyzer-rust/pull/1266).
+  The local fix branch and its origin tracking ref both point to `07cbc7ce`
+  at this checkpoint. Verify remote status before publishing further updates.
 - Earlier records called the Rust remote `CppCXY/emmylua-analyzer-rust`; use the
   current configured remotes above and verify before fetching/pushing.
 
@@ -132,7 +176,7 @@ export CARGO_HOME="$WORKSPACE/spike/cache/cargo"
 export CARGO_TARGET_DIR="$WORKSPACE/spike/emmy-target"
 export TMPDIR="$WORKSPACE/spike/tmp"
 mkdir -p "$CARGO_HOME" "$TMPDIR"
-cd "$WORKSPACE/spike/emmy-analyzer-source"
+cd "$WORKSPACE/upstream/emmylua-analyzer-rust"
 cargo test --locked -p emmylua_code_analysis -p emmylua_ls
 cargo clippy --locked -p emmylua_code_analysis -p emmylua_ls --tests
 cargo build --locked --release -p emmylua_ls
@@ -140,10 +184,10 @@ cargo build --locked --release -p emmylua_ls
 
 For changes, run `cargo fmt --all` and `git diff --check`. A focused first pass
 can use `cargo test --locked -p emmylua_code_analysis --lib db_index::module`.
-Revalidate upstream and backport separately if either changes. Do not assume
-one passing build validates both versions.
+If the development and review branches diverge in source, validate each changed
+tree separately. Historical 0.24.0 results do not validate the main-based tree.
 
-Recorded results:
+Historical results before the main-based merge:
 
 | Source | Analysis tests | Server tests | Other |
 | --- | --- | --- | --- |
@@ -155,7 +199,7 @@ These are dated results, not a claim that new commits or remote updates have
 been tested. Existing warnings included the parser's unused `node::*` import
 and Clippy suggestions in unchanged parser/formatter/flow/test code.
 
-## Source pins and the documentation-only HEAD change
+## Existing downstream source pins
 
 Both downstream pins currently contain the executable-source commit
 `75629641053563189106266dc53739c8346f391a`:
@@ -163,22 +207,22 @@ Both downstream pins currently contain the executable-source commit
 - `$WORKSPACE/Intellij-EmmyLua2/analyzer.lock`
 - `$WORKSPACE/intellij-factorio/emmy-analyzer.lock`
 
-This handoff commit advances the development branch without changing executable
-source. The packaging script compares analyzer **HEAD** to its pin, not just
-source contents. Therefore a direct packaging invocation from the documentation
-HEAD will intentionally stop with a revision mismatch. The existing built ZIP
-still identifies the correct tested source; the pins were not silently advanced
-for this documentation task.
+The main-based development branch now has different executable source from
+these pins. The packaging script compares analyzer **HEAD** to its pin, not just
+source contents. A packaging invocation from the updated branch must therefore
+stop with a revision mismatch until the pins are deliberately updated. The
+existing built ZIP still identifies the earlier tested 0.24.0 source.
 
 To reproduce the exact existing package, start with a clean Rust checkout,
-build the pinned revision detached, then restore the development branch. This
-subshell restores the branch even if the build fails:
+first correct the analyzer path in the external packaging script, build the
+pinned revision detached, then restore the development branch. This subshell
+restores the branch even if the build fails:
 
 ```sh
 (
   set -e
   WORKSPACE=/Users/henning/ai/fmtk
-  ANALYZER="$WORKSPACE/spike/emmy-analyzer-source"
+  ANALYZER="$WORKSPACE/upstream/emmylua-analyzer-rust"
   test -z "$(git -C "$ANALYZER" status --porcelain)"
   test "$(git -C "$ANALYZER" branch --show-current)" = work/intellij-modules
   trap 'git -C "$ANALYZER" switch work/intellij-modules' EXIT
@@ -308,12 +352,11 @@ that remains true.
 3. **Generic scope:** global/library fallback is preserved; this is not isolated
    Lua global namespaces per mod. Per-module toolchains, LuaLS and profiling are
    not part of this patch. Windows/Linux/Intel runtime acceptance has not run.
-4. **Upstream review:** check whether a PR has been filed and whether upstream has
-   moved before preparing a follow-up. The review branch uses upstream main;
-   the development branch intentionally stays on 0.24.0. Address review changes
-   on the PR branch, test, sign, and backport them; keep downstream pins/builds
-   consistent. Do not push, submit, merge, or publish merely because a handoff
-   suggests a next step.
+4. **Upstream review:** check PR #1266 and whether upstream has moved before
+   preparing a follow-up. Both review and development branches now use upstream
+   main. Address review changes on the PR branch, test, sign, and merge them into
+   development; update downstream pins/builds when rebuilding the plugin.
+   Do not push, submit, merge, or publish merely because a handoff suggests a next step.
 5. **Independent architecture fix:** the earlier IntelliJ EmmyLua2 JVM `aarch64`
    selector fix is separate from this Rust PR. The user previously submitted
    that PR. This handoff does not establish its current upstream merge status.

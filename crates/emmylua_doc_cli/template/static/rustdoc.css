@@ -1,0 +1,1579 @@
+/* ─── rustdoc theme ─────────────────────────────────────
+   Palette and typography follow rustdoc's default light/dark themes
+   (see src/librustdoc/html/static/css in rust-lang/rust). */
+
+/* Fonts (bundled under static/fonts/, SIL OFL licensed). */
+@font-face {
+  font-family: 'Fira Sans';
+  font-style: normal;
+  font-weight: 400;
+  src:
+    local('Fira Sans'),
+    url('fonts/FiraSans-Regular-0fe48ade.woff2') format('woff2');
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Fira Sans';
+  font-style: italic;
+  font-weight: 400;
+  src:
+    local('Fira Sans Italic'),
+    url('fonts/FiraSans-Italic-81dc35de.woff2') format('woff2');
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Fira Sans';
+  font-style: normal;
+  font-weight: 500;
+  src:
+    local('Fira Sans Medium'),
+    url('fonts/FiraSans-Medium-e1aa3f0a.woff2') format('woff2');
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Fira Sans';
+  font-style: italic;
+  font-weight: 500;
+  src:
+    local('Fira Sans Medium Italic'),
+    url('fonts/FiraSans-MediumItalic-ccf7e434.woff2') format('woff2');
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Source Serif 4';
+  font-style: normal;
+  font-weight: 400;
+  src:
+    local('Source Serif 4'),
+    url('fonts/SourceSerif4-Regular-6b053e98.ttf.woff2') format('woff2');
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Source Serif 4';
+  font-style: italic;
+  font-weight: 400;
+  src:
+    local('Source Serif 4 Italic'),
+    url('fonts/SourceSerif4-It-ca3b17ed.ttf.woff2') format('woff2');
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Source Serif 4';
+  font-style: normal;
+  font-weight: 500;
+  src:
+    local('Source Serif 4 Semibold'),
+    url('fonts/SourceSerif4-Semibold-457a13ac.ttf.woff2') format('woff2');
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Source Serif 4';
+  font-style: normal;
+  font-weight: 700;
+  src:
+    local('Source Serif 4 Bold'),
+    url('fonts/SourceSerif4-Bold-6d4fd4c0.ttf.woff2') format('woff2');
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Source Code Pro';
+  font-style: normal;
+  font-weight: 400;
+  src: url('fonts/SourceCodePro-Regular-8badfe75.ttf.woff2') format('woff2');
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Source Code Pro';
+  font-style: italic;
+  font-weight: 400;
+  src: url('fonts/SourceCodePro-It-fc8b9304.ttf.woff2') format('woff2');
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Source Code Pro';
+  font-style: normal;
+  font-weight: 600;
+  src: url('fonts/SourceCodePro-Semibold-aa29a496.ttf.woff2') format('woff2');
+  font-display: swap;
+}
+
+:root {
+  /* Serif body text is rustdoc's signature look; UI chrome (sidebar, top
+     bar, headings, search) uses sans. */
+  --font-body: 'Source Serif 4', Georgia, 'Times New Roman', serif;
+  --font-sans: 'Fira Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+  --font-mono: 'Source Code Pro', 'SFMono-Regular', Consolas, Menlo, monospace;
+}
+
+/* Begin theme: light (rustdoc defaults) */
+:root,
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-sidebar: #f5f5f5;
+  --bg-muted: #f5f5f5;
+  --bg-sidebar-hover: #e0e0e0;
+  --fg: #000000;
+  --fg-muted: #717171;
+  --border: #e0e0e0;
+  --border-strong: #dddddd;
+  --accent: #3873ad;
+  --accent-strong: #3873ad;
+  --accent-soft: #e7f0f7;
+  --code-bg: #f5f5f5;
+  --deprecated: #cf222e;
+  --header-bg: #f5f5f5;
+  --header-fg: #000000;
+  --signature-bg: #f5f5f5;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  --radius: 2px;
+  /* Syntax highlighting (rustdoc light = Tomorrow) */
+  --hl-str: #718c00;
+  --hl-num: #718c00;
+  --hl-kw: #8959a8;
+  --hl-op: #8e908c;
+  --hl-comment: #8e908c;
+  --hl-fn: #ad7c37;
+  --hl-class: #ad378a;
+  --hl-enum: #ad378a;
+  --hl-type: #ad378a;
+  --hl-var: #000000;
+  --hl-prop: #ad7c37;
+  --hl-decorator: #3873ad;
+  /* Sidebar kind dots */
+  --dot-class: #ad378a;
+  --dot-enum: #6e4fc9;
+  --dot-alias: #068000;
+  --sidebar-link: #356da4;
+  --search-focus-border: #66afe9;
+  --target-bg: #fdffd3;
+  --target-border: #ad7c37;
+  --stab-bg: #fff5d6;
+}
+
+/* End theme: light */
+
+/* Dark palette. Kept in sync between the explicit [data-theme="dark"] override
+     and the system dark preference (used when no explicit light choice exists). */
+/* Begin theme: dark (rustdoc defaults) */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #353535;
+  --bg-elevated: #3c3c3c;
+  --bg-sidebar: #505050;
+  --bg-muted: #444444;
+  --bg-sidebar-hover: #676767;
+  --fg: #dddddd;
+  --fg-muted: #999999;
+  --border: #4a4a4a;
+  --border-strong: #999999;
+  --accent: #d2991d;
+  --accent-strong: #d2991d;
+  --accent-soft: rgba(210, 153, 29, 0.18);
+  --code-bg: #2a2a2a;
+  --deprecated: #f85149;
+  --header-bg: #505050;
+  --header-fg: #dddddd;
+  --signature-bg: #2a2a2a;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --hl-str: #83a300;
+  --hl-num: #83a300;
+  --hl-kw: #ab8ac1;
+  --hl-op: #8d8d8b;
+  --hl-comment: #8d8d8b;
+  --hl-fn: #2bab63;
+  --hl-class: #2dbfb8;
+  --hl-enum: #2dbfb8;
+  --hl-type: #2dbfb8;
+  --hl-var: #dddddd;
+  --hl-prop: #2bab63;
+  --hl-decorator: #d2991d;
+  --dot-class: #39afd7;
+  --dot-enum: #b78cf2;
+  --dot-alias: #83a300;
+  --sidebar-link: #fdbf35;
+  --search-focus-border: #008dfd;
+  --target-bg: #494a3d;
+  --target-border: #bb7410;
+  --stab-bg: #314559;
+}
+
+/* End theme: dark */
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --bg: #353535;
+    --bg-elevated: #3c3c3c;
+    --bg-sidebar: #505050;
+    --bg-muted: #444444;
+    --bg-sidebar-hover: #676767;
+    --fg: #dddddd;
+    --fg-muted: #999999;
+    --border: #4a4a4a;
+    --border-strong: #999999;
+    --accent: #d2991d;
+    --accent-strong: #d2991d;
+    --accent-soft: rgba(210, 153, 29, 0.18);
+    --code-bg: #2a2a2a;
+    --deprecated: #f85149;
+    --header-bg: #505050;
+    --header-fg: #dddddd;
+    --signature-bg: #2a2a2a;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --hl-str: #83a300;
+    --hl-num: #83a300;
+    --hl-kw: #ab8ac1;
+    --hl-op: #8d8d8b;
+    --hl-comment: #8d8d8b;
+    --hl-fn: #2bab63;
+    --hl-class: #2dbfb8;
+    --hl-enum: #2dbfb8;
+    --hl-type: #2dbfb8;
+    --hl-var: #dddddd;
+    --hl-prop: #2bab63;
+    --hl-decorator: #d2991d;
+    --dot-class: #39afd7;
+    --dot-enum: #b78cf2;
+    --dot-alias: #83a300;
+    --sidebar-link: #fdbf35;
+    --search-focus-border: #008dfd;
+    --target-bg: #494a3d;
+    --target-border: #bb7410;
+    --stab-bg: #314559;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Do NOT cap html/body at viewport height: `height: 100%` on <body> makes it
+   exactly 100vh, and a sticky .docbar inside it can only travel within its
+   parent's bounds - so the top bar would scroll away as soon as the page is
+   taller than the viewport. Let the document flow define the height instead. */
+html {
+  height: 100%;
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 16px;
+  color: var(--fg);
+  background: var(--bg);
+  line-height: 1.5;
+  font-feature-settings: 'kern', 'liga';
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+/* ─── Top bar ─────────────────────────────────────────── */
+/* rustdoc's chrome is the same light grey as the sidebar; only a hairline
+   border separates it from the page. */
+.docbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--header-bg);
+  color: var(--header-fg);
+  border-bottom: 1px solid var(--border-strong);
+}
+
+.docbar-inner {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  height: 52px;
+  padding: 0 20px;
+}
+
+.docbar-title {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: 15px;
+  letter-spacing: 0.01em;
+  color: var(--header-fg);
+  white-space: nowrap;
+}
+
+.docbar-title:hover {
+  text-decoration: none;
+  opacity: 0.85;
+}
+
+/* The search box is the visual anchor of the top bar: centered, stretched
+   with the viewport up to a readable cap, with an icon and a shortcut hint. */
+.search {
+  position: relative;
+  flex: 1;
+  max-width: 640px;
+  margin: 0 auto;
+  font-family: var(--font-sans);
+}
+
+.search input {
+  width: 100%;
+  height: 34px;
+  padding: 0 42px 0 40px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 14px;
+  outline: none;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.search input::placeholder {
+  color: var(--fg-muted);
+}
+
+.search input:focus {
+  border-color: var(--search-focus-border);
+}
+
+.search-icon {
+  position: absolute;
+  left: 13px;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  transform: translateY(-50%);
+  color: var(--fg-muted);
+  pointer-events: none;
+}
+
+.search-hint {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  min-width: 20px;
+  padding: 1px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--fg-muted);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.search input:focus ~ .search-hint,
+.search input:not(:placeholder-shown) ~ .search-hint {
+  display: none;
+}
+
+/* Search results dropdown */
+.search-results {
+  position: absolute;
+  top: 38px;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  max-height: 340px;
+  overflow-y: auto;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  padding: 2px;
+}
+
+.search-result {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 2px;
+  font-size: 14px;
+  color: var(--fg);
+}
+
+.search-result:hover {
+  background: var(--bg-muted);
+  text-decoration: none;
+}
+
+.search-result.selected {
+  background: var(--accent-soft);
+}
+
+.search-result-kind {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--fg-muted);
+  min-width: 46px;
+}
+
+.search-result-name {
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-result-empty {
+  padding: 10px;
+  color: var(--fg-muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* ─── Layout ──────────────────────────────────────────── */
+/* Three-column grid: the sidebar hugs the left edge of the screen and the TOC
+   the right edge, while the content column is capped and centered inside the
+   middle track. Sidebar width matches rustdoc's 200px default. */
+.layout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  min-height: calc(100vh - 52px);
+}
+
+.layout:has(.toc) {
+  grid-template-columns: 220px minmax(0, 1fr) 200px;
+}
+
+/* ─── Sidebar ─────────────────────────────────────────── */
+.sidebar {
+  font-family: var(--font-sans);
+  border-right: 1px solid var(--border-strong);
+  background: var(--bg-sidebar);
+  overflow-y: auto;
+  height: calc(100vh - 52px);
+  position: sticky;
+  top: 52px;
+  padding: 12px 0 24px;
+}
+
+.sidebar::-webkit-scrollbar {
+  width: 8px;
+}
+
+.sidebar::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+.sidebar-category {
+  margin: 0 0 8px;
+}
+
+.category-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-muted);
+  padding: 10px 16px 4px;
+}
+
+.category-count {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 7px;
+  line-height: 16px;
+}
+
+.sidebar details {
+  margin: 0;
+}
+
+.sidebar summary.group-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  padding: 2px 18px;
+  user-select: none;
+  list-style: none;
+  transition: color 0.12s ease;
+}
+
+.sidebar summary.group-label::-webkit-details-marker {
+  display: none;
+}
+
+.sidebar summary.group-label:hover {
+  color: var(--fg);
+}
+
+/* Folder expand arrow: a small caret that rotates when the branch opens. */
+.group-caret {
+  flex-shrink: 0;
+  width: 0;
+  height: 0;
+  border-left: 4px solid currentColor;
+  border-top: 3.5px solid transparent;
+  border-bottom: 3.5px solid transparent;
+  transition: transform 0.15s ease;
+}
+
+.sidebar details[open] > summary.group-label .group-caret {
+  transform: rotate(90deg);
+}
+
+.sidebar ul {
+  list-style: none;
+  margin: 0 0 4px;
+  padding: 0 0 0 16px;
+}
+
+.sidebar li {
+  margin: 0;
+}
+
+.sidebar details > ul {
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+  margin-left: 21px;
+}
+
+.sidebar details[open] > ul {
+  margin-bottom: 2px;
+}
+
+/* rustdoc sidebar links are plain blue text on the grey rail; the current
+   item is a white slab, hover a slightly darker grey. */
+.sidebar a.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 26px;
+  padding: 2px 8px;
+  font-size: 13px;
+  color: var(--sidebar-link);
+  overflow: hidden;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+
+.sidebar a.nav-item:hover {
+  background: var(--bg-sidebar-hover);
+  text-decoration: none;
+}
+
+.sidebar a.nav-item.active {
+  background: var(--bg);
+  color: var(--sidebar-link);
+  font-weight: 500;
+}
+
+.nav-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Kind indicator: a small colored letter badge (C/E/A) on type leaves. */
+.kind-badge {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  color: #fff;
+  background: var(--fg-muted);
+}
+
+.kind-badge.kind-class {
+  background: var(--dot-class);
+}
+
+.kind-badge.kind-enum {
+  background: var(--dot-enum);
+}
+
+.kind-badge.kind-alias {
+  background: var(--dot-alias);
+}
+
+/* ─── Content ─────────────────────────────────────────── */
+/* Capped for readability and centered inside the middle grid track, so long
+   lines never span an ultrawide monitor. */
+.content {
+  min-width: 0;
+  width: 100%;
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 32px 40px 64px;
+}
+
+.content h1.item-title {
+  font-size: 30px;
+  font-weight: 650;
+  margin: 0 0 8px;
+}
+
+/* rustdoc section headings use the sans font with a hairline underline. */
+.content h2 {
+  font-family: var(--font-sans);
+  font-size: 22px;
+  font-weight: 500;
+  margin: 28px 0 15px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--border-strong);
+}
+
+.lead {
+  color: var(--fg-muted);
+  margin: 0 0 8px;
+}
+
+/* ─── Page header (item pages) ────────────────────────── */
+/* Sticky header that stays visible while scrolling long pages: breadcrumb on
+   top, kind badge + full name below, frosted-glass backdrop so content slides
+   under it. */
+.pagehead {
+  position: sticky;
+  top: 52px;
+  z-index: 10;
+  margin: -12px -12px 16px;
+  padding: 12px 12px 12px;
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-sans);
+}
+
+.pagehead .breadcrumb {
+  margin: 0 0 8px;
+}
+
+.pagehead-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.kind-badge-lg {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  font-size: 14px;
+  line-height: 26px;
+}
+
+.kind-badge-lg.kind-module {
+  background: var(--accent);
+}
+
+.kind-badge-lg.kind-global {
+  background: var(--hl-num);
+}
+
+.pagehead-name {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 500;
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pagehead .meta {
+  margin: 6px 0 0;
+}
+
+.meta {
+  font-size: 13.5px;
+  color: var(--fg-muted);
+  margin: 4px 0;
+}
+
+.meta-label {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.doc-lead {
+  font-size: 16px;
+}
+
+.docblock {
+  margin: 14px 0;
+  color: var(--fg);
+  overflow-wrap: break-word;
+}
+
+.docblock p {
+  margin: 0 0 10px;
+}
+
+.docblock p:last-child {
+  margin-bottom: 0;
+}
+
+.docblock ul,
+.docblock ol {
+  margin: 0 0 10px;
+  padding-left: 22px;
+}
+
+.docblock li {
+  margin: 2px 0;
+}
+
+.docblock code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  background: var(--code-bg);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+.docblock pre.doc-code {
+  background: var(--code-bg);
+  border-radius: 6px;
+  padding: 14px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.docblock pre.doc-code code {
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+/* Syntax highlighting (code blocks + signatures) */
+.hl-str {
+  color: var(--hl-str);
+}
+
+.hl-num {
+  color: var(--hl-num);
+}
+
+.hl-kw {
+  color: var(--hl-kw);
+}
+
+.hl-op {
+  color: var(--hl-op);
+}
+
+.hl-comment {
+  color: var(--hl-comment);
+}
+
+.hl-fn {
+  color: var(--hl-fn);
+}
+
+.hl-class {
+  color: var(--hl-class);
+}
+
+.hl-enum {
+  color: var(--hl-enum);
+}
+
+.hl-type {
+  color: var(--hl-type);
+}
+
+.hl-var {
+  color: var(--hl-var);
+}
+
+.hl-prop {
+  color: var(--hl-prop);
+}
+
+.hl-decorator {
+  color: var(--hl-decorator);
+}
+
+.hl-none {
+  color: inherit;
+}
+
+/* Member overloads */
+.member-overloads {
+  margin-top: 8px;
+}
+
+.member-overloads .member-signature pre.signature {
+  margin-top: 4px;
+  opacity: 0.92;
+}
+
+.docblock blockquote {
+  margin: 0 0 10px;
+  padding: 2px 14px;
+  border-left: 3px solid var(--border);
+  color: var(--fg-muted);
+}
+
+.docblock h1,
+.docblock h2,
+.docblock h3,
+.docblock h4 {
+  font-size: 17px;
+  margin: 18px 0 8px;
+}
+
+.deprecated {
+  color: var(--deprecated);
+  font-weight: 600;
+}
+
+.see {
+  color: var(--fg-muted);
+  font-size: 14px;
+}
+
+.other {
+  color: var(--fg-muted);
+  font-size: 14px;
+}
+
+/* ─── Signatures ──────────────────────────────────────── */
+/* rustdoc signatures are plain grey code blocks - no accent bar, no border. */
+pre.signature {
+  background: var(--signature-bg);
+  border-radius: 6px;
+  padding: 14px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 10px 0;
+  white-space: pre-wrap;
+}
+
+pre.signature code {
+  background: transparent;
+  padding: 0;
+}
+
+pre.signature a {
+  color: var(--accent);
+}
+
+pre.signature a:hover {
+  text-decoration: underline;
+}
+
+/* ─── Members (rustdoc-style, always expanded) ────────── */
+/* Each member is a plain list entry: a bold signature row followed by its
+   indented description. No cards, no collapsing - long pages are scanned by
+   the signature column, exactly like rustdoc's Implementations section. */
+.section-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 8px;
+  line-height: 18px;
+  margin-left: 8px;
+  vertical-align: 2px;
+}
+
+.section-link {
+  color: inherit;
+}
+
+.section-link:hover {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.section .member {
+  padding: 10px 0 12px;
+  border-top: 1px solid var(--border);
+}
+
+.section .member:first-of-type {
+  border-top: none;
+}
+
+.member:target {
+  background: var(--target-bg);
+  box-shadow: 0 0 0 6px var(--target-bg);
+  border-radius: 4px;
+}
+
+.member-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.member-signature {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.member-signature::-webkit-scrollbar {
+  display: none;
+}
+
+.member-signature pre.signature {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  margin: 0;
+}
+
+.member-body {
+  padding-left: 20px;
+}
+
+.member-body .docblock {
+  margin: 4px 0 0;
+  color: var(--fg-muted);
+  font-size: 14px;
+}
+
+.member-body .docblock p {
+  margin: 0 0 6px;
+}
+
+.member-body .docblock p:last-child {
+  margin: 0;
+}
+
+/* Member detail: parameters / returns as a definition list. The name and its
+   type pill sit on one line; the description indents beneath, which reads
+   better than a three-column table for prose-heavy docs. */
+.member-detail {
+  margin-top: 10px;
+}
+
+.detail-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-muted);
+  margin-bottom: 4px;
+}
+
+.param-list {
+  margin: 0;
+}
+
+.param-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 16px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+
+.param-row:first-child {
+  border-top: none;
+}
+
+.param-row dt {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-shrink: 0;
+  min-width: 180px;
+}
+
+.param-row dt code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  background: var(--code-bg);
+  border-radius: 3px;
+  padding: 0 5px;
+}
+
+.param-type {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
+.param-type a {
+  color: var(--accent);
+}
+
+.param-row dd {
+  flex: 1;
+  min-width: 200px;
+  margin: 0;
+  color: var(--fg);
+  font-size: 13.5px;
+}
+
+.param-row dd p {
+  margin: 0;
+}
+
+.param-row dd p + p {
+  margin-top: 4px;
+}
+
+.param-row dd ul,
+.param-row dd ol {
+  margin: 0 0 4px;
+  padding-left: 20px;
+}
+
+.param-row dd code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  background: var(--code-bg);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+/* ─── Index page ──────────────────────────────────────── */
+.hero {
+  padding: 20px 0 8px;
+}
+
+.hero-title {
+  font-family: var(--font-sans);
+  margin: 0 0 6px;
+  font-size: 34px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.hero-lead {
+  margin: 0 0 14px;
+  font-size: 16px;
+  color: var(--fg-muted);
+}
+
+.hero-search-hint {
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  color: var(--fg-muted);
+}
+
+.hero-search-hint kbd {
+  display: inline-block;
+  min-width: 20px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--bg-muted);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 11.5px;
+  line-height: 17px;
+  text-align: center;
+}
+
+/* Letter quick-jump bar: sticky within the section so long listings stay
+   navigable without scrolling back up. */
+.letter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin: 0 0 14px;
+  padding: 6px 4px;
+  position: sticky;
+  top: 52px;
+  z-index: 5;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.letter-bar a {
+  min-width: 24px;
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: center;
+  color: var(--fg-muted);
+}
+
+.letter-bar a:hover {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  text-decoration: none;
+}
+
+/* Index groups are plain text columns in rustdoc's "all items" pages; keep
+   them flat - no card chrome, no hover shadows. */
+.index-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 32px;
+}
+
+.index-group {
+  min-width: 200px;
+  flex: 1 1 200px;
+  max-width: 300px;
+  scroll-margin-top: 112px;
+}
+
+.index-group:target .index-letter {
+  border-bottom-color: var(--accent);
+}
+
+.index-letter {
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--accent);
+  border-bottom: 1px solid var(--border-strong);
+  padding-bottom: 5px;
+  margin-bottom: 7px;
+}
+
+.index-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.index-list li {
+  margin: 1px 0;
+}
+
+.index-list a {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 2px 0;
+  font-size: 13.5px;
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.index-list a:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+/* ─── Icon buttons (theme / drawer toggle) ───────────── */
+/* rustdoc toolbar buttons are borderless until hovered. */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--header-fg);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.icon-btn:hover {
+  border-color: var(--border-strong);
+}
+
+.icon-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+#sidebar-toggle {
+  display: none;
+}
+
+#theme-toggle .icon-sun {
+  display: none;
+}
+
+#theme-toggle.is-dark .icon-sun {
+  display: block;
+}
+
+#theme-toggle.is-dark .icon-moon {
+  display: none;
+}
+
+/* ─── Anchors, scroll offset ──────────────────────────── */
+.section,
+.member {
+  scroll-margin-top: 128px;
+}
+
+/* Deep-linked member: auto-opened by a tiny script; this highlights it. */
+.member:target {
+  background: var(--target-bg);
+  border-right: 3px solid var(--target-border);
+}
+
+/* Deprecated emphasis */
+.member.is-deprecated > .member-head .member-signature {
+  opacity: 0.75;
+}
+
+/* rustdoc renders stability badges as soft-highlighted "stab" chips rather
+   than solid red pills. */
+.deprecated-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg);
+  background: var(--stab-bg);
+  border-radius: 3px;
+  padding: 1px 7px;
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+
+/* ─── Breadcrumb ──────────────────────────────────────── */
+.breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 7px;
+  margin: 0 0 14px;
+  font-size: 13px;
+  font-family: var(--font-sans);
+  color: var(--fg-muted);
+}
+
+.breadcrumb a {
+  color: var(--fg-muted);
+}
+
+.breadcrumb a:hover {
+  color: var(--accent);
+}
+
+.breadcrumb .sep {
+  opacity: 0.6;
+}
+
+.breadcrumb .crumb-current {
+  color: var(--fg);
+  font-weight: 600;
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+/* ─── Stat cards (index page) ─────────────────────────── */
+.stat-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 20px 0 6px;
+}
+
+.stat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 130px;
+  padding: 14px 18px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg-elevated);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  transition: border-color 0.15s ease;
+}
+
+.stat-card:hover {
+  border-color: var(--accent);
+  text-decoration: none;
+}
+
+.stat-num {
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.stat-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--fg-muted);
+}
+
+/* ─── Copy button ─────────────────────────────────────── */
+.code-wrap {
+  position: relative;
+}
+
+.copy-btn {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  color: var(--fg-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.code-wrap:hover .copy-btn,
+.copy-btn:focus-visible {
+  opacity: 1;
+}
+
+.copy-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.copy-btn.copied {
+  color: var(--dot-alias);
+  border-color: var(--dot-alias);
+  opacity: 1;
+}
+
+.copy-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+@media (hover: none) {
+  .copy-btn {
+    opacity: 1;
+  }
+}
+
+/* ─── On-this-page TOC ────────────────────────────────── */
+.toc {
+  position: sticky;
+  top: 52px;
+  height: calc(100vh - 52px);
+  overflow-y: auto;
+  padding: 32px 20px 64px 4px;
+  font-size: 13px;
+  font-family: var(--font-sans);
+}
+
+.toc-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-muted);
+  margin-bottom: 6px;
+  padding-left: 12px;
+}
+
+.toc-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-left: 1px solid var(--border);
+}
+
+.toc-list a {
+  display: block;
+  padding: 3px 12px;
+  margin-left: -1px;
+  border-left: 2px solid transparent;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toc-list a:hover {
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.toc-list a.active {
+  color: var(--accent-strong);
+  border-left-color: var(--accent);
+  font-weight: 600;
+}
+
+.toc-sub a {
+  padding-left: 24px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+@media (max-width: 1200px) {
+  .toc {
+    display: none;
+  }
+
+  .layout,
+  .layout:has(.toc) {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+}
+
+/* Search match highlighting */
+.search-result mark {
+  background: transparent;
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+
+/* ─── Sidebar drawer (mobile) ─────────────────────────── */
+#sidebar-backdrop {
+  position: fixed;
+  inset: 52px 0 0 0;
+  z-index: 35;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+#sidebar-backdrop[hidden] {
+  display: none;
+}
+
+/* ─── Responsive ──────────────────────────────────────── */
+@media (max-width: 900px) {
+  #sidebar-toggle {
+    display: inline-flex;
+  }
+
+  .docbar-inner {
+    gap: 10px;
+    padding: 0 12px;
+  }
+
+  .search input {
+    height: 34px;
+  }
+
+  .layout,
+  .layout:has(.toc) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sidebar {
+    position: fixed;
+    left: 0;
+    top: 52px;
+    bottom: 0;
+    width: 240px;
+    z-index: 40;
+    height: auto;
+    transform: translateX(-102%);
+    transition: transform 0.2s ease;
+    background: var(--bg-sidebar);
+  }
+
+  body.drawer-open .sidebar {
+    transform: translateX(0);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.3);
+  }
+
+  .content {
+    padding: 20px 16px 48px;
+  }
+
+  .pagehead {
+    top: 52px;
+  }
+
+  .pagehead-name {
+    font-size: 20px;
+  }
+}
+
+/* ─── Print ───────────────────────────────────────────── */
+@media print {
+  .docbar,
+  .sidebar,
+  .toc,
+  .copy-btn,
+  .pagehead .breadcrumb,
+  #sidebar-backdrop {
+    display: none !important;
+  }
+
+  .pagehead {
+    position: static;
+    background: none;
+    backdrop-filter: none;
+    border-bottom: none;
+  }
+
+  /* Expand every member so printouts contain the full documentation. */
+  .member-body {
+    display: block !important;
+  }
+
+  .member > .member-head .group-caret {
+    display: none;
+  }
+
+  .content {
+    padding: 0;
+    max-width: none;
+  }
+
+  .section .member {
+    break-inside: avoid;
+  }
+}

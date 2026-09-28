@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% import "macros.html" as macros %}
+{% block title %}{{ doc.title }}{% endblock title %}
+{% block content %}
+<header class="pagehead">
+  <nav class="breadcrumb" aria-label="Breadcrumb">
+    <a href="{{ root_prefix }}index.html">{{ site_name }}</a>
+    <span class="sep" aria-hidden="true">›</span>
+    <span>{{ doc.kind }}</span>
+    {% if doc.namespace %}<span class="sep" aria-hidden="true">›</span><span>{{ doc.namespace }}</span>{% endif %}
+  </nav>
+  <div class="pagehead-title">
+    <span class="kind-badge kind-badge-lg kind-{{ doc.kind }}" aria-hidden="true">{{ doc.kind_letter }}</span>
+    <h1 class="pagehead-name">{{ doc.name }}</h1>
+    {% if doc.deprecated %}<span class="deprecated-badge">Deprecated</span>{% endif %}
+  </div>
+  {% if doc.supers %}<div class="meta"><span class="meta-label">supers:</span> {{ doc.supers | safe }}</div>{% endif %}
+</header>
+
+{% if doc.display %}<div class="display">{{ doc.display | safe }}</div>{% endif %}
+{% if doc.deprecated %}<div class="deprecated"><span class="deprecated-badge">Deprecated</span>{{ doc.deprecated }}
+</div>{% endif %}
+{% if doc.description %}<div class="docblock doc-lead">{{ doc.description }}</div>{% endif %}
+{% if doc.see %}<div class="see">See: {{ doc.see }}</div>{% endif %}
+{% if doc.other %}<div class="other">{{ doc.other }}</div>{% endif %}
+
+{% if doc.methods %}
+<section class="section" id="methods">
+  <h2><a class="section-link" href="#methods">Methods</a><span class="section-count">{{ doc.methods | length }}</span>
+  </h2>
+  {% for m in doc.methods %}{{ macros::member(m=m) }}{% endfor %}
+</section>
+{% endif %}
+
+{% if doc.fields %}
+<section class="section" id="fields">
+  <h2><a class="section-link" href="#fields">Fields</a><span class="section-count">{{ doc.fields | length }}</span></h2>
+  {% for f in doc.fields %}{{ macros::member(m=f) }}{% endfor %}
+</section>
+{% endif %}
+{% endblock content %}
+
+{% block toc %}
+{% if doc.methods or doc.fields %}
+<aside class="toc" id="toc" aria-label="On this page">
+  <div class="toc-title">On this page</div>
+  <ul class="toc-list">
+    {% if doc.methods %}
+    <li><a href="#methods">Methods</a></li>
+    {% for m in doc.methods %}
+    <li class="toc-sub"><a href="#{{ m.name }}">{{ m.short_name }}</a></li>
+    {% endfor %}
+    {% endif %}
+    {% if doc.fields %}
+    <li><a href="#fields">Fields</a></li>
+    {% for f in doc.fields %}
+    <li class="toc-sub"><a href="#{{ f.name }}">{{ f.short_name }}</a></li>
+    {% endfor %}
+    {% endif %}
+  </ul>
+</aside>
+{% endif %}
+{% endblock toc %}

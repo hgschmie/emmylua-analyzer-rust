@@ -117,7 +117,10 @@ impl LuaAstNode for LuaVarExpr {
     where
         Self: Sized,
     {
-        matches!(kind, LuaSyntaxKind::NameExpr | LuaSyntaxKind::IndexExpr)
+        matches!(
+            kind,
+            LuaSyntaxKind::NameExpr | LuaSyntaxKind::IndexExpr | LuaSyntaxKind::SafeIndexExpr
+        )
     }
 
     fn cast(syntax: LuaSyntaxNode) -> Option<Self>
@@ -126,7 +129,9 @@ impl LuaAstNode for LuaVarExpr {
     {
         match syntax.kind().into() {
             LuaSyntaxKind::NameExpr => LuaNameExpr::cast(syntax).map(LuaVarExpr::NameExpr),
-            LuaSyntaxKind::IndexExpr => LuaIndexExpr::cast(syntax).map(LuaVarExpr::IndexExpr),
+            LuaSyntaxKind::IndexExpr | LuaSyntaxKind::SafeIndexExpr => {
+                LuaIndexExpr::cast(syntax).map(LuaVarExpr::IndexExpr)
+            }
             _ => None,
         }
     }
@@ -331,7 +336,20 @@ impl LuaIndexExpr {
 
                         return Some(LuaIndexKey::Expr(LuaExpr::cast(node).unwrap()));
                     }
-                    _ => return None,
+                    _ => {
+                        if let Some(token) = child.as_token()
+                            && matches!(
+                                token.kind().to_token(),
+                                LuaTokenKind::TkWhitespace
+                                    | LuaTokenKind::TkEndOfLine
+                                    | LuaTokenKind::TkShortComment
+                                    | LuaTokenKind::TkLongComment
+                            )
+                        {
+                            continue;
+                        }
+                        return None;
+                    }
                 }
             } else if let Some(token) = child.as_token() {
                 if token.kind() == LuaTokenKind::TkLeftBracket.into() {

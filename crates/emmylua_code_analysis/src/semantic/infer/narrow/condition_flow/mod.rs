@@ -293,10 +293,10 @@ impl PendingConditionNarrow {
                     LuaType::Array(array_type),
                     LuaType::IntegerConst(i) | LuaType::DocIntegerConst(i),
                 ) if matches!(condition_flow, InferConditionFlow::TrueCondition) => {
-                    let new_array_type = LuaArrayType::new(
-                        array_type.get_base().clone(),
-                        LuaArrayLen::Max(*i + *max_adjustment),
-                    );
+                    // Array bounds are i64, so clamp an exclusive bound above i64::MAX.
+                    let max_len = i.saturating_add(*max_adjustment);
+                    let new_array_type =
+                        LuaArrayType::new(array_type.get_base().clone(), LuaArrayLen::Max(max_len));
                     LuaType::Array(new_array_type.into())
                 }
                 _ => antecedent_type,
@@ -1107,14 +1107,12 @@ impl CorrelatedSubquery {
 
 pub(super) fn always_literal_equal(left: &LuaType, right: &LuaType) -> bool {
     match (left, right) {
-        (LuaType::Union(union), other) => union
-            .into_vec()
-            .into_iter()
-            .all(|candidate| always_literal_equal(&candidate, other)),
-        (other, LuaType::Union(union)) => union
-            .into_vec()
-            .into_iter()
-            .all(|candidate| always_literal_equal(other, &candidate)),
+        (LuaType::Union(union), other) => {
+            union.all_members(|candidate| always_literal_equal(candidate, other))
+        }
+        (other, LuaType::Union(union)) => {
+            union.all_members(|candidate| always_literal_equal(other, candidate))
+        }
         (
             LuaType::StringConst(l) | LuaType::DocStringConst(l),
             LuaType::StringConst(r) | LuaType::DocStringConst(r),

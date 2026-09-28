@@ -28,6 +28,16 @@ pub struct CliArgs {
     #[arg(long)]
     pub stdin: bool,
 
+    /// Path to associate with stdin so config resolution and diffs work as if
+    /// the input came from that file
+    #[arg(long, value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
+    pub stdin_filename: Option<PathBuf>,
+
+    /// After formatting, format the result again and warn if the output is not
+    /// idempotent
+    #[arg(long)]
+    pub verify: bool,
+
     /// Write formatted result back to the file(s)
     #[arg(long)]
     pub write: bool,
@@ -40,13 +50,18 @@ pub struct CliArgs {
     #[arg(long, alias = "list-different")]
     pub list_different: bool,
 
+    /// With --check/--list-different, print a machine-readable JSON summary
+    /// instead of diffs or a plain path list
+    #[arg(long)]
+    pub json: bool,
+
     /// Colorize --check diff output
     #[arg(long, value_enum, default_value_t = ColorChoice::Auto)]
     pub color: ColorChoice,
 
-    /// Diff rendering style for --check output
-    #[arg(long, value_enum, default_value_t = DiffStyle::Marker)]
-    pub diff_style: DiffStyle,
+    /// Highlight changed words inside modified lines in --check diff output
+    #[arg(long)]
+    pub inline: bool,
 
     /// Write output to a specific file (only with a single input or stdin)
     #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
@@ -59,6 +74,14 @@ pub struct CliArgs {
     /// Print the default configuration as TOML and exit
     #[arg(long)]
     pub dump_default_config: bool,
+
+    /// Write a config file and exit. Defaults to ./luafmt.toml.
+    #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "luafmt.toml")]
+    pub init: Option<PathBuf>,
+
+    /// Print the effective configuration for PATH and exit
+    #[arg(long, value_name = "PATH", value_hint = clap::ValueHint::AnyPath)]
+    pub explain_config: Option<PathBuf>,
 
     /// Use tabs for indentation
     #[arg(long)]
@@ -109,13 +132,6 @@ pub enum ColorChoice {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
-pub enum DiffStyle {
-    #[default]
-    Marker,
-    Git,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
 pub enum LanguageLevel {
     Lua51,
     Lua52,
@@ -124,6 +140,7 @@ pub enum LanguageLevel {
     #[default]
     Lua55,
     LuaJIT,
+    LuaJIT3,
 }
 
 impl From<LanguageLevel> for LuaLanguageLevel {
@@ -135,6 +152,7 @@ impl From<LanguageLevel> for LuaLanguageLevel {
             LanguageLevel::Lua54 => LuaLanguageLevel::Lua54,
             LanguageLevel::Lua55 => LuaLanguageLevel::Lua55,
             LanguageLevel::LuaJIT => LuaLanguageLevel::LuaJIT,
+            LanguageLevel::LuaJIT3 => LuaLanguageLevel::LuaJIT3,
         }
     }
 }
@@ -148,6 +166,7 @@ impl From<LanguageLevel> for LuaSyntaxLevel {
             LanguageLevel::Lua54 => LuaSyntaxLevel::Lua54,
             LanguageLevel::Lua55 => LuaSyntaxLevel::Lua55,
             LanguageLevel::LuaJIT => LuaSyntaxLevel::LuaJIT,
+            LanguageLevel::LuaJIT3 => LuaSyntaxLevel::LuaJIT3,
         }
     }
 }

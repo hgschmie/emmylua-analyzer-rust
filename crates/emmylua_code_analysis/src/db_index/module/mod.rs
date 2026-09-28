@@ -28,6 +28,8 @@ pub struct LuaModuleIndex {
     workspaces: Vec<Workspace>,
     // A file can have a short name and explicitly mapped names from enclosing roots.
     file_module_nodes: HashMap<FileId, Vec<ModuleNodeId>>,
+    // Most specific containing root that accepts the file's path. Explicit module
+    // renaming preserves it; removal clears it. Unregistered callers use global lookup.
     file_workspace_roots: HashMap<FileId, PathBuf>,
     id_counter: u32,
     fuzzy_search: bool,
@@ -116,7 +118,7 @@ impl LuaModuleIndex {
             module_path = self.replace_module_path(&module_path);
         }
 
-        let mut aliases = Vec::new();
+        let mut aliases = HashSet::new();
         let mut source_root: Option<PathBuf> = None;
         for workspace in &self.workspaces {
             let Ok(relative) = Path::new(path).strip_prefix(&workspace.root) else {
@@ -125,6 +127,9 @@ impl LuaModuleIndex {
             if !workspace.import.includes_path(relative) {
                 continue;
             }
+            // Every candidate is a component-wise prefix of this file's path, so
+            // matching roots are nested, never siblings. More components means
+            // more specific; equal depths denote the same path and keep the first.
             if source_root
                 .as_ref()
                 .is_none_or(|root| workspace.root.components().count() > root.components().count())
@@ -139,8 +144,8 @@ impl LuaModuleIndex {
                 let mapped = self.replace_module_path(&name);
                 // Only explicit mappings introduce aliases; ordinary enclosing roots
                 // must not change the existing shortest-root module naming behavior.
-                if mapped != name && mapped != module_path && !aliases.contains(&mapped) {
-                    aliases.push(mapped);
+                if mapped != name && mapped != module_path {
+                    aliases.insert(mapped);
                 }
             }
         }
@@ -160,13 +165,7 @@ impl LuaModuleIndex {
         module_path: String,
         workspace_id: WorkspaceId,
     ) -> Option<()> {
-        let source_root = self.file_workspace_roots.get(&file_id).cloned();
-        if self.file_module_map.contains_key(&file_id) {
-            self.remove(file_id);
-        }
-        if let Some(root) = source_root {
-            self.file_workspace_roots.insert(file_id, root);
-        }
+        self.remove_module_entries(file_id);
 
         let parent_node_id = self.add_module_node(file_id, &module_path)?;
         let module_parts: Vec<&str> = module_path.split('.').collect();
@@ -240,10 +239,10 @@ impl LuaModuleIndex {
         if !node.file_ids.contains(&file_id) {
             node.file_ids.push(file_id);
         }
-        self.file_module_nodes
-            .entry(file_id)
-            .or_default()
-            .push(parent_node_id);
+        let nodes = self.file_module_nodes.entry(file_id).or_default();
+        if !nodes.contains(&parent_node_id) {
+            nodes.push(parent_node_id);
+        }
         Some(parent_node_id)
     }
 
@@ -271,20 +270,29 @@ impl LuaModuleIndex {
         }
     }
 
+    /// Resolve without a caller-root preference, retaining the global lookup order.
     pub fn find_module(&self, module_path: &str) -> Option<&ModuleInfo> {
         self.find_module_with_root(module_path, None)
     }
 
     /// Prefer modules in the caller's most specific workspace root. WorkspaceId
     /// alone is insufficient: all configured source roots share MAIN.
+    /// Root preference precedes visibility: a hidden local match shadows a visible
+    /// match in another root. Completion omits that hidden match without falling back.
+    /// If the caller has no registered root, use the same lookup as `find_module`.
     pub fn find_module_from(&self, module_path: &str, file_id: FileId) -> Option<&ModuleInfo> {
-        self.find_module_with_root(module_path, self.file_workspace_roots.get(&file_id))
+        self.find_module_with_root(
+            module_path,
+            self.file_workspace_roots
+                .get(&file_id)
+                .map(PathBuf::as_path),
+        )
     }
 
     fn find_module_with_root(
         &self,
         module_path: &str,
-        source_root: Option<&PathBuf>,
+        source_root: Option<&Path>,
     ) -> Option<&ModuleInfo> {
         let module_path = module_path.replace(['\\', '/'], ".");
         // require 路径已经和模块索引完全一致时, 优先保留原始命中结果.
@@ -335,7 +343,7 @@ impl LuaModuleIndex {
     fn find_module_by_normalized_path(
         &self,
         module_path: &str,
-        source_root: Option<&PathBuf>,
+        source_root: Option<&Path>,
     ) -> Option<&ModuleInfo> {
         let module_parts: Vec<&str> = module_path.split('.').collect();
         if module_parts.is_empty() {
@@ -348,7 +356,7 @@ impl LuaModuleIndex {
     fn exact_find_module(
         &self,
         module_parts: &Vec<&str>,
-        source_root: Option<&PathBuf>,
+        source_root: Option<&Path>,
     ) -> Option<&ModuleInfo> {
         let mut parent_node_id = self.module_root_id;
         for part in module_parts {
@@ -361,6 +369,8 @@ impl LuaModuleIndex {
         }
 
         let node = self.module_nodes.get(&parent_node_id)?;
+        // Skip stale file IDs rather than discarding the remaining candidates.
+        // min_by_key retains the first candidate when root and visibility tie.
         node.file_ids
             .iter()
             .filter_map(|id| self.file_module_map.get(id))
@@ -372,20 +382,28 @@ impl LuaModuleIndex {
             })
     }
 
-    fn root_preference(&self, file_id: FileId, source_root: Option<&PathBuf>) -> bool {
-        source_root.is_some() && self.file_workspace_roots.get(&file_id) != source_root
+    /// Sort key: false prefers the caller's root; true ranks other roots later.
+    /// With no caller root all candidates receive false, preserving global order.
+    fn root_preference(&self, file_id: FileId, source_root: Option<&Path>) -> bool {
+        source_root.is_some()
+            && self
+                .file_workspace_roots
+                .get(&file_id)
+                .map(PathBuf::as_path)
+                != source_root
     }
 
     /// Find a module by suffix when exact lookup fails.
     ///
     /// Candidates must either exactly equal `module_path` or end with `.{module_path}`.
-    /// Among matches, prefer the one with the fewest leading path segments before the suffix,
-    /// then use lexicographic `full_module_name` ordering as a stable tie-break.
+    /// Among matches, prefer the caller's root, then the fewest leading path segments
+    /// before the suffix, then lexicographic `full_module_name` ordering. These keys
+    /// form a transitive lexicographic order; without a caller root the first key ties.
     fn fuzzy_find_module(
         &self,
         module_path: &str,
         last_name: &str,
-        source_root: Option<&PathBuf>,
+        source_root: Option<&Path>,
     ) -> Option<&ModuleInfo> {
         let file_ids = self.module_name_to_file_ids.get(last_name)?;
         let suffix_with_boundary = format!(".{}", module_path);
@@ -493,6 +511,7 @@ impl LuaModuleIndex {
         matched_module_path
     }
 
+    /// Apply the configured rewrite rules in order, once per rule.
     fn replace_module_path(&self, module_path: &str) -> String {
         let mut module_path = module_path.to_owned();
         for (key, value) in &self.module_replace_vec {
@@ -504,6 +523,8 @@ impl LuaModuleIndex {
         module_path
     }
 
+    /// Extract a module name using runtime path patterns, without applying moduleMap.
+    /// Callers normalize separators and apply the rewrite rules separately.
     pub fn match_pattern(&self, path: &str) -> Option<String> {
         for pattern in &self.module_patterns {
             if let Some(captures) = pattern.captures(path)
@@ -678,12 +699,21 @@ impl LuaModuleIndex {
 
         None
     }
-}
 
-impl LuaIndex for LuaModuleIndex {
-    fn remove(&mut self, file_id: FileId) {
-        self.file_module_map.remove(&file_id);
-        self.file_workspace_roots.remove(&file_id);
+    /// Remove canonical and alias entries while preserving the file's source root
+    /// for an explicit module-name replacement. Full file removal also clears it.
+    fn remove_module_entries(&mut self, file_id: FileId) {
+        if let Some(info) = self.file_module_map.remove(&file_id) {
+            // Only canonical names enter the fuzzy index; aliases live in the tree.
+            if let hashbrown::hash_map::Entry::Occupied(mut entry) =
+                self.module_name_to_file_ids.entry(info.name)
+            {
+                entry.get_mut().retain(|id| *id != file_id);
+                if entry.get().is_empty() {
+                    entry.remove();
+                }
+            }
+        }
         for module_id in self.file_module_nodes.remove(&file_id).unwrap_or_default() {
             if let Some(node) = self.module_nodes.get_mut(&module_id) {
                 node.file_ids.retain(|id| *id != file_id);
@@ -704,10 +734,13 @@ impl LuaIndex for LuaModuleIndex {
                 current = parent;
             }
         }
-        self.module_name_to_file_ids.retain(|_, ids| {
-            ids.retain(|id| *id != file_id);
-            !ids.is_empty()
-        });
+    }
+}
+
+impl LuaIndex for LuaModuleIndex {
+    fn remove(&mut self, file_id: FileId) {
+        self.remove_module_entries(file_id);
+        self.file_workspace_roots.remove(&file_id);
     }
 
     fn clear(&mut self) {

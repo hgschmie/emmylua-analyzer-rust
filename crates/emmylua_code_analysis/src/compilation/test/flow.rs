@@ -1896,7 +1896,7 @@ n = n + 1
     fn test_unreachable_continue_loop_after_return_does_not_cycle() {
         let mut ws = VirtualWorkspace::new();
         let mut emmyrc = ws.get_emmyrc();
-        emmyrc.runtime.version = EmmyrcLuaVersion::LuaJITExt;
+        emmyrc.runtime.version = EmmyrcLuaVersion::LuaJIT2;
         ws.update_emmyrc(emmyrc);
 
         ws.def(
@@ -3156,6 +3156,57 @@ _2 = a[1]
     }
 
     #[test]
+    fn test_issue_1207_lesser_array_length_guards() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+local a --- @type string[]
+if #a <= 1 then error() end
+
+--- @type string
+_ = a[2]
+
+local b --- @type string[]
+if #b < 2 then error() end
+
+--- @type string
+_ = b[2]
+            "#
+        ));
+    }
+
+    #[test]
+    fn test_issue_1207_array_length_bound_does_not_overflow() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+local a --- @type string[]
+if #a <= 9223372036854775807 then error() end
+
+--- @type string
+_ = a[1]
+            "#
+        ));
+    }
+
+    #[test]
+    fn test_issue_1207_empty_else_preserves_array_length_guard() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+local a --- @type string[]
+if not (#a > 1) then error() else end
+
+--- @type string
+_ = a[2]
+            "#
+        ));
+    }
+
+    #[test]
     fn test_return_cast_with_fallback() {
         let mut ws = VirtualWorkspace::new();
 
@@ -3597,6 +3648,48 @@ _2 = a[1]
 
         let after_assign = ws.expr_ty("after_assign");
         assert_eq!(ws.humanize_type(after_assign), "Counter");
+    }
+
+    #[test]
+    fn test_issue_1180_self_assignment_replays_antecedent_type() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+        local index = 1
+        index = index - 1
+        after_assign = index
+        "#,
+        );
+
+        assert_eq!(ws.expr_ty("after_assign"), ws.ty("integer"));
+    }
+
+    #[test]
+    fn test_issue_1180_while_loop_preserves_integer_self_assignments() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file_id = ws.def(
+            r#"
+        function test()
+            local arr = {1, 2, 3, 4, "hello", 6, false, 7}
+            local index = 1
+
+            while index <= #arr do
+                local v = arr[index]
+
+                if type(v) == "boolean" then
+                    table.remove(arr, index)
+                    index = index - 1
+                    print(index)
+                end
+
+                index = index + 1
+            end
+        end
+        "#,
+        );
+        let index_type = last_name_expr_type(&ws, file_id, "index");
+
+        assert_eq!(ws.humanize_type(index_type), "integer");
     }
 
     #[test]

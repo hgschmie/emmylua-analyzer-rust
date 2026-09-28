@@ -1,3 +1,4 @@
+use emmylua_parser::LuaLanguageLevel;
 use serde::{Deserialize, Serialize};
 
 /// Formatter root config.
@@ -55,11 +56,25 @@ impl LuaFormatConfig {
         }
     }
 
-    pub fn newline_str(&self) -> &'static str {
+    /// Returns the configured line ending sequence, or `None` when the source
+    /// line ending style should be preserved.
+    pub fn newline_str(&self) -> Option<&'static str> {
         match &self.output.end_of_line {
-            EndOfLine::LF => "\n",
-            EndOfLine::CRLF => "\r\n",
+            EndOfLine::Preserve => None,
+            EndOfLine::LF => Some("\n"),
+            EndOfLine::CRLF => Some("\r\n"),
         }
+    }
+
+    /// Returns `section.key = value` pairs for every setting that differs from
+    /// the default config. Useful for showing the "effective delta" of a
+    /// resolved config.
+    pub fn settings_differing_from_default(&self) -> Vec<(String, String)> {
+        let default_value = serde_json::to_value(LuaFormatConfig::default()).unwrap_or_default();
+        let actual_value = serde_json::to_value(self).unwrap_or_default();
+        let mut out = Vec::new();
+        collect_json_diff(&mut out, "", &actual_value, &default_value);
+        out
     }
 
     pub fn should_align_statement_line_comments(&self) -> bool {
@@ -215,7 +230,7 @@ impl Default for OutputConfig {
             quote_style: QuoteStyle::Preserve,
             single_arg_call_parens: SingleArgCallParens::Preserve,
             simple_lambda_single_line: SimpleLambdaSingleLine::Preserve,
-            end_of_line: EndOfLine::LF,
+            end_of_line: EndOfLine::Preserve,
         }
     }
 }
@@ -437,21 +452,19 @@ pub enum LuaSyntaxLevel {
     #[default]
     Lua55,
     LuaJIT,
-    LuaJITExt,
     LuaJIT3,
 }
 
-impl From<LuaSyntaxLevel> for emmylua_parser::LuaLanguageLevel {
+impl From<LuaSyntaxLevel> for LuaLanguageLevel {
     fn from(level: LuaSyntaxLevel) -> Self {
         match level {
-            LuaSyntaxLevel::Lua51 => emmylua_parser::LuaLanguageLevel::Lua51,
-            LuaSyntaxLevel::Lua52 => emmylua_parser::LuaLanguageLevel::Lua52,
-            LuaSyntaxLevel::Lua53 => emmylua_parser::LuaLanguageLevel::Lua53,
-            LuaSyntaxLevel::Lua54 => emmylua_parser::LuaLanguageLevel::Lua54,
-            LuaSyntaxLevel::Lua55 => emmylua_parser::LuaLanguageLevel::Lua55,
-            LuaSyntaxLevel::LuaJIT => emmylua_parser::LuaLanguageLevel::LuaJIT,
-            LuaSyntaxLevel::LuaJITExt => emmylua_parser::LuaLanguageLevel::LuaJITExt,
-            LuaSyntaxLevel::LuaJIT3 => emmylua_parser::LuaLanguageLevel::LuaJIT3,
+            LuaSyntaxLevel::Lua51 => LuaLanguageLevel::Lua51,
+            LuaSyntaxLevel::Lua52 => LuaLanguageLevel::Lua52,
+            LuaSyntaxLevel::Lua53 => LuaLanguageLevel::Lua53,
+            LuaSyntaxLevel::Lua54 => LuaLanguageLevel::Lua54,
+            LuaSyntaxLevel::Lua55 => LuaLanguageLevel::Lua55,
+            LuaSyntaxLevel::LuaJIT => LuaLanguageLevel::LuaJIT,
+            LuaSyntaxLevel::LuaJIT3 => LuaLanguageLevel::LuaJIT3,
         }
     }
 }
@@ -463,8 +476,48 @@ pub enum ExpandStrategy {
     Auto,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum EndOfLine {
+    /// Keep the line ending style of the source text.
+    #[default]
+    Preserve,
     LF,
     CRLF,
+}
+
+/// Recursively walks `actual` and records leaves whose value differs from the
+/// corresponding leaf in `default`, using `section.key` paths.
+fn collect_json_diff(
+    out: &mut Vec<(String, String)>,
+    prefix: &str,
+    actual: &serde_json::Value,
+    default: &serde_json::Value,
+) {
+    let (serde_json::Value::Object(actual_obj), serde_json::Value::Object(default_obj)) =
+        (actual, default)
+    else {
+        return;
+    };
+
+    for (key, actual_value) in actual_obj {
+        let path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        let default_value = default_obj
+            .get(key)
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+
+        if matches!(actual_value, serde_json::Value::Object(_)) {
+            collect_json_diff(out, &path, actual_value, &default_value);
+        } else if actual_value != &default_value {
+            let rendered = match actual_value {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            out.push((path, rendered));
+        }
+    }
 }

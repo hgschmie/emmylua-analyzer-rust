@@ -528,6 +528,51 @@ end
         );
     }
 
+    #[test]
+    fn test_simple_lambda_always_collapses_non_return_closure() {
+        let config = LuaFormatConfig {
+            output: OutputConfig {
+                simple_lambda_single_line: SimpleLambdaSingleLine::Always,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert_format_with_config!(
+            r#"buttonRegister(self._btnClose, function()
+    self:_onBtnEventClose()
+end)
+"#,
+            r#"buttonRegister(self._btnClose, function () self:_onBtnEventClose() end)
+"#,
+            config
+        );
+    }
+
+    #[test]
+    fn test_simple_lambda_never_expands_non_return_closure() {
+        let config = LuaFormatConfig {
+            output: OutputConfig {
+                simple_lambda_single_line: SimpleLambdaSingleLine::Never,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert_format_with_config!(
+            r#"buttonRegister(self._btnClose, function() self:_onBtnEventClose() end)
+"#,
+            r#"buttonRegister(
+    self._btnClose,
+    function ()
+        self:_onBtnEventClose()
+    end
+)
+"#,
+            config
+        );
+    }
+
     // ========== indentation ==========
 
     #[test]
@@ -871,5 +916,30 @@ table_field = false
         assert!(!config.emmy_doc.space_after_description_dash);
         assert!(config.emmy_doc.compact_type_or);
         assert!(!config.align.table_field);
+    }
+
+    #[test]
+    fn test_default_config_has_no_settings_differing_from_default() {
+        let config = LuaFormatConfig::default();
+        assert!(config.settings_differing_from_default().is_empty());
+    }
+
+    #[test]
+    fn test_settings_differing_from_default_lists_only_changed_fields() {
+        let mut config = LuaFormatConfig::default();
+        config.layout.max_line_width = 88;
+        config.output.quote_style = QuoteStyle::Single;
+        config.comments.align_in_statements = true;
+
+        let diffs = config.settings_differing_from_default();
+
+        assert!(diffs.contains(&("layout.max_line_width".to_string(), "88".to_string())));
+        assert!(diffs.contains(&("output.quote_style".to_string(), "Single".to_string())));
+        assert!(diffs.contains(&(
+            "comments.align_in_statements".to_string(),
+            "true".to_string()
+        )));
+        assert!(!diffs.iter().any(|(key, _)| key == "syntax.level"));
+        assert_eq!(diffs.len(), 3);
     }
 }
