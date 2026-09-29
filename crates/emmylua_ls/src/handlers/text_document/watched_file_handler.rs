@@ -14,12 +14,13 @@ pub async fn on_did_change_watched_files(
     let interval = emmyrc.diagnostics.diagnostic_interval.unwrap_or(500);
     let mut watched_lua_files: Vec<(Uri, Option<String>)> = Vec::new();
     let lsp_features = context.lsp_features();
-    // let
+    let mut removed_file = false;
     for file_event in params.changes.into_iter() {
         let file_type = get_file_type(&file_event.uri);
         match file_type {
             Some(WatchedFileType::Lua) => {
                 if file_event.typ == FileChangeType::DELETED {
+                    removed_file |= analysis.get_file_id(&file_event.uri).is_some();
                     analysis.remove_file_by_uri(&file_event.uri);
                     if !lsp_features.supports_pull_diagnostic() {
                         context
@@ -58,10 +59,22 @@ pub async fn on_did_change_watched_files(
     }
 
     let file_ids = analysis.update_files_by_uri(watched_lua_files);
-    context
-        .file_diagnostic()
-        .add_files_diagnostic_task(file_ids, interval)
-        .await;
+    let changed = removed_file || !file_ids.is_empty();
+    drop(analysis);
+    drop(workspace);
+    if lsp_features.supports_pull_diagnostic() {
+        if changed && lsp_features.supports_refresh_diagnostic() {
+            context
+                .file_diagnostic()
+                .schedule_diagnostic_refresh(interval)
+                .await;
+        }
+    } else {
+        context
+            .file_diagnostic()
+            .add_files_diagnostic_task(file_ids, interval)
+            .await;
+    }
 
     Some(())
 }
