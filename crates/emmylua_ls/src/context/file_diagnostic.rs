@@ -13,6 +13,7 @@ pub struct FileDiagnostic {
     client: Arc<ClientProxy>,
     status_bar: Arc<StatusBar>,
     diagnostic_tokens: Arc<Mutex<HashMap<FileId, CancellationToken>>>,
+    refresh_token: Mutex<Option<CancellationToken>>,
     workspace_diagnostic_token: Arc<Mutex<Option<CancellationToken>>>,
 }
 
@@ -26,9 +27,30 @@ impl FileDiagnostic {
             analysis,
             client,
             diagnostic_tokens: Arc::new(Mutex::new(HashMap::new())),
+            refresh_token: Mutex::new(None),
             workspace_diagnostic_token: Arc::new(Mutex::new(None)),
             status_bar,
         }
+    }
+
+    /// Coalesce cross-file invalidations after analysis has incorporated an edit.
+    pub async fn schedule_diagnostic_refresh(&self, interval: u64) {
+        let mut pending = self.refresh_token.lock().await;
+        if let Some(token) = pending.take() {
+            token.cancel();
+        }
+        let token = CancellationToken::new();
+        *pending = Some(token.clone());
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                biased;
+                _ = token.cancelled() => {},
+                _ = tokio::time::sleep(Duration::from_millis(interval)) => {
+                    client.refresh_workspace_diagnostics();
+                }
+            }
+        });
     }
 
     pub async fn add_diagnostic_task(&self, file_id: FileId, interval: u64) {
@@ -357,5 +379,61 @@ async fn push_workspace_diagnostic(
             ProgressTask::DiagnoseWorkspace,
             Some("Diagnosis complete".to_string()),
         );
+    }
+}
+
+impl Drop for FileDiagnostic {
+    fn drop(&mut self) {
+        if let Some(token) = self.refresh_token.get_mut().take() {
+            token.cancel();
+        }
+    }
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use super::*;
+    use lsp_server::{Connection, Message};
+
+    fn diagnostic() -> (FileDiagnostic, Connection) {
+        let (server, client_connection) = Connection::memory();
+        let client = Arc::new(ClientProxy::new(server));
+        let status = Arc::new(StatusBar::new(client.clone(), false));
+        (
+            FileDiagnostic::new(
+                Arc::new(RwLock::new(EmmyLuaAnalysis::new())),
+                status,
+                client,
+            ),
+            client_connection,
+        )
+    }
+
+    #[tokio::test]
+    async fn refresh_coalesces_and_is_scoped_to_its_client() {
+        let (first, client) = diagnostic();
+        let (_second, other_client) = diagnostic();
+        for _ in 0..10 {
+            first.schedule_diagnostic_refresh(30).await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let Message::Request(request) = client.receiver.try_recv().unwrap() else {
+            panic!("expected request")
+        };
+        assert_eq!(request.method, "workspace/diagnostic/refresh");
+        assert!(client.receiver.try_recv().is_err());
+        assert!(other_client.receiver.try_recv().is_err());
+        first.schedule_diagnostic_refresh(0).await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(client.receiver.try_recv().is_ok());
+    }
+
+    #[tokio::test]
+    async fn dropping_diagnostics_cancels_pending_refresh() {
+        let (diagnostic, client) = diagnostic();
+        diagnostic.schedule_diagnostic_refresh(30).await;
+        drop(diagnostic);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(client.receiver.try_recv().is_err());
     }
 }

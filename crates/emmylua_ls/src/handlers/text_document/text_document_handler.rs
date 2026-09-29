@@ -48,6 +48,12 @@ pub async fn on_did_open_text_document(
     };
 
     // Schedule diagnostic task without holding any locks
+    if supports_pull && context.lsp_features().supports_refresh_diagnostic() && file_id.is_some() {
+        context
+            .file_diagnostic()
+            .schedule_diagnostic_refresh(interval)
+            .await;
+    }
     if !supports_pull {
         if let Some(file_id) = file_id {
             context
@@ -136,6 +142,12 @@ pub async fn on_did_change_text_document(
     }
 
     // Schedule diagnostic task
+    if supports_pull && context.lsp_features().supports_refresh_diagnostic() && file_id.is_some() {
+        context
+            .file_diagnostic()
+            .schedule_diagnostic_refresh(interval)
+            .await;
+    }
     if !supports_pull {
         if let Some(file_id) = file_id {
             context
