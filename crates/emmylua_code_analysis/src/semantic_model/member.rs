@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use emmylua_parser::{LuaAstNode, LuaTableExpr, LuaTableField};
+use emmylua_parser::{LuaAssignStat, LuaAstNode, LuaExpr, LuaTableExpr, LuaTableField};
 
 use crate::semantic_db::def::{DeclKind, MemberRef, SemanticId, TypeDef, TypeDefKind, TypeScope};
 use crate::semantic_model::infer::unify::{self, TplBindings};
@@ -348,6 +348,24 @@ pub(crate) fn member_info_impl(
     {
         return Some(info);
     }
+    // Module exports can retain both their symbolic owner and literal identity.
+    // Include metatable-provided fields when the ordinary union members are absent.
+    if let LuaType::Union(union) = prefix_type {
+        let types: Vec<_> = union
+            .into_vec()
+            .iter()
+            .filter_map(|ty| member_info(model, ty, key).map(|info| info.typ))
+            .collect();
+        if !types.is_empty() {
+            return Some(MemberInfo {
+                key: key.clone(),
+                typ: LuaType::from_vec(types),
+                id: None,
+                file_id: None,
+                is_method: false,
+            });
+        }
+    }
     // An anonymous table literal can supply missing members through the
     // `__index` function in `setmetatable(t, { __index = function ... end })`:
     // Lua passes the access key to that function, and its return type is the member type.
@@ -435,17 +453,55 @@ pub(crate) fn table_metatable_type(
         return table_metatable_type(&foreign, table);
     }
     let facts = model.file_facts_of(table.file_id)?;
-    for &(first_range, first_syntax, metatable_syntax) in facts.setmetatable_calls() {
+    for &(first_range, first_syntax, metatable_syntax) in facts.setmetatable_calls().iter().rev() {
         let first_matches = first_range == table.value
-            || matches!(
-                model.type_of_expr(first_syntax),
-                LuaType::TableConst(ft) if ft.file_id == table.file_id && ft.value == table.value
-            );
+            || model
+                .chunk()
+                .and_then(|root| {
+                    let expr = LuaExpr::cast(first_syntax.to_node_from_root(root.syntax())?)?;
+                    stable_local_table(model, expr).map(|expr| expr.get_range() == table.value)
+                })
+                .unwrap_or(false);
         if first_matches {
             return Some(model.type_of_expr(metatable_syntax));
         }
     }
     None
+}
+
+/// Resolve immutable local bindings and aliases to their literal constructor.
+/// Reassigned bindings can retain an old inferred table identity, so inspect
+/// declaration references rather than relying on their inferred type here.
+pub(crate) fn stable_local_table(model: &SemanticModel, mut expr: LuaExpr) -> Option<LuaTableExpr> {
+    let root = model.chunk()?;
+    let facts = model.file_facts()?;
+    let mut visited = hashbrown::HashSet::new();
+    loop {
+        match expr {
+            LuaExpr::TableExpr(table) => return Some(table),
+            LuaExpr::NameExpr(name) => {
+                let id = model.resolve_name(name.get_position())?;
+                if !visited.insert(id.clone()) {
+                    return None;
+                }
+                let decl = facts.decl_by_id(&id)?;
+                if !matches!(decl.kind, DeclKind::Local { .. }) {
+                    return None;
+                }
+                for assign in root.descendants::<LuaAssignStat>() {
+                    for variable in assign.get_var_and_expr_list().0 {
+                        if let emmylua_parser::LuaVarExpr::NameExpr(name) = variable
+                            && model.resolve_name(name.get_position()).as_ref() == Some(&id)
+                        {
+                            return None;
+                        }
+                    }
+                }
+                expr = LuaExpr::cast(decl.value_expr_syntax?.to_node_from_root(root.syntax())?)?;
+            }
+            _ => return None,
+        }
+    }
 }
 
 /// If a table literal is the runtime class table for a `---@class Foo` annotation, returns that class's Ref/Def.

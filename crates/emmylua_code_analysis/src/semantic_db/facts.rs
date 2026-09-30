@@ -2258,23 +2258,9 @@ impl FactsBuilder {
         // assigning by member id's key_range here is not feasible, so it is set at the collection point).
     }
 
-    /// Top-level `return X` → module export target (the last top-level return wins).
-    /// Indexes `setmetatable(table, meta)` calls that initialize a declaration.
-    ///
-    /// Table member lookup otherwise has to scan every declaration to find the
-    /// matching `setmetatable` call for a table literal.
+    /// Index all setmetatable calls, including standalone calls on local tables.
     fn collect_setmetatable_calls(&mut self, chunk: &LuaChunk) {
-        let root = chunk.get_root();
-        for decl in &self.decls {
-            let Some(value_syntax) = decl.value_expr_syntax else {
-                continue;
-            };
-            let Some(node) = value_syntax.to_node_from_root(&root) else {
-                continue;
-            };
-            let Some(call) = LuaCallExpr::cast(node) else {
-                continue;
-            };
+        for call in chunk.descendants::<LuaCallExpr>() {
             let is_setmetatable = match call.get_prefix_expr() {
                 Some(LuaExpr::NameExpr(name_expr)) => {
                     name_expr.get_name_text().as_deref() == Some("setmetatable")

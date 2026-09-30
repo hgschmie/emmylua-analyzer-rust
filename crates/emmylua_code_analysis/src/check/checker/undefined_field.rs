@@ -159,6 +159,13 @@ fn is_valid_member(
     }
     match prefix_ty {
         LuaType::TableConst(table) => {
+            if let Some(key) = static_member_key(semantic_model, index_key)
+                && semantic_model
+                    .member_info(prefix_ty, &key)
+                    .is_some_and(|info| !info.typ.is_nil())
+            {
+                return true;
+            }
             let Some((decl, def)) = table_binding(semantic_model, table.file_id, table.value)
             else {
                 // Unbound table: a local export table is still checked against the export surface (old check_export semantics).
