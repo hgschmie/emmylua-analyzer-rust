@@ -81,6 +81,8 @@ pub fn definition(
     if let Some(semantic_decl) =
         semantic_model.find_decl(token.clone().into(), SemanticDeclLevel::default())
     {
+        let semantic_decl =
+            prefer_same_file_global(&semantic_model, &token).unwrap_or(semantic_decl);
         return goto_def_definition(
             &semantic_model,
             &analysis.compilation,
@@ -136,4 +138,50 @@ impl RegisterCapabilities for DefinitionCapabilities {
     fn register_capabilities(server_capabilities: &mut ServerCapabilities, _: &ClientCapabilities) {
         server_capabilities.definition_provider = Some(OneOf::Left(true));
     }
+}
+
+/// Navigation preference only: inference still resolves globals across the workspace.
+fn prefer_same_file_global(
+    model: &emmylua_code_analysis::SemanticModel,
+    token: &emmylua_parser::LuaSyntaxToken,
+) -> Option<emmylua_code_analysis::LuaSemanticDeclId> {
+    use emmylua_code_analysis::LuaSemanticDeclId;
+    use emmylua_parser::{LuaAssignStat, LuaCallExpr, LuaNameExpr};
+
+    let name = LuaNameExpr::cast(token.parent()?)?;
+    // Keep overload/function-origin navigation unchanged.
+    if name.get_parent::<LuaCallExpr>().is_some() {
+        return None;
+    }
+    let LuaSemanticDeclId::LuaDecl(original) =
+        model.find_decl(token.clone().into(), SemanticDeclLevel::NoTrace)?
+    else {
+        return None;
+    };
+    let db = model.get_db();
+    let original = db.get_decl_index().get_decl(&original)?;
+    if !original.is_global() {
+        return None;
+    }
+    let root = model.get_root();
+    let block = root.get_block()?;
+    db.get_global_index()
+        .get_global_decl_ids(original.get_name())?
+        .iter()
+        .filter(|id| id.file_id == model.get_file_id())
+        .filter_map(|id| {
+            let decl = db.get_decl_index().get_decl(id)?;
+            let node = decl.get_syntax_id().to_node_from_root(root.syntax())?;
+            let assignment = LuaAssignStat::cast(node.parent()?)?;
+            // Only unconditional chunk-level assignments completed before this use.
+            // Do not guess execution order inside branches, loops or other functions.
+            if assignment.syntax().parent().as_ref() != Some(block.syntax())
+                || assignment.get_range().end() > name.get_position()
+            {
+                return None;
+            }
+            Some(*id)
+        })
+        .max_by_key(|id| id.position)
+        .map(LuaSemanticDeclId::LuaDecl)
 }
