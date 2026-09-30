@@ -1,4 +1,5 @@
 use emmylua_parser::{LuaAstNode, LuaCallExpr, LuaExpr, LuaIndexKey, LuaTableField};
+use hashbrown::HashSet;
 
 use crate::{
     InFiled, LuaOperator, LuaOperatorMetaMethod, LuaOperatorOwner, LuaSignatureId, OperatorFunction,
@@ -26,12 +27,50 @@ pub fn analyze_setmetatable(analyzer: &mut LuaAnalyzer, call_expr: LuaCallExpr) 
         InFiled::new(file_id, metatable.get_range()),
     );
 
+    // A named table retains the identity of its constructor. Member lookup uses
+    // that identity, not the range of the reference passed to setmetatable.
+    if let Some(table_identity) = stable_local_table(analyzer, table.clone()) {
+        analyzer.db.get_metatable_index_mut().add(
+            InFiled::new(file_id, table_identity.get_range()),
+            InFiled::new(file_id, metatable.get_range()),
+        );
+    }
+
     let operator_owner = LuaOperatorOwner::Table(InFiled::new(file_id, metatable.get_range()));
     for (field, field_key) in metatable.get_fields_with_keys() {
         analyze_metable_field(analyzer, &field, &field_key, &operator_owner);
     }
 
     Some(())
+}
+
+// Resolve only immutable local bindings and aliases to literal tables. Inferred
+// types can retain a declaration's original table after reassignment, so using
+// them here would attach the metatable to an unrelated runtime object.
+fn stable_local_table(analyzer: &LuaAnalyzer, mut expr: LuaExpr) -> Option<LuaExpr> {
+    let references = analyzer
+        .db
+        .get_reference_index()
+        .get_local_reference(&analyzer.file_id)?;
+    let tree = analyzer.db.get_vfs().get_syntax_tree(&analyzer.file_id)?;
+    let mut visited = HashSet::new();
+    loop {
+        match expr {
+            LuaExpr::TableExpr(_) => return Some(expr),
+            LuaExpr::NameExpr(ref name) => {
+                let decl_id = references.get_decl_id(&name.get_range())?;
+                if !visited.insert(decl_id) || references.get_decl_references(&decl_id)?.mutable {
+                    return None;
+                }
+                let decl = analyzer.db.get_decl_index().get_decl(&decl_id)?;
+                if !decl.is_local() || decl.is_param() {
+                    return None;
+                }
+                expr = LuaExpr::cast(decl.get_value_syntax_id()?.to_node(tree)?)?;
+            }
+            _ => return None,
+        }
+    }
 }
 
 fn analyze_metable_field(
