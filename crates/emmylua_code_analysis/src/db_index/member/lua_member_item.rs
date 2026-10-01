@@ -1,6 +1,6 @@
 use crate::{DbIndex, InferFailReason, LuaSemanticDeclId, LuaType, TypeOps};
 
-use super::LuaMemberId;
+use super::{LuaMemberAccess, LuaMemberId};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LuaMemberIndexItem {
@@ -10,11 +10,81 @@ pub enum LuaMemberIndexItem {
 
 impl LuaMemberIndexItem {
     pub fn resolve_type(&self, db: &DbIndex) -> Result<LuaType, InferFailReason> {
-        resolve_member_type(db, self)
+        self.resolve_type_for_access(db, LuaMemberAccess::Read)
+    }
+
+    /// Filter complementary field declarations before resolving overloads/precedence.
+    /// Missing directions deliberately fall back: this is typing, not access control.
+    pub fn for_access(&self, db: &DbIndex, access: LuaMemberAccess) -> Self {
+        if self.is_one() {
+            return self.clone();
+        }
+        let all_ids = self.get_member_ids();
+        if all_ids.iter().all(|id| {
+            db.get_member_index()
+                .get_member(id)
+                .is_none_or(|m| m.get_access() == LuaMemberAccess::ReadWrite)
+        }) {
+            return self.clone();
+        }
+        let mut candidates = all_ids.clone();
+        if db.get_emmyrc().strict.meta_override_file_define {
+            let members = db.get_member_index();
+            if candidates.iter().any(|id| {
+                members
+                    .get_member(id)
+                    .is_some_and(|m| m.get_feature().is_meta_decl())
+            }) {
+                candidates.retain(|id| {
+                    members
+                        .get_member(id)
+                        .is_some_and(|m| m.get_feature().is_meta_decl())
+                });
+            } else if candidates.iter().any(|id| {
+                members
+                    .get_member(id)
+                    .is_some_and(|m| m.get_feature().is_file_decl())
+            }) {
+                candidates.retain(|id| {
+                    members
+                        .get_member(id)
+                        .is_some_and(|m| m.get_feature().is_file_decl())
+                });
+            }
+        }
+        let ids: Vec<_> = candidates
+            .into_iter()
+            .filter(|id| {
+                db.get_member_index()
+                    .get_member(id)
+                    .is_some_and(|m| m.get_access().overlaps(access))
+            })
+            .collect();
+        match ids.as_slice() {
+            [] => self.clone(),
+            [id] => Self::One(*id),
+            _ => Self::Many(ids),
+        }
+    }
+
+    pub fn resolve_type_for_access(
+        &self,
+        db: &DbIndex,
+        access: LuaMemberAccess,
+    ) -> Result<LuaType, InferFailReason> {
+        resolve_member_type(db, &self.for_access(db, access))
     }
 
     pub fn resolve_semantic_decl(&self, db: &DbIndex) -> Option<LuaSemanticDeclId> {
-        resolve_member_semantic_id(db, self)
+        self.resolve_semantic_decl_for_access(db, LuaMemberAccess::Read)
+    }
+
+    pub fn resolve_semantic_decl_for_access(
+        &self,
+        db: &DbIndex,
+        access: LuaMemberAccess,
+    ) -> Option<LuaSemanticDeclId> {
+        resolve_member_semantic_id(db, &self.for_access(db, access))
     }
 
     #[allow(unused)]

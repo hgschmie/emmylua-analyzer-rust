@@ -206,7 +206,10 @@ fn find_custom_type_function_member(
     if let Some(member_item) = db.get_member_index().get_member_item(&owner, &key) {
         let index_member_id = get_member_id(cache, &index_expr);
         let mut result_types = Vec::new();
-        for member_id in member_item.get_member_ids() {
+        for member_id in member_item
+            .for_access(db, crate::LuaMemberAccess::Write)
+            .get_member_ids()
+        {
             if index_member_id != member_id
                 && let Some(type_cache) = db.get_type_index().get_type_cache(&member_id.into())
             {

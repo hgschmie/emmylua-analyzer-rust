@@ -4,8 +4,9 @@ use smol_str::SmolStr;
 
 use crate::{
     DbIndex, FileId, InferGuardRef, LuaGenericType, LuaInstanceType, LuaIntersectionType,
-    LuaMemberFeature, LuaMemberIndexItem, LuaMemberKey, LuaMemberOwner, LuaObjectType,
-    LuaSemanticDeclId, LuaTupleType, LuaType, LuaTypeDeclId, LuaTypeOwner, LuaUnionType,
+    LuaMemberAccess, LuaMemberFeature, LuaMemberIndexItem, LuaMemberKey, LuaMemberOwner,
+    LuaObjectType, LuaSemanticDeclId, LuaTupleType, LuaType, LuaTypeDeclId, LuaTypeOwner,
+    LuaUnionType,
     semantic::{
         InferGuard,
         generic::{TypeSubstitutor, instantiate_type_generic},
@@ -249,6 +250,14 @@ fn find_normal_members(
     let owner_members = member_index.get_members(&member_owner)?;
 
     for member in owner_members {
+        if let Some(item) = member_index.get_member_item(&member_owner, member.get_key())
+            && !item
+                .for_access(db, LuaMemberAccess::Read)
+                .get_member_ids()
+                .contains(&member.get_id())
+        {
+            continue;
+        }
         let member_key = member.get_key().clone();
 
         if should_include_member(&member_key, filter) {
@@ -277,7 +286,10 @@ fn collect_member_infos_from_item(
     find_all: bool,
 ) -> FindMembersResult {
     let mut members = Vec::new();
-    for member_id in member_item.get_member_ids() {
+    for member_id in member_item
+        .for_access(db, LuaMemberAccess::Read)
+        .get_member_ids()
+    {
         let member = db.get_member_index().get_member(&member_id)?;
         members.push(semantic_decl_to_member_info(
             db,
@@ -358,6 +370,14 @@ fn find_custom_type_members(
         }
     } else if let Some(type_members) = member_index.get_members(&type_owner) {
         for member in type_members {
+            if let Some(item) = member_index.get_member_item(&type_owner, member.get_key())
+                && !item
+                    .for_access(db, LuaMemberAccess::Read)
+                    .get_member_ids()
+                    .contains(&member.get_id())
+            {
+                continue;
+            }
             let member_key = member.get_key().clone();
 
             if should_include_member(&member_key, filter) {

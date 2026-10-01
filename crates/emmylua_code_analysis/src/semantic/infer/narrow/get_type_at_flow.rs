@@ -1162,6 +1162,19 @@ impl<'a> FlowTypeEngine<'a> {
             return Ok(SchedulerStep::ContinueWalk(walk));
         };
 
+        // A setter can transform its input. An assignment kills previous getter
+        // narrowing, but cannot replace the getter's declared result with the RHS.
+        if let LuaVarExpr::IndexExpr(index) = &assignment_info.vars[i]
+            && let Some(read_type) =
+                crate::asymmetric_index_read_type(self.db, self.cache, index.clone())
+        {
+            return Ok(Self::start_assignment_reachability(
+                walk,
+                antecedent_flow_id,
+                read_type,
+            ));
+        }
+
         let var_id = match &assignment_info.vars[i] {
             LuaVarExpr::NameExpr(name_expr) => {
                 Some(LuaDeclId::new(self.cache.get_file_id(), name_expr.get_position()).into())

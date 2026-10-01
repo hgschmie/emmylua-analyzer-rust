@@ -107,6 +107,17 @@ fn handle_member_definition(
 
     let mut locations: Vec<Location> = Vec::new();
 
+    if semantic_model
+        .get_db()
+        .get_member_index()
+        .get_member(member_id)
+        .is_some_and(|member| {
+            member.get_access() != emmylua_code_analysis::LuaMemberAccess::ReadWrite
+        })
+    {
+        return get_member_location(semantic_model, member_id).map(GotoDefinitionResponse::Scalar);
+    }
+
     // 尝试寻找函数调用时最匹配的定义
     if let Some(match_members) = find_matching_function_definitions(
         semantic_model,

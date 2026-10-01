@@ -39,7 +39,7 @@ use crate::{
     db_index::{DbIndex, LuaOperator, LuaOperatorMetaMethod, LuaSignatureId, LuaType},
 };
 
-use super::{CacheEntry, LuaInferCache, member::infer_raw_member_type};
+use super::{CacheEntry, LuaInferCache};
 
 pub type InferResult = Result<LuaType, InferFailReason>;
 pub use infer_call::InferCallFuncResult;
@@ -274,7 +274,12 @@ pub fn infer_bind_value_type(
                                 return None;
                             }
                         };
-                        typ = Some(infer_expr(db, cache, var.clone().into()).ok()?);
+                        typ = Some(match var {
+                            LuaVarExpr::IndexExpr(index) => {
+                                infer_index_write_type(db, cache, index.clone()).ok()?
+                            }
+                            _ => infer_expr(db, cache, var.clone().into()).ok()?,
+                        });
                         break;
                     }
                 }
@@ -289,7 +294,12 @@ pub fn infer_bind_value_type(
                 Ok(key) => key,
                 Err(_) => return None,
             };
-            match infer_raw_member_type(db, &table_type, &member_key) {
+            match super::member::infer_raw_member_type_for_access(
+                db,
+                &table_type,
+                &member_key,
+                crate::LuaMemberAccess::Write,
+            ) {
                 Ok(typ) => Some(typ),
                 Err(InferFailReason::FieldNotFound) => None,
                 Err(_) => Some(LuaType::Unknown),
@@ -337,3 +347,5 @@ pub fn infer_bind_value_type(
         _ => None,
     }
 }
+
+pub use infer_index::{asymmetric_index_read_type, infer_index_write_type};

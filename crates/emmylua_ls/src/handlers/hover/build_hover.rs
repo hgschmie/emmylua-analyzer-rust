@@ -225,6 +225,54 @@ fn build_member_hover(
     is_completion: bool,
 ) -> Option<()> {
     let member = db.get_member_index().get_member(&member_id)?;
+    if let Some(owner) = db.get_member_index().get_current_owner(&member_id)
+        && let Some(item) = db
+            .get_member_index()
+            .get_member_item(owner, member.get_key())
+        && let (Ok(mut read), Ok(mut write)) = (
+            item.resolve_type_for_access(db, emmylua_code_analysis::LuaMemberAccess::Read),
+            item.resolve_type_for_access(db, emmylua_code_analysis::LuaMemberAccess::Write),
+        )
+        && read != write
+    {
+        // Resolve the named property against the receiver so completion after
+        // an unfinished `object.` retains concrete generic arguments too.
+        if let Some(index) = builder
+            .get_trigger_token()
+            .and_then(|t| t.parent())
+            .and_then(|node| {
+                node.ancestors()
+                    .find_map(emmylua_parser::LuaIndexExpr::cast)
+            })
+            && let Some(prefix) = index.get_prefix_expr()
+            && let Ok(prefix) = builder.semantic_model.infer_expr(prefix)
+        {
+            if let Ok(ty) = builder
+                .semantic_model
+                .infer_member_type(&prefix, member.get_key())
+            {
+                read = ty;
+            }
+            if let Ok(ty) = builder
+                .semantic_model
+                .infer_member_write_type(&prefix, member.get_key())
+            {
+                write = ty;
+            }
+        }
+        builder.set_type_description(format!(
+            "(field) {}\nRead: {}\nWrite: {}",
+            member.get_key().to_path(),
+            humanize_type(db, &read, RenderLevel::Simple),
+            humanize_type(db, &write, RenderLevel::Simple)
+        ));
+        builder.set_location_path(Some(member));
+        // Prefer the getter's shared property documentation, even on a write.
+        if let Some(decl) = item.resolve_semantic_decl(db) {
+            builder.add_description(&decl);
+        }
+        return Some(());
+    }
     let mut semantic_decls = find_member_origin_owners(builder.semantic_model, member_id, true)
         .get_types(builder.semantic_model);
 

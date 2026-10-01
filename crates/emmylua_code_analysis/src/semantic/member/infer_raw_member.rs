@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use crate::{
-    DbIndex, InferFailReason, InferGuard, InferGuardRef, LuaGenericType, LuaMemberKey,
-    LuaMemberOwner, LuaObjectType, LuaTupleType, LuaType, LuaTypeDeclId, TypeOps,
+    DbIndex, InferFailReason, InferGuard, InferGuardRef, LuaGenericType, LuaMemberAccess,
+    LuaMemberKey, LuaMemberOwner, LuaObjectType, LuaTupleType, LuaType, LuaTypeDeclId, TypeOps,
     check_type_compact,
     semantic::generic::{TypeSubstitutor, instantiate_type_generic},
 };
@@ -14,7 +14,16 @@ pub fn infer_raw_member_type(
     prefix_type: &LuaType,
     member_key: &LuaMemberKey,
 ) -> RawGetMemberTypeResult {
-    infer_raw_member_type_guard(db, prefix_type, member_key, &InferGuard::new())
+    infer_raw_member_type_for_access(db, prefix_type, member_key, LuaMemberAccess::Read)
+}
+
+pub fn infer_raw_member_type_for_access(
+    db: &DbIndex,
+    prefix_type: &LuaType,
+    member_key: &LuaMemberKey,
+    access: LuaMemberAccess,
+) -> RawGetMemberTypeResult {
+    infer_raw_member_type_guard(db, prefix_type, member_key, &InferGuard::new(), access)
 }
 
 fn infer_raw_member_type_guard(
@@ -22,12 +31,13 @@ fn infer_raw_member_type_guard(
     prefix_type: &LuaType,
     member_key: &LuaMemberKey,
     infer_guard: &InferGuardRef,
+    access: LuaMemberAccess,
 ) -> RawGetMemberTypeResult {
     match prefix_type {
         LuaType::Table | LuaType::Any | LuaType::Unknown => Ok(LuaType::Any),
         LuaType::TableConst(id) => {
             let owner = LuaMemberOwner::Element(id.clone());
-            infer_owner_raw_member_type(db, owner, member_key)
+            infer_owner_raw_member_type(db, owner, member_key, access)
         }
         LuaType::String
         | LuaType::Io
@@ -36,13 +46,13 @@ fn infer_raw_member_type_guard(
         | LuaType::Language(_) => {
             let decl_id = get_buildin_type_map_type_id(prefix_type).ok_or(InferFailReason::None)?;
             let owner = LuaMemberOwner::Type(decl_id);
-            infer_owner_raw_member_type(db, owner, member_key)
+            infer_owner_raw_member_type(db, owner, member_key, access)
         }
         LuaType::Ref(type_id) => {
-            infer_custom_type_raw_member_type(db, type_id, member_key, infer_guard)
+            infer_custom_type_raw_member_type(db, type_id, member_key, infer_guard, access)
         }
         LuaType::Def(type_id) => {
-            infer_custom_type_raw_member_type(db, type_id, member_key, infer_guard)
+            infer_custom_type_raw_member_type(db, type_id, member_key, infer_guard, access)
         }
         LuaType::Tuple(tuple) => infer_tuple_raw_member_type(tuple, member_key),
         LuaType::Object(object) => infer_object_raw_member_type(db, object, member_key),
@@ -53,7 +63,7 @@ fn infer_raw_member_type_guard(
             infer_table_generic_raw_member_type(db, table_generic, member_key)
         }
         LuaType::Generic(generic_type) => {
-            infer_generic_raw_member_type(db, generic_type, member_key, infer_guard)
+            infer_generic_raw_member_type(db, generic_type, member_key, infer_guard, access)
         }
         // other do not support now
         _ => Err(InferFailReason::None),
@@ -64,12 +74,13 @@ fn infer_owner_raw_member_type(
     db: &DbIndex,
     member_owner: LuaMemberOwner,
     member_key: &LuaMemberKey,
+    access: LuaMemberAccess,
 ) -> RawGetMemberTypeResult {
     let member_item = db
         .get_member_index()
         .get_member_item(&member_owner, member_key)
         .ok_or(InferFailReason::FieldNotFound)?;
-    member_item.resolve_type(db)
+    member_item.resolve_type_for_access(db, access)
 }
 
 fn infer_custom_type_raw_member_type(
@@ -77,6 +88,7 @@ fn infer_custom_type_raw_member_type(
     type_id: &LuaTypeDeclId,
     member_key: &LuaMemberKey,
     infer_guard: &InferGuardRef,
+    access: LuaMemberAccess,
 ) -> RawGetMemberTypeResult {
     infer_guard.check(type_id)?;
     let type_index = db.get_type_index();
@@ -85,7 +97,7 @@ fn infer_custom_type_raw_member_type(
         .ok_or(InferFailReason::None)?;
     if type_decl.is_alias() {
         if let Some(origin_type) = type_decl.get_alias_origin(db, None) {
-            return infer_raw_member_type_guard(db, &origin_type, member_key, infer_guard);
+            return infer_raw_member_type_guard(db, &origin_type, member_key, infer_guard, access);
         } else {
             return Err(InferFailReason::None);
         }
@@ -93,7 +105,7 @@ fn infer_custom_type_raw_member_type(
 
     let owner = LuaMemberOwner::Type(type_id.clone());
     if let Some(member_item) = db.get_member_index().get_member_item(&owner, member_key) {
-        return member_item.resolve_type(db);
+        return member_item.resolve_type_for_access(db, access);
     }
 
     if let Some(access_key_type) = member_key.to_index_type() {
@@ -128,8 +140,13 @@ fn infer_custom_type_raw_member_type(
         && let Some(super_types) = type_index.get_super_types(type_id)
     {
         for super_type in super_types {
-            let result =
-                infer_raw_member_type_guard(db, &super_type, member_key, &infer_guard.fork());
+            let result = infer_raw_member_type_guard(
+                db,
+                &super_type,
+                member_key,
+                &infer_guard.fork(),
+                access,
+            );
 
             match result {
                 Ok(member_type) => {
@@ -232,6 +249,7 @@ fn infer_generic_raw_member_type(
     generic_type: &LuaGenericType,
     member_key: &LuaMemberKey,
     infer_guard: &InferGuardRef,
+    access: LuaMemberAccess,
 ) -> RawGetMemberTypeResult {
     let base_ref_id = generic_type.get_base_type_id_ref();
     let generic_params = generic_type.get_params();
@@ -242,10 +260,10 @@ fn infer_generic_raw_member_type(
         .ok_or(InferFailReason::None)?;
 
     if let Some(origin) = type_decl.get_alias_origin(db, Some(&substitutor)) {
-        return infer_raw_member_type(db, &origin, member_key);
+        return infer_raw_member_type_for_access(db, &origin, member_key, access);
     }
 
     let base_ref_type = LuaType::Ref(base_ref_id.clone());
-    let result = infer_raw_member_type_guard(db, &base_ref_type, member_key, infer_guard)?;
+    let result = infer_raw_member_type_guard(db, &base_ref_type, member_key, infer_guard, access)?;
     Ok(instantiate_type_generic(db, &result, &substitutor))
 }

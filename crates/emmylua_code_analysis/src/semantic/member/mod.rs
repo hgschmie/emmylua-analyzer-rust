@@ -15,7 +15,7 @@ pub use find_members::{
     find_members, find_members_in_scope, find_members_with_key, find_members_with_key_in_scope,
 };
 pub use get_member_map::{get_member_map, get_member_map_in_scope};
-pub use infer_raw_member::infer_raw_member_type;
+pub use infer_raw_member::{infer_raw_member_type, infer_raw_member_type_for_access};
 
 use super::{
     InferFailReason, LuaInferCache, SemanticDeclLevel, infer_node_semantic_decl,

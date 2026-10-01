@@ -24,12 +24,39 @@ pub struct SemanticInfo {
     pub semantic_decl: Option<LuaSemanticDeclId>,
 }
 
+// A literal used as a directional property key represents the property for
+// hover/navigation, while other literals retain their existing semantics.
+fn token_semantic_parent(
+    db: &DbIndex,
+    cache: &mut LuaInferCache,
+    token: &LuaSyntaxToken,
+) -> Option<LuaSyntaxNode> {
+    let parent = token.parent()?;
+    if let Some(literal) = emmylua_parser::LuaLiteralExpr::cast(parent.clone())
+        && let Some(index) = literal.get_parent::<emmylua_parser::LuaIndexExpr>()
+        && let Some(LuaSemanticDeclId::Member(id)) = infer_expr_semantic_decl(
+            db,
+            cache,
+            LuaExpr::IndexExpr(index.clone()),
+            SemanticDeclGuard::default(),
+            SemanticDeclLevel::default(),
+        )
+        && db
+            .get_member_index()
+            .get_member(&id)
+            .is_some_and(|m| m.get_access() != crate::LuaMemberAccess::ReadWrite)
+    {
+        return Some(index.syntax().clone());
+    }
+    Some(parent)
+}
+
 pub fn infer_token_semantic_info(
     db: &DbIndex,
     cache: &mut LuaInferCache,
     token: LuaSyntaxToken,
 ) -> Option<SemanticInfo> {
-    let parent = token.parent()?;
+    let parent = token_semantic_parent(db, cache, &token)?;
     match parent.kind().into() {
         LuaSyntaxKind::ForStat | LuaSyntaxKind::ForRangeStat | LuaSyntaxKind::LocalName => {
             let file_id = cache.get_file_id();
@@ -164,7 +191,7 @@ pub fn infer_token_semantic_decl(
     token: LuaSyntaxToken,
     level: SemanticDeclLevel,
 ) -> Option<LuaSemanticDeclId> {
-    let parent = token.parent()?;
+    let parent = token_semantic_parent(db, cache, &token)?;
     match parent.kind().into() {
         LuaSyntaxKind::ForStat
         | LuaSyntaxKind::ForRangeStat

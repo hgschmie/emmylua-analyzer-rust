@@ -141,7 +141,9 @@ fn get_token_should_type(builder: &mut CompletionBuilder) -> Option<Vec<LuaType>
             }
 
             let var = vars.first()?;
-            let var_type = builder.semantic_model.infer_expr(var.to_expr());
+            let var_type = builder
+                .semantic_model
+                .infer_assignment_target(var.to_expr());
             if let Ok(typ) = var_type
             // this is to avoid repeating function types in completion
                 && contain_function_types(builder.semantic_model.get_db(), &typ).is_none()

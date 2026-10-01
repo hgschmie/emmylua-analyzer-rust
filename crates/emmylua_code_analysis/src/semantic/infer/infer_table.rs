@@ -398,11 +398,16 @@ fn infer_table_type_by_assign_stat(
             None => Err(InferFailReason::UnResolveDeclType(decl_id)),
         }
     } else {
-        infer_expr(
-            db,
-            cache,
-            LuaExpr::cast(name.syntax().clone()).ok_or(InferFailReason::None)?,
-        )
+        match name {
+            emmylua_parser::LuaVarExpr::IndexExpr(index) => {
+                super::infer_index_write_type(db, cache, index.clone())
+            }
+            _ => infer_expr(
+                db,
+                cache,
+                LuaExpr::cast(name.syntax().clone()).ok_or(InferFailReason::None)?,
+            ),
+        }
     }
 }
 

@@ -9,7 +9,8 @@ use rowan::{NodeOrToken, TextRange};
 use crate::{
     DbIndex, DiagnosticCode, LuaBuiltinAttributeKind, LuaDeclExtra, LuaDeclId, LuaMemberKey,
     LuaSemanticDeclId, LuaType, SemanticDeclLevel, SemanticModel, TypeCheckFailReason,
-    TypeCheckResult, VariadicType, get_real_type, infer_index_expr,
+    TypeCheckResult, VariadicType, asymmetric_index_read_type, get_real_type,
+    infer_index_write_type,
 };
 
 use super::{Checker, DiagnosticContext, humanize_lint_type};
@@ -136,11 +137,10 @@ fn check_index_expr(
     expr: Option<LuaExpr>,
     value_type: LuaType,
 ) -> Option<()> {
-    let source_type = infer_index_expr(
+    let source_type = infer_index_write_type(
         semantic_model.get_db(),
         &mut semantic_model.get_cache().borrow_mut(),
         index_expr.clone(),
-        false,
     )
     .ok();
     let source_type = source_type.map(|source_type| {
@@ -148,13 +148,19 @@ fn check_index_expr(
             .apply_assignment_target_casts(LuaExpr::IndexExpr(index_expr.clone()), source_type)
     });
 
+    let asymmetric = asymmetric_index_read_type(
+        semantic_model.get_db(),
+        &mut semantic_model.get_cache().borrow_mut(),
+        index_expr.clone(),
+    )
+    .is_some();
     check_assign_type_mismatch(
         context,
         semantic_model,
         index_expr.get_range(),
         source_type.as_ref(),
         &value_type,
-        true,
+        !asymmetric,
     );
     if let Some(expr) = expr {
         check_table_expr(
@@ -301,7 +307,7 @@ fn check_table_expr_content(
             continue;
         };
 
-        let source_type = match semantic_model.infer_member_type(table_type, &member_key) {
+        let source_type = match semantic_model.infer_member_write_type(table_type, &member_key) {
             Ok(typ) => typ,
             Err(_) => {
                 continue;
@@ -350,7 +356,7 @@ fn check_table_last_variadic_type(
     for offset in idx..(idx + 10) {
         let member_key = LuaMemberKey::Integer((idx + offset) as i64 + 1);
         let source_type = semantic_model
-            .infer_member_type(table_type, &member_key)
+            .infer_member_write_type(table_type, &member_key)
             .ok()?;
         match source_type {
             LuaType::Variadic(source_variadic) => {

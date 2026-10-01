@@ -11,12 +11,28 @@ use crate::{
     semantic::try_infer_expr_for_index,
 };
 
+/// The operation described by a field annotation. Unqualified fields support both.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum LuaMemberAccess {
+    #[default]
+    ReadWrite,
+    Read,
+    Write,
+}
+
+impl LuaMemberAccess {
+    pub fn overlaps(self, other: Self) -> bool {
+        self == Self::ReadWrite || other == Self::ReadWrite || self == other
+    }
+}
+
 #[derive(Debug)]
 pub struct LuaMember {
     member_id: LuaMemberId,
     key: LuaMemberKey,
     feature: LuaMemberFeature,
     global_id: Option<GlobalId>,
+    access: LuaMemberAccess,
 }
 
 impl LuaMember {
@@ -31,7 +47,16 @@ impl LuaMember {
             key,
             feature: decl_feature,
             global_id: global_path,
+            access: LuaMemberAccess::ReadWrite,
         }
+    }
+
+    pub fn set_access(&mut self, access: LuaMemberAccess) {
+        self.access = access;
+    }
+
+    pub fn get_access(&self) -> LuaMemberAccess {
+        self.access
     }
 
     pub fn get_key(&self) -> &LuaMemberKey {

@@ -21,8 +21,8 @@ use emmylua_parser::{
     LuaSyntaxToken, LuaTableExpr,
 };
 use generic::resolve_call_self_type;
-pub use infer::infer_index_expr;
 use infer::{apply_assignment_target_casts, infer_bind_value_type, infer_expr_list_types};
+pub use infer::{asymmetric_index_read_type, infer_index_expr, infer_index_write_type};
 pub use infer::{infer_table_field_value_should_be, infer_table_should_be};
 use lsp_types::Uri;
 pub use member::LuaMemberInfo;
@@ -334,6 +334,28 @@ impl<'a> SemanticModel<'a> {
 
     pub fn get_member_key(&self, index_key: &LuaIndexKey) -> Option<LuaMemberKey> {
         LuaMemberKey::from_index_key(self.db, &mut self.infer_cache.borrow_mut(), index_key).ok()
+    }
+
+    pub fn infer_assignment_target(&self, expr: LuaExpr) -> Result<LuaType, InferFailReason> {
+        match expr {
+            LuaExpr::IndexExpr(index) => {
+                infer_index_write_type(self.db, &mut self.infer_cache.borrow_mut(), index)
+            }
+            _ => self.infer_expr(expr),
+        }
+    }
+
+    pub fn infer_member_write_type(
+        &self,
+        prefix_type: &LuaType,
+        member_key: &LuaMemberKey,
+    ) -> Result<LuaType, InferFailReason> {
+        member::infer_raw_member_type_for_access(
+            self.db,
+            prefix_type,
+            member_key,
+            crate::LuaMemberAccess::Write,
+        )
     }
 
     pub fn infer_member_type(

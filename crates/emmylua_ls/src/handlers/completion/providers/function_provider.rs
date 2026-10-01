@@ -112,7 +112,10 @@ fn get_token_should_type(builder: &mut CompletionBuilder) -> Option<Vec<LuaType>
                 return None;
             }
             let var = vars.first()?;
-            let var_type = builder.semantic_model.infer_expr(var.clone().into()).ok()?;
+            let var_type = builder
+                .semantic_model
+                .infer_assignment_target(var.clone().into())
+                .ok()?;
             let real_type = get_real_type(builder.semantic_model.get_db(), &var_type)?;
             return Some(vec![get_function_remove_nil(
                 builder.semantic_model.get_db(),

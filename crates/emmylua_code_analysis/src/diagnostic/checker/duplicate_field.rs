@@ -177,6 +177,15 @@ fn check_decl_duplicate_field(
             // 如果不全是 DocFunction，则报错
             if !all_doc_functions {
                 for field_decl in &field_decls {
+                    if !field_decls.iter().any(|other| {
+                        other.member.get_id() != field_decl.member.get_id()
+                            && other
+                                .member
+                                .get_access()
+                                .overlaps(field_decl.member.get_access())
+                    }) {
+                        continue;
+                    }
                     if field_decl.member.get_file_id() == file_id {
                         context.add_diagnostic(
                             DiagnosticCode::DuplicateDocField,

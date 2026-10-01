@@ -4,8 +4,8 @@ use emmylua_parser::{
 };
 
 use crate::{
-    AnalyzeError, DiagnosticCode, LuaMemberFeature, LuaMemberId, LuaSignatureId, LuaTypeCache,
-    OperatorFunction, TypeOps,
+    AnalyzeError, DiagnosticCode, LuaMemberAccess, LuaMemberFeature, LuaMemberId, LuaSignatureId,
+    LuaTypeCache, OperatorFunction, TypeOps,
     compilation::analyzer::doc::preprocess_description,
     db_index::{
         LuaMember, LuaMemberKey, LuaMemberOwner, LuaOperator, LuaOperatorMetaMethod,
@@ -72,7 +72,46 @@ pub fn analyze_field(analyzer: &mut DocAnalyzer, tag: LuaDocTagField) -> Option<
         }
     }
 
+    let mut field_access = LuaMemberAccess::ReadWrite;
+    if let Some(flags) = tag.get_type_flag() {
+        let mut access = None;
+        for token in flags.get_attrib_tokens() {
+            let direction = match token.get_name_text() {
+                "read" => LuaMemberAccess::Read,
+                "write" => LuaMemberAccess::Write,
+                _ => continue,
+            };
+            if access.is_some() {
+                analyzer.get_db().get_diagnostic_index_mut().add_diagnostic(
+                    file_id,
+                    AnalyzeError {
+                        kind: DiagnosticCode::AnnotationUsageError,
+                        message: "A field may specify only one of (read) or (write)".into(),
+                        range: tag.get_range(),
+                    },
+                );
+                return None;
+            }
+            access = Some(direction);
+        }
+        if let Some(access) = access {
+            field_access = access;
+        }
+    }
     let field_key = tag.get_field_key()?;
+    if field_access != LuaMemberAccess::ReadWrite && matches!(field_key, LuaDocFieldKey::Type(_)) {
+        analyzer.get_db().get_diagnostic_index_mut().add_diagnostic(
+            file_id,
+            AnalyzeError {
+                kind: DiagnosticCode::AnnotationUsageError,
+                message:
+                    "Directional fields require a named, string-literal, or integer-literal key"
+                        .into(),
+                range: tag.get_range(),
+            },
+        );
+        return None;
+    }
     let key = match field_key {
         LuaDocFieldKey::Name(name_token) => {
             LuaMemberKey::Name(name_token.get_name_text().to_string().into())
@@ -116,7 +155,8 @@ pub fn analyze_field(analyzer: &mut DocAnalyzer, tag: LuaDocTagField) -> Option<
         LuaMemberFeature::FileFieldDecl
     };
 
-    let member = LuaMember::new(member_id, key.clone(), decl_feature, None);
+    let mut member = LuaMember::new(member_id, key.clone(), decl_feature, None);
+    member.set_access(field_access);
     analyzer
         .get_db()
         .get_reference_index_mut()

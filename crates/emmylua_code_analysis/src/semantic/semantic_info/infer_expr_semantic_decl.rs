@@ -191,13 +191,30 @@ fn infer_index_expr_semantic_decl(
     let prefix_type = infer_expr(db, cache, prefix_expr).ok()?;
     let index_key = index_expr.get_index_key()?;
     let member_key = LuaMemberKey::from_index_key(db, cache, &index_key).ok()?;
-    infer_member_semantic_decl_by_member_key(
+    let decl = infer_member_semantic_decl_by_member_key(
         db,
         cache,
         &prefix_type,
         &member_key,
         semantic_guard.next_level()?,
-    )
+    )?;
+    let is_write = index_expr
+        .get_parent::<emmylua_parser::LuaAssignStat>()
+        .is_some_and(|assign| {
+            assign
+                .get_var_and_expr_list()
+                .0
+                .iter()
+                .any(|var| var.syntax() == index_expr.syntax())
+        });
+    if is_write && let LuaSemanticDeclId::Member(id) = &decl {
+        let index = db.get_member_index();
+        let owner = index.get_current_owner(id)?;
+        if let Some(item) = index.get_member_item(owner, &member_key) {
+            return item.resolve_semantic_decl_for_access(db, crate::LuaMemberAccess::Write);
+        }
+    }
+    Some(decl)
 }
 
 fn infer_closure_expr_semantic_decl(

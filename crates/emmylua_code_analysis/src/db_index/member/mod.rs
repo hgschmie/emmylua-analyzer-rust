@@ -8,7 +8,7 @@ use hashbrown::{HashMap, HashSet};
 
 use super::traits::LuaIndex;
 use crate::{FileId, db_index::member::lua_owner_members::LuaOwnerMembers};
-pub use lua_member::{LuaMember, LuaMemberId, LuaMemberKey};
+pub use lua_member::{LuaMember, LuaMemberAccess, LuaMemberId, LuaMemberKey};
 pub use lua_member_feature::LuaMemberFeature;
 pub use lua_member_item::LuaMemberIndexItem;
 pub use lua_member_owner::LuaMemberOwner;

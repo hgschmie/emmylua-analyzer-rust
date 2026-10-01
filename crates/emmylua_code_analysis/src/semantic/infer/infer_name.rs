@@ -120,7 +120,12 @@ pub fn infer_param(db: &DbIndex, decl: &LuaDecl) -> InferResult {
     }
 
     if let Some(current_member_id) = member_id {
-        let member_decl_type = find_decl_member_type(db, current_member_id)?;
+        // Parameters of an assigned function implement the setter contract.
+        let member_decl_type = db
+            .get_member_index()
+            .get_member_item_by_member_id(current_member_id)
+            .ok_or(InferFailReason::None)?
+            .resolve_type_for_access(db, crate::LuaMemberAccess::Write)?;
         let param_type = find_param_type_from_type(
             db,
             member_decl_type,
