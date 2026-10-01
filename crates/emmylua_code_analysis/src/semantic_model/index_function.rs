@@ -6,7 +6,8 @@ use super::{
 use crate::{DeclKind, InFiled, LuaMemberKey, LuaType, SemanticId};
 use emmylua_parser::{
     BinaryOperator, LuaAssignStat, LuaAstNode, LuaClosureExpr, LuaCommentOwner, LuaDocTag, LuaExpr,
-    LuaIndexExpr, LuaIndexKey, LuaLiteralToken, LuaStat, LuaTableExpr, LuaTableField, LuaVarExpr,
+    LuaFuncStat, LuaIndexExpr, LuaIndexKey, LuaLiteralToken, LuaStat, LuaTableExpr, LuaTableField,
+    LuaVarExpr,
 };
 use hashbrown::HashSet;
 use std::cell::Cell;
@@ -24,6 +25,15 @@ pub(crate) fn infer(
     info: &MemberInfo,
     key: &LuaMemberKey,
 ) -> Option<LuaType> {
+    infer_detail(model, info, key, false).map(|result| result.0)
+}
+
+fn infer_detail(
+    model: &SemanticModel,
+    info: &MemberInfo,
+    key: &LuaMemberKey,
+    origin: bool,
+) -> Option<(LuaType, Option<SemanticId>)> {
     let key_type = match key {
         LuaMemberKey::Name(name) => LuaType::StringConst(name.clone().into()),
         LuaMemberKey::Integer(value) => LuaType::IntegerConst(*value),
@@ -79,7 +89,7 @@ pub(crate) fn infer(
         && !matches!(param_type, LuaType::Unknown | LuaType::Any)
         && !super::type_check::is_compatible(&model, &param_type, &key_type)
     {
-        return Some(LuaType::Nil);
+        return Some((LuaType::Nil, None));
     }
     let block = closure.get_block()?;
     let mut stats = block.get_stats();
@@ -94,14 +104,20 @@ pub(crate) fn infer(
     if exprs.next().is_some() {
         return None;
     }
-    Inference {
+    let mut inference = Inference {
         model: &model,
         key_decl,
         key_type,
         remaining: 64,
         closed: HashSet::new(),
-    }
-    .infer(expr)
+    };
+    let typ = inference.infer(expr.clone())?;
+    let origin = if origin && !typ.is_nil() {
+        inference.find_origin(expr)
+    } else {
+        None
+    };
+    Some((typ, origin))
 }
 
 struct Inference<'a, 'db> {
@@ -112,6 +128,125 @@ struct Inference<'a, 'db> {
     closed: HashSet<InFiled<rowan::TextRange>>,
 }
 impl Inference<'_, '_> {
+    // Definition-only provenance: do not make synthetic members part of the
+    // normal semantic identity used by rename, references and diagnostics.
+    fn find_origin(&mut self, expr: LuaExpr) -> Option<SemanticId> {
+        self.remaining = self.remaining.checked_sub(1)?;
+        match expr {
+            LuaExpr::ParenExpr(paren) => self.find_origin(paren.get_expr()?),
+            LuaExpr::IndexExpr(index) => {
+                let prefix = index.get_prefix_expr()?;
+                let LuaType::TableConst(table) = self.infer(prefix.clone())? else {
+                    return None;
+                };
+                let key = self.index_key(index.get_index_key()?)?;
+                if !self.has_unique_definition(prefix, &key)? {
+                    return None;
+                }
+                self.model
+                    .member_info(&LuaType::TableConst(table), &key)?
+                    .id
+            }
+            LuaExpr::BinaryExpr(binary) => {
+                let (left, right) = binary.get_exprs()?;
+                let left_type = self.infer(left.clone())?;
+                let selected = match binary.get_op_token()?.get_op() {
+                    BinaryOperator::OpAnd if left_type.is_always_truthy() => right,
+                    BinaryOperator::OpAnd if left_type.is_always_falsy() => left,
+                    BinaryOperator::OpOr if left_type.is_always_truthy() => left,
+                    BinaryOperator::OpOr if left_type.is_always_falsy() => right,
+                    _ => return None,
+                };
+                self.find_origin(selected)
+            }
+            LuaExpr::ClosureExpr(closure) => {
+                // Follow a forwarding wrapper's callee, not merely the table
+                // lookup used as its existence guard. Parameter identities are
+                // resolved by infer(), so a shadowed key cannot be substituted.
+                let block = closure.get_block()?;
+                let mut stats = block.get_stats();
+                let LuaStat::ReturnStat(ret) = stats.next()? else {
+                    return None;
+                };
+                if stats.next().is_some() {
+                    return None;
+                }
+                let mut exprs = ret.get_expr_list();
+                let LuaExpr::CallExpr(call) = exprs.next()? else {
+                    return None;
+                };
+                if exprs.next().is_some() {
+                    return None;
+                }
+                self.find_origin(call.get_prefix_expr()?)
+            }
+            _ => None,
+        }
+    }
+
+    fn has_unique_definition(&mut self, prefix: LuaExpr, key: &LuaMemberKey) -> Option<bool> {
+        if let LuaExpr::ParenExpr(paren) = prefix {
+            return self.has_unique_definition(paren.get_expr()?, key);
+        }
+        let LuaExpr::NameExpr(name) = prefix else {
+            return None;
+        };
+        let facts = self.model.file_facts()?;
+        let decl_id = self.model.resolve_name(name.get_position())?;
+        let decl = facts.decl_by_id(&decl_id)?;
+        let root = self.model.chunk()?;
+        let table = LuaTableExpr::cast(decl.value_expr_syntax?.to_node_from_root(root.syntax())?)?;
+        let mut definitions = 0;
+        for (_, key_expr) in table.get_fields_with_keys() {
+            if self.index_key(key_expr)? == *key {
+                definitions += 1;
+            }
+        }
+        for reference in &facts.name_uses {
+            if self
+                .model
+                .resolve_name(reference.syntax.get_range().start())
+                .as_ref()
+                != Some(&decl_id)
+            {
+                continue;
+            }
+            let node = reference.syntax.to_node_from_root(root.syntax())?;
+            let index = node.parent().and_then(LuaIndexExpr::cast)?;
+            let is_write = index.get_parent::<LuaFuncStat>().is_some()
+                || index.get_parent::<LuaAssignStat>().is_some_and(|assign| {
+                    assign
+                        .get_var_and_expr_list()
+                        .0
+                        .iter()
+                        .any(|var| var.get_range() == index.get_range())
+                });
+            if is_write && self.index_key(index.get_index_key()?)? == *key {
+                definitions += 1;
+            }
+        }
+        Some(definitions == 1)
+    }
+
+    fn index_key(&mut self, key: LuaIndexKey) -> Option<LuaMemberKey> {
+        Some(match key {
+            LuaIndexKey::Name(name) => LuaMemberKey::Name(name.get_name_text().into()),
+            LuaIndexKey::String(s) => LuaMemberKey::Name(s.get_value().into()),
+            LuaIndexKey::Integer(n) => match n.get_number_value() {
+                emmylua_parser::NumberResult::Int(n) => LuaMemberKey::Integer(n),
+                _ => return None,
+            },
+            LuaIndexKey::Expr(expr) => match self.infer(expr)? {
+                LuaType::StringConst(s) | LuaType::DocStringConst(s) => {
+                    LuaMemberKey::Name(s.as_str().into())
+                }
+                LuaType::IntegerConst(n) | LuaType::DocIntegerConst(n) => LuaMemberKey::Integer(n),
+                _ => return None,
+            },
+            _ => return None,
+        })
+    }
+
     fn infer(&mut self, expr: LuaExpr) -> Option<LuaType> {
         self.remaining = self.remaining.checked_sub(1)?;
         match expr {
@@ -158,24 +293,7 @@ impl Inference<'_, '_> {
             }
             LuaExpr::IndexExpr(index) => {
                 let prefix = self.infer(index.get_prefix_expr()?)?;
-                let key = match index.get_index_key()? {
-                    LuaIndexKey::Name(name) => LuaMemberKey::Name(name.get_name_text().into()),
-                    LuaIndexKey::String(s) => LuaMemberKey::Name(s.get_value().into()),
-                    LuaIndexKey::Integer(n) => match n.get_number_value() {
-                        emmylua_parser::NumberResult::Int(n) => LuaMemberKey::Integer(n),
-                        _ => return None,
-                    },
-                    LuaIndexKey::Expr(expr) => match self.infer(expr)? {
-                        LuaType::StringConst(s) | LuaType::DocStringConst(s) => {
-                            LuaMemberKey::Name(s.as_str().into())
-                        }
-                        LuaType::IntegerConst(n) | LuaType::DocIntegerConst(n) => {
-                            LuaMemberKey::Integer(n)
-                        }
-                        _ => return None,
-                    },
-                    _ => return None,
-                };
+                let key = self.index_key(index.get_index_key()?)?;
                 if let Some(info) = self.model.member_info(&prefix, &key) {
                     return Some(info.typ);
                 }
@@ -281,4 +399,42 @@ pub(crate) fn oversized(
         return false;
     }
     closure.descendants::<LuaExpr>().take(65).count() > 64
+}
+
+impl SemanticModel<'_> {
+    /// Navigation-only provenance; never establishes identity for rename/references.
+    pub fn get_index_metamethod_origin(&self, index: LuaIndexExpr) -> Option<SemanticId> {
+        let key = match index.get_index_key()? {
+            LuaIndexKey::Name(n) => LuaMemberKey::Name(n.get_name_text().into()),
+            LuaIndexKey::String(s) => LuaMemberKey::Name(s.get_value().into()),
+            LuaIndexKey::Integer(n) => match n.get_number_value() {
+                emmylua_parser::NumberResult::Int(n) => LuaMemberKey::Integer(n),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let typ = self.type_of_expr(index.get_prefix_expr()?.get_syntax_id());
+        fn origin(model: &SemanticModel, typ: &LuaType, key: &LuaMemberKey) -> Option<SemanticId> {
+            if model
+                .member_info(typ, key)
+                .is_some_and(|info| info.id.is_some())
+            {
+                return None;
+            }
+            match typ {
+                LuaType::TableConst(table) => {
+                    let info = super::member::table_metatable_index_info(model, table)?;
+                    infer_detail(model, &info, key, true)?.1
+                }
+                LuaType::Union(union) => {
+                    let types = union.into_vec();
+                    let mut origins = types.iter().filter_map(|typ| origin(model, typ, key));
+                    let first = origins.next()?;
+                    origins.all(|id| id == first).then_some(first)
+                }
+                _ => None,
+            }
+        }
+        origin(self, &typ, &key)
+    }
 }
