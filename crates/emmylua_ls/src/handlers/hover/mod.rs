@@ -78,6 +78,9 @@ pub fn hover(analysis: &EmmyLuaAnalysis, file_id: FileId, position: Position) ->
     ) {
         return Some(hover);
     }
+    if let Some(hover) = directional::hover(&model, &analysis.db, &token) {
+        return Some(hover);
+    }
     match token {
         keywords if is_keyword(keywords.clone()) => Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
@@ -113,3 +116,5 @@ impl RegisterCapabilities for HoverCapabilities {
 }
 
 mod index_metamethod;
+
+mod directional;

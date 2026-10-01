@@ -445,6 +445,11 @@ pub fn type_of_expr_at(
             model.type_of_expr(expr_syntax)
         }
         LuaExpr::IndexExpr(index_expr) => {
+            if let Some((read, _)) = model.directional_index(index_expr)
+                && let Some(typ) = directional_read_at(model, index_expr, &read, offset)
+            {
+                return apply_expr_casts(model, expr_syntax, typ);
+            }
             if let Some(resolved) = model.resolve_member(index_expr)
                 && let Some(member_id) = resolved.member_id
             {
@@ -5164,4 +5169,90 @@ pub(crate) mod flow_metrics {
     pub(crate) fn fast_member_hits() -> u64 {
         COUNTERS.with(|c| c.get().fast_member_hits)
     }
+}
+
+/// Directional assignments invalidate earlier guards but never substitute the
+/// write value for the property's read contract. Bound traversal conservatively.
+fn directional_read_at(
+    model: &SemanticModel,
+    index: &emmylua_parser::LuaIndexExpr,
+    read: &super::member::MemberInfo,
+    offset: TextSize,
+) -> Option<LuaType> {
+    let member = read.id.as_ref()?;
+    let owner = model.resolve_member(index)?.owner;
+    let tree = model.flow_tree()?;
+    let root = model.chunk()?;
+    let start = tree.get_flow_id_at(offset)?;
+    let mut pending = vec![(start, PathState::default(), HashSet::new())];
+    let mut results = Vec::new();
+    let mut budget = 512;
+    while let Some((mut current, mut path, mut seen)) = pending.pop() {
+        loop {
+            if budget == 0 || !seen.insert(current) {
+                return Some(read.typ.clone());
+            }
+            budget -= 1;
+            let node = tree.get_flow_node(current)?;
+            match &node.kind {
+                FlowNodeKind::Assignment(ptr) => {
+                    let assignment = ptr.to_node(&root)?;
+                    if assignment.get_range().end() <= offset
+                        && assignment.get_var_and_expr_list().0.iter().any(|var| {
+                            let emmylua_parser::LuaVarExpr::IndexExpr(target) = var else {
+                                return false;
+                            };
+                            member_key_from_index_expr(model, target).as_ref() == Some(&read.key)
+                                && model
+                                    .resolve_member(target)
+                                    .is_some_and(|resolved| resolved.owner == owner)
+                        })
+                    {
+                        results.push(finalize(model, read.typ.clone(), &path));
+                        break;
+                    }
+                }
+                FlowNodeKind::TrueCondition(cond) | FlowNodeKind::FalseCondition(cond) => {
+                    // Avoid applying a guard for another instance of the same class.
+                    let expr = cond.to_node(&root)?;
+                    let relevant = std::iter::once(expr.syntax().clone())
+                        .chain(expr.syntax().descendants())
+                        .filter_map(emmylua_parser::LuaIndexExpr::cast)
+                        .any(|other| {
+                            member_key_from_index_expr(model, &other).as_ref() == Some(&read.key)
+                                && model
+                                    .resolve_member(&other)
+                                    .is_some_and(|resolved| resolved.owner == owner)
+                        });
+                    if relevant
+                        && let Some(narrowing) = narrow_member_condition(
+                            model,
+                            member,
+                            cond,
+                            matches!(node.kind, FlowNodeKind::TrueCondition(_)),
+                        )
+                    {
+                        path.narrowings.push(narrowing);
+                    }
+                }
+                FlowNodeKind::TagCast(ptr) => collect_member_cast(model, member, ptr, &mut path),
+                FlowNodeKind::AsCast(ptr) => collect_member_as_cast(model, member, ptr, &mut path),
+                _ => {}
+            }
+            match &node.antecedent {
+                Some(FlowAntecedent::Single(next)) => current = *next,
+                Some(FlowAntecedent::Multiple(id)) => {
+                    for next in tree.get_multi_antecedents(*id)? {
+                        pending.push((*next, path.clone_path(), seen.clone()));
+                    }
+                    break;
+                }
+                None => {
+                    results.push(finalize(model, read.typ.clone(), &path));
+                    break;
+                }
+            }
+        }
+    }
+    Some(LuaType::from_vec(results))
 }
