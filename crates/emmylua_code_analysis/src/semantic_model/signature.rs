@@ -776,20 +776,7 @@ impl<'db> SemanticModel<'db> {
                     let table = root
                         .descendants::<LuaTableExpr>()
                         .find(|table| table.get_range() == table_key.key_range)?;
-                    let assign = table.get_parent::<LuaAssignStat>()?;
-                    let (vars, values) = assign.get_var_and_expr_list();
-                    let position = values
-                        .iter()
-                        .position(|value| value.get_range() == table.get_range())?;
-                    {
-                        let target = vars.get(position)?.to_expr();
-                        if let LuaExpr::IndexExpr(index) = &target {
-                            self.dictionary_index_type(index, false)
-                                .unwrap_or_else(|| self.type_of_expr(target.get_syntax_id()))
-                        } else {
-                            self.type_of_expr(target.get_syntax_id())
-                        }
-                    }
+                    self.table_assignment_context(&table)?
                 }
             }
             _ => return None,

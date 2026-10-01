@@ -1054,6 +1054,20 @@ impl<'a> InferVm<'a> {
     }
 
     fn index_member_impl(&mut self, mut owner: Value, key: &LuaMemberKey) -> Value {
+        let directional = self.model.directional_member(&owner.ty, key).or_else(|| {
+            let id = owner.owner.as_ref()?;
+            self.model
+                .directional_member(&self.model.type_of_decl(id)?, key)
+        });
+        if let Some((read, _)) = directional {
+            return Value::plain(read.typ);
+        }
+        if let Some(key_type) = super::super::dictionary::key_type(key)
+            && let Some(typ) =
+                super::super::dictionary::lookup(self.model, &owner.ty, &key_type, true)
+        {
+            return Value::plain(typ);
+        }
         let receiver_ty = Some(owner.ty.clone());
         // A bare table does not acquire a closed shape from runtime writes.
         // Handle it before owner lookup, which also collects later assignments.
