@@ -446,9 +446,23 @@ pub fn type_of_expr_at(
         }
         LuaExpr::IndexExpr(index_expr) => {
             if let Some((read, _)) = model.directional_index(index_expr)
-                && let Some(typ) = directional_read_at(model, index_expr, &read, offset)
+                && let Some(typ) = indexed_read_at(model, index_expr, &read, offset, true)
             {
                 return apply_expr_casts(model, expr_syntax, typ);
+            }
+            if let Some(typ) = model.dictionary_index_type(index_expr, true)
+                && let Some(key) = member_key_from_index_expr(model, index_expr)
+            {
+                let read = super::member::MemberInfo {
+                    key,
+                    typ,
+                    id: None,
+                    file_id: None,
+                    is_method: false,
+                };
+                if let Some(typ) = indexed_read_at(model, index_expr, &read, offset, false) {
+                    return apply_expr_casts(model, expr_syntax, typ);
+                }
             }
             if let Some(resolved) = model.resolve_member(index_expr)
                 && let Some(member_id) = resolved.member_id
@@ -5173,14 +5187,15 @@ pub(crate) mod flow_metrics {
 
 /// Directional assignments invalidate earlier guards but never substitute the
 /// write value for the property's read contract. Bound traversal conservatively.
-fn directional_read_at(
+fn indexed_read_at(
     model: &SemanticModel,
     index: &emmylua_parser::LuaIndexExpr,
     read: &super::member::MemberInfo,
     offset: TextSize,
+    transformed: bool,
 ) -> Option<LuaType> {
-    let member = read.id.as_ref()?;
-    let owner = model.resolve_member(index)?.owner;
+    let member = read.id.as_ref();
+    let owner = index_owner(model, index)?;
     let tree = model.flow_tree()?;
     let root = model.chunk()?;
     let start = tree.get_flow_id_at(offset)?;
@@ -5197,46 +5212,47 @@ fn directional_read_at(
             match &node.kind {
                 FlowNodeKind::Assignment(ptr) => {
                     let assignment = ptr.to_node(&root)?;
-                    if assignment.get_range().end() <= offset
-                        && assignment.get_var_and_expr_list().0.iter().any(|var| {
+                    if assignment.get_range().end() <= offset {
+                        let (vars, values) = assignment.get_var_and_expr_list();
+                        if let Some((position, _)) = vars.iter().enumerate().find(|(_, var)| {
                             let emmylua_parser::LuaVarExpr::IndexExpr(target) = var else {
                                 return false;
                             };
                             member_key_from_index_expr(model, target).as_ref() == Some(&read.key)
-                                && model
-                                    .resolve_member(target)
-                                    .is_some_and(|resolved| resolved.owner == owner)
-                        })
-                    {
-                        results.push(finalize(model, read.typ.clone(), &path));
-                        break;
+                                && index_owner(model, target).as_ref() == Some(&owner)
+                        }) {
+                            let typ = if transformed {
+                                read.typ.clone()
+                            } else {
+                                let value = values.get(position)?;
+                                model.type_of_expr_at(value.get_syntax_id(), value.get_position())
+                            };
+                            results.push(finalize_index_read(model, typ, &path));
+                            break;
+                        }
                     }
                 }
                 FlowNodeKind::TrueCondition(cond) | FlowNodeKind::FalseCondition(cond) => {
-                    // Avoid applying a guard for another instance of the same class.
                     let expr = cond.to_node(&root)?;
-                    let relevant = std::iter::once(expr.syntax().clone())
-                        .chain(expr.syntax().descendants())
-                        .filter_map(emmylua_parser::LuaIndexExpr::cast)
-                        .any(|other| {
-                            member_key_from_index_expr(model, &other).as_ref() == Some(&read.key)
-                                && model
-                                    .resolve_member(&other)
-                                    .is_some_and(|resolved| resolved.owner == owner)
-                        });
-                    if relevant
-                        && let Some(narrowing) = narrow_member_condition(
-                            model,
-                            member,
-                            cond,
-                            matches!(node.kind, FlowNodeKind::TrueCondition(_)),
-                        )
-                    {
+                    if let Some(narrowing) = indexed_guard(
+                        model,
+                        index,
+                        &expr,
+                        matches!(node.kind, FlowNodeKind::TrueCondition(_)),
+                    ) {
                         path.narrowings.push(narrowing);
                     }
                 }
-                FlowNodeKind::TagCast(ptr) => collect_member_cast(model, member, ptr, &mut path),
-                FlowNodeKind::AsCast(ptr) => collect_member_as_cast(model, member, ptr, &mut path),
+                FlowNodeKind::TagCast(ptr) => {
+                    if let Some(member) = member {
+                        collect_member_cast(model, member, ptr, &mut path);
+                    }
+                }
+                FlowNodeKind::AsCast(ptr) => {
+                    if let Some(member) = member {
+                        collect_member_as_cast(model, member, ptr, &mut path);
+                    }
+                }
                 _ => {}
             }
             match &node.antecedent {
@@ -5248,11 +5264,93 @@ fn directional_read_at(
                     break;
                 }
                 None => {
-                    results.push(finalize(model, read.typ.clone(), &path));
+                    results.push(finalize_index_read(model, read.typ.clone(), &path));
                     break;
                 }
             }
         }
     }
-    Some(LuaType::from_vec(results))
+    Some(LuaType::from_vec(
+        results
+            .into_iter()
+            .filter(|typ| *typ != LuaType::Never)
+            .collect(),
+    ))
+}
+
+fn index_owner(model: &SemanticModel, index: &emmylua_parser::LuaIndexExpr) -> Option<SemanticId> {
+    if let Some(resolved) = model.resolve_member(index) {
+        return Some(resolved.owner);
+    }
+    let LuaExpr::NameExpr(name) = index.get_prefix_expr()? else {
+        return None;
+    };
+    model.resolve_name(name.get_position())
+}
+fn indexed_guard(
+    model: &SemanticModel,
+    index: &emmylua_parser::LuaIndexExpr,
+    cond: &LuaExpr,
+    truthy: bool,
+) -> Option<Narrowing> {
+    let same = |other: &emmylua_parser::LuaIndexExpr| {
+        index_owner(model, other) == index_owner(model, index)
+            && member_key_from_index_expr(model, other) == member_key_from_index_expr(model, index)
+    };
+    match cond {
+        LuaExpr::IndexExpr(other) if same(other) => Some(if truthy {
+            Narrowing::Truthy
+        } else {
+            Narrowing::Falsy
+        }),
+        LuaExpr::ParenExpr(paren) => indexed_guard(model, index, &paren.get_expr()?, truthy),
+        LuaExpr::UnaryExpr(unary) if unary.get_op_token()?.get_op() == UnaryOperator::OpNot => {
+            indexed_guard(model, index, &unary.get_expr()?, !truthy)
+        }
+        LuaExpr::BinaryExpr(binary) => {
+            let op = binary.get_op_token()?.get_op();
+            let (left, right) = binary.get_exprs()?;
+            if (op == BinaryOperator::OpAnd && truthy) || (op == BinaryOperator::OpOr && !truthy) {
+                return indexed_guard(model, index, &left, truthy)
+                    .or_else(|| indexed_guard(model, index, &right, truthy));
+            }
+            if !matches!(op, BinaryOperator::OpEq | BinaryOperator::OpNe) {
+                return None;
+            }
+            let (other, lit) = match (left, right) {
+                (LuaExpr::IndexExpr(other), LuaExpr::LiteralExpr(lit))
+                | (LuaExpr::LiteralExpr(lit), LuaExpr::IndexExpr(other)) => (other, lit),
+                _ => return None,
+            };
+            if !same(&other) {
+                return None;
+            }
+            let typ = literal_type(&lit)?;
+            Some(if truthy == (op == BinaryOperator::OpEq) {
+                Narrowing::Replace(typ)
+            } else {
+                Narrowing::Remove(typ)
+            })
+        }
+        _ => None,
+    }
+}
+
+fn finalize_index_read(model: &SemanticModel, mut base: LuaType, path: &PathState) -> LuaType {
+    for narrowing in path.narrowings.iter().rev() {
+        if (matches!(narrowing, Narrowing::Truthy) && base.is_always_falsy())
+            || (matches!(narrowing, Narrowing::Falsy) && base.is_always_truthy())
+        {
+            return LuaType::Never;
+        }
+        base = apply_narrowing(model, base, narrowing);
+    }
+    for cast in path.casts.iter().rev() {
+        match cast {
+            CastOp::Add(ty) => base = merge_types(base, ty.clone()),
+            CastOp::Remove(ty) => base = remove_type(base, ty),
+            CastOp::Replace(ty) => base = ty.clone(),
+        }
+    }
+    base
 }

@@ -10,6 +10,11 @@ impl SemanticModel<'_> {
         {
             return write.typ;
         }
+        if let emmylua_parser::LuaExpr::IndexExpr(index) = &expr
+            && let Some(typ) = self.dictionary_index_type(index, false)
+        {
+            return typ;
+        }
         self.type_of_expr(expr.get_syntax_id())
     }
 

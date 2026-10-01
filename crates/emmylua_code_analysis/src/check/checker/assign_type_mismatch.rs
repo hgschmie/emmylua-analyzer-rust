@@ -360,6 +360,15 @@ fn check_assign(
                 );
             }
             LuaVarExpr::IndexExpr(index_expr) => {
+                if let Some(target) = semantic_model.dictionary_index_type(index_expr, false) {
+                    if !matches!(
+                        semantic_model.type_of_expr(expr.get_syntax_id()),
+                        LuaType::Nil
+                    ) {
+                        check_value_against(context, semantic_model, &target, &expr);
+                    }
+                    continue;
+                }
                 if let Some((_, write)) = semantic_model.directional_index(index_expr) {
                     check_value_against(context, semantic_model, &write.typ, &expr);
                     continue;
