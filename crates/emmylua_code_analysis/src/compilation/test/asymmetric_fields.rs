@@ -191,3 +191,125 @@ end
     );
     assert_eq!(ws.expr_ty("callback_value"), LuaType::String);
 }
+
+// Compatibility coverage for strict.tableIndex lives on the work branch so the
+// nullable dictionary lookup patch remains independently reviewable upstream.
+#[googletest::gtest]
+fn asymmetric_fields_dictionary_properties() {
+    use googletest::prelude::*;
+
+    for table_index in [false, true] {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let mut config = ws.get_emmyrc();
+        config.strict.table_index = table_index;
+        ws.update_emmyrc(config);
+        ws.def(
+            r#"
+            ---@class Result
+            ---@field value number
+            ---@class Input
+            ---@field name string
+            ---@field callback fun(value: string)
+            ---@class DictionaryHolder
+            ---@field (read) entries table<string, Result>
+            ---@field (write) entries table<string, Input>|string
+            ---@type DictionaryHolder
+            holder = {}
+            holder.entries = 'reset'
+            after_setter = holder.entries
+            lookup_after_setter = holder.entries.example
+            holder.entries = {
+                example = {
+                    name = 'ok',
+                    callback = function(value) dictionary_callback_value = value end,
+                },
+            }
+        "#,
+        );
+        let dictionary = ws.ty("table<string, Result>");
+        expect_that!(ws.expr_ty("after_setter"), eq(&dictionary));
+        let result = ws.ty(if table_index { "Result?" } else { "Result" });
+        expect_that!(ws.expr_ty("lookup_after_setter"), eq(&result));
+        expect_that!(
+            ws.expr_ty("dictionary_callback_value"),
+            eq(&LuaType::String)
+        );
+        for source in [
+            "holder.entries = 'reset'",
+            "holder.entries = { example = { name = 'ok', callback = function(value) end } }",
+            "holder.entries.example = { value = 42 }",
+            "holder.entries.example = nil",
+            "if holder.entries.example then holder.entries.example.value = 42 end",
+        ] {
+            expect_that!(
+                ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, source),
+                eq(true),
+                "{source}; tableIndex={table_index}"
+            );
+        }
+        for source in [
+            "holder.entries = nil",
+            "holder.entries = { example = { name = 42, callback = function(value) end } }",
+            "holder.entries.example = 'wrong'",
+            "if holder.entries.example then holder.entries.example.value = 'wrong' end",
+        ] {
+            expect_that!(
+                ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, source),
+                eq(false),
+                "{source}; tableIndex={table_index}"
+            );
+        }
+    }
+}
+
+#[googletest::gtest]
+fn asymmetric_fields_inside_dictionaries() {
+    use googletest::prelude::*;
+
+    for table_index in [false, true] {
+        for annotation in ["table<string, Burner>", "{[string]: Burner}"] {
+            let mut ws = VirtualWorkspace::new();
+            let mut config = ws.get_emmyrc();
+            config.strict.table_index = table_index;
+            ws.update_emmyrc(config);
+            ws.def(DEFS);
+            ws.def(&format!(
+                r#"
+                ---@type {annotation}
+                burners = {{}}
+                if burners.example then
+                    burners.example.force = 'coal'
+                    dictionary_force = burners.example.force
+                    burners.example.fuel = nil
+                    dictionary_fuel = burners.example.fuel
+                end
+            "#
+            ));
+            let fuel = ws.ty("Fuel");
+            expect_that!(ws.expr_ty("dictionary_force"), eq(&fuel));
+            let optional_fuel = ws.ty("Fuel?");
+            expect_that!(ws.expr_ty("dictionary_fuel"), eq(&optional_fuel));
+            for source in [
+                "burners.example = nil",
+                "if burners.example then burners.example.force = 'coal' end",
+                "if burners.example then burners.example.fuel = nil end",
+            ] {
+                expect_that!(
+                    ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, source),
+                    eq(true),
+                    "{source}; tableIndex={table_index}"
+                );
+            }
+            for source in [
+                "if burners.example then burners.example.force = nil end",
+                "if burners.example then burners.example.force = false end",
+            ] {
+                expect_that!(
+                    ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, source),
+                    eq(false),
+                    "{source}; tableIndex={table_index}"
+                );
+            }
+        }
+    }
+}
