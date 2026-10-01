@@ -1,4 +1,5 @@
 mod infer_array;
+mod infer_index_function;
 
 use emmylua_parser::{
     LuaExpr, LuaIndexExpr, LuaIndexKey, LuaIndexMemberExpr, NumberResult, PathTrait,
@@ -813,7 +814,7 @@ fn infer_member_by_operator_key_type_inner(
     infer_guard: &InferGuardRef,
 ) -> InferResult {
     match &prefix_type {
-        LuaType::TableConst(in_filed) => infer_member_by_index_table(db, in_filed, key_type),
+        LuaType::TableConst(in_filed) => infer_member_by_index_table(db, cache, in_filed, key_type),
         LuaType::Ref(decl_id) | LuaType::Def(decl_id) => {
             infer_member_by_index_custom_type(db, cache, decl_id, key_type, infer_guard)
         }
@@ -869,6 +870,7 @@ fn infer_member_by_operator_key_type_inner(
 
 fn infer_member_by_index_table(
     db: &DbIndex,
+    cache: &mut LuaInferCache,
     table_range: &InFiled<TextRange>,
     key_type: &LuaType,
 ) -> InferResult {
@@ -887,6 +889,18 @@ fn infer_member_by_index_table(
                     .get_operator(operator_id)
                     .ok_or(InferFailReason::None)?;
                 let operand = operator.get_operand(db);
+                if check_type_compact(db, &operand, key_type).is_err() {
+                    continue;
+                }
+                if let Some(typ) =
+                    infer_index_function::infer_index_function(db, cache, operator, key_type)
+                {
+                    return if typ.is_nil() {
+                        Err(InferFailReason::FieldNotFound)
+                    } else {
+                        Ok(typ)
+                    };
+                }
                 let return_type = operator.get_result(db)?;
                 if let Ok(typ) =
                     infer_index_metamethod_by_key_type(db, key_type, &operand, &return_type)
