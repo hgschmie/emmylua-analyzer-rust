@@ -169,5 +169,4 @@ fn find_index_metamethod_definition(
 ) -> Option<SemanticId> {
     let origin = super::common::find_index_metamethod_origin(model, token)?;
     super::common::resolve_alias_origin(model, &origin).or(Some(origin))
-
 }
