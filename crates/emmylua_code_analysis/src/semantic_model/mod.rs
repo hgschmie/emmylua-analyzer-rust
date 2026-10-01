@@ -8,6 +8,7 @@ pub mod type_check;
 pub mod type_eval;
 
 mod access;
+mod directional;
 mod doc_types;
 mod prelude;
 mod signature;
