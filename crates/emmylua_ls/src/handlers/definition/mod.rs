@@ -3,7 +3,7 @@ mod goto_label;
 mod goto_module_file;
 mod goto_string;
 
-use emmylua_code_analysis::{EmmyLuaAnalysis, FileId};
+use emmylua_code_analysis::{EmmyLuaAnalysis, FileId, SemanticId};
 use emmylua_parser::{LuaAstNode, LuaAstToken, LuaStringToken, LuaTokenKind};
 use lsp_types::{
     ClientCapabilities, GotoDefinitionParams, GotoDefinitionResponse, OneOf, Position,
@@ -59,6 +59,16 @@ pub fn definition(
             return None;
         }
     };
+
+    if let Some((read, write, assignment)) = super::common::directional_index_at(&model, &token)
+        && let Some(SemanticId::Member(key)) = if assignment { write.id } else { read.id }
+    {
+        let document = analysis.db.document(key.file_id)?;
+        return Some(GotoDefinitionResponse::Scalar(lsp_types::Location::new(
+            document.get_uri()?,
+            document.to_lsp_range(key.key_range)?,
+        )));
+    }
 
     // 1. Label definition (goto / label).
     if let Some(response) = goto_label::goto_label_definition(&model, &analysis.db, &token) {
