@@ -309,7 +309,7 @@ impl Inference<'_, '_> {
             LuaExpr::ClosureExpr(ref closure) => Some(
                 self.model
                     .type_of_signature(closure.get_syntax_id())
-                    .map(|fun| LuaType::DocFunction(std::sync::Arc::new(fun)))
+                    .map(|fun| LuaType::DocFunction(fun.into()))
                     .unwrap_or(LuaType::Function),
             ),
             LuaExpr::LiteralExpr(_) => Some(self.model.type_of_expr(expr.get_syntax_id())),
