@@ -371,11 +371,14 @@ pub(crate) fn member_info_impl(
     // Lua passes the access key to that function, and its return type is the member type.
     if let LuaType::TableConst(table) = prefix_type
         && let Some(index_info) = table_metatable_index_info(model, table)
-        && let Some(ret) = match &index_info.typ {
-            LuaType::DocFunction(fun) => Some(fun.get_ret().clone()),
-            LuaType::Function | LuaType::Signature(_) => None,
-            _ => None,
-        }
+        && let Some(ret) = super::index_function::infer(model, &index_info, key).or_else(|| {
+            match &index_info.typ {
+                LuaType::Any => Some(LuaType::Any),
+                LuaType::DocFunction(fun) => Some(fun.get_ret().clone()),
+                LuaType::Function | LuaType::Signature(_) => None,
+                _ => None,
+            }
+        })
     {
         return Some(MemberInfo {
             key: key.clone(),
@@ -526,6 +529,22 @@ pub(crate) fn table_metatable_index_info(
 ) -> Option<MemberInfo> {
     let metatable_ty = table_metatable_type(model, table)?;
     let key = LuaMemberKey::Name(SmolStr::new("__index"));
+    if let LuaType::TableConst(meta) = &metatable_ty
+        && let Some(facts) = model.file_facts_of(meta.file_id)
+        && let Some(member_ref) = facts
+            .members_of_owner_named(&SemanticId::member(meta.file_id, meta.value), "__index")
+            .next()
+        && let Some(member) = facts.member_by_id(&member_ref.id)
+        && super::index_function::oversized(model, member, meta.file_id)
+    {
+        return Some(MemberInfo {
+            key,
+            typ: LuaType::Any,
+            id: Some(member.id.clone()),
+            file_id: Some(meta.file_id),
+            is_method: false,
+        });
+    }
     member_info(model, &metatable_ty, &key)
 }
 
