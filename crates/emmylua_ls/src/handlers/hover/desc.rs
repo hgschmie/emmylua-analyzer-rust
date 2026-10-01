@@ -301,7 +301,7 @@ pub(crate) fn member_signature_tags(model: &SemanticModel<'_>, member: &Semantic
 }
 
 /// Comment block -> description (plain text + extra tag lines).
-fn comments_description(comments: &[LuaComment]) -> HoverDescription {
+pub(super) fn comments_description(comments: &[LuaComment]) -> HoverDescription {
     let mut text = None;
     let mut tags = Vec::new();
     for comment in comments {
