@@ -5,10 +5,12 @@ mod goto_label;
 mod goto_module_file;
 mod goto_path;
 
-use emmylua_code_analysis::{EmmyLuaAnalysis, FileId, SemanticDeclLevel, WorkspaceId};
+use emmylua_code_analysis::{
+    EmmyLuaAnalysis, FileId, LuaSemanticDeclId, SemanticDeclLevel, SemanticModel, WorkspaceId,
+};
 use emmylua_parser::{
-    LuaAstNode, LuaAstToken, LuaDocDescription, LuaDocTagSee, LuaGeneralToken, LuaStringToken,
-    LuaTokenKind,
+    LuaAstNode, LuaAstToken, LuaDocDescription, LuaDocTagSee, LuaGeneralToken, LuaIndexExpr,
+    LuaStringToken, LuaSyntaxToken, LuaTokenKind,
 };
 pub use goto_def_definition::goto_def_definition;
 use goto_def_definition::goto_str_tpl_ref_definition;
@@ -78,8 +80,9 @@ pub fn definition(
         return Some(goto_label_response);
     }
 
-    if let Some(semantic_decl) =
-        semantic_model.find_decl(token.clone().into(), SemanticDeclLevel::default())
+    if let Some(semantic_decl) = semantic_model
+        .find_decl(token.clone().into(), SemanticDeclLevel::default())
+        .or_else(|| find_index_metamethod_definition(&semantic_model, &token))
     {
         return goto_def_definition(
             &semantic_model,
@@ -128,6 +131,28 @@ pub fn definition(
     }
 
     None
+}
+
+fn find_index_metamethod_definition(
+    model: &SemanticModel,
+    token: &LuaSyntaxToken,
+) -> Option<LuaSemanticDeclId> {
+    let index = token.parent_ancestors().find_map(LuaIndexExpr::cast)?;
+    // Only clicking the key should follow the metamethod. Prefix expressions
+    // and computed-key variables retain ordinary declaration navigation.
+    let key = index.get_index_key()?;
+    // Token selection above intentionally chooses '[' at the start of an
+    // integer key. Treat that boundary as the key for this fallback too.
+    let integer_boundary = token.kind() == LuaTokenKind::TkLeftBracket.into()
+        && matches!(key, emmylua_parser::LuaIndexKey::Integer(_));
+    if !integer_boundary && !key.get_range()?.contains_range(token.text_range()) {
+        return None;
+    }
+    let origin = model.get_index_metamethod_origin(index)?;
+    if let LuaSemanticDeclId::Member(member) = origin {
+        return model.get_member_origin_owner(member).or(Some(origin));
+    }
+    Some(origin)
 }
 
 pub struct DefinitionCapabilities;

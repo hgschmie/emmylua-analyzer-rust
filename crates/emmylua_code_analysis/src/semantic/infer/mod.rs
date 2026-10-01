@@ -20,6 +20,7 @@ use engine::{InferEngine, MAX_INFER_DEPTH};
 pub use infer_call::infer_call_expr_func;
 pub use infer_doc_type::{DocTypeInferContext, infer_doc_type};
 pub use infer_fail_reason::InferFailReason;
+pub(crate) use infer_index::find_index_metamethod_origin;
 pub use infer_index::infer_index_expr;
 pub(crate) use infer_index::try_infer_expr_for_index;
 use infer_name::infer_name_expr;

@@ -11,7 +11,7 @@ use smol_str::SmolStr;
 
 use crate::{
     CacheEntry, GenericTpl, InFiled, InferGuardRef, LuaAliasCallKind, LuaDeclOrMemberId,
-    LuaInferCache, LuaInstanceType, LuaMemberOwner, LuaOperatorOwner, TypeOps,
+    LuaInferCache, LuaInstanceType, LuaMemberOwner, LuaOperatorOwner, LuaSemanticDeclId, TypeOps,
     db_index::{
         DbIndex, LuaGenericType, LuaIntersectionType, LuaMemberKey, LuaObjectType,
         LuaOperatorMetaMethod, LuaTupleType, LuaType, LuaTypeDeclId, LuaUnionType,
@@ -90,6 +90,40 @@ pub fn infer_index_expr(
     )?;
 
     infer_index_expr_with_member(db, cache, index_expr, prefix_type, member_type, pass_flow)
+}
+
+pub(crate) fn find_index_metamethod_origin(
+    db: &DbIndex,
+    cache: &mut LuaInferCache,
+    index_expr: LuaIndexExpr,
+) -> Option<LuaSemanticDeclId> {
+    let prefix_type = infer_expr_for_index(db, cache, index_expr.get_prefix_expr()?).ok()?;
+    let LuaType::TableConst(table) = prefix_type else {
+        return None;
+    };
+    let lookup =
+        MemberLookupQuery::from_index_expr(db, cache, LuaIndexMemberExpr::IndexExpr(index_expr))
+            .ok()?;
+    // A real field always wins over __index, even if its definition was not
+    // available to the caller for some other reason.
+    if db
+        .get_member_index()
+        .get_member_item(&LuaMemberOwner::Element(table.clone()), &lookup.key)
+        .is_some()
+    {
+        return None;
+    }
+    let metatable = db.get_metatable_index().get(&table)?;
+    let operators = db.get_operator_index().get_operators(
+        &LuaOperatorOwner::Table(metatable.clone()),
+        LuaOperatorMetaMethod::Index,
+    )?;
+    if operators.len() != 1 {
+        return None;
+    }
+    let operator = db.get_operator_index().get_operator(operators.first()?)?;
+    check_type_compact(db, &operator.get_operand(db), &lookup.key_type).ok()?;
+    infer_index_function::find_index_function_origin(db, cache, operator, &lookup.key_type)
 }
 
 /// Complete the index expression inference once the member type is known (flow narrowing + safe navigation)
