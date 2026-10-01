@@ -191,6 +191,7 @@ This template is a good starting point for most Lua projects:
     "requirePath": false,
     "typeCall": false,
     "arrayIndex": true,
+    "tableIndex": false,
     "metaOverrideFileDefine": true,
     "docBaseConstMatchBaseType": true,
     "requireExportGlobal": false
@@ -443,9 +444,18 @@ Supported `special` values: `none`, `require`, `error`, `assert`, `type`, `setme
 | `requirePath` | `boolean` | `false` | Require import paths must match configured module paths |
 | `typeCall` | `boolean` | `false` | Apply stricter checking to type calls |
 | `arrayIndex` | `boolean` | `true` | Apply stricter array index checks |
+| `tableIndex` | `boolean` | `false` | Include `nil` in lookups of `table<K, V>` and anonymous object index signatures |
 | `metaOverrideFileDefine` | `boolean` | `true` | Meta definitions override file-local definitions |
 | `docBaseConstMatchBaseType` | `boolean` | `true` | Allow base constant doc types to match base scalar types |
 | `requireExportGlobal` | `boolean` | `false` | Third-party libraries must use `---@export global` before they become importable |
+
+With `strict.tableIndex: true`, a lookup such as `mods["nullius"]` on
+`table<string, string>` (or `{[string]: string}`) has type `string | nil`, since the
+key may be absent. Guards narrow this result normally. The declared value type
+stays `string`, so `pairs` still yields non-null values and assignments accept
+strings or `nil` (deleting the key). Required named fields, class index operators,
+and declared `__index` function return types keep their existing behavior.
+`strict.arrayIndex` controls arrays separately.
 
 ### format
 

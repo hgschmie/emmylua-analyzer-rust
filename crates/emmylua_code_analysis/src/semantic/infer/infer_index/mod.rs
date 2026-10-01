@@ -602,7 +602,7 @@ fn infer_object_member(
         let result = infer_index_metamethod_by_key_type(db, key_type, key, value);
         match result {
             Ok(typ) => {
-                return Ok(typ);
+                return Ok(table_index_result(db, &typ));
             }
             Err(InferFailReason::FieldNotFound) => {}
             Err(err) => {
@@ -1118,7 +1118,21 @@ fn infer_table_generic_member_by_key_type(
 
     let table_key_type = &table_params[0];
     let value_type = &table_params[1];
-    infer_index_metamethod_by_key_type(db, key_type, table_key_type, value_type)
+    let typ = infer_index_metamethod_by_key_type(db, key_type, table_key_type, value_type)?;
+    Ok(table_index_result(db, &typ))
+}
+
+// Keep the declared value type intact for iteration and generic substitution.
+// Only an indexed lookup may miss a key; named fields and __index return types
+// retain their declared guarantees.
+fn table_index_result(db: &DbIndex, value_type: &LuaType) -> LuaType {
+    match value_type {
+        LuaType::Any | LuaType::Unknown => value_type.clone(),
+        _ if db.get_emmyrc().strict.table_index => {
+            TypeOps::Union.apply(db, value_type, &LuaType::Nil)
+        }
+        _ => value_type.clone(),
+    }
 }
 
 fn infer_global_field_member(db: &DbIndex, key: &LuaMemberKey) -> InferResult {
