@@ -1,12 +1,12 @@
 use emmylua_parser::{
     BinaryOperator, LuaAssignStat, LuaAstNode, LuaClosureExpr, LuaCommentOwner, LuaDocTag, LuaExpr,
-    LuaIndexExpr, LuaIndexKey, LuaIndexMemberExpr, LuaLiteralToken, LuaStat, LuaSyntaxId,
-    LuaSyntaxKind, LuaTableExpr, LuaTableField,
+    LuaFuncStat, LuaIndexExpr, LuaIndexKey, LuaIndexMemberExpr, LuaLiteralToken, LuaStat,
+    LuaSyntaxId, LuaSyntaxKind, LuaTableExpr, LuaTableField,
 };
 
 use crate::{
-    DbIndex, InFiled, InferFailReason, InferGuard, LuaDeclId, LuaInferCache, LuaMemberKey,
-    LuaOperator, LuaType, SignatureReturnStatus,
+    DbIndex, InFiled, InferFailReason, InferGuard, LuaDeclId, LuaInferCache, LuaMemberIndexItem,
+    LuaMemberKey, LuaMemberOwner, LuaOperator, LuaSemanticDeclId, LuaType, SignatureReturnStatus,
 };
 
 use super::{
@@ -29,6 +29,33 @@ pub(super) fn infer_index_function(
     operator: &LuaOperator,
     key_type: &LuaType,
 ) -> Option<LuaType> {
+    with_index_function(db, cache, operator, key_type, |context, expr| {
+        context.infer(expr)
+    })
+}
+
+pub(super) fn find_index_function_origin(
+    db: &DbIndex,
+    cache: &LuaInferCache,
+    operator: &LuaOperator,
+    key_type: &LuaType,
+) -> Option<LuaSemanticDeclId> {
+    with_index_function(db, cache, operator, key_type, |context, expr| {
+        // A missing key must not navigate to the wrapper or its guard.
+        if context.infer(expr.clone())?.is_nil() {
+            return None;
+        }
+        context.find_origin(expr)
+    })
+}
+
+fn with_index_function<R>(
+    db: &DbIndex,
+    cache: &LuaInferCache,
+    operator: &LuaOperator,
+    key_type: &LuaType,
+    evaluate: impl FnOnce(&mut IndexFunctionInference, LuaExpr) -> Option<R>,
+) -> Option<R> {
     if cache.infer_depth >= MAX_SPECIALIZATION_DEPTH
         || !matches!(
             key_type,
@@ -97,15 +124,15 @@ pub(super) fn infer_index_function(
     }
     let mut local_cache = cache.fork_for_file(file_id);
     local_cache.infer_depth = cache.infer_depth + 1;
-    IndexFunctionInference {
+    let mut context = IndexFunctionInference {
         db,
         cache: &mut local_cache,
         key_decl,
         key_type,
         remaining_nodes: MAX_EXPRESSION_NODES,
         closed_tables: HashSet::new(),
-    }
-    .infer(expr)
+    };
+    evaluate(&mut context, expr)
 }
 
 struct IndexFunctionInference<'a> {
@@ -118,6 +145,121 @@ struct IndexFunctionInference<'a> {
 }
 
 impl IndexFunctionInference<'_> {
+    // Definition-only provenance: do not make synthetic members part of the
+    // normal semantic identity used by rename, references and diagnostics.
+    fn find_origin(&mut self, expr: LuaExpr) -> Option<LuaSemanticDeclId> {
+        self.remaining_nodes = self.remaining_nodes.checked_sub(1)?;
+        match expr {
+            LuaExpr::ParenExpr(paren) => self.find_origin(paren.get_expr()?),
+            LuaExpr::IndexExpr(index) => {
+                let prefix = index.get_prefix_expr()?;
+                let LuaType::TableConst(table) = self.infer(prefix.clone())? else {
+                    return None;
+                };
+                let key = index.get_index_key()?;
+                let key_type = match key {
+                    LuaIndexKey::Expr(expr) => self.infer(expr)?,
+                    _ => infer_index_key_type(self.db, self.cache, &key).ok()??,
+                };
+                let key = super::member_key_from_type(&key_type);
+                if !self.has_unique_definition(prefix, &key)? {
+                    return None;
+                }
+                let item = self
+                    .db
+                    .get_member_index()
+                    .get_member_item(&LuaMemberOwner::Element(table), &key)?;
+                // Multiple writes may represent different implementations.
+                let LuaMemberIndexItem::One(member) = item else {
+                    return None;
+                };
+                Some(LuaSemanticDeclId::Member(*member))
+            }
+            LuaExpr::BinaryExpr(binary) => {
+                let (left, right) = binary.get_exprs()?;
+                let left_type = self.infer(left.clone())?;
+                let selected = match binary.get_op_token()?.get_op() {
+                    BinaryOperator::OpAnd if left_type.is_always_truthy() => right,
+                    BinaryOperator::OpAnd if left_type.is_always_falsy() => left,
+                    BinaryOperator::OpOr if left_type.is_always_truthy() => left,
+                    BinaryOperator::OpOr if left_type.is_always_falsy() => right,
+                    _ => return None,
+                };
+                self.find_origin(selected)
+            }
+            LuaExpr::ClosureExpr(closure) => {
+                // Follow a forwarding wrapper's callee, not merely the table
+                // lookup used as its existence guard. Parameter identities are
+                // resolved by infer(), so a shadowed key cannot be substituted.
+                let block = closure.get_block()?;
+                let mut stats = block.get_stats();
+                let LuaStat::ReturnStat(ret) = stats.next()? else {
+                    return None;
+                };
+                if stats.next().is_some() {
+                    return None;
+                }
+                let mut exprs = ret.get_expr_list();
+                let LuaExpr::CallExpr(call) = exprs.next()? else {
+                    return None;
+                };
+                if exprs.next().is_some() {
+                    return None;
+                }
+                self.find_origin(call.get_prefix_expr()?)
+            }
+            _ => None,
+        }
+    }
+
+    fn has_unique_definition(&mut self, prefix: LuaExpr, key: &LuaMemberKey) -> Option<bool> {
+        if let LuaExpr::ParenExpr(paren) = prefix {
+            return self.has_unique_definition(paren.get_expr()?, key);
+        }
+        let LuaExpr::NameExpr(name) = prefix else {
+            return None;
+        };
+        let file_id = self.cache.get_file_id();
+        let references = self
+            .db
+            .get_reference_index()
+            .get_local_reference(&file_id)?;
+        let decl_id = references.get_decl_id(&name.get_range())?;
+        let decl = self.db.get_decl_index().get_decl(&decl_id)?;
+        let tree = self.db.get_vfs().get_syntax_tree(&file_id)?;
+        let table = LuaTableExpr::cast(decl.get_value_syntax_id()?.to_node(tree)?)?;
+        let mut definitions = 0;
+        for (_, field_key) in table.get_fields_with_keys() {
+            if LuaMemberKey::from_index_key(self.db, self.cache, &field_key).ok()? == *key {
+                definitions += 1;
+            }
+        }
+        // The member index can retain only the original declaration after a
+        // reassignment. Count write sites too, rather than returning that stale
+        // target for a member whose implementation is ambiguous.
+        for reference in &references.get_decl_references(&decl_id)?.cells {
+            let node =
+                LuaSyntaxId::new(LuaSyntaxKind::NameExpr.into(), reference.range).to_node(tree)?;
+            let index = node.parent().and_then(LuaIndexExpr::cast)?;
+            let is_write = index.get_parent::<LuaFuncStat>().is_some()
+                || index.get_parent::<LuaAssignStat>().is_some_and(|assign| {
+                    assign
+                        .get_var_and_expr_list()
+                        .0
+                        .iter()
+                        .any(|var| var.get_range() == index.get_range())
+                });
+            if is_write
+                && LuaMemberKey::from_index_key(self.db, self.cache, &index.get_index_key()?)
+                    .ok()?
+                    == *key
+            {
+                definitions += 1;
+            }
+        }
+        Some(definitions == 1)
+    }
+
     fn infer(&mut self, expr: LuaExpr) -> Option<LuaType> {
         self.remaining_nodes = self.remaining_nodes.checked_sub(1)?;
         match expr {

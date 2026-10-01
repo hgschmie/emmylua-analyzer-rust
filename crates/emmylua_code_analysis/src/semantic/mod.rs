@@ -356,4 +356,13 @@ impl<'a> SemanticModel<'a> {
         let cache = &mut self.infer_cache.borrow_mut();
         infer_index_expr(self.db, cache, index_expr, false).ok()
     }
+
+    /// A definition-navigation fallback for literal-key __index lookups.
+    /// This does not establish an identity for rename or reference searches.
+    pub fn get_index_metamethod_origin(
+        &self,
+        index_expr: LuaIndexExpr,
+    ) -> Option<LuaSemanticDeclId> {
+        infer::find_index_metamethod_origin(self.db, &mut self.infer_cache.borrow_mut(), index_expr)
+    }
 }
