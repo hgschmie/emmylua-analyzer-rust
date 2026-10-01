@@ -3,8 +3,10 @@ mod goto_label;
 mod goto_module_file;
 mod goto_string;
 
-use emmylua_code_analysis::{EmmyLuaAnalysis, FileId};
-use emmylua_parser::{LuaAstNode, LuaAstToken, LuaStringToken, LuaTokenKind};
+use emmylua_code_analysis::{EmmyLuaAnalysis, FileId, SemanticId, SemanticModel};
+use emmylua_parser::{
+    LuaAstNode, LuaAstToken, LuaIndexExpr, LuaStringToken, LuaSyntaxToken, LuaTokenKind,
+};
 use lsp_types::{
     ClientCapabilities, GotoDefinitionParams, GotoDefinitionResponse, OneOf, Position,
     ServerCapabilities,
@@ -65,6 +67,12 @@ pub fn definition(
         return Some(response);
     }
 
+    if model.find_decl(token.clone().into()).is_none()
+        && let Some(origin) = find_index_metamethod_definition(&model, &token)
+    {
+        return goto_def_definition::goto_def_definition(&model, &analysis.db, &origin, &token);
+    }
+
     // 2. String token: require module file / string template reference.
     if let Some(string_token) = LuaStringToken::cast(token.clone()) {
         if let Some(response) =
@@ -92,7 +100,9 @@ pub fn definition(
     }
 
     // 3. Semantic declarations (decl / member / typedef).
-    let decl = model.find_decl(token.clone().into())?;
+    let decl = model
+        .find_decl(token.clone().into())
+        .or_else(|| find_index_metamethod_definition(&model, &token))?;
     let decl = prefer_same_file_global(&model, &token).unwrap_or(decl);
     goto_def_definition::goto_def_definition(&model, &analysis.db, &decl, &token)
 }
@@ -106,10 +116,7 @@ impl RegisterCapabilities for DefinitionCapabilities {
 }
 
 /// Navigation preference only: inference still resolves globals across the workspace.
-fn prefer_same_file_global(
-    model: &emmylua_code_analysis::SemanticModel,
-    token: &emmylua_parser::LuaSyntaxToken,
-) -> Option<emmylua_code_analysis::SemanticId> {
+fn prefer_same_file_global(model: &SemanticModel, token: &LuaSyntaxToken) -> Option<SemanticId> {
     use emmylua_code_analysis::{DeclKind, SemanticId};
     use emmylua_parser::{LuaAssignStat, LuaCallExpr, LuaNameExpr};
 
@@ -143,4 +150,19 @@ fn prefer_same_file_global(
         })
         .max_by_key(|decl| decl.name_range.start())
         .map(|decl| decl.id.clone())
+}
+
+fn find_index_metamethod_definition(
+    model: &SemanticModel,
+    token: &LuaSyntaxToken,
+) -> Option<SemanticId> {
+    let index = token.parent_ancestors().find_map(LuaIndexExpr::cast)?;
+    let key = index.get_index_key()?;
+    let integer_boundary = token.kind() == LuaTokenKind::TkLeftBracket.into()
+        && matches!(key, emmylua_parser::LuaIndexKey::Integer(_));
+    if !integer_boundary && !key.get_range()?.contains_range(token.text_range()) {
+        return None;
+    }
+    let origin = model.get_index_metamethod_origin(index)?;
+    super::common::resolve_alias_origin(model, &origin).or(Some(origin))
 }
