@@ -78,7 +78,8 @@ impl SemanticModel<'_> {
     }
 
     pub fn directional_index(&self, index: &LuaIndexExpr) -> Option<(MemberInfo, MemberInfo)> {
-        let prefix = self.type_of_expr(index.get_prefix_expr()?.get_syntax_id());
+        let prefix_expr = index.get_prefix_expr()?;
+        let prefix = self.type_of_expr_at(prefix_expr.get_syntax_id(), prefix_expr.get_position());
         let key = match index.get_index_key()? {
             LuaIndexKey::Name(n) => LuaMemberKey::Name(n.get_name_text().into()),
             LuaIndexKey::String(s) => LuaMemberKey::Name(s.get_value().into()),
@@ -88,6 +89,12 @@ impl SemanticModel<'_> {
             },
             _ => return None,
         };
-        self.directional_member(&prefix, &key)
+        self.directional_member(&prefix, &key).or_else(|| {
+            let emmylua_parser::LuaExpr::NameExpr(name) = prefix_expr else {
+                return None;
+            };
+            let id = self.resolve_name(name.get_position())?;
+            self.directional_member(&self.type_of_decl(&id)?, &key)
+        })
     }
 }

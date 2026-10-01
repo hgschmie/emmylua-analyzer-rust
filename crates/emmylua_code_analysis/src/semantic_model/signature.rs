@@ -701,12 +701,7 @@ impl<'db> SemanticModel<'db> {
                     let table = root
                         .descendants::<LuaTableExpr>()
                         .find(|table| table.get_range() == table_key.key_range)?;
-                    let assign = table.get_parent::<LuaAssignStat>()?;
-                    let (vars, values) = assign.get_var_and_expr_list();
-                    let position = values
-                        .iter()
-                        .position(|value| value.get_range() == table.get_range())?;
-                    self.assignment_target_type(vars.get(position)?.to_expr())
+                    self.table_assignment_context(&table)?
                 }
             }
             _ => return None,
