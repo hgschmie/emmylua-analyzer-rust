@@ -24,6 +24,10 @@ impl<'db> SemanticModel<'db> {
     pub fn document_current(&self) -> Option<LuaDocument<'db>> {
         self.document(self.view.file_id())
     }
+    pub fn strict_table_index(&self) -> bool {
+        self.db().strict_table_index()
+    }
+
     pub fn strict_array_index(&self) -> bool {
         self.db().strict_array_index()
     }
