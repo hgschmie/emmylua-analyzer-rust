@@ -802,6 +802,9 @@ impl<'a> InferVm<'a> {
     }
 
     fn index_member_dynamic(&mut self, owner: Value, key: Value) -> Value {
+        if let Some(typ) = super::super::dictionary::lookup(self.model, &owner.ty, &key.ty, true) {
+            return Value::plain(typ);
+        }
         match &key.ty {
             LuaType::StringConst(s) | LuaType::DocStringConst(s) => {
                 self.index_member(owner, &LuaMemberKey::Name(SmolStr::new(s.as_str())))
@@ -1441,6 +1444,36 @@ impl<'a> InferVm<'a> {
             .or_else(|| self.callee_member_name(&callee));
         if let Some(name) = builtin_name {
             match name.as_str() {
+                "next" => {
+                    if let Some(Value {
+                        ty: LuaType::Object(object),
+                        ..
+                    }) = args.first()
+                        && !object.get_index_access().is_empty()
+                    {
+                        let mut keys: Vec<_> = object
+                            .get_index_access()
+                            .iter()
+                            .map(|(key, _)| key.clone())
+                            .collect();
+                        let mut values: Vec<_> = object
+                            .get_index_access()
+                            .iter()
+                            .map(|(_, value)| value.clone())
+                            .collect();
+                        for (key, value) in object.get_fields() {
+                            if let Some(key) = super::super::dictionary::key_type(key) {
+                                keys.push(key);
+                                values.push(value.clone());
+                            }
+                        }
+                        keys.push(LuaType::Nil);
+                        values.push(LuaType::Nil);
+                        return Value::plain(LuaType::Variadic(Arc::new(VariadicType::Multi(
+                            vec![LuaType::from_vec(keys), LuaType::from_vec(values)],
+                        ))));
+                    }
+                }
                 // setmetatable(t, mt) -> t; if mt.__index is a named type/class table, the
                 // instance directly takes that type.
                 "setmetatable" => {
