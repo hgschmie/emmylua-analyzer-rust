@@ -658,8 +658,20 @@ impl<'db> SemanticModel<'db> {
             SemanticId::Member(table_key) => {
                 // Table-literal field (`---@type D31; local f = { func = function(...) end }`):
                 // the member owner is a synthetic table identity; go back to the declaration that initializes the table and use its declared type as the field type source.
-                let decl = facts.decl_by_value_range(table_key.key_range)?;
-                self.type_of_decl(&decl.id)?
+                if let Some(decl) = facts.decl_by_value_range(table_key.key_range) {
+                    self.type_of_decl(&decl.id)?
+                } else {
+                    let root = self.chunk()?;
+                    let table = root
+                        .descendants::<LuaTableExpr>()
+                        .find(|table| table.get_range() == table_key.key_range)?;
+                    let assign = table.get_parent::<LuaAssignStat>()?;
+                    let (vars, values) = assign.get_var_and_expr_list();
+                    let position = values
+                        .iter()
+                        .position(|value| value.get_range() == table.get_range())?;
+                    self.assignment_target_type(vars.get(position)?.to_expr())
+                }
             }
             _ => return None,
         };

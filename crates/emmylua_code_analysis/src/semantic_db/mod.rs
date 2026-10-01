@@ -411,6 +411,12 @@ impl SemanticDatabase {
         self.main_root.clone()
     }
 
+    pub(crate) fn strict_table_index(&self) -> bool {
+        self.config
+            .as_ref()
+            .is_some_and(|config| config.strict.table_index)
+    }
+
     pub(crate) fn strict_array_index(&self) -> bool {
         self.config
             .as_ref()
