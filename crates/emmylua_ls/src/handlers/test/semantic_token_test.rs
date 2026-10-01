@@ -63,6 +63,73 @@ m.foo()
     }
 
     #[gtest]
+    fn test_inferred_function_member_references_match_normal_members() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new_with_init_std_lib();
+        ws.def_file("predicates.lua", "local proxy = {}\nlocal M = {}\nfunction M.Check(value) return value end\nM.Alias = M.Check\nsetmetatable(proxy, { __index = function(_, key) return M[key] and function(value) return M[key](value) end or nil end })\nreturn proxy");
+        let file = ws.def_file("consumer.lua", "local p = require('predicates')\nlocal direct = { Check = function(value) return value end }\nlocal normal = direct.Check\nlocal inferred = p.Check\nlocal alias = p.Alias\np.Check({})\nlocal missing = p.Missing");
+        let tokens = decode(&ws.get_semantic_token_data_for_file(file)?);
+        let method = SemanticTokenTypeKind::Method.to_u32();
+        let property = SemanticTokenTypeKind::Property.to_u32();
+        for (line, col, len) in [(2, 22, 5), (3, 19, 5), (4, 16, 5), (5, 2, 5)] {
+            verify_that!(&tokens, contains(eq(&(line, col, len, method, 0))))?;
+            verify_that!(&tokens, not(contains(eq(&(line, col, len, property, 0)))))?;
+        }
+        verify_that!(&tokens, contains(eq(&(6, 18, 7, property, 0))))?;
+        Ok(())
+    }
+
+    #[gtest]
+    fn test_inferred_function_member_tokens_refresh_after_provider_changes() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new_with_init_std_lib();
+        let provider = "local proxy = {}\nlocal M = { Check = function(value) return value end }\nsetmetatable(proxy, { __index = function(_, key) return M[key] end })\nreturn proxy";
+        ws.def_file("predicates.lua", provider);
+        let file = ws.def_file(
+            "consumer.lua",
+            "local p = require('predicates')\nlocal f = p.Check",
+        );
+        let method = SemanticTokenTypeKind::Method.to_u32();
+        let property = SemanticTokenTypeKind::Property.to_u32();
+        let tokens = decode(&ws.get_semantic_token_data_for_file(file)?);
+        verify_that!(&tokens, contains(eq(&(1, 12, 5, method, 0))))?;
+        ws.def_file(
+            "predicates.lua",
+            &provider.replace("function(value) return value end", "42"),
+        );
+        let tokens = decode(&ws.get_semantic_token_data_for_file(file)?);
+        verify_that!(&tokens, contains(eq(&(1, 12, 5, property, 0))))?;
+        verify_that!(&tokens, not(contains(eq(&(1, 12, 5, method, 0)))))?;
+        ws.def_file("predicates.lua", &provider.replace("Check =", "Renamed ="));
+        let tokens = decode(&ws.get_semantic_token_data_for_file(file)?);
+        verify_that!(&tokens, contains(eq(&(1, 12, 5, property, 0))))?;
+        ws.def_file("predicates.lua", provider);
+        let tokens = decode(&ws.get_semantic_token_data_for_file(file)?);
+        verify_that!(&tokens, contains(eq(&(1, 12, 5, method, 0))))?;
+        Ok(())
+    }
+
+    #[gtest]
+    fn test_inferred_function_indexers_require_a_definite_function() -> Result<()> {
+        for (value_type, expected) in [
+            ("fun(value: number): string", SemanticTokenTypeKind::Method),
+            ("function", SemanticTokenTypeKind::Method),
+            ("number", SemanticTokenTypeKind::Property),
+            ("any", SemanticTokenTypeKind::Property),
+            ("(fun(): boolean)|string", SemanticTokenTypeKind::Property),
+        ] {
+            let mut ws = ProviderVirtualWorkspace::new();
+            let tokens = decode(&ws.get_semantic_token_data(&format!(
+                "---@type table<string, {value_type}>\nlocal p\nlocal f = p.member"
+            ))?);
+            assert_that!(
+                &tokens,
+                contains(eq(&(2, 12, 6, expected.to_u32(), 0))),
+                "value type: {value_type}"
+            );
+        }
+        Ok(())
+    }
+
+    #[gtest]
     fn test_return_overload_tag_is_documentation_keyword() -> Result<()> {
         let mut ws = ProviderVirtualWorkspace::new();
         let data = ws.get_semantic_token_data(

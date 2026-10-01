@@ -691,6 +691,17 @@ fn build_node_semantic_token(
                 }
             }
 
+            // Indexers and function-valued __index metamethods can infer a
+            // function without a concrete member declaration. References to
+            // those values use the same token as ordinary function members.
+            if semantic_model
+                .infer_expr(LuaExpr::IndexExpr(index_expr.clone()))
+                .is_ok_and(|typ| typ.is_function())
+            {
+                builder.push(name.syntax(), SemanticTokenTypeKind::Method);
+                return Some(());
+            }
+
             // 默认情况：检查是否在调用上下文中
             if index_expr
                 .syntax()
