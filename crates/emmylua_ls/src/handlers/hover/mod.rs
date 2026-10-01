@@ -70,6 +70,14 @@ pub fn hover(analysis: &EmmyLuaAnalysis, file_id: FileId, position: Position) ->
         }
         TokenAtOffset::None => return None,
     };
+    if let Some(hover) = index_metamethod::build_index_metamethod_hover(
+        &model,
+        &analysis.db,
+        &token,
+        token.text_range(),
+    ) {
+        return Some(hover);
+    }
     match token {
         keywords if is_keyword(keywords.clone()) => Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
@@ -103,3 +111,5 @@ impl RegisterCapabilities for HoverCapabilities {
         server_capabilities.hover_provider = Some(HoverProviderCapability::Simple(true));
     }
 }
+
+mod index_metamethod;
