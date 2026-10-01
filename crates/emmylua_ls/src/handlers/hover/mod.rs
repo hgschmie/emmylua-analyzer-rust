@@ -4,6 +4,7 @@ mod function;
 mod hover_builder;
 mod humanize_type_decl;
 mod humanize_types;
+mod index_metamethod;
 mod keyword_hover;
 
 use super::RegisterCapabilities;

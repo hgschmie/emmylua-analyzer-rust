@@ -29,6 +29,11 @@ pub fn build_semantic_info_hover(
 ) -> Option<Hover> {
     let typ = semantic_info.clone().typ;
     if semantic_info.semantic_decl.is_none() {
+        if let Some(builder) =
+            super::index_metamethod::build_index_metamethod_hover(semantic_model, &token)
+        {
+            return builder.build_hover_result(document.to_lsp_range(range));
+        }
         return build_hover_without_property(db, document, token, typ);
     }
     let hover_builder = build_hover_content(

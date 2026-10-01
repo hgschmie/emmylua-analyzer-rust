@@ -357,7 +357,7 @@ impl<'a> SemanticModel<'a> {
         infer_index_expr(self.db, cache, index_expr, false).ok()
     }
 
-    /// A definition-navigation fallback for literal-key __index lookups.
+    /// A presentation fallback for literal-key __index lookups.
     /// This does not establish an identity for rename or reference searches.
     pub fn get_index_metamethod_origin(
         &self,
