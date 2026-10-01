@@ -4,9 +4,7 @@ mod goto_module_file;
 mod goto_string;
 
 use emmylua_code_analysis::{EmmyLuaAnalysis, FileId, SemanticId, SemanticModel};
-use emmylua_parser::{
-    LuaAstNode, LuaAstToken, LuaIndexExpr, LuaStringToken, LuaSyntaxToken, LuaTokenKind,
-};
+use emmylua_parser::{LuaAstNode, LuaAstToken, LuaStringToken, LuaSyntaxToken, LuaTokenKind};
 use lsp_types::{
     ClientCapabilities, GotoDefinitionParams, GotoDefinitionResponse, OneOf, Position,
     ServerCapabilities,
@@ -156,13 +154,6 @@ fn find_index_metamethod_definition(
     model: &SemanticModel,
     token: &LuaSyntaxToken,
 ) -> Option<SemanticId> {
-    let index = token.parent_ancestors().find_map(LuaIndexExpr::cast)?;
-    let key = index.get_index_key()?;
-    let integer_boundary = token.kind() == LuaTokenKind::TkLeftBracket.into()
-        && matches!(key, emmylua_parser::LuaIndexKey::Integer(_));
-    if !integer_boundary && !key.get_range()?.contains_range(token.text_range()) {
-        return None;
-    }
-    let origin = model.get_index_metamethod_origin(index)?;
+    let origin = super::common::find_index_metamethod_origin(model, token)?;
     super::common::resolve_alias_origin(model, &origin).or(Some(origin))
 }
