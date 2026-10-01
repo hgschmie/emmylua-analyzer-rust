@@ -761,7 +761,11 @@ impl<'db> SemanticModel<'db> {
             _ => return None,
         };
 
-        let infos = member::member_infos_with_key_all(self, &owner_ty, &key);
+        let infos = if let Some((_, write)) = self.directional_member(&owner_ty, &key) {
+            vec![write]
+        } else {
+            member::member_infos_with_key_all(self, &owner_ty, &key)
+        };
         let mut out = Vec::new();
         for info in &infos {
             let typ = match &info.typ {
