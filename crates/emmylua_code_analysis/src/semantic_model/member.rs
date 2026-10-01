@@ -183,6 +183,17 @@ fn direct_member_info(
     prefix_type: &LuaType,
     key: &LuaMemberKey,
 ) -> Option<MemberInfo> {
+    if let Some(key_type) = super::dictionary::key_type(key)
+        && let Some(typ) = super::dictionary::lookup(model, prefix_type, &key_type, true)
+    {
+        return Some(MemberInfo {
+            key: key.clone(),
+            typ,
+            id: None,
+            file_id: None,
+            is_method: false,
+        });
+    }
     match prefix_type {
         LuaType::Ref(id) | LuaType::Def(id) => {
             let def = model.type_def_of(id)?;
@@ -354,7 +365,7 @@ pub(crate) fn member_info_impl(
         && let Some(ret) = match &index_info.typ {
             LuaType::DocFunction(fun) => Some(fun.get_ret().clone()),
             LuaType::Function | LuaType::Signature(_) => None,
-            _ => None,
+            _ => member_info(model, &index_info.typ, key).map(|info| info.typ),
         }
     {
         return Some(MemberInfo {
