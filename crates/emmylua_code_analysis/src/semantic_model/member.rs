@@ -185,6 +185,32 @@ fn direct_member_info(
     prefix_type: &LuaType,
     key: &LuaMemberKey,
 ) -> Option<MemberInfo> {
+    let dictionary = match prefix_type {
+        LuaType::TableGeneric(params) if params.len() == 2 => Some(params.as_slice()),
+        LuaType::Generic(generic)
+            if generic.get_base_type_id().get_name() == "table"
+                && generic.get_params().len() == 2 =>
+        {
+            Some(generic.get_params().as_slice())
+        }
+        _ => None,
+    };
+    if let Some(params) = dictionary {
+        let key_type = match key {
+            LuaMemberKey::Name(name) => LuaType::StringConst(name.clone().into()),
+            LuaMemberKey::Integer(n) => LuaType::IntegerConst(*n),
+            _ => return None,
+        };
+        return super::type_check::is_compatible(model, &params[0], &key_type).then(|| {
+            MemberInfo {
+                key: key.clone(),
+                typ: params[1].clone(),
+                id: None,
+                file_id: None,
+                is_method: false,
+            }
+        });
+    }
     match prefix_type {
         LuaType::Ref(id) | LuaType::Def(id) => {
             let def = model.type_def_of(id)?;
