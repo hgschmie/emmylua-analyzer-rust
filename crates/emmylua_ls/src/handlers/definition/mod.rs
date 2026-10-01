@@ -9,8 +9,8 @@ use emmylua_code_analysis::{
     EmmyLuaAnalysis, FileId, LuaSemanticDeclId, SemanticDeclLevel, SemanticModel, WorkspaceId,
 };
 use emmylua_parser::{
-    LuaAstNode, LuaAstToken, LuaDocDescription, LuaDocTagSee, LuaGeneralToken, LuaIndexExpr,
-    LuaStringToken, LuaSyntaxToken, LuaTokenKind,
+    LuaAstNode, LuaAstToken, LuaDocDescription, LuaDocTagSee, LuaGeneralToken, LuaStringToken,
+    LuaSyntaxToken, LuaTokenKind,
 };
 pub use goto_def_definition::goto_def_definition;
 use goto_def_definition::goto_str_tpl_ref_definition;
@@ -137,18 +137,7 @@ fn find_index_metamethod_definition(
     model: &SemanticModel,
     token: &LuaSyntaxToken,
 ) -> Option<LuaSemanticDeclId> {
-    let index = token.parent_ancestors().find_map(LuaIndexExpr::cast)?;
-    // Only clicking the key should follow the metamethod. Prefix expressions
-    // and computed-key variables retain ordinary declaration navigation.
-    let key = index.get_index_key()?;
-    // Token selection above intentionally chooses '[' at the start of an
-    // integer key. Treat that boundary as the key for this fallback too.
-    let integer_boundary = token.kind() == LuaTokenKind::TkLeftBracket.into()
-        && matches!(key, emmylua_parser::LuaIndexKey::Integer(_));
-    if !integer_boundary && !key.get_range()?.contains_range(token.text_range()) {
-        return None;
-    }
-    let origin = model.get_index_metamethod_origin(index)?;
+    let origin = super::common::find_index_metamethod_origin(model, token)?;
     if let LuaSemanticDeclId::Member(member) = origin {
         return model.get_member_origin_owner(member).or(Some(origin));
     }
