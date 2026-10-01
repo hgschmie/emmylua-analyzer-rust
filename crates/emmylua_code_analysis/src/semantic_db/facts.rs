@@ -1550,6 +1550,33 @@ impl FactsBuilder {
         let Some(key) = field_tag.get_field_key() else {
             return;
         };
+        let mut access = crate::MemberAccess::ReadWrite;
+        if let Some(flags) = field_tag.get_type_flag() {
+            for flag in flags.get_attrib_tokens() {
+                let direction = match flag.get_name_text() {
+                    "read" => crate::MemberAccess::Read,
+                    "write" => crate::MemberAccess::Write,
+                    _ => continue,
+                };
+                if access != crate::MemberAccess::ReadWrite {
+                    self.annotation_errors.push(AnnotationError {
+                        range: field_tag.get_range(),
+                        message: "A field may specify only one of (read) or (write)".into(),
+                    });
+                    return;
+                }
+                access = direction;
+            }
+        }
+        if access != crate::MemberAccess::ReadWrite && matches!(key, LuaDocFieldKey::Type(_)) {
+            self.annotation_errors.push(AnnotationError {
+                range: field_tag.get_range(),
+                message:
+                    "Directional fields require a named, string-literal, or integer-literal key"
+                        .into(),
+            });
+            return;
+        }
         // Integer keys in `@field [1]` are encoded as `LuaMemberKey::Integer` (matching index expression keys).
         let member_key = match &key {
             LuaDocFieldKey::Integer(token) => match token.get_number_value() {
@@ -1566,6 +1593,7 @@ impl FactsBuilder {
             member_key,
             type_def_id,
         );
+        member.access = access;
         member.is_index_signature = matches!(key, LuaDocFieldKey::Type(_));
         member.is_nullable = field_tag.is_nullable();
         member.value_syntax = field_tag

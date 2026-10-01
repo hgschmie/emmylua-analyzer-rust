@@ -111,3 +111,35 @@ local scores = {
 3. **Index signatures**
 4. **Complex type support**
 5. **Nested structures**
+
+## Different read and write types
+
+A property whose setter accepts a different type from its getter can declare a
+complementary pair of fields:
+
+```lua
+---@class Burner
+---@field (read) fuel? Fuel
+---@field (write) fuel? string|Fuel
+
+---@type Burner
+local burner
+burner.fuel = "coal" -- checked against string|Fuel|nil
+local fuel = burner.fuel -- Fuel|nil, even after the string assignment
+```
+
+Unqualified fields continue to use one type for both operations. Each direction
+may use its own optional marker and generic types. Named fields, string-literal
+keys, and integer-literal keys are supported; directional index signatures and
+`__newindex` modeling are not supported. Both modifiers on a single field are an
+annotation error. Repeating a declaration for the same direction remains a
+duplicate-field error (existing function overload rules still apply).
+
+Assignments to a paired property invalidate its previous flow narrowing and
+restore its declared getter type. Later checks can narrow that type normally.
+The receiver of a nested assignment is always read: `object.property.child = x`
+uses the getter type of `property` and the setter type of `child`.
+
+These annotations describe types, not access permissions. If only one direction
+is supplied it is used for both operations; no read-only or write-only diagnostic
+is introduced. Hover and completion documentation show both types for a pair.
