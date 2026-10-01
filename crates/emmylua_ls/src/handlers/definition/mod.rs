@@ -60,6 +60,16 @@ pub fn definition(
         }
     };
 
+    if let Some((read, write, assignment)) = super::common::directional_index_at(&model, &token)
+        && let Some(SemanticId::Member(key)) = if assignment { write.id } else { read.id }
+    {
+        let document = analysis.db.document(key.file_id)?;
+        return Some(GotoDefinitionResponse::Scalar(lsp_types::Location::new(
+            document.get_uri()?,
+            document.to_lsp_range(key.key_range)?,
+        )));
+    }
+
     // 1. Label definition (goto / label).
     if let Some(response) = goto_label::goto_label_definition(&model, &analysis.db, &token) {
         return Some(response);

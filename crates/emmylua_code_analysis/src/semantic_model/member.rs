@@ -1152,6 +1152,24 @@ fn member_info_of(
 ) -> Option<MemberInfo> {
     let facts = model.file_facts_of(member_ref.file_id)?;
     let member = facts.member_by_id(&member_ref.id)?;
+    if member.access == crate::MemberAccess::Write
+        && let Some(read) = facts.members.iter().find(|other| {
+            other.owner == member.owner
+                && other.key == member.key
+                && other.access == crate::MemberAccess::Read
+        })
+    {
+        return member_info_of(
+            model,
+            &MemberRef {
+                file_id: member_ref.file_id,
+                id: read.id.clone(),
+                name: read.key.to_path().into(),
+            },
+            bindings,
+            name_bindings,
+        );
+    }
     if !member_version_visible(model, facts, &member) {
         return None;
     }
@@ -1183,16 +1201,17 @@ fn member_info_of(
     // being disturbed by a `fun | nil` union (flow queries still add nil through flow_member_value_type).
     if member.is_nullable
         && !typ.is_nullable()
-        && !matches!(
-            typ,
-            LuaType::Function
-                | LuaType::DocFunction(_)
-                | LuaType::Ref(_)
-                | LuaType::Def(_)
-                | LuaType::Generic(_)
-                | LuaType::Array(_)
-                | LuaType::Object(_)
-        )
+        && (member.access != crate::MemberAccess::ReadWrite
+            || !matches!(
+                typ,
+                LuaType::Function
+                    | LuaType::DocFunction(_)
+                    | LuaType::Ref(_)
+                    | LuaType::Def(_)
+                    | LuaType::Generic(_)
+                    | LuaType::Array(_)
+                    | LuaType::Object(_)
+            ))
     {
         typ = LuaType::from_vec(vec![typ, LuaType::Nil]);
     }
