@@ -61,7 +61,68 @@ fn lookup_inner(
         return None;
     }
     seen.push(owner.clone());
-    let value = match owner {
+    // Only ordinary dictionaries distribute key unions. Nominal classes and
+    // explicit __index functions retain their own lookup contracts.
+    let dictionary = matches!(owner, LuaType::TableGeneric(_) | LuaType::Object(_))
+        || matches!(owner, LuaType::Generic(g) if g.get_base_type_id().get_name() == "table");
+    if dictionary {
+        let normalized = normalize_key(model, key, &mut Vec::new());
+        if let LuaType::Union(union) = normalized {
+            let values = union
+                .into_vec()
+                .iter()
+                .map(|key| lookup_atomic(model, owner, key, nullable, seen).unwrap_or(LuaType::Nil))
+                .collect();
+            seen.pop();
+            return Some(LuaType::from_vec(values));
+        }
+        if normalized == LuaType::Nil {
+            seen.pop();
+            return Some(LuaType::Nil);
+        }
+        let value = lookup_atomic(model, owner, &normalized, nullable, seen);
+        seen.pop();
+        return value;
+    }
+    let value = lookup_atomic(model, owner, key, nullable, seen);
+    seen.pop();
+    value
+}
+
+fn normalize_key(model: &SemanticModel, key: &LuaType, seen: &mut Vec<LuaType>) -> LuaType {
+    if seen.len() >= 32 || seen.contains(key) {
+        return key.clone();
+    }
+    seen.push(key.clone());
+    let result = match key {
+        LuaType::Ref(id) | LuaType::Def(id) => model
+            .type_def_of(id)
+            .filter(|def| def.kind == TypeDefKind::Alias)
+            .and_then(|def| model.alias_target(&def))
+            .map(|target| normalize_key(model, &target, seen))
+            .unwrap_or_else(|| key.clone()),
+        LuaType::Union(union) => LuaType::from_vec(
+            union
+                .into_vec()
+                .iter()
+                .map(|key| normalize_key(model, key, seen))
+                .collect(),
+        ),
+        LuaType::MultiLineUnion(union) => normalize_key(model, &union.to_union(), seen),
+        _ => key.clone(),
+    };
+    seen.pop();
+    result
+}
+
+fn lookup_atomic(
+    model: &SemanticModel,
+    owner: &LuaType,
+    key: &LuaType,
+    nullable: bool,
+    seen: &mut Vec<LuaType>,
+) -> Option<LuaType> {
+    match owner {
         LuaType::TableGeneric(params) if params.len() == 2 => {
             Some(signature(model, &params[0], &params[1], key, mode))
         }
@@ -117,9 +178,7 @@ fn lookup_inner(
             (!values.is_empty()).then(|| LuaType::from_vec(values))
         }
         _ => None,
-    };
-    seen.pop();
-    value
+    }
 }
 fn signature(
     model: &SemanticModel,
@@ -166,7 +225,9 @@ impl SemanticModel<'_> {
                 emmylua_parser::NumberResult::Int(n) => LuaType::IntegerConst(n),
                 _ => return None,
             },
-            LuaIndexKey::Expr(expr) => self.type_of_expr(expr.get_syntax_id()),
+            LuaIndexKey::Expr(expr) => {
+                self.type_of_expr_at(expr.get_syntax_id(), expr.get_position())
+            }
             _ => return None,
         };
         lookup_inner(self, &prefix, &key, mode, &mut Vec::new())
