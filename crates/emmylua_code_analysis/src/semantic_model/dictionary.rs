@@ -66,50 +66,118 @@ fn lookup_inner(
     let dictionary = matches!(owner, LuaType::TableGeneric(_) | LuaType::Object(_))
         || matches!(owner, LuaType::Generic(g) if g.get_base_type_id().get_name() == "table");
     if dictionary {
-        let normalized = normalize_key(model, key, &mut Vec::new());
-        if let LuaType::Union(union) = normalized {
-            let values = union
-                .into_vec()
-                .iter()
-                .map(|key| lookup_atomic(model, owner, key, nullable, seen).unwrap_or(LuaType::Nil))
-                .collect();
-            seen.pop();
-            return Some(LuaType::from_vec(values));
-        }
-        if normalized == LuaType::Nil {
-            seen.pop();
-            return Some(LuaType::Nil);
-        }
-        let value = lookup_atomic(model, owner, &normalized, nullable, seen);
+        let value = lookup_keys(model, owner, key, mode, seen, &mut Vec::new());
         seen.pop();
         return value;
     }
-    let value = lookup_atomic(model, owner, key, nullable, seen);
+    let value = lookup_atomic(model, owner, key, mode, seen);
     seen.pop();
     value
 }
 
-fn normalize_key(model: &SemanticModel, key: &LuaType, seen: &mut Vec<LuaType>) -> LuaType {
-    if seen.len() >= 32 || seen.contains(key) {
-        return key.clone();
+fn lookup_keys(
+    model: &SemanticModel,
+    owner: &LuaType,
+    key: &LuaType,
+    mode: LookupMode,
+    owners: &mut Vec<LuaType>,
+    keys: &mut Vec<LuaType>,
+) -> Option<LuaType> {
+    if keys.len() >= 32 || keys.contains(key) {
+        return Some(LuaType::Unknown);
     }
-    seen.push(key.clone());
-    let result = match key {
+    keys.push(key.clone());
+    let homogeneous = match owner {
+        LuaType::TableGeneric(params) if params.len() == 2 => Some((&params[0], &params[1])),
+        LuaType::Generic(g)
+            if g.get_base_type_id().get_name() == "table" && g.get_params().len() == 2 =>
+        {
+            Some((&g.get_params()[0], &g.get_params()[1]))
+        }
+        LuaType::Object(object)
+            if object.get_fields().is_empty() && object.get_index_access().len() == 1 =>
+        {
+            object.get_index_access().first().map(|(k, v)| (k, v))
+        }
+        _ => None,
+    };
+    let expanded = match key {
         LuaType::Ref(id) | LuaType::Def(id) => model
             .type_def_of(id)
             .filter(|def| def.kind == TypeDefKind::Alias)
-            .and_then(|def| model.alias_target(&def))
-            .map(|target| normalize_key(model, &target, seen))
-            .unwrap_or_else(|| key.clone()),
-        LuaType::Union(union) => LuaType::from_vec(
+            .and_then(|def| model.alias_target(&def)),
+        LuaType::Generic(_) => {
+            let expanded = type_eval::expand_alias_generic(model, key);
+            (expanded != *key).then_some(expanded)
+        }
+        LuaType::MultiLineUnion(union) => Some(union.to_union()),
+        _ => None,
+    };
+    let value = if *key == LuaType::Nil {
+        Some(LuaType::Nil)
+    } else if let LuaType::Union(union) = key {
+        Some(LuaType::from_vec(
             union
                 .into_vec()
                 .iter()
-                .map(|key| normalize_key(model, key, seen))
+                .map(|key| {
+                    lookup_keys(model, owner, key, mode, owners, keys).unwrap_or(LuaType::Nil)
+                })
                 .collect(),
-        ),
-        LuaType::MultiLineUnion(union) => normalize_key(model, &union.to_union(), seen),
-        _ => key.clone(),
+        ))
+    } else if let Some(expanded) = expanded {
+        // Keep an exact alias match as one signature check. Expanding thousands
+        // of literal keys and rechecking each against that alias is quadratic.
+        // Still inspect the alias for nil and bound recursively growing generics.
+        if let Some((declared, value)) = homogeneous
+            && (declared == key || matches!(declared, LuaType::Any | LuaType::Unknown))
+        {
+            match key_nil_status(model, &expanded, keys) {
+                None => Some(LuaType::Unknown),
+                Some(true) => Some(LuaType::from_vec(vec![
+                    mode.value(model, value),
+                    LuaType::Nil,
+                ])),
+                Some(false) => Some(mode.value(model, value)),
+            }
+        } else {
+            lookup_keys(model, owner, &expanded, mode, owners, keys)
+        }
+    } else {
+        lookup_atomic(model, owner, key, mode, owners)
+    };
+    keys.pop();
+    value
+}
+
+fn key_nil_status(model: &SemanticModel, key: &LuaType, seen: &mut Vec<LuaType>) -> Option<bool> {
+    if seen.len() >= 32 || seen.contains(key) {
+        return None;
+    }
+    seen.push(key.clone());
+    let result = match key {
+        LuaType::Nil => Some(true),
+        LuaType::Ref(id) | LuaType::Def(id) => match model
+            .type_def_of(id)
+            .filter(|def| def.kind == TypeDefKind::Alias)
+            .and_then(|def| model.alias_target(&def))
+        {
+            Some(target) => key_nil_status(model, &target, seen),
+            None => Some(false),
+        },
+        LuaType::Generic(_) => {
+            let target = type_eval::expand_alias_generic(model, key);
+            if target == *key {
+                Some(false)
+            } else {
+                key_nil_status(model, &target, seen)
+            }
+        }
+        LuaType::Union(union) => union.into_vec().iter().try_fold(false, |nullable, key| {
+            key_nil_status(model, key, seen).map(|branch| nullable || branch)
+        }),
+        LuaType::MultiLineUnion(union) => key_nil_status(model, &union.to_union(), seen),
+        _ => Some(false),
     };
     seen.pop();
     result
@@ -119,7 +187,7 @@ fn lookup_atomic(
     model: &SemanticModel,
     owner: &LuaType,
     key: &LuaType,
-    nullable: bool,
+    mode: LookupMode,
     seen: &mut Vec<LuaType>,
 ) -> Option<LuaType> {
     match owner {
