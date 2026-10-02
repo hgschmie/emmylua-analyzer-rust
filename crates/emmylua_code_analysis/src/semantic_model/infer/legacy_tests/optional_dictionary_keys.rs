@@ -18,6 +18,148 @@ processor = {}
 "#;
 
 #[gtest]
+fn literal_alias_keys_resolve_required_fields() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def(
+        r#"
+---@alias Name 'name'
+---@alias Count 1
+---@type {name: string, [1]: number}
+record = {}
+---@type Name?
+optional_name = nil
+---@type Name
+name = 'name'
+---@type Count?
+optional_count = nil
+"#,
+    );
+    let name_type = ws.ty("string?");
+    expect_that!(ws.expr_ty("record[optional_name]"), eq(&name_type));
+    expect_that!(ws.expr_ty("record[name]"), eq(&LuaType::String));
+    let count_type = ws.ty("number?");
+    expect_that!(ws.expr_ty("record[optional_count]"), eq(&count_type));
+}
+
+#[gtest]
+fn generic_alias_keys_are_instantiated_before_lookup() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def(
+        r#"
+---@alias Maybe<T> T|nil
+---@alias Identity<T> T
+---@alias Nested<T> Identity<Maybe<T>>
+---@alias Name 'name'
+---@type table<integer, string>
+map = {}
+---@type {[integer]: string}
+object_map = {}
+---@type Maybe<integer>
+key = nil
+---@type Nested<integer>
+nested_key = nil
+---@type Maybe<Name>
+name_key = nil
+---@type {name: string}
+record = {}
+"#,
+    );
+    let expected = ws.ty("string?");
+    for expression in [
+        "map[key]",
+        "map[nested_key]",
+        "object_map[key]",
+        "record[name_key]",
+    ] {
+        expect_that!(ws.expr_ty(expression), eq(&expected), "{expression}");
+    }
+}
+
+#[gtest]
+fn matching_key_aliases_still_account_for_nil() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def(
+        r#"
+---@alias Maybe<T> T|nil
+---@alias Key 'first'|'second'
+---@alias OptionalKey Key|nil
+---@type table<OptionalKey, string>
+map = {}
+---@type OptionalKey
+key = nil
+---@type table<any, string>
+any_map = {}
+---@type Maybe<Key>
+nested_key = nil
+"#,
+    );
+    let expected = ws.ty("string?");
+    for expression in ["map[key]", "any_map[key]", "any_map[nested_key]"] {
+        expect_that!(ws.expr_ty(expression), eq(&expected), "{expression}");
+    }
+    expect_that!(ws.expr_ty("map[nil]"), eq(&LuaType::Nil));
+    expect_that!(ws.expr_ty("any_map[nil]"), eq(&LuaType::Nil));
+}
+
+#[gtest]
+fn large_matching_key_alias_lookups() {
+    let mut ws = VirtualWorkspace::new();
+    let keys = (0..8192)
+        .map(|i| format!("---| 'key{i}'\n"))
+        .collect::<String>();
+    ws.def(&format!(
+        "---@alias Key\n{keys}\n---@type table<Key, number>\nmap = {{}}\n---@type {{[Key]: number}}\nobject_map = {{}}\n---@type Key\nkey = 'key0'\n---@type Key?\noptional_key = nil"
+    ));
+    let started = std::time::Instant::now();
+    expect_that!(ws.expr_ty("map[key]"), eq(&LuaType::Number));
+    println!("8192-member key alias lookup: {:?}", started.elapsed());
+    let expected = ws.ty("number?");
+    let started = std::time::Instant::now();
+    expect_that!(ws.expr_ty("map[optional_key]"), eq(&expected));
+    println!(
+        "8192-member optional key alias lookup: {:?}",
+        started.elapsed()
+    );
+    let started = std::time::Instant::now();
+    expect_that!(ws.expr_ty("object_map[optional_key]"), eq(&expected));
+    println!(
+        "8192-member optional object key alias lookup: {:?}",
+        started.elapsed()
+    );
+}
+
+#[gtest]
+fn alias_key_optimization_preserves_named_field_overrides() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def(
+        r#"
+---@alias Key 'name'|'other'
+---@type {name: string, [string]: number}
+record = {}
+---@type Key
+key = 'name'
+"#,
+    );
+    let expected = ws.ty("string|number");
+    expect_that!(ws.expr_ty("record[key]"), eq(&expected));
+}
+
+#[gtest]
+fn expanding_recursive_generic_keys_are_bounded() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def(
+        r#"
+---@alias Recursive<T> T|Recursive<T[]>
+---@type table<any, string>
+map = {}
+---@type Recursive<integer>
+key = 1
+"#,
+    );
+    expect_that!(ws.expr_ty("map[key]"), eq(&LuaType::Unknown));
+}
+
+#[gtest]
 fn optional_property_key_preserves_dictionary_value() {
     let mut ws = VirtualWorkspace::new();
     ws.def(PROCESSOR_DEFS);
@@ -206,14 +348,11 @@ fn explicit_index_function_keeps_its_declared_return_type() {
     let mut ws = VirtualWorkspace::new_with_init_std_lib();
     ws.def(
         r#"
-function make_lookup()
-    return setmetatable({}, {
-        ---@param key string
-        ---@return string
-        __index = function(_, key) return key end,
-    })
-end
-metatable_backed = make_lookup()
+metatable_backed = setmetatable({}, {
+    ---@param key string
+    ---@return string
+    __index = function(_, key) return key end,
+})
 ---@class Fallback
 ---@field [string] string
 ---@type Fallback
