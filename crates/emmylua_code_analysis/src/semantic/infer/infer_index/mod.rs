@@ -17,7 +17,7 @@ use crate::{
         DbIndex, LuaGenericType, LuaIntersectionType, LuaMemberKey, LuaObjectType,
         LuaOperatorMetaMethod, LuaTupleType, LuaType, LuaTypeDeclId, LuaUnionType,
     },
-    enum_variable_is_param, get_keyof_members,
+    enum_variable_is_param, get_keyof_members, get_real_type,
     semantic::{
         InferGuard,
         generic::{TypeSubstitutor, instantiate_type_generic},
@@ -693,6 +693,13 @@ fn infer_object_member(
         return Ok(member_type.clone());
     }
 
+    if let Some(result) = infer_dictionary_union_key(db, key_type, |key_type| {
+        let key = member_key_from_type(key_type);
+        infer_object_member(db, object_type, key_type, &key)
+    }) {
+        return result;
+    }
+
     // todo
     let index_accesses = object_type.get_index_access();
     for (key, value) in index_accesses {
@@ -722,6 +729,57 @@ fn infer_index_metamethod_by_key_type(
     }
 
     Err(InferFailReason::FieldNotFound)
+}
+
+/// A dictionary can have a value for one branch of a union key even when another
+/// branch is nil or does not match its index signature. Keep the successful
+/// results instead of treating the whole lookup as a missing field. This is
+/// specific to ordinary dictionaries; declared __index function signatures keep
+/// their existing argument matching.
+fn infer_dictionary_union_key(
+    db: &DbIndex,
+    key_type: &LuaType,
+    mut lookup: impl FnMut(&LuaType) -> InferResult,
+) -> Option<InferResult> {
+    let real_key_type = get_real_type(db, key_type).unwrap_or(key_type);
+    if !matches!(
+        real_key_type,
+        LuaType::Nil | LuaType::Union(_) | LuaType::MultiLineUnion(_)
+    ) {
+        return None;
+    }
+
+    let mut pending = vec![key_type.clone()];
+    let mut visited = HashSet::new();
+    let mut results = Vec::new();
+    let mut has_match = false;
+    while let Some(key_type) = pending.pop() {
+        if !visited.insert(key_type.clone()) {
+            continue;
+        }
+        match get_real_type(db, &key_type).unwrap_or(&key_type) {
+            LuaType::Union(union) => pending.extend(union.into_vec()),
+            LuaType::MultiLineUnion(union) => pending.push(union.to_union()),
+            LuaType::Nil => {
+                has_match = true;
+                results.push(LuaType::Nil);
+            }
+            _ => match lookup(&key_type) {
+                Ok(typ) => {
+                    has_match = true;
+                    results.push(typ);
+                }
+                Err(InferFailReason::FieldNotFound) => results.push(LuaType::Nil),
+                Err(err) => return Some(Err(err)),
+            },
+        }
+    }
+
+    Some(if has_match {
+        Ok(TypeOps::union_all(db, results))
+    } else {
+        Err(InferFailReason::FieldNotFound)
+    })
 }
 
 fn infer_union_member(
@@ -1246,7 +1304,12 @@ fn infer_table_generic_member_by_key_type(
 
     let table_key_type = &table_params[0];
     let value_type = &table_params[1];
-    let typ = infer_index_metamethod_by_key_type(db, key_type, table_key_type, value_type)?;
+    let typ = match infer_dictionary_union_key(db, key_type, |key_type| {
+        infer_index_metamethod_by_key_type(db, key_type, table_key_type, value_type)
+    }) {
+        Some(result) => result?,
+        None => infer_index_metamethod_by_key_type(db, key_type, table_key_type, value_type)?,
+    };
     Ok(table_index_result(db, &typ))
 }
 

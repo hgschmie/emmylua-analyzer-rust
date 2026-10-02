@@ -20,6 +20,7 @@ mod member_infer_test;
 mod metatable_test;
 mod module_test;
 mod multi_return;
+mod optional_dictionary_keys;
 mod out_of_order;
 mod overload_field;
 mod overload_test;
