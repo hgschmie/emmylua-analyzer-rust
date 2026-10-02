@@ -5,6 +5,38 @@ use googletest::prelude::*;
 use crate::{DiagnosticCode, Emmyrc, LuaType, VirtualWorkspace};
 
 #[gtest]
+fn table_index_preserves_alias_keys_with_both_strict_settings() {
+    for enabled in [false, true] {
+        for annotation in ["table<Key, Entry>", "{[Key]: Entry}"] {
+            let mut ws = workspace(enabled);
+            ws.def(&format!(
+                r#"
+                ---@alias Key 'first'|'second'
+                ---@alias Maybe<T> T|nil
+                ---@class Entry
+                ---@field name string
+                ---@type {annotation}
+                entries = {{}}
+                ---@type Key
+                key = 'first'
+                ---@type Maybe<Key>
+                optional_key = nil
+                ---@class Entity
+                ---@field (read) key Maybe<Key>
+                ---@type Entity
+                entity = {{}}
+            "#
+            ));
+            let expected = ws.ty(if enabled { "Entry?" } else { "Entry" });
+            expect_that!(ws.expr_ty("entries[key]"), eq(&expected));
+            let optional = ws.ty("Entry?");
+            expect_that!(ws.expr_ty("entries[optional_key]"), eq(&optional));
+            expect_that!(ws.expr_ty("entries[entity.key]"), eq(&optional));
+        }
+    }
+}
+
+#[gtest]
 fn table_index_handles_optional_and_fully_matching_union_keys() {
     for enabled in [false, true] {
         for annotation in ["table<integer, Entry>", "{[integer]: Entry}"] {

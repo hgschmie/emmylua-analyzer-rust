@@ -17,7 +17,7 @@ use crate::{
         DbIndex, LuaGenericType, LuaIntersectionType, LuaMemberKey, LuaObjectType,
         LuaOperatorMetaMethod, LuaTupleType, LuaType, LuaTypeDeclId, LuaUnionType,
     },
-    enum_variable_is_param, get_keyof_members, get_real_type,
+    enum_variable_is_param, get_keyof_members,
     semantic::{
         InferGuard,
         generic::{TypeSubstitutor, instantiate_type_generic},
@@ -693,29 +693,30 @@ fn infer_object_member(
         return Ok(member_type.clone());
     }
 
-    if let Some(result) = infer_dictionary_union_key(db, key_type, |key_type| {
-        let key = member_key_from_type(key_type);
-        infer_object_member(db, object_type, key_type, &key)
-    }) {
-        return result;
-    }
-
-    // todo
     let index_accesses = object_type.get_index_access();
-    for (key, value) in index_accesses {
-        let result = infer_index_metamethod_by_key_type(db, key_type, key, value);
-        match result {
-            Ok(typ) => {
-                return Ok(table_index_result(db, &typ));
-            }
-            Err(InferFailReason::FieldNotFound) => {}
-            Err(err) => {
-                return Err(err);
+    let reusable_key = if object_type.get_fields().is_empty() && index_accesses.len() == 1 {
+        Some(&index_accesses[0].0)
+    } else {
+        None
+    };
+    let mut lookup = |key_type: &LuaType| {
+        let key = member_key_from_type(key_type);
+        if let Some(member_type) = object_type.get_field(&key) {
+            return Ok(member_type.clone());
+        }
+        for (key, value) in index_accesses {
+            match infer_index_metamethod_by_key_type(db, key_type, key, value) {
+                Ok(typ) => return Ok(table_index_result(db, &typ)),
+                Err(InferFailReason::FieldNotFound) => {}
+                Err(err) => return Err(err),
             }
         }
+        Err(InferFailReason::FieldNotFound)
+    };
+    if let Some(result) = infer_dictionary_union_key(db, key_type, reusable_key, &mut lookup) {
+        return result;
     }
-
-    Err(InferFailReason::FieldNotFound)
+    lookup(key_type)
 }
 
 fn infer_index_metamethod_by_key_type(
@@ -736,35 +737,63 @@ fn infer_index_metamethod_by_key_type(
 /// results instead of treating the whole lookup as a missing field. This is
 /// specific to ordinary dictionaries; declared __index function signatures keep
 /// their existing argument matching.
+/// A homogeneous index signature may supply its declared key type so an exact
+/// alias match can be reused while expanding it. Nil branches still yield nil.
 fn infer_dictionary_union_key(
     db: &DbIndex,
     key_type: &LuaType,
+    reusable_key: Option<&LuaType>,
     mut lookup: impl FnMut(&LuaType) -> InferResult,
 ) -> Option<InferResult> {
-    let real_key_type = get_real_type(db, key_type).unwrap_or(key_type);
     if !matches!(
-        real_key_type,
+        key_type,
         LuaType::Nil | LuaType::Union(_) | LuaType::MultiLineUnion(_)
-    ) {
+    ) && dictionary_key_alias_origin(db, key_type).is_none()
+    {
         return None;
     }
-
-    let mut pending = vec![key_type.clone()];
+    let mut pending = vec![(key_type.clone(), 0, None)];
     let mut visited = HashSet::new();
     let mut results = Vec::new();
     let mut has_match = false;
-    while let Some(key_type) = pending.pop() {
+    while let Some((key_type, alias_depth, mut known_value)) = pending.pop() {
         if !visited.insert(key_type.clone()) {
             continue;
         }
-        match get_real_type(db, &key_type).unwrap_or(&key_type) {
-            LuaType::Union(union) => pending.extend(union.into_vec()),
-            LuaType::MultiLineUnion(union) => pending.push(union.to_union()),
+        let alias_origin = dictionary_key_alias_origin(db, &key_type);
+        if known_value.is_none() && alias_origin.is_some() && reusable_key == Some(&key_type) {
+            match lookup(&key_type) {
+                Ok(typ) => known_value = Some(typ),
+                Err(InferFailReason::FieldNotFound) => {}
+                Err(err) => return Some(Err(err)),
+            }
+        }
+        if let Some(origin) = alias_origin {
+            // Generic aliases can recurse with different arguments on every
+            // expansion, so the visited set alone cannot bound their growth.
+            if alias_depth >= 64 {
+                return Some(Err(InferFailReason::DepthLimit));
+            }
+            pending.push((origin, alias_depth + 1, known_value));
+            continue;
+        }
+        match &key_type {
+            LuaType::Union(union) => {
+                pending.extend(
+                    union
+                        .into_vec()
+                        .into_iter()
+                        .map(|typ| (typ, alias_depth, known_value.clone())),
+                );
+            }
+            LuaType::MultiLineUnion(union) => {
+                pending.push((union.to_union(), alias_depth, known_value))
+            }
             LuaType::Nil => {
                 has_match = true;
                 results.push(LuaType::Nil);
             }
-            _ => match lookup(&key_type) {
+            _ => match known_value.map(Ok).unwrap_or_else(|| lookup(&key_type)) {
                 Ok(typ) => {
                     has_match = true;
                     results.push(typ);
@@ -780,6 +809,24 @@ fn infer_dictionary_union_key(
     } else {
         Err(InferFailReason::FieldNotFound)
     })
+}
+
+fn dictionary_key_alias_origin(db: &DbIndex, key_type: &LuaType) -> Option<LuaType> {
+    let (type_id, substitutor) = match key_type {
+        LuaType::Ref(type_id) => (type_id.clone(), None),
+        LuaType::Generic(generic) => {
+            let type_id = generic.get_base_type_id();
+            let substitutor =
+                TypeSubstitutor::from_alias(generic.get_params().clone(), type_id.clone());
+            (type_id, Some(substitutor))
+        }
+        _ => return None,
+    };
+    let decl = db.get_type_index().get_type_decl(&type_id)?;
+    if !decl.is_alias() {
+        return None;
+    }
+    decl.get_alias_origin(db, substitutor.as_ref())
 }
 
 fn infer_union_member(
@@ -1304,7 +1351,7 @@ fn infer_table_generic_member_by_key_type(
 
     let table_key_type = &table_params[0];
     let value_type = &table_params[1];
-    let typ = match infer_dictionary_union_key(db, key_type, |key_type| {
+    let typ = match infer_dictionary_union_key(db, key_type, Some(table_key_type), |key_type| {
         infer_index_metamethod_by_key_type(db, key_type, table_key_type, value_type)
     }) {
         Some(result) => result?,
