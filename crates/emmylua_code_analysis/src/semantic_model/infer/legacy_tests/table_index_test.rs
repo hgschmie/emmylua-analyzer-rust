@@ -4,6 +4,70 @@ use googletest::prelude::*;
 
 use crate::{DiagnosticCode, Emmyrc, LuaType, VirtualWorkspace};
 
+#[gtest]
+fn table_index_handles_optional_and_fully_matching_union_keys() {
+    for enabled in [false, true] {
+        for annotation in ["table<integer, Entry>", "{[integer]: Entry}"] {
+            let mut ws = workspace(enabled);
+            ws.def(&format!(
+                r#"
+                ---@class Entry
+                ---@field name string
+                ---@type {annotation}
+                entries = {{}}
+                ---@type integer?
+                optional_key = nil
+                ---@class Entity
+                ---@field (read) unit_number? integer
+                ---@type Entity
+                entity = {{}}
+                ---@type 1|2
+                valid_keys = 1
+                ---@type {{[string]: string, [integer]: number}}
+                multiple_signatures = {{}}
+                ---@type string|integer
+                signature_keys = 1
+                ---@type table<string|integer, boolean>
+                union_dictionary = {{}}
+                ---@type {{name: string, count: number}}
+                required_fields = {{}}
+                ---@type 'name'|'count'
+                field_keys = 'name'
+            "#
+            ));
+            let optional = ws.ty("Entry?");
+            expect_that!(ws.expr_ty("entries[optional_key]"), eq(&optional));
+            expect_that!(ws.expr_ty("entries[entity.unit_number]"), eq(&optional));
+            let definite = ws.ty(if enabled { "Entry?" } else { "Entry" });
+            expect_that!(ws.expr_ty("entries[assert(optional_key)]"), eq(&definite));
+            expect_that!(ws.expr_ty("entries[valid_keys]"), eq(&definite));
+            let signatures = ws.ty(if enabled {
+                "string|number|nil"
+            } else {
+                "string|number"
+            });
+            expect_that!(
+                ws.expr_ty("multiple_signatures[signature_keys]"),
+                eq(&signatures)
+            );
+            let union_value = ws.ty(if enabled { "boolean?" } else { "boolean" });
+            expect_that!(
+                ws.expr_ty("union_dictionary[signature_keys]"),
+                eq(&union_value)
+            );
+            let required = ws.ty("string|number");
+            expect_that!(ws.expr_ty("required_fields[field_keys]"), eq(&required));
+            expect_that!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::UnnecessaryIf,
+                    "local entry = entries[optional_key]\nif entry then end"
+                ),
+                eq(true)
+            );
+        }
+    }
+}
+
 fn workspace(table_index: bool) -> VirtualWorkspace {
     let mut ws = VirtualWorkspace::new_with_init_std_lib();
     let mut config = ws.get_emmyrc();

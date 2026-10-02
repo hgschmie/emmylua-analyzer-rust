@@ -1,6 +1,74 @@
 #![cfg(test)]
 use crate::{DiagnosticCode, LuaType, VirtualWorkspace};
 
+#[googletest::gtest]
+fn asymmetric_fields_inside_dictionaries_with_optional_keys() {
+    use googletest::prelude::*;
+
+    for table_index in [false, true] {
+        for annotation in ["table<integer, Burner>", "{[integer]: Burner}"] {
+            let mut ws = VirtualWorkspace::new();
+            let mut config = ws.get_emmyrc();
+            config.strict.table_index = table_index;
+            ws.update_emmyrc(config);
+            ws.def(DEFS);
+            ws.def("---@type integer?\nkey = nil");
+            ws.def(&format!(
+                r#"
+                ---@class OptionalDictionaryHolder
+                ---@field (read) entries {annotation}
+                ---@field (write) entries {annotation}|string
+                ---@type OptionalDictionaryHolder
+                holder = {{}}
+                holder.entries = 'reset'
+                selected = holder.entries[key]
+                if selected then
+                    selected.force = 'coal'
+                    selected_force = selected.force
+                    selected.fuel = nil
+                    selected_fuel = selected.fuel
+                end
+            "#
+            ));
+            let burner = ws.ty("Burner?");
+            expect_that!(ws.expr_ty("selected"), eq(&burner));
+            let fuel = ws.ty("Fuel");
+            expect_that!(ws.expr_ty("selected_force"), eq(&fuel));
+            let optional_fuel = ws.ty("Fuel?");
+            expect_that!(ws.expr_ty("selected_fuel"), eq(&optional_fuel));
+            expect_that!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::UnnecessaryIf,
+                    "local entry = holder.entries[key]\nif entry then end"
+                ),
+                eq(true)
+            );
+            for source in [
+                "if key then holder.entries[key] = nil end",
+                "local entry = holder.entries[key]\nif entry then entry.force = 'coal' end",
+                "local entry = holder.entries[key]\nif entry then entry.fuel = nil end",
+            ] {
+                expect_that!(
+                    ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, source),
+                    eq(true),
+                    "{source}; tableIndex={table_index}"
+                );
+            }
+            for source in [
+                "if key then holder.entries[key] = 'wrong' end",
+                "local entry = holder.entries[key]\nif entry then entry.force = nil end",
+                "local entry = holder.entries[key]\nif entry then entry.force = false end",
+            ] {
+                expect_that!(
+                    ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, source),
+                    eq(false),
+                    "{source}; tableIndex={table_index}"
+                );
+            }
+        }
+    }
+}
+
 const DEFS: &str = r#"
 ---@meta
 ---@class Fuel
