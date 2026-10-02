@@ -466,6 +466,23 @@ pub fn type_of_expr_at(
                     return apply_expr_casts(model, expr_syntax, typ, All);
                 }
             }
+            // The ordinary member projection intentionally keeps some optional
+            // reference/function fields nonnullable. Dictionary keys need the
+            // full contract, including nil, followed by the local branch guards.
+            if let Some(prefix) = index_expr.get_prefix_expr()
+                && let Some(key) = member_key_from_index_expr(model, index_expr)
+                && let Some(mut read) =
+                    model.member_info(&model.type_of_expr(prefix.get_syntax_id()), &key)
+                && let Some(id) = read.id.as_ref()
+            {
+                let nullable = apply_field_nullable(model, id, read.typ.clone());
+                if nullable != read.typ {
+                    read.typ = nullable;
+                    if let Some(typ) = indexed_read_at(model, index_expr, &read, offset, false) {
+                        return apply_expr_casts(model, expr_syntax, typ, All);
+                    }
+                }
+            }
             if let Some(resolved) = model.resolve_member(index_expr)
                 && let Some(member_id) = resolved.member_id
             {
