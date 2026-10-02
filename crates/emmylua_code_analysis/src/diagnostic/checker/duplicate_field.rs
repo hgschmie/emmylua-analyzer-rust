@@ -276,11 +276,9 @@ fn check_function_member_is_set(
                     // 判断是否在左侧
                     let (vars, exprs) = assign_stat.get_var_and_expr_list();
                     for (i, var) in vars.iter().enumerate() {
-                        if var
-                            .syntax()
-                            .text_range()
-                            .contains(node.text_range().start())
-                        {
+                        // References inside the target's prefix or index are reads.
+                        // Only the complete assignment target is being overwritten.
+                        if var.syntax() == node {
                             // 如果是 require 导入的, 则直接认为是重复字段
                             if is_require {
                                 return Some(());
