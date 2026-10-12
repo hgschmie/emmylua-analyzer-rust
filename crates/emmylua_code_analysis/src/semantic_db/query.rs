@@ -1774,6 +1774,20 @@ fn push_type_associated_owner_ids(
                 if let Some(decl_owner) = canonical_owner_id(db, &decl.id) {
                     push_unique_owner_id(out, decl_owner);
                 }
+                // Inline fields belong to the initializer table's identity,
+                // which can differ from the global declaration's identity.
+                if let Some(value) = decl.value_expr_syntax {
+                    let tree = syntax_tree(db, file_id);
+                    if value
+                        .to_node_from_root(&tree.get_red_root())
+                        .and_then(emmylua_parser::LuaTableExpr::cast)
+                        .is_some()
+                        && let Some(owner) =
+                            canonical_owner_id(db, &SemanticId::member(file_id, value.get_range()))
+                    {
+                        push_unique_owner_id(out, owner);
+                    }
+                }
             }
         }
         break;
