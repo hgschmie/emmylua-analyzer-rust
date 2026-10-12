@@ -1774,6 +1774,20 @@ fn push_type_associated_owner_ids(
                 if let Some(decl_owner) = canonical_owner_id(db, &decl.id) {
                     push_unique_owner_id(out, decl_owner);
                 }
+                // Inline fields belong to the initializer table's identity,
+                // which can differ from the global declaration's identity.
+                if let Some(value) = decl.value_expr_syntax {
+                    let tree = syntax_tree(db, file_id);
+                    if value
+                        .to_node_from_root(&tree.get_red_root())
+                        .and_then(emmylua_parser::LuaTableExpr::cast)
+                        .is_some()
+                        && let Some(owner) =
+                            canonical_owner_id(db, &SemanticId::member(file_id, value.get_range()))
+                    {
+                        push_unique_owner_id(out, owner);
+                    }
+                }
             }
         }
         break;
@@ -2594,9 +2608,19 @@ pub(crate) fn signature_returns(
     let Some(closure) = LuaClosureExpr::cast(node) else {
         return Vec::new();
     };
-    let multi_path_returns = closure.descendants::<LuaReturnStat>().count() > 1;
+    // Nested callbacks return to their own caller, not to the factory containing
+    // them. Their newly preserved parameter annotations must not leak outward.
+    let returns: Vec<_> = closure
+        .descendants::<LuaReturnStat>()
+        .filter(|ret| {
+            ret.ancestors::<LuaClosureExpr>()
+                .next()
+                .is_some_and(|owner| owner.get_syntax_id() == closure_syntax)
+        })
+        .collect();
+    let multi_path_returns = returns.len() > 1;
     let mut slots: Vec<TypeShell> = Vec::new();
-    for ret in closure.descendants::<LuaReturnStat>() {
+    for ret in returns {
         for (index, expr) in ret.get_expr_list().enumerate() {
             let shell = match &expr {
                 LuaExpr::NameExpr(name) if name.get_name_text().as_deref() == Some("self") => {
