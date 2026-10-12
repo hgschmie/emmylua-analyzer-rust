@@ -3765,6 +3765,15 @@ pub(crate) fn unify_call_bindings(
     use LuaType::*;
     match param {
         Unknown | Any => true,
+        Ref(id) | Def(id)
+            if model
+                .type_def_of(id)
+                .is_some_and(|def| def.kind == TypeDefKind::Alias) =>
+        {
+            // Union members can still be named aliases (`uint32|string`).
+            // Reuse the cycle-safe alias-aware checker for these concrete types.
+            model.type_check_subtype(arg, param)
+        }
         TplRef(tpl) => {
             if let TplRef(arg_tpl) = arg
                 && arg_tpl.get_tpl_id() == tpl.get_tpl_id()

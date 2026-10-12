@@ -125,6 +125,14 @@ impl<'db> SemanticModel<'db> {
         else {
             return LuaType::Unknown;
         };
+        // TypeShell erases anonymous functions to bare `function`. A module
+        // exporting a factory must retain its signature for require('init')().
+        if let Some(facts) = self.file_facts_of(module_file)
+            && let ModuleExport::Expr { value_syntax } = facts.module_export
+            && let Some(signature) = self.type_of_signature_in_file(module_file, value_syntax)
+        {
+            return LuaType::DocFunction(Arc::new(signature));
+        }
         let Some(shell) = self.analysis().module_export_type(module_file) else {
             return LuaType::Unknown;
         };

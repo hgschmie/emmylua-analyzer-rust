@@ -3,6 +3,34 @@ mod tests {
     use crate::handlers::test_lib::{ProviderVirtualWorkspace, VirtualHoverResult, check};
     use googletest::prelude::*;
 
+    #[gtest]
+    fn annotated_inline_api_method_hover_keeps_return_type() {
+        use crate::handlers::hover::hover;
+        use lsp_types::{HoverContents, Position};
+        let mut ws = ProviderVirtualWorkspace::new_with_init_std_lib();
+        ws.def_file(
+            "api.lua",
+            r#"
+---@meta _
+---@class Surface
+---@field name string
+local Surface = {}
+---@class Game
+game = {
+    ---@param index integer|string
+    ---@return Surface?
+    get_surface = function(index) end,
+}
+"#,
+        );
+        let file = ws.def_file("consumer.lua", "local surface = game.get_surface(1)");
+        let result = hover(&ws.analysis, file, Position::new(0, 24)).unwrap();
+        let HoverContents::Markup(markup) = result.contents else {
+            panic!("expected markdown hover")
+        };
+        assert_that!(&markup.value, contains_substring("Surface"));
+    }
+
     // M3 batch 2 retirement: function signature rendering stack (old HoverBuilder/overload matching/generic substitution); see migration notes §M3.
     #[gtest]
     fn test_1() -> Result<()> {
