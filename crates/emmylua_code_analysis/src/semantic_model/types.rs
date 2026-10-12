@@ -925,6 +925,22 @@ impl<'db> SemanticModel<'db> {
         if let Some(enum_const) = self.enum_member_const(member_file, member) {
             return Some(enum_const);
         }
+        // A class annotated directly on a table field identifies that value,
+        // rather than inheriting the containing table's class identity.
+        if let Some(facts) = self.file_facts_of(member_file)
+            && let Some(field) = facts.member_by_id(member)
+            && field.doc_type_syntax.is_none()
+            && let Some(value) = field.value_syntax
+            && let Some(tree) = self.syntax_tree_of(member_file)
+            && let Some(table) = value
+                .to_node_from_root(&tree.get_red_root())
+                .and_then(LuaTableExpr::cast)
+            && let Some(field) = table.get_parent::<LuaTableField>()
+            && let Some(def) = facts.type_def_by_owner_syntax(field.get_syntax_id())
+            && matches!(def.kind, TypeDefKind::Class | TypeDefKind::Enum)
+        {
+            return Some(self.type_def_ref(def));
+        }
         // Runtime member assignments prefer VM projection: the TypeShell path does not perform higher-order generic call inference,
         // and would keep `E.foo_wrapped = wrap(function(a) ... end)` as `fun(...: T...)`.
         // Cycles/reentry are handled by `CacheEntry::InProgress` in the shared cache.
