@@ -2813,6 +2813,15 @@ pub(crate) fn module_export_type(
     match &facts.module_export {
         // `return M`: declaration identity table (TableConst members reachable) + name identity (Named -> decl owner reachable).
         ModuleExport::Decl { decl, name } => {
+            // Keep the declared class identity when its runtime table uses a
+            // different local name. A synthetic union with that variable name
+            // would lose member navigation through an exported factory.
+            if let Some(owner) = facts.decl_by_id(decl).and_then(|decl| decl.owner_syntax)
+                && let Some(def) = facts.type_def_by_owner_syntax(owner)
+                && matches!(def.kind, TypeDefKind::Class | TypeDefKind::Enum)
+            {
+                return TypeShell::from_name(def.full_name.as_str());
+            }
             let mut shell = decl_type(db, file, config, decl.clone());
             shell.merge(&TypeShell::from_name(name.as_str()));
             shell
