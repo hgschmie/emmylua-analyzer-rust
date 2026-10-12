@@ -1051,6 +1051,28 @@ fn build_decl_hover(
     }
 
     let description = decl_description(model, decl);
+    // An open global table keeps its broad contract, but its hover can still
+    // show fields assigned by the workspace (for example Factorio's storage).
+    if matches!(typ, LuaType::Table) && matches!(decl_info.kind, DeclKind::Global) {
+        let fields = model
+            .members_of_owner(&SemanticId::name(decl_info.name.clone()))
+            .iter()
+            .filter_map(|member| {
+                let ty = model.type_of_member(&member.id)?;
+                Some((member.name.to_string(), humanize(model, &ty)))
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        if !fields.is_empty() {
+            let lines = fields
+                .iter()
+                .map(|(name, ty)| format!("    {name}: {ty},"))
+                .collect::<Vec<_>>();
+            return (
+                format!("{prefix}{name}: table {{\n{}\n}}", lines.join("\n")),
+                Some(description),
+            );
+        }
+    }
     // Named type declaration -> expand class member list (`local node: Node { ... }`).
     if let Some(class_lines) = class_member_lines(model, typ)
         && !class_lines.is_empty()

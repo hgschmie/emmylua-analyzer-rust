@@ -53,6 +53,12 @@ parameters. Regressions cover multiple returns, API return inference and hover,
 and rejection of incompatible arguments. All 1,463 default-feature code-analysis
 and 246 language-server tests pass with this follow-up.
 
+The final navigation/hover follow-up retains annotated class identities in module
+exports, including through factories, and shows known workspace-assigned fields
+when hovering an open global `table`. It leaves the table's broad type contract
+unchanged. All 1,463 default-feature code-analysis and 248 server tests pass;
+final platform/full-workspace results are recorded in the workspace handoff.
+
 Validation of this port: all 2,451 workspace tests passed with all features,
 including the upstream slow test. Workspace Clippy (all targets/features,
 warnings denied) and rustfmt passed. Plugin/protocol build results are recorded
