@@ -4,6 +4,37 @@ mod tests {
     use googletest::prelude::*;
 
     #[gtest]
+    fn open_global_table_hover_shows_workspace_fields() {
+        use crate::handlers::hover::hover;
+        use lsp_types::{HoverContents, Position};
+        let mut ws = ProviderVirtualWorkspace::new_with_init_std_lib();
+        ws.def_file("api.lua", "---@meta _\n---@type table\nstorage = {}");
+        ws.def_file("state.lua", "storage.sensor_data = { sensors = {} }");
+        let file = ws.def_file("consumer.lua", "local saved = storage");
+        let result = hover(&ws.analysis, file, Position::new(0, 17)).unwrap();
+        let HoverContents::Markup(markup) = result.contents else {
+            panic!("expected markdown hover")
+        };
+        assert_that!(&markup.value, contains_substring("sensor_data"));
+    }
+
+    #[gtest]
+    fn imported_factory_global_member_navigation() {
+        use crate::handlers::definition::definition;
+        use lsp_types::Position;
+        let mut ws = ProviderVirtualWorkspace::new_with_init_std_lib();
+        ws.def_file("state.lua", "---@class ModState\nlocal This = {}\n---@return string\nfunction This:storage() return 'value' end\nreturn This");
+        ws.def_file(
+            "init.lua",
+            "local this = require('state')\nreturn function() return this, {} end",
+        );
+        ws.def_file("control.lua", "This, Framework = require('init')()");
+        let file = ws.def_file("consumer.lua", "local saved = This:storage()");
+        let result = definition(&ws.analysis, file, Position::new(0, 21));
+        assert_that!(format!("{result:?}"), contains_substring("state.lua"));
+    }
+
+    #[gtest]
     fn annotated_inline_api_method_hover_keeps_return_type() {
         use crate::handlers::hover::hover;
         use lsp_types::{HoverContents, Position};
