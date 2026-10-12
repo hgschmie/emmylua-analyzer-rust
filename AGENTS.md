@@ -4,7 +4,7 @@ Read [docs/intellij-development-handoff.md](docs/intellij-development-handoff.md
 before continuing the EmmyLua/Factorio integration work. It records repository
 roles, source pins, reproduction commands, validation evidence and open issues.
 
-Use `work/intellij-modules` for the local 0.24.0-based analyzer development.
+Use `work/intellij-modules` for the local 0.30.0-based analyzer development.
 `fix/workspace-relative-module-resolution` is the separate upstream PR branch;
 keep this local handoff and downstream packaging changes out of that branch.
 Check current Git state before acting: the handoff records a dated checkpoint,

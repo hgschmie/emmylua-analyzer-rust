@@ -1,5 +1,62 @@
 # EmmyLua IntelliJ development handoff
 
+## Current checkpoint: October 11, 2026
+
+The active checkout is
+`upstream/emmylua-analyzer-rust/build/checkouts/intellij-work`, branch
+`work/intellij-modules`. It is based on upstream main
+`1c8589bbc8e60eb6f40bd89000082a53a10803a7` (0.30.0), with PR #1266's single
+signed commit `ef3cf3c899c36172ff52d7b49abe6409f469e6f7` and the internal patches.
+The PR branch `fix/workspace-relative-module-resolution` was pushed to the
+user's fork. Keep internal patches and packaging off that branch.
+
+The pre-rebase internal branch is preserved at
+`backup/internal-before-main-rebase-2026-10-11` (`a7ea9de6`). The old PR series is
+preserved at `backup/pr-1266-before-squash-2026-10-11` (`07cbc7ce`). Independent
+fix branches still hold their original patches; this operation updates the
+internal development baseline, not each upstream submission branch.
+
+Upstream's semantic database rewrite removed the old compilation/db_index and
+semantic/infer implementation. The internal port retains these behaviors:
+
+- Caller-root import resolution and explicitly mapped aliases from PR #1266.
+- Cross-file diagnostic refresh and preceding same-file global navigation.
+- Stable local metatable association, key-aware `__index` inference, definition
+  navigation, backing-member documentation and function highlighting.
+- Separate property read/write types, generic projections, callback context and
+  guard invalidation after writes. Reads retain their read contract.
+- Opt-in `strict.tableIndex`, required object fields, writes/nil deletion and
+  guards; optional/union dictionary keys, generic aliases and bounded recursion.
+- Imported function reads within assignment targets are not redefinitions;
+  actual reassignment and `function module.member(...)` still diagnose duplicates.
+
+Integration code now lives mainly in `semantic_model/{dictionary,directional,
+index_function,flow,member}.rs`, `semantic_db/facts.rs`, `check/checker/`, and
+`emmylua_ls/src/handlers/`. Existing regression cases were retained and adapted
+to new semantic identities and upstream presentation ranges. Additional glue
+preserves class index signatures, anonymous-object directional contracts,
+numeric-loop ownership and dictionary initializer checking in the new engine.
+
+Validation of this port: all 2,450 workspace tests passed with all features,
+including the upstream slow test. Workspace Clippy (all targets/features,
+warnings denied) and rustfmt passed. Plugin/protocol build results are recorded
+in the workspace `HANDOFF.md` and FDE's `docs/ACCEPTANCE.md`.
+
+Shared Cargo cache: `$WORKSPACE/dev/cache/cargo`; verification target:
+`$WORKSPACE/upstream/emmylua-analyzer-rust/build/pr-1266-target`. New evidence is
+under the analyzer repository's `build/logs/internal-rebase-*`. The old paths
+and version-specific statements below are historical.
+
+Packaging uses EmmyLua2's `work/patched-build` checkout under
+`upstream/Intellij-EmmyLua2-worktrees/patched-build`, build 133. Its
+`analyzer.lock` and FDE's `emmy-analyzer.lock` record the final analyzer commit.
+Only macOS arm64 is rebuilt with internal patches; other bundled binaries
+remain upstream 0.25.1. FDE is on `intellij-factorio/main`, version 0.7.0-dev.
+Use `scripts/build-module-patch.sh` then FDE's `scripts/build.sh test buildPlugin`.
+The usual archives are under the main repositories' `build/distributions/`.
+
+## Historical September checkpoint
+
 Checkpoint: September 27, 2026. Implementation and runtime validation were done
 September 25. This document is local development documentation on
 `work/intellij-modules`, not part of the upstream resolver PR.
