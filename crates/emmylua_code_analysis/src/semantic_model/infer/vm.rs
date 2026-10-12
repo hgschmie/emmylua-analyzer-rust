@@ -1221,7 +1221,14 @@ impl<'a> InferVm<'a> {
             .and_then(|info| info.id)
             .is_some()
             && (matches!(member_type_fallback, Some(LuaType::Signature(_)))
-                || (matches!(member_type_fallback, Some(LuaType::Function)) && !is_std_global));
+                || (matches!(member_type_fallback, Some(LuaType::Function)) && !is_std_global)
+                || (matches!(member_type_fallback, Some(LuaType::DocFunction(_)))
+                    && self
+                        .model
+                        .member_info(&owner.ty, &lua_key)
+                        .and_then(|info| info.id)
+                        .and_then(|id| self.signature_candidates(&id))
+                        .is_some_and(|candidates| candidates.len() > 1)));
         if let Some(ty) = &member_type_fallback
             && !matches!(ty, LuaType::Unknown)
             && !needs_member_owner
@@ -4193,9 +4200,8 @@ pub(crate) fn unify_call_bindings(
                 }
             } else {
                 let pv = param_union.into_vec();
-                // A generic union like `` `T`|T `` allows T to be bound through any generic
-                // component; ordinary unions still require all non-nil components to be
-                // compatible (caller may pass any member).
+                // A single actual argument only needs to match one member of the
+                // parameter union. Preserve the preference for string templates.
                 if matches!(arg, Function | DocFunction(_) | Signature(_)) {
                     pv.iter()
                         .any(|p| unify_call_bindings(model, p, arg, bindings))
@@ -4211,12 +4217,16 @@ pub(crate) fn unify_call_bindings(
                 } else if pv.iter().any(|p| matches!(p, TplRef(_))) {
                     pv.iter()
                         .any(|p| unify_call_bindings(model, p, arg, bindings))
-                } else if pv.contains(&Nil) {
-                    pv.iter()
-                        .filter(|t| !matches!(t, Nil))
-                        .all(|p| unify_call_bindings(model, p, arg, bindings))
                 } else {
-                    false
+                    pv.iter().any(|p| {
+                        let mut candidate_bindings = bindings.clone();
+                        if unify_call_bindings(model, p, arg, &mut candidate_bindings) {
+                            *bindings = candidate_bindings;
+                            true
+                        } else {
+                            false
+                        }
+                    })
                 }
             }
         }

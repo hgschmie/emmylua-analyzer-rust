@@ -37,7 +37,14 @@ to new semantic identities and upstream presentation ranges. Additional glue
 preserves class index signatures, anonymous-object directional contracts,
 numeric-loop ownership and dictionary initializer checking in the new engine.
 
-Validation of this port: all 2,450 workspace tests passed with all features,
+The integration also retains inline annotated API table members and nested event
+class identities. Table-field functions keep their parameter/overload annotations,
+overload matching accepts either member of an event-type/string-name union, and
+nested callback returns do not leak into their enclosing factory's return type.
+The regression covers numeric, named and string event callback registration.
+These compatibility changes remain internal, separate from PR #1266.
+
+Validation of this port: all 2,451 workspace tests passed with all features,
 including the upstream slow test. Workspace Clippy (all targets/features,
 warnings denied) and rustfmt passed. Plugin/protocol build results are recorded
 in the workspace `HANDOFF.md` and FDE's `docs/ACCEPTANCE.md`.

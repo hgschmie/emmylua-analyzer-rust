@@ -415,7 +415,10 @@ pub(crate) fn member_info_impl(
             match &index_info.typ {
                 LuaType::Any => Some(LuaType::Any),
                 LuaType::DocFunction(fun) => Some(fun.get_ret().clone()),
-                LuaType::Function | LuaType::Signature(_) => None,
+                LuaType::Signature(id) => model
+                    .function_type_by_signature_id(id)
+                    .map(|fun| fun.get_ret().clone()),
+                LuaType::Function => None,
                 _ => member_info(model, &index_info.typ, key).map(|info| info.typ),
             }
         })

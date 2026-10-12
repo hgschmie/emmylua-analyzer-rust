@@ -1350,7 +1350,11 @@ impl FactsBuilder {
                                 owner.get_kind(),
                                 LuaSyntaxKind::FuncStat | LuaSyntaxKind::LocalFuncStat
                             )
-                        });
+                        }) || comment
+                            .get_owner()
+                            .and_then(|owner| LuaTableField::cast(owner.syntax().clone()))
+                            .and_then(|field| field.get_value_expr())
+                            .is_some_and(|value| matches!(value, LuaExpr::ClosureExpr(_)));
                         if !owner_is_function
                             && let Some(type_def_id) = self.current_class.clone()
                             && let Some(def) =
@@ -2071,6 +2075,12 @@ impl FactsBuilder {
             self.add_implicit_self_decl(SmolStr::new("self"), self_range);
         }
 
+        // A closure stored in a table field owns that field's annotations,
+        // including overloads, not the enclosing table assignment's comment.
+        let doc_owner = closure
+            .get_parent::<LuaTableField>()
+            .map(|field| field.get_syntax_id())
+            .or(doc_owner);
         let mut docs = doc_owner.and_then(|owner| self.signature_doc_map.remove(&owner));
         if docs.is_none() && doc_owner.is_some_and(|owner| self.doc_comment_owners.contains(&owner))
         {
