@@ -3,12 +3,39 @@ mod test {
     use crate::VirtualWorkspace;
 
     #[test]
+    fn required_factory_keeps_exported_closure_signature() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def_file(
+            "state.lua",
+            r#"
+---@class ModState
+local This = {}
+---@return string
+function This:storage() return "value" end
+return This
+"#,
+        );
+        ws.def_file(
+            "init.lua",
+            r#"
+local this = require('state')
+local framework = { marker = true }
+return function() return this, framework end
+"#,
+        );
+        ws.def("This, Framework = require('init')()");
+        assert_eq!(ws.expr_ty("This:storage()"), ws.ty("string"));
+        assert_eq!(ws.expr_ty("Framework.marker"), ws.ty("true"));
+    }
+
+    #[test]
     fn annotated_global_table_keeps_overloaded_callback_types() {
         let mut ws = VirtualWorkspace::new();
         ws.def_file(
             "api.lua",
             r#"
 ---@meta _
+---@alias uint32 integer
 ---@class BaseEvent
 ---@field name string
 local BaseEvent = {}
@@ -29,6 +56,9 @@ kinds = {
 }
 ---@class Bootstrap
 script = {
+    ---@param index uint32|string
+    ---@return Tick?
+    get_tick = function(index) end,
     ---@param event string
     ---@param handler (fun(event:BaseEvent))|(nil)
     ---@overload fun(event:integer, handler:fun(event:Tick))
@@ -47,6 +77,12 @@ script = {
         assert_eq!(ws.expr_ty("literal"), ws.ty("Tick"));
         ws.def(r#"script.on_event(kinds.other, function(event) other = event end)"#);
         assert_eq!(ws.expr_ty("other"), ws.ty("OtherEvent"));
+        assert_eq!(ws.expr_ty("script.get_tick(1)"), ws.ty("Tick?"));
+        assert_eq!(ws.expr_ty("script.get_tick('one')"), ws.ty("Tick?"));
+        assert_eq!(
+            ws.expr_ty("script.get_tick(false)"),
+            crate::LuaType::Unknown
+        );
     }
 
     #[test]
