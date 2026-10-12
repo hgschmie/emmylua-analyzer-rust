@@ -44,6 +44,15 @@ nested callback returns do not leak into their enclosing factory's return type.
 The regression covers numeric, named and string event callback registration.
 These compatibility changes remain internal, separate from PR #1266.
 
+Platform testing additionally exposed erased signatures for modules exporting
+anonymous factories (`This, Framework = require('lib.init')()`), omitted return
+types in inline-field hovers, and aliases inside union call parameters
+(`uint32|string`). Internal follow-up preserves factory signatures, renders the
+return type and uses the alias-aware checker when matching concrete alias
+parameters. Regressions cover multiple returns, API return inference and hover,
+and rejection of incompatible arguments. All 1,463 default-feature code-analysis
+and 246 language-server tests pass with this follow-up.
+
 Validation of this port: all 2,451 workspace tests passed with all features,
 including the upstream slow test. Workspace Clippy (all targets/features,
 warnings denied) and rustfmt passed. Plugin/protocol build results are recorded
