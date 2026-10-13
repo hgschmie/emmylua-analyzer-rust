@@ -596,14 +596,27 @@ fn cached_arg_type(
     arg_types: Option<&[LuaType]>,
     index: usize,
 ) -> LuaType {
-    if let Some(types) = arg_types
-        && let Some(ty) = types.get(index)
+    let Some(arg) = args.get(index) else {
+        return LuaType::Unknown;
+    };
+    let asserted_type = |syntax| {
+        crate::semantic_model::flow::type_of_expr_with_cast(
+            semantic_model,
+            syntax,
+            crate::semantic_model::flow::ExprCastMode::AsOnly,
+        )
+    };
+    let ty = arg_types
+        .and_then(|types| types.get(index))
+        .cloned()
+        .unwrap_or_else(|| asserted_type(arg.get_syntax_id()));
+    if matches!(ty, LuaType::TableConst(_))
+        && matches!(arg, LuaExpr::ParenExpr(_))
+        && let Some(table) = table_expr(arg)
     {
-        return ty.clone();
+        return asserted_type(table.get_syntax_id());
     }
-    args.get(index)
-        .map(|arg| semantic_model.type_of_expr(arg.get_syntax_id()))
-        .unwrap_or(LuaType::Unknown)
+    ty
 }
 
 fn check_arg_pairs(
