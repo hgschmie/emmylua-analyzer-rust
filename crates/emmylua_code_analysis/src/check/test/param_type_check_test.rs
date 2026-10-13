@@ -2105,3 +2105,158 @@ mod test {
         );
     }
 }
+
+#[cfg(test)]
+mod class_index_array_compatibility {
+    use crate::DiagnosticCode;
+    use crate::check::test::check_source;
+
+    fn mismatch_count(declaration: &str, source: &str, target: &str) -> usize {
+        let code = format!(
+            r#"
+            {declaration}
+            ---@param value {target}[]
+            local function accept(value) return value end
+            ---@type {source}
+            local value
+            accept(value)
+        "#
+        );
+        check_source(&code)
+            .into_iter()
+            .filter(|d| d.code == DiagnosticCode::ParamTypeMismatch)
+            .count()
+    }
+
+    #[test]
+    fn named_numeric_index_signature_is_an_array() {
+        assert_eq!(
+            mismatch_count(
+                r#"
+            ---@class StringList
+            ---@field [integer] string
+            ---@field data any
+            local list = {}
+        "#,
+                "StringList",
+                "string"
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn numeric_signatures_support_inheritance_aliases_and_generics() {
+        for (declaration, source, target) in [
+            (
+                r#"
+                ---@class NumberKeys
+                ---@field [number] string
+                local list = {}
+            "#,
+                "NumberKeys",
+                "string",
+            ),
+            (
+                r#"
+                ---@class BaseList
+                ---@field [integer] string
+                local base = {}
+                ---@class DerivedList: BaseList
+                ---@field metadata boolean
+                local derived = {}
+                ---@alias ListAlias DerivedList
+            "#,
+                "ListAlias",
+                "string",
+            ),
+            (
+                r#"
+                ---@class GenericList<T>
+                ---@field [integer] T
+                local list = {}
+            "#,
+                "GenericList<string>",
+                "string",
+            ),
+            (
+                r#"
+                ---@class OptionalList
+                ---@field [integer] string?
+                local list = {}
+            "#,
+                "OptionalList",
+                "(string?)",
+            ),
+            (
+                r#"
+                ---@class IntegerList
+                ---@field [integer] integer
+                local list = {}
+            "#,
+                "IntegerList",
+                "number",
+            ),
+        ] {
+            assert_eq!(
+                mismatch_count(declaration, source, target),
+                0,
+                "{source} -> {target}[]"
+            );
+        }
+    }
+
+    #[test]
+    fn incompatible_or_absent_signatures_are_rejected() {
+        for (field, operator) in [
+            ("[integer] number", ""),
+            ("[integer] string?", ""),
+            ("[string] string", ""),
+            ("[1] string", ""),
+            ("[\"integer\"] string", ""),
+            ("data string", "---@operator len: integer"),
+        ] {
+            let declaration = format!(
+                r#"
+                ---@class NotAStringArray
+                ---@field {field}
+                {operator}
+                local list = {{}}
+            "#
+            );
+            assert_eq!(
+                mismatch_count(&declaration, "NotAStringArray", "string"),
+                1,
+                "{field}"
+            );
+        }
+        let generic = r#"
+            ---@class GenericList<T>
+            ---@field [integer] T
+            local list = {}
+        "#;
+        assert_eq!(mismatch_count(generic, "GenericList<number>", "string"), 1);
+    }
+
+    #[test]
+    fn specific_and_derived_signatures_take_precedence() {
+        let specific = r#"
+            ---@class Indexed
+            ---@field [integer] string
+            ---@field [number] boolean
+            local list = {}
+        "#;
+        assert_eq!(mismatch_count(specific, "Indexed", "string"), 0);
+        assert_eq!(mismatch_count(specific, "Indexed", "boolean"), 1);
+        let inherited = r#"
+            ---@class ParentList
+            ---@field [integer] string
+            local parent = {}
+            ---@class ChildList: ParentList
+            ---@field [integer] number
+            local child = {}
+        "#;
+        assert_eq!(mismatch_count(inherited, "ChildList", "number"), 0);
+        assert_eq!(mismatch_count(inherited, "ChildList", "string"), 1);
+    }
+}
