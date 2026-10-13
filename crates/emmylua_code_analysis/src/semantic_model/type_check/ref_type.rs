@@ -117,12 +117,12 @@ fn check_ref_class(
             }
             Err(context.mismatch(&LuaType::Ref(source_id.clone()), compact_type))
         }
-        LuaType::Array(array) => {
-            let value = context
-                .require_complete(|| context.model.infer_iter_from_type_def(source_id, 1))?
-                .ok_or_else(|| context.mismatch(&LuaType::Ref(source_id.clone()), compact_type))?;
-            check_general_type_compact(context, &value, array.get_base())
-        }
+        LuaType::Array(array) => check_class_array(
+            context,
+            &LuaType::Ref(source_id.clone()),
+            compact_type,
+            array.get_base(),
+        ),
         LuaType::Table => Ok(()),
         LuaType::Generic(generic) => {
             let base_type_id = generic.get_base_type_id();
@@ -186,4 +186,26 @@ fn check_ref_class(
             }
         }
     }
+}
+
+/// A declared numeric index signature supplies the elements of an array even
+/// when the class has additional named fields. Static fields like `[1]` do not
+/// establish a signature for arbitrary integer indices.
+/// A `number` domain covers every integer key; density and length are not checked.
+pub(super) fn check_class_array(
+    context: &mut TypeCheckContext,
+    source: &LuaType,
+    target: &LuaType,
+    element: &LuaType,
+) -> TypeCheckResult {
+    // Dedicated index projection preserves inherited overrides without mixing in
+    // ordinary fields such as a member named `integer`.
+    let indices = context.require_complete(|| context.model.index_infos(source))?;
+    for key in [LuaType::Integer, LuaType::Number] {
+        let value = indices.iter().find(|info| info.key_type == key);
+        if let Some(value) = value {
+            return check_general_type_compact(context, &value.value_type, element);
+        }
+    }
+    Err(context.mismatch(source, target))
 }

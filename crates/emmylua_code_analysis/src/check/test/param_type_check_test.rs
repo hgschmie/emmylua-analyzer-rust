@@ -3562,3 +3562,340 @@ mod test {
         );
     }
 }
+
+#[cfg(test)]
+mod class_index_array_compatibility {
+    use crate::check::test::check_source;
+    use crate::{DiagnosticCode, VirtualWorkspace};
+
+    fn call_source(declaration: &str, source: &str, target: &str) -> String {
+        format!(
+            r#"
+            {declaration}
+            ---@param value {target}[]
+            local function accept(value) return value end
+            ---@type {source}
+            local value
+            accept(value)
+        "#
+        )
+    }
+
+    fn mismatch_count(declaration: &str, source: &str, target: &str) -> usize {
+        check_source(&call_source(declaration, source, target))
+            .into_iter()
+            .filter(|d| d.code == DiagnosticCode::ParamTypeMismatch)
+            .count()
+    }
+
+    #[test]
+    fn class_array_results_preserve_callback_parameter_compatibility() {
+        use crate::{LuaType, VariadicType};
+        use std::rc::Rc;
+
+        for (callback, expected) in [
+            ("fun(): boolean", true),
+            ("fun(value: boolean): boolean", false),
+            ("fun(): string", false),
+        ] {
+            for source in [
+                "CallbackList".to_string(),
+                format!("GenericList<{callback}>"),
+            ] {
+                let mut ws = VirtualWorkspace::new();
+                ws.def(&format!(
+                    r#"
+                    ---@class CallbackList
+                    ---@field [integer] {callback}
+                    local list = {{}}
+                    ---@class GenericList<T>
+                    ---@field [integer] T
+                    local generic_list = {{}}
+                "#
+                ));
+                let source_type = ws.ty(&source);
+                let target = ws.ty("(fun(value: string): boolean)[]");
+                for repeat in [false, true] {
+                    let sequence = |typ| {
+                        LuaType::Variadic(Rc::new(if repeat {
+                            VariadicType::Repeat(typ)
+                        } else {
+                            VariadicType::Base(typ)
+                        }))
+                    };
+                    assert_eq!(
+                        ws.check_type(&sequence(target.clone()), &sequence(source_type.clone())),
+                        expected,
+                        "{source}: {callback}, repeat={repeat}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn named_numeric_index_signature_is_an_array() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            &call_source(
+                r#"
+            ---@class StringList
+            ---@field [integer] string
+            ---@field data any
+            local list = {}
+        "#,
+                "StringList",
+                "string"
+            ),
+        ));
+    }
+
+    #[test]
+    fn numeric_signatures_support_inheritance_aliases_and_generics() {
+        for (declaration, source, target) in [
+            (
+                r#"
+                ---@class NumberKeys
+                ---@field [number] string
+                local list = {}
+            "#,
+                "NumberKeys",
+                "string",
+            ),
+            (
+                r#"
+                ---@class BaseList
+                ---@field [integer] string
+                local base = {}
+                ---@class DerivedList: BaseList
+                ---@field metadata boolean
+                local derived = {}
+                ---@alias ListAlias DerivedList
+            "#,
+                "ListAlias",
+                "string",
+            ),
+            (
+                r#"
+                ---@class GenericList<T>
+                ---@field [integer] T
+                local list = {}
+            "#,
+                "GenericList<string>",
+                "string",
+            ),
+            (
+                r#"
+                ---@class OptionalList
+                ---@field [integer] string?
+                local list = {}
+            "#,
+                "OptionalList",
+                "(string?)",
+            ),
+            (
+                r#"
+                ---@class IntegerList
+                ---@field [integer] integer
+                local list = {}
+            "#,
+                "IntegerList",
+                "number",
+            ),
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            assert!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::ParamTypeMismatch,
+                    &call_source(declaration, source, target),
+                ),
+                "{source} -> {target}[]"
+            );
+        }
+    }
+
+    #[test]
+    fn incompatible_or_absent_signatures_are_rejected() {
+        for (field, operator) in [
+            ("[integer] number", ""),
+            ("[integer] string?", ""),
+            ("[string] string", ""),
+            ("[1] string", ""),
+            ("[\"integer\"] string", ""),
+            ("data string", "---@operator len: integer"),
+        ] {
+            let declaration = format!(
+                r#"
+                ---@class NotAStringArray
+                ---@field {field}
+                {operator}
+                local list = {{}}
+            "#
+            );
+            assert_eq!(
+                mismatch_count(&declaration, "NotAStringArray", "string"),
+                1,
+                "{field}"
+            );
+        }
+        let generic = r#"
+            ---@class GenericList<T>
+            ---@field [integer] T
+            local list = {}
+        "#;
+        assert_eq!(mismatch_count(generic, "GenericList<number>", "string"), 1);
+    }
+
+    #[test]
+    fn specific_and_derived_signatures_take_precedence() {
+        for fields in [
+            "---@field [integer] string\n---@field [number] boolean",
+            "---@field [number] boolean\n---@field [integer] string",
+        ] {
+            let specific = format!("---@class Indexed\n{fields}\nlocal list = {{}}");
+            let mut ws = VirtualWorkspace::new();
+            assert!(ws.has_no_diagnostic(
+                DiagnosticCode::ParamTypeMismatch,
+                &call_source(&specific, "Indexed", "string"),
+            ));
+            assert_eq!(mismatch_count(&specific, "Indexed", "boolean"), 1);
+        }
+        let inherited = r#"
+            ---@class ParentList
+            ---@field [integer] string
+            local parent = {}
+            ---@class ChildList: ParentList
+            ---@field [integer] number
+            local child = {}
+        "#;
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            &call_source(inherited, "ChildList", "number"),
+        ));
+        assert_eq!(mismatch_count(inherited, "ChildList", "string"), 1);
+    }
+
+    #[test]
+    fn numeric_array_projection_keeps_cross_file_defaults_and_aliases() {
+        for (source, target, compatible) in [
+            ("IndexModels.DefaultItems", "string", true),
+            ("IndexModels.DefaultItems", "number", false),
+            ("IndexModels.NumericItems", "number", true),
+            ("IndexModels.NumericItems", "string", false),
+            ("IndexModels.Derived<boolean>", "boolean", true),
+            ("IndexModels.Derived<boolean>", "string", false),
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            ws.def_file(
+                "index_models.lua",
+                r#"
+---@namespace IndexModels
+---@class Items<T = string>
+---@field [integer] T
+local Items = {}
+---@class Derived<T = string>: Items<T>
+---@field integer boolean
+local Derived = {}
+---@alias DefaultItems Derived
+---@alias NumericItems Derived<number>
+"#,
+            );
+            assert_eq!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::ParamTypeMismatch,
+                    &call_source("", source, target)
+                ),
+                compatible,
+                "{source} -> {target}[]"
+            );
+        }
+    }
+
+    #[test]
+    fn numeric_key_domains_require_full_array_coverage() {
+        for (domain, compatible) in [
+            ("integer", true),
+            ("number", true),
+            ("1", false),
+            ("1|2", false),
+            ("string", false),
+        ] {
+            let declarations = format!(
+                "---@alias Key {domain}\n---@class IndexedByAlias\n---@field [Key] string\nlocal list = {{}}"
+            );
+            assert_eq!(
+                mismatch_count(&declarations, "IndexedByAlias", "string"),
+                usize::from(!compatible),
+                "key domain={domain}"
+            );
+        }
+    }
+
+    #[test]
+    fn generic_array_checks_keep_builtin_table_value_contract() {
+        for with_std in [false, true] {
+            let mut ws = if with_std {
+                VirtualWorkspace::new_with_init_std_lib()
+            } else {
+                VirtualWorkspace::new()
+            };
+            let actual = ws.ty("table<integer,string>");
+            let accepted = ws.ty("string[]");
+            let rejected = ws.ty("number[]");
+            assert!(ws.check_type(&accepted, &actual));
+            assert!(!ws.check_type(&rejected, &actual));
+        }
+    }
+
+    #[test]
+    fn user_declared_table_generics_use_their_own_index_contract() {
+        for (params, field, source, target, compatible) in [
+            ("T", "[integer] T", "table<string>", "string[]", true),
+            ("T", "[integer] T", "table<string>", "number[]", false),
+            ("T", "[string] T", "table<string>", "string[]", false),
+            (
+                "K,V",
+                "[integer] K",
+                "table<string,number>",
+                "string[]",
+                true,
+            ),
+            (
+                "K,V",
+                "[integer] K",
+                "table<string,number>",
+                "number[]",
+                false,
+            ),
+        ] {
+            for (name, modifier, with_std) in [
+                ("table", "", false),
+                ("Table", "", false),
+                ("Table", "", true),
+                ("Custom.table", "", false),
+                ("Custom.table", "", true),
+                ("table", "(internal) ", false),
+                ("table", "(internal) ", true),
+            ] {
+                let mut ws = if with_std {
+                    VirtualWorkspace::new_with_init_std_lib()
+                } else {
+                    VirtualWorkspace::new()
+                };
+                ws.def(&format!(
+                    "---@class {modifier}{name}<{params}>\n---@field {field}\nlocal CustomTable = {{}}"
+                ));
+                let source = source.replace("table", name);
+                let actual = ws.ty(&source);
+                let expected = ws.ty(target);
+                assert_eq!(
+                    ws.check_type(&expected, &actual),
+                    compatible,
+                    "{modifier}{source} -> {target}, field={field}, std={with_std}"
+                );
+            }
+        }
+    }
+}
