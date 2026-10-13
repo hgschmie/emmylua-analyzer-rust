@@ -3562,3 +3562,232 @@ mod test {
         );
     }
 }
+#[cfg(test)]
+mod nominal_enum_members {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    use googletest::prelude::*;
+
+    #[gtest]
+    fn enum_accepts_its_nominal_members() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def(
+            r#"
+            defines = {}
+            ---@enum defines.rail_direction
+            defines.rail_direction = {
+                ---@class defines.rail_direction.back
+                back = {},
+                ---@class defines.rail_direction.front
+                front = {},
+            }
+            ---@param direction defines.rail_direction
+            function use_direction(direction) end
+        "#,
+        );
+        assert_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::ParamTypeMismatch,
+                r#"
+            ---@type defines.rail_direction.front
+            local front
+            use_direction(front)
+            use_direction(defines.rail_direction.front)
+            use_direction(defines.rail_direction.back)
+        "#
+            ),
+            eq(true)
+        );
+    }
+
+    #[gtest]
+    fn enum_accepts_predeclared_class_value() {
+        let mut ws = VirtualWorkspace::new();
+        assert_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::ParamTypeMismatch,
+                r#"
+            ---@class Front
+            local front = {}
+            ---@enum Direction
+            local Direction = {front = front}
+            ---@param direction Direction
+            local function use_direction(direction) end
+            use_direction(front)
+        "#
+            ),
+            eq(true)
+        );
+    }
+
+    #[gtest]
+    fn enum_member_compatibility_preserves_rejections() {
+        let definitions = r#"
+            defines = {}
+            ---@enum Direction
+            defines.directions = {
+                ---@class Front
+                front = {},
+            }
+            ---@enum OtherDirection
+            defines.other = {
+                ---@class OtherFront
+                front = {},
+            }
+            ---@class Direction.unlisted
+            ---@class Unrelated
+            ---@param direction Direction
+            function use_direction(direction) end
+        "#;
+        for ty in [
+            "OtherFront",
+            "Direction.unlisted",
+            "Unrelated",
+            "nil",
+            "Front?",
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            ws.def(definitions);
+            assert_that!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::ParamTypeMismatch,
+                    &format!(
+                        r#"
+                ---@param value {ty}
+                local function call(value) use_direction(value) end
+            "#
+                    )
+                ),
+                eq(false),
+                "{ty}"
+            );
+        }
+    }
+
+    #[gtest]
+    fn enum_member_assignments_and_optional_parameters() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@class Front
+            front = {}
+            ---@class Back
+            back = {}
+            ---@class Other
+            other = {}
+            ---@enum Direction
+            directions = {front = front, back = back}
+            ---@param direction Direction?
+            function optional_direction(direction) end
+        "#,
+        );
+        assert_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::AssignTypeMismatch,
+                r#"
+            ---@type Direction
+            local direction = front
+            direction = back
+        "#
+            ),
+            eq(true)
+        );
+        assert_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::AssignTypeMismatch,
+                r#"
+            ---@type Direction
+            local direction = other
+        "#
+            ),
+            eq(false)
+        );
+        assert_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::ParamTypeMismatch,
+                r#"
+            optional_direction(front)
+            optional_direction(back)
+            optional_direction(nil)
+        "#
+            ),
+            eq(true)
+        );
+    }
+
+    #[gtest]
+    fn nested_enum_and_inherited_member() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            defines = {
+                ---@enum Direction
+                direction = {
+                    ---@class Front
+                    front = {},
+                },
+            }
+            ---@class DerivedFront: Front
+            derived_front = {}
+            ---@param direction Direction
+            function use_direction(direction) end
+        "#,
+        );
+        assert_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::ParamTypeMismatch,
+                r#"
+            use_direction(derived_front)
+        "#
+            ),
+            eq(true)
+        );
+    }
+
+    #[gtest]
+    fn recursive_enum_member_does_not_accept_unrelated_class() {
+        let mut ws = VirtualWorkspace::new();
+        assert_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::ParamTypeMismatch,
+                r#"
+            ---@class Other
+            local other = {}
+            ---@type Recursive
+            local recursive
+            ---@enum Recursive
+            local values = {self = recursive}
+            ---@param value Recursive
+            local function use(value) end
+            use(other)
+        "#
+            ),
+            eq(false)
+        );
+    }
+
+    #[gtest]
+    fn private_enum_member_does_not_match_another_files_class() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@class (private) Front
+            local front = {}
+            ---@enum Direction
+            local values = {front = front}
+            ---@param value Direction
+            function use_direction(value) end
+        "#,
+        );
+        assert_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::ParamTypeMismatch,
+                r#"
+            ---@class (private) Front
+            local front = {}
+            use_direction(front)
+        "#
+            ),
+            eq(false)
+        );
+    }
+}
