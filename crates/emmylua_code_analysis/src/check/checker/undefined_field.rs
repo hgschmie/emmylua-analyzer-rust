@@ -319,7 +319,7 @@ fn enum_table_access(
     accepted.iter().any(|text| text == &key_text)
 }
 
-/// Finds the declaration and same-named type definition bound to a TableConst.
+/// Finds the declaration and type annotation attached to a TableConst initializer.
 fn table_binding(
     semantic_model: &SemanticModel<'_>,
     file_id: FileId,
@@ -327,14 +327,9 @@ fn table_binding(
 ) -> Option<(Decl, TypeDef)> {
     let facts = semantic_model.file_facts_of(file_id)?;
     let decl = facts.decl_by_value_range(range)?;
-    let def = facts
-        .type_defs_named_case_insensitive(decl.name.as_str())
-        .next()
-        .or_else(|| {
-            // `---@enum K3` + `local apiAlias = {...}`: when names differ, associate with the nearest preceding type definition by position.
-            facts.nearest_type_def_before(decl.name_range.start())
-        })?
-        .clone();
+    // A nearby or same-named type can belong to an entirely different declaration.
+    // Use doc ownership, which also handles differently named runtime tables.
+    let def = facts.type_def_by_owner_syntax(decl.owner_syntax?)?.clone();
     Some((decl.clone(), def))
 }
 
