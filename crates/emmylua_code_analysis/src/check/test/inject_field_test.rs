@@ -498,3 +498,155 @@ mod test {
         ));
     }
 }
+
+#[cfg(test)]
+mod union_table_constructors {
+    use crate::DiagnosticCode;
+    use crate::check::test::check_source;
+
+    const TYPES: &str = r#"
+        ---@class Record
+        ---@field valid boolean
+        ---@field members integer[]
+        local record = {}
+        ---@class Named
+        ---@field id integer
+        ---@field name string
+        local named = {}
+        ---@class Enabled
+        ---@field id string
+        ---@field enabled boolean
+        local enabled = {}
+    "#;
+
+    fn diagnostics(target: &str, expression: &str) -> Vec<crate::check::checker::Diagnostic> {
+        let source = format!(
+            r#"
+            {TYPES}
+            ---@alias Choice {target}
+            ---@param value Choice
+            local function accept(value) return value end
+            accept({expression})
+            ---@type Choice
+            local assigned = {expression}
+            return assigned
+        "#
+        );
+        check_source(&source)
+            .into_iter()
+            .filter(|d| d.code != DiagnosticCode::Unused)
+            .collect()
+    }
+
+    #[test]
+    fn accepts_complete_alternatives_independent_of_order() {
+        for (target, expression) in [
+            ("[string, string]|Record|string", "{'message', 'argument'}"),
+            ("Record|string|[string, string]", "{'message', 'argument'}"),
+            ("Record|{x:number,y:number}", "{x=1,y=2}"),
+            ("string|{x:number,y:number}", "{x=1,y=2}"),
+            ("Record|string[]", "{'one', 'two'}"),
+            ("Named|Enabled", "{id='id', enabled=true}"),
+            ("Enabled|Named", "{id=1, name='name'}"),
+            ("Record|table", "{arbitrary=true}"),
+            ("Record|any", "{arbitrary=true}"),
+            ("Record|unknown", "{arbitrary=true}"),
+        ] {
+            let diagnostics = diagnostics(target, expression);
+            assert!(diagnostics.is_empty(), "{target}: {diagnostics:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_incomplete_or_mistyped_constructors() {
+        for (target, expression) in [
+            ("[string, string]|Record", "{1, 'argument'}"),
+            ("[string, string]|Record", "{'message'}"),
+            ("Record|string[]", "{function() end}"),
+            ("Named|Enabled", "{id='id', name='name'}"),
+            ("Enabled|Named", "{id='id', name='name'}"),
+            ("Named|Enabled", "{id=1}"),
+            ("Named|Named[]", "{id=1}"),
+            ("Record|{x:number,y:number}", "{x='wrong',y=2}"),
+            ("string|{x:number,y:number}", "{x='wrong',y=2}"),
+        ] {
+            let diagnostics = diagnostics(target, expression);
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.code == DiagnosticCode::ParamTypeMismatch),
+                "{target}: {diagnostics:?}"
+            );
+            assert!(
+                diagnostics.iter().any(|d| matches!(
+                    d.code,
+                    DiagnosticCode::AssignTypeMismatch
+                        | DiagnosticCode::MissingFields
+                        | DiagnosticCode::InjectField
+                )),
+                "{target}: {diagnostics:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn follows_aliases_without_requiring_every_branch() {
+        let diagnostics = check_source(&format!(
+            r#"
+            {TYPES}
+            ---@alias Pair [string, string]
+            ---@alias PairAlias Pair
+            ---@alias Choice PairAlias|Record
+            ---@param value Choice
+            local function accept(value) return value end
+            accept({{'message', 'argument'}})
+        "#
+        ));
+        assert!(
+            diagnostics.iter().all(|d| d.code == DiagnosticCode::Unused),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn diagnostic_filters_do_not_select_an_incompatible_branch() {
+        let diagnostics = check_source(&format!(
+            r#"
+            {TYPES}
+            ---@alias Choice Named|Enabled
+            ---@param value Choice
+            local function accept(value) return value end
+            ---@diagnostic disable: assign-type-mismatch
+            accept({{id='id', name='name'}})
+        "#
+        ));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::ParamTypeMismatch),
+            "{diagnostics:?}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::AssignTypeMismatch),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn recursive_union_aliases_terminate_and_keep_matching_branches() {
+        let diagnostics = check_source(
+            r#"
+            ---@alias Recursive Recursive|[string, string]
+            ---@param value Recursive
+            local function accept(value) return value end
+            accept({'message', 'argument'})
+        "#,
+        );
+        assert!(
+            diagnostics.iter().all(|d| d.code == DiagnosticCode::Unused),
+            "{diagnostics:?}"
+        );
+    }
+}
