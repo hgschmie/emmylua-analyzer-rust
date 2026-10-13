@@ -2913,7 +2913,7 @@ fn coerce_table_assign_to_narrowed(
         if let (Some(lit), Some(nar)) = (
             table_member_type(model, &value_ty, &key),
             model.member_type(narrowed_before, &key),
-        ) && !types_may_overlap(lit, nar)
+        ) && !types_may_overlap(model, lit, nar)
         {
             return base_before.clone();
         }
@@ -3077,7 +3077,7 @@ fn correlated_narrowing_for_condition(
                 if !correlated_candidate_types.contains(&target_slot) {
                     correlated_candidate_types.push(target_slot.clone());
                 }
-                if types_may_overlap(disc_slot.clone(), disc_narrowed.clone())
+                if types_may_overlap(model, disc_slot.clone(), disc_narrowed.clone())
                     && !matching_target_types.contains(&target_slot)
                 {
                     matching_target_types.push(target_slot);
@@ -5117,11 +5117,13 @@ fn filter_type_by_member_discriminant(
                 continue;
             }
         }
-        let matched = model
-            .member_type(&component, key)
-            .map(|member_ty| types_may_overlap(member_ty, literal.clone()))
-            .unwrap_or(false);
-        if matched == keep_matching {
+        let member_ty = model.member_type(&component, key).unwrap_or(LuaType::Nil);
+        let possible = if keep_matching {
+            types_may_overlap(model, member_ty, literal.clone())
+        } else {
+            !type_is_only_literal(model, &member_ty, literal, &mut Vec::new())
+        };
+        if possible {
             kept.push(component);
         }
     }
@@ -5130,6 +5132,35 @@ fn filter_type_by_member_discriminant(
         1 => kept.pop().expect("len checked"),
         _ => LuaType::Union(LuaUnionType::from_vec(kept).into()),
     }
+}
+
+/// A negative comparison excludes a component only when its field cannot have
+/// any other value. An aliased union such as `'item' | 'fluid'` keeps both paths.
+fn type_is_only_literal(
+    model: &SemanticModel,
+    typ: &LuaType,
+    literal: &LuaType,
+    active: &mut Vec<LuaType>,
+) -> bool {
+    if active.len() >= 100 || active.contains(typ) {
+        return false;
+    }
+    active.push(typ.clone());
+    let result = match typ {
+        LuaType::Ref(id) | LuaType::Def(id) => model.type_def_of(id).is_some_and(|def| {
+            def.kind == TypeDefKind::Alias
+                && model
+                    .alias_target(&def)
+                    .is_some_and(|target| type_is_only_literal(model, &target, literal, active))
+        }),
+        LuaType::Union(union) => union
+            .into_vec()
+            .iter()
+            .all(|part| type_is_only_literal(model, part, literal, active)),
+        _ => is_singleton_value_type(typ) && types_may_overlap(model, typ.clone(), literal.clone()),
+    };
+    active.pop();
+    result
 }
 
 /// Dynamic member truthiness narrowing: when `obj[key]` is true, keep union components whose member is truthy;
@@ -5590,15 +5621,59 @@ impl Narrowing {
     }
 }
 
-/// Whether two types may overlap (used for return_overload discriminant slot matching).
-fn types_may_overlap(left: LuaType, right: LuaType) -> bool {
-    if matches!(left, LuaType::Unknown | LuaType::Any)
-        || matches!(right, LuaType::Unknown | LuaType::Any)
-    {
-        return true;
+/// Whether two types may overlap, including aliases used as discriminant fields.
+fn types_may_overlap(model: &SemanticModel, left: LuaType, right: LuaType) -> bool {
+    fn overlap(
+        model: &SemanticModel,
+        left: LuaType,
+        right: LuaType,
+        active: &mut Vec<(LuaType, LuaType)>,
+    ) -> bool {
+        if matches!(left, LuaType::Unknown | LuaType::Any)
+            || matches!(right, LuaType::Unknown | LuaType::Any)
+        {
+            return true;
+        }
+        if left == right {
+            return !left.is_never();
+        }
+        // Recursive aliases cannot prove a branch impossible.
+        let pair = (left.clone(), right.clone());
+        if active.len() >= 100 || active.contains(&pair) {
+            return true;
+        }
+        active.push(pair);
+        let expanded = |ty: &LuaType| {
+            let (LuaType::Ref(id) | LuaType::Def(id)) = ty else {
+                return None;
+            };
+            let def = model.type_def_of(id)?;
+            (def.kind == TypeDefKind::Alias)
+                .then(|| model.alias_target(&def))
+                .flatten()
+        };
+        let result = if let Some(target) = expanded(&left) {
+            overlap(model, target, right, active)
+        } else if let Some(target) = expanded(&right) {
+            overlap(model, left, target, active)
+        } else if let LuaType::Union(union) = &left {
+            union
+                .into_vec()
+                .iter()
+                .any(|part| overlap(model, part.clone(), right.clone(), active))
+        } else if let LuaType::Union(union) = &right {
+            union
+                .into_vec()
+                .iter()
+                .any(|part| overlap(model, left.clone(), part.clone(), active))
+        } else {
+            let intersection = narrow_intersect_types(left, right);
+            !intersection.is_never() && !matches!(intersection, LuaType::Unknown)
+        };
+        active.pop();
+        result
     }
-    let inter = narrow_intersect_types(left, right);
-    !inter.is_never() && !matches!(inter, LuaType::Unknown)
+    overlap(model, left, right, &mut Vec::new())
 }
 
 /// Intersection with primitive subtyping (`integer <: number`, literals <: base types).
