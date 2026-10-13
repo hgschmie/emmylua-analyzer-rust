@@ -356,8 +356,8 @@ fn compile_expr(expr: &LuaExpr, file_id: FileId, out: &mut Vec<Instr>, stack: &m
             table.get_range(),
         )))),
         LuaExpr::UnaryExpr(unary) => {
-            // M0: `not` -> Boolean; `-x`/`#x` -> operator overload (`---@operator unm/len`),
-            // falling back to the operand type when no overload exists.
+            // `not` -> Boolean; `-x`/`#x` check operator overloads (`---@operator unm/len`).
+            // Without an overload, `#x` returns Integer regardless of the operand type.
             let op = unary.get_op_token().map(|t| t.get_op());
             if op == Some(emmylua_parser::UnaryOperator::OpNot) {
                 out.push(Instr::PushPrimitive(PrimitiveType::Boolean));
@@ -4899,6 +4899,9 @@ fn unary_type(
         && let Some(ty) = model.operator_type(name, operand)
     {
         return ty;
+    }
+    if op == OpLen {
+        return LuaType::Integer;
     }
     if op == OpUnm {
         match operand {
