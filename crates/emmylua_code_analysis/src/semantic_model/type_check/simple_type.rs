@@ -32,6 +32,37 @@ pub fn check_simple_type_compact(
                 };
                 let next_guard = check_guard.next_level()?;
                 for (index, expected) in tuple.get_types().iter().enumerate() {
+                    if let LuaType::Variadic(variadic) = expected
+                        && matches!(variadic.as_ref(), VariadicType::Base(_))
+                        && index + 1 == tuple.len()
+                    {
+                        // A tuple tail may be empty. Check each present element
+                        // against its repeated type, rather than requiring one
+                        // value whose type is itself variadic.
+                        for member in context.model.member_infos(source) {
+                            let LuaMemberKey::Integer(key) = member.key else {
+                                continue;
+                            };
+                            let Some(key) = key.checked_sub(1) else {
+                                continue;
+                            };
+                            let Ok(offset) = usize::try_from(key) else {
+                                continue;
+                            };
+                            let Some(offset) = offset.checked_sub(index) else {
+                                continue;
+                            };
+                            if let Some(expected) = variadic.get_type(offset) {
+                                super::check_general_type_compact(
+                                    &mut element_context,
+                                    &member.typ,
+                                    expected,
+                                    next_guard,
+                                )?;
+                            }
+                        }
+                        continue;
+                    }
                     let key = LuaMemberKey::Integer(index as i64 + 1);
                     let actual = context
                         .model

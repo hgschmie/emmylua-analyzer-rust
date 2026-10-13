@@ -12,7 +12,7 @@
 //!   it is substituted back into later constraints;
 //! - Nested functions become new `FnPair` work items rather than recursive stack calls.
 //!
-//! Leaf-type decisions reuse `type_check::is_compatible` (named types/alias/union etc.);
+//! Leaf-type decisions reuse `type_check::is_assign_compatible` (named types/alias/union etc.);
 //! this module only makes the function structure iterative.
 
 use std::collections::VecDeque;
@@ -20,7 +20,7 @@ use std::collections::VecDeque;
 use crate::LuaFunctionType;
 use crate::LuaType;
 use crate::semantic_model::SemanticModel;
-use crate::semantic_model::type_check::is_compatible;
+use crate::semantic_model::type_check::is_assign_compatible;
 
 use super::unify::{self, TplBindings};
 
@@ -57,29 +57,50 @@ fn parameter_assignable(model: &SemanticModel, source: &LuaType, target: &LuaTyp
     types_assignable(model, source, target)
 }
 
-/// Leaf assignability check: `type_check` requires all union-target components to be
-/// compatible; here we also allow "any component compatible" (needed for function
-/// parameter positions).
+/// Callback values use assignment semantics: every actual union alternative must
+/// fit an expected alternative, including when either side is a named alias.
 fn types_assignable(model: &SemanticModel, source: &LuaType, target: &LuaType) -> bool {
+    types_assignable_inner(model, source, target, &mut Vec::new())
+}
+
+fn types_assignable_inner(
+    model: &SemanticModel,
+    source: &LuaType,
+    target: &LuaType,
+    visiting: &mut Vec<(LuaType, LuaType)>,
+) -> bool {
     if source == target {
         return true;
     }
-    if is_compatible(model, source, target) {
-        return true;
+    let pair = (source.clone(), target.clone());
+    if visiting.len() >= 100 || visiting.contains(&pair) {
+        return false;
     }
-    if let LuaType::Union(union) = target {
-        return union
-            .into_vec()
+    visiting.push(pair);
+    let alias_target = |ty: &LuaType| {
+        let (LuaType::Ref(id) | LuaType::Def(id)) = ty else {
+            return None;
+        };
+        let def = model.type_def_of(id)?;
+        model.alias_target(&def)
+    };
+    let compatible = if let Some(expanded) = alias_target(source) {
+        types_assignable_inner(model, &expanded, target, visiting)
+    } else if let Some(expanded) = alias_target(target) {
+        types_assignable_inner(model, source, &expanded, visiting)
+    } else if let LuaType::Union(union) = source {
+        union
             .iter()
-            .any(|component| types_assignable(model, source, component));
-    }
-    if let LuaType::Union(union) = source {
-        return union
-            .into_vec()
+            .all(|component| types_assignable_inner(model, component, target, visiting))
+    } else if let LuaType::Union(union) = target {
+        union
             .iter()
-            .any(|component| types_assignable(model, component, target));
-    }
-    false
+            .any(|component| types_assignable_inner(model, source, component, visiting))
+    } else {
+        is_assign_compatible(model, source, target)
+    };
+    visiting.pop();
+    compatible
 }
 
 /// Iteratively check whether `actual` can be used where `expected` is expected.
