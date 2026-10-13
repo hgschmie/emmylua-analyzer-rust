@@ -1,4 +1,210 @@
 #[cfg(test)]
+mod inline_assertion_arguments {
+    use crate::DiagnosticCode;
+    use crate::check::test::check_source;
+
+    fn diagnostics(source: &str) -> Vec<crate::check::checker::Diagnostic> {
+        check_source(source)
+            .into_iter()
+            .filter(|d| {
+                matches!(
+                    d.code,
+                    DiagnosticCode::ParamTypeMismatch
+                        | DiagnosticCode::AssignTypeMismatch
+                        | DiagnosticCode::MissingFields
+                        | DiagnosticCode::InjectField
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_asserted_table_arguments_use_asserted_contract() {
+        let source = r#"
+        ---@class Message
+        ---@field text string
+        ---@param message Message
+        local function accept(message) end
+        ---@type string?
+        local maybe
+        accept({text = maybe} --[[@as Message]])
+        accept({unexpected = true} --[[@as Message]])
+        accept(({} --[[@as Message]]))
+        accept(({}) --[[@as Message]])
+        "#;
+        assert!(diagnostics(source).is_empty(), "{:#?}", diagnostics(source));
+    }
+
+    #[test]
+    fn test_assertions_do_not_hide_other_argument_errors() {
+        let source = r#"
+        ---@class Message
+        ---@field text string
+        ---@param message Message
+        ---@param count integer
+        local function accept(message, count) end
+        accept({} --[[@as Message]], 'wrong')
+        "#;
+        let result = diagnostics(source);
+        assert_eq!(result.len(), 1, "{result:#?}");
+        assert_eq!(result[0].code, DiagnosticCode::ParamTypeMismatch);
+        assert!(result[0].message.contains("integer"), "{result:#?}");
+    }
+
+    #[test]
+    fn test_asserted_argument_does_not_cast_siblings_or_nested_calls() {
+        for call in [
+            "accept({} --[[@as Message]], 'wrong')",
+            "accept({text = integer_only('wrong')} --[[@as Message]], {} --[[@as Message]])",
+            "integer_only({text = integer_only('wrong')} --[[@as integer]])",
+        ] {
+            let source = format!(
+                r#"
+            ---@class Message
+            ---@field text string
+            ---@param first Message
+            ---@param second Message
+            local function accept(first, second) end
+            ---@param n integer
+            local function integer_only(n) return n end
+            {call}
+            "#
+            );
+            let result = diagnostics(&source);
+            assert_eq!(result.len(), 1, "{call}: {result:#?}");
+            assert_eq!(result[0].code, DiagnosticCode::ParamTypeMismatch);
+        }
+    }
+
+    #[test]
+    fn test_incompatible_asserted_contract_is_still_rejected() {
+        let source = r#"
+        ---@class Message
+        ---@field text string
+        ---@param count integer
+        local function accept(count) end
+        accept({text = 'message'} --[[@as Message]])
+        "#;
+        let result = diagnostics(source);
+        assert_eq!(result.len(), 1, "{result:#?}");
+        assert_eq!(result[0].code, DiagnosticCode::ParamTypeMismatch);
+    }
+
+    #[test]
+    fn test_asserted_arguments_in_methods_generics_and_variadics() {
+        let source = r#"
+        ---@class Message
+        ---@field text string
+        local methods = {}
+        ---@param message Message
+        function methods:accept(message) end
+        ---@param ... Message
+        local function accept_many(...) end
+        ---@generic T
+        ---@param value T
+        ---@return T
+        local function identity(value) return value end
+        methods:accept({} --[[@as Message]])
+        accept_many({} --[[@as Message]], {} --[[@as Message]])
+        methods:accept(identity({} --[[@as Message]]))
+        "#;
+        assert!(diagnostics(source).is_empty(), "{:#?}", diagnostics(source));
+    }
+
+    #[test]
+    fn test_unasserted_and_incompatible_contracts_still_report_errors() {
+        for argument in ["{}", "{text = false}", "{} --[[@as integer]]"] {
+            let source = format!(
+                r#"
+            ---@class Message
+            ---@field text string
+            ---@param message Message
+            local function accept(message) end
+            accept({argument})
+            "#
+            );
+            assert!(!diagnostics(&source).is_empty(), "{argument}");
+        }
+    }
+
+    #[test]
+    fn test_asserted_argument_cache_preserves_nullable_contract() {
+        use emmylua_parser::{LuaAstNode, LuaCallExpr};
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def(
+            r#"
+            ---@class Message
+            ---@field text string
+            ---@param message Message?
+            local function accept(message) end
+            accept({} --[[@as Message?]])
+        "#,
+        );
+        let model = ws.analysis.semantic_model(file);
+        let call = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaCallExpr>()
+            .next()
+            .unwrap();
+        let analysis = model.call_site_analysis(&call);
+        assert_eq!(analysis.arg_types, vec![ws.ty("Message?")]);
+    }
+    #[test]
+    fn asserted_variadic_fields_preserve_later_argument_errors() {
+        for annotation in ["Message", "[Message, Message]..."] {
+            for callee in ["accept(", "pcall(accept, "] {
+                for (arguments, valid) in [
+                    (
+                        "{text=false} --[[@as Message]], {text=1} --[[@as Message]]",
+                        true,
+                    ),
+                    ("{} --[[@as Message]], false", false),
+                    ("{} --[[@as Message]], {text=false}", false),
+                    ("{} --[[@as Message]], {} --[[@as integer]]", false),
+                ] {
+                    let source = format!(
+                        "---@class Message\n---@field text string\n---@param ... {annotation}\nlocal function accept(...) end\n{callee}{arguments})"
+                    );
+                    let result = diagnostics(&source);
+                    assert_eq!(
+                        result.is_empty(),
+                        valid,
+                        "{annotation}, {callee}, {arguments}: {result:#?}"
+                    );
+                    if !valid {
+                        assert!(
+                            result
+                                .iter()
+                                .all(|d| d.code == DiagnosticCode::ParamTypeMismatch
+                                    || d.code == DiagnosticCode::AssignTypeMismatch),
+                            "{result:#?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn assertions_do_not_skip_unknown_or_unasserted_siblings() {
+        for value in ["nil", "false", "{text=false}"] {
+            let source = format!(
+                "---@class Message\n---@field text string\n---@param first Message\n---@param second Message\nlocal function accept(first, second) end\naccept({{}} --[[@as Message]], {value})"
+            );
+            let result = diagnostics(&source);
+            assert!(!result.is_empty(), "{value}");
+            assert!(
+                result
+                    .iter()
+                    .all(|d| d.code != DiagnosticCode::MissingFields),
+                "asserted first argument was rechecked: {result:#?}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod test {
     use std::{ops::Deref, sync::Arc};
 

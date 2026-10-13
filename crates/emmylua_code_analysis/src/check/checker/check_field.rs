@@ -263,7 +263,15 @@ fn check_call_args(
             let Some((_, Some(param_ty))) = params.get(index) else {
                 continue;
             };
-            check_against_type(context, semantic_model, param_ty, &table);
+            // An explicit assertion replaces this constructor's structural contract.
+            let asserted = crate::semantic_model::flow::type_of_expr_with_cast(
+                semantic_model,
+                table.get_syntax_id(),
+                crate::semantic_model::flow::ExprCastMode::AsOnly,
+            );
+            if matches!(asserted, LuaType::TableConst(_)) {
+                check_against_type(context, semantic_model, param_ty, &table);
+            }
         }
     }
 }
