@@ -1045,3 +1045,230 @@ mod dictionary_constructor {
         }
     }
 }
+
+#[cfg(test)]
+mod union_table_constructors {
+    use crate::DiagnosticCode;
+    use crate::check::test::check_source;
+
+    const TYPES: &str = r#"
+        ---@class Record
+        ---@field valid boolean
+        ---@field members integer[]
+        local record = {}
+        ---@class Named
+        ---@field id integer
+        ---@field name string
+        local named = {}
+        ---@class Enabled
+        ---@field id string
+        ---@field enabled boolean
+        local enabled = {}
+    "#;
+
+    fn diagnostics(target: &str, expression: &str) -> Vec<crate::check::checker::Diagnostic> {
+        let source = format!(
+            r#"
+            {TYPES}
+            ---@alias Choice {target}
+            ---@param value Choice
+            local function accept(value) return value end
+            accept({expression})
+            ---@type Choice
+            local assigned = {expression}
+            return assigned
+        "#
+        );
+        check_source(&source)
+            .into_iter()
+            .filter(|d| d.code != DiagnosticCode::Unused)
+            .collect()
+    }
+
+    #[test]
+    fn accepts_complete_alternatives_independent_of_order() {
+        for (target, expression) in [
+            ("[string, string]|Record|string", "{'message', 'argument'}"),
+            ("Record|string|[string, string]", "{'message', 'argument'}"),
+            ("Record|{x:number,y:number}", "{x=1,y=2}"),
+            ("string|{x:number,y:number}", "{x=1,y=2}"),
+            ("Record|string[]", "{'one', 'two'}"),
+            ("Named|Enabled", "{id='id', enabled=true}"),
+            ("Enabled|Named", "{id=1, name='name'}"),
+            ("Record|table", "{arbitrary=true}"),
+            ("Record|any", "{arbitrary=true}"),
+            ("Record|unknown", "{arbitrary=true}"),
+            ("{nested?:{left:number}}|{name:string}", "{}"),
+            (
+                "{nested:{left:number}}|{nested:{right:string}}",
+                "{nested={}, [('nested')]={left=1}}",
+            ),
+            (
+                "{nested:{left:number}}|{nested:{right:string}}",
+                "{[('nested')]={left=1}}",
+            ),
+            (
+                "{nested: {left:number}|{right:string}}|{name:string}",
+                "{nested={right='text'}}",
+            ),
+            (
+                "{nested:{left:number}}|{nested:{right:string}}",
+                "{nested={right='text'}}",
+            ),
+        ] {
+            let diagnostics = diagnostics(target, expression);
+            assert!(diagnostics.is_empty(), "{target}: {diagnostics:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_incomplete_or_mistyped_constructors() {
+        for (target, expression) in [
+            ("[string, string]|Record", "{1, 'argument'}"),
+            ("[string, string]|Record", "{'message'}"),
+            ("Record|string[]", "{function() end}"),
+            ("Named|Enabled", "{id='id', name='name'}"),
+            ("Enabled|Named", "{id='id', name='name'}"),
+            ("Named|Enabled", "{id=1}"),
+            ("Named|Named[]", "{id=1}"),
+            ("Record|{x:number,y:number}", "{x='wrong',y=2}"),
+            ("string|{x:number,y:number}", "{x='wrong',y=2}"),
+            ("{nested?:{left:number}}|{name:string}", "{nested={}}"),
+            (
+                "{nested:{left:number}}|{nested:{right:string}}",
+                "{nested={left=1}, [('nested')]={}}",
+            ),
+            (
+                "{nested: {left:number}|{right:string}}|{name:string}",
+                "{nested={left=false}}",
+            ),
+            (
+                "{nested:{left:number}}|{nested:{right:string}}",
+                "{nested={left=false}}",
+            ),
+            (
+                "{nested:{left:number}}|{nested:{right:string}}",
+                "{nested={}}",
+            ),
+        ] {
+            let diagnostics = diagnostics(target, expression);
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.code == DiagnosticCode::ParamTypeMismatch),
+                "{target}: {diagnostics:?}"
+            );
+            assert!(
+                diagnostics.iter().any(|d| matches!(
+                    d.code,
+                    DiagnosticCode::AssignTypeMismatch
+                        | DiagnosticCode::MissingFields
+                        | DiagnosticCode::InjectField
+                )),
+                "{target}: {diagnostics:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn follows_aliases_without_requiring_every_branch() {
+        let diagnostics = check_source(&format!(
+            r#"
+            {TYPES}
+            ---@alias Pair [string, string]
+            ---@alias PairAlias Pair
+            ---@alias Choice PairAlias|Record
+            ---@param value Choice
+            local function accept(value) return value end
+            accept({{'message', 'argument'}})
+        "#
+        ));
+        assert!(
+            diagnostics.iter().all(|d| d.code == DiagnosticCode::Unused),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn diagnostic_filters_do_not_select_an_incompatible_branch() {
+        let diagnostics = check_source(&format!(
+            r#"
+            {TYPES}
+            ---@alias Choice Named|Enabled
+            ---@param value Choice
+            local function accept(value) return value end
+            ---@diagnostic disable: assign-type-mismatch
+            accept({{id='id', name='name'}})
+        "#
+        ));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::ParamTypeMismatch),
+            "{diagnostics:?}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::AssignTypeMismatch),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn recursive_union_aliases_terminate_and_keep_matching_branches() {
+        let diagnostics = check_source(
+            r#"
+            ---@alias Recursive Recursive|[string, string]
+            ---@param value Recursive
+            local function accept(value) return value end
+            accept({'message', 'argument'})
+        "#,
+        );
+        assert!(
+            diagnostics.iter().all(|d| d.code == DiagnosticCode::Unused),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn direct_and_protected_calls_keep_selected_union_field_mismatches() {
+        for callee in ["accept(", "pcall(accept, "] {
+            for (fields, value, valid) in [
+                ("{value: number}|{value: string}", "{value=2}", true),
+                ("{value: number}|{value: string}", "{value='text'}", true),
+                ("{value: number}|{value: string}", "{value=false}", false),
+                (
+                    "{[string]: number}|{[string]: string}",
+                    "{value=false}",
+                    false,
+                ),
+                (
+                    "{a: number,b: number}|{a: string,b: string}",
+                    "{a=2,b='text'}",
+                    false,
+                ),
+            ] {
+                let source = format!(
+                    "---@alias Fields {fields}\n---@param value Fields\nlocal function accept(value) return value end\n{callee}{value})"
+                );
+                let diagnostics = check_source(&source);
+                assert_eq!(diagnostics.is_empty(), valid, "{source}: {diagnostics:?}");
+                if !valid {
+                    assert!(
+                        diagnostics.iter().any(|diagnostic| {
+                            diagnostic.code == DiagnosticCode::AssignTypeMismatch
+                        }),
+                        "{source}: {diagnostics:?}"
+                    );
+                    assert!(
+                        diagnostics.iter().any(|diagnostic| {
+                            diagnostic.code == DiagnosticCode::ParamTypeMismatch
+                        }),
+                        "{source}: {diagnostics:?}"
+                    );
+                }
+            }
+        }
+    }
+}

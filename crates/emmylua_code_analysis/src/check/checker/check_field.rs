@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use emmylua_parser::{
     LuaAssignStat, LuaAst, LuaAstNode, LuaCallExpr, LuaDocType, LuaExpr, LuaIndexKey, LuaLocalStat,
@@ -9,9 +10,9 @@ use crate::DiagnosticCode;
 use crate::semantic_db::def::{SemanticId, TypeDef, TypeDefKind};
 use crate::semantic_model::SemanticModel;
 use crate::semantic_model::type_eval::expand_alias_branches;
-use crate::{LuaMemberKey, LuaType, LuaTypeDeclId};
+use crate::{LuaMemberKey, LuaType, LuaTypeDeclId, LuaUnionType};
 
-use super::assign_type_mismatch::index_key_type;
+use super::assign_type_mismatch::{check_value_against, index_key_type};
 use super::param_type_check::callable_candidates;
 use super::{CheckContext, Checker};
 use crate::semantic_model::render::humanize_type;
@@ -166,7 +167,10 @@ fn check_index_assign(
 
 /// Follows alias definitions until a non-alias type is reached. Returns `None` when the
 /// input is not an alias (or an alias cycle/unresolved target prevents expansion).
-fn expand_alias_type(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> Option<LuaType> {
+pub(super) fn expand_alias_type(
+    semantic_model: &SemanticModel<'_>,
+    ty: &LuaType,
+) -> Option<LuaType> {
     let mut current = ty.clone();
     let mut visited = Vec::new();
     loop {
@@ -193,6 +197,12 @@ fn expand_alias_type(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> Option
         }
         visited.push(id.clone());
         current = semantic_model.alias_target(&def)?;
+        if def.generic_params.is_empty() && matches!(current, LuaType::Union(_)) {
+            // Preserve object fields inside unions; the shell projection can reduce
+            // an object alternative to `table`, which would accept any constructor.
+            // Leave mapped/generic alias projection with its existing resolver.
+            current = semantic_model.doc_type_lua_rich_in(def.file_id, def.alias_type?);
+        }
     }
 }
 
@@ -320,21 +330,13 @@ fn check_against_type(
             return;
         }
         LuaType::Union(union) => {
-            // Check the first named-class component; empty tables pass through the array component.
-            let fields_count = table.get_fields_with_keys().len();
-            for component in union.into_vec() {
-                let named = matches!(
-                    component,
-                    LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_)
-                );
-                if named && fields_count > 0 {
-                    check_against_type(context, semantic_model, &component, table);
-                    return;
-                }
-                if matches!(component, LuaType::Array(_)) && fields_count == 0 {
-                    return;
-                }
-            }
+            check_union_table_fields(
+                context,
+                semantic_model,
+                union,
+                table,
+                &[DiagnosticCode::MissingFields, DiagnosticCode::InjectField],
+            );
             return;
         }
         LuaType::Object(object) => {
@@ -346,10 +348,9 @@ fn check_against_type(
                     LuaMemberKey::Integer(i) => i.to_string(),
                     _ => continue,
                 };
-                if !fields
-                    .iter()
-                    .any(|(_, field_key)| field_key.get_path_part() == name)
-                    && !ty.is_nullable()
+                if !fields.iter().any(|(_, field_key)| {
+                    static_member_key(semantic_model, field_key).as_ref() == Some(key)
+                }) && !ty.is_nullable()
                 {
                     missing.push(name);
                 }
@@ -367,6 +368,24 @@ fn check_against_type(
                             .join(", ")
                     ),
                 );
+            }
+            // Only the final complete write supplies a nested constructor's fields.
+            let mut overwritten = HashSet::new();
+            for (field, key) in fields.into_iter().rev() {
+                let Some(value) = field.get_value_expr() else {
+                    continue;
+                };
+                let Some(key) = static_member_key(semantic_model, &key) else {
+                    continue;
+                };
+                if !overwritten.insert(key.clone()) {
+                    continue;
+                }
+                if let Some(expected) = object.get_field(&key)
+                    && let LuaExpr::TableExpr(value) = value
+                {
+                    check_against_type(context, semantic_model, expected, &value);
+                }
             }
             return;
         }
@@ -468,6 +487,103 @@ fn check_against_type(
             ),
         );
     }
+}
+
+/// A table constructor must satisfy one complete union alternative. Choose using
+/// both field presence and value checks so the two diagnostic passes cannot pick
+/// different alternatives and accidentally accept an invalid constructor.
+pub(super) fn check_union_table_fields(
+    context: &mut CheckContext<'_>,
+    semantic_model: &SemanticModel<'_>,
+    union: &LuaUnionType,
+    table: &LuaTableExpr,
+    codes: &[DiagnosticCode],
+) {
+    for diagnostic in table_union_diagnostics(semantic_model, union, table) {
+        if codes.contains(&diagnostic.code) {
+            context.add_diagnostic(diagnostic.code, diagnostic.range, diagnostic.message);
+        }
+    }
+}
+
+pub(super) fn table_union_diagnostics(
+    semantic_model: &SemanticModel<'_>,
+    union: &LuaUnionType,
+    table: &LuaTableExpr,
+) -> Vec<super::Diagnostic> {
+    semantic_model.constructor_diagnostics(
+        table.get_syntax_id(),
+        LuaType::Union(Rc::new(union.clone())),
+        || table_union_diagnostics_uncached(semantic_model, union, table),
+    )
+}
+
+fn table_union_diagnostics_uncached(
+    semantic_model: &SemanticModel<'_>,
+    union: &LuaUnionType,
+    table: &LuaTableExpr,
+) -> Vec<super::Diagnostic> {
+    fn collect_alternatives(
+        model: &SemanticModel<'_>,
+        ty: &LuaType,
+        active: &mut Vec<LuaType>,
+        out: &mut Vec<LuaType>,
+    ) {
+        if active.len() >= 100 || active.contains(ty) {
+            return;
+        }
+        active.push(ty.clone());
+        if let Some(expanded) = expand_alias_type(model, ty) {
+            collect_alternatives(model, &expanded, active, out);
+        } else if let LuaType::Union(union) = ty {
+            for component in union.iter() {
+                collect_alternatives(model, component, active, out);
+            }
+        } else {
+            out.push(ty.clone());
+        }
+        active.pop();
+    }
+
+    let mut alternatives = Vec::new();
+    for component in union.iter() {
+        collect_alternatives(
+            semantic_model,
+            component,
+            &mut Vec::new(),
+            &mut alternatives,
+        );
+    }
+    let value_expr = LuaExpr::TableExpr(table.clone());
+    let mut best: Option<Vec<super::Diagnostic>> = None;
+    for alternative in alternatives {
+        // A constructor with named keys is not the array alternative of `C|C[]`.
+        // Keep reporting the class's missing fields rather than an element error.
+        if matches!(alternative, LuaType::Array(_))
+            && table.get_fields_with_keys().iter().any(|(_, key)| {
+                matches!(
+                    static_member_key(semantic_model, key),
+                    Some(LuaMemberKey::Name(_))
+                )
+            })
+        {
+            continue;
+        }
+        let mut candidate = CheckContext::unfiltered(semantic_model);
+        check_against_type(&mut candidate, semantic_model, &alternative, table);
+        check_value_against(&mut candidate, semantic_model, &alternative, &value_expr);
+        let diagnostics = candidate.into_diagnostics();
+        if diagnostics.is_empty() {
+            return diagnostics;
+        }
+        if best
+            .as_ref()
+            .is_none_or(|current| diagnostics.len() < current.len())
+        {
+            best = Some(diagnostics);
+        }
+    }
+    best.unwrap_or_default()
 }
 
 /// Target type -> named type id (Ref/Def/Generic base class).

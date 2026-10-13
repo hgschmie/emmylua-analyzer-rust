@@ -239,7 +239,7 @@ fn check_call(
             && let Some(decl_facts) = facts.decl_by_id(&decl)
             && let Some(doc_syntax) = decl_facts.doc_type_syntax
         {
-            let doc_ty = semantic_model.doc_type_lua(doc_syntax);
+            let doc_ty = semantic_model.doc_type_lua_rich(doc_syntax);
             if let Some(func) = doc_function_of(semantic_model, &doc_ty) {
                 candidates = vec![func];
             }
@@ -803,6 +803,33 @@ fn check_arg_pairs(
         }
         // Table literals targeting object / intersection: check field by field and then fully take over.
         if let LuaExpr::TableExpr(table) = arg {
+            let table_target = super::check_field::expand_alias_type(semantic_model, &param_ty)
+                .unwrap_or_else(|| param_ty.clone());
+            if let LuaType::Union(union) = &table_target
+                && !table_target.contains_tpl_node()
+            {
+                let diagnostics =
+                    super::check_field::table_union_diagnostics(semantic_model, union, table);
+                if !diagnostics.is_empty() {
+                    // Whole-constructor failures use ParamTypeMismatch below;
+                    // preserve AssignTypeMismatch only for the selected field ranges.
+                    out.extend(diagnostics.into_iter().filter_map(|diagnostic| {
+                        (diagnostic.code == DiagnosticCode::AssignTypeMismatch
+                            && diagnostic.range != table.get_range())
+                        .then_some(Mismatch {
+                            code: DiagnosticCode::AssignTypeMismatch,
+                            range: diagnostic.range,
+                            message: diagnostic.message,
+                        })
+                    }));
+                    out.push(Mismatch {
+                        code: DiagnosticCode::ParamTypeMismatch,
+                        range: table.get_range(),
+                        message: mismatch_message(semantic_model, &call_arg_ty, &param_ty, name),
+                    });
+                }
+                continue;
+            }
             out.extend(table_field_mismatches(semantic_model, &param_ty, arg));
             if has_table_literal_shape(&param_ty) {
                 if let Some(mismatch) = table_literal_mismatch(semantic_model, &param_ty, table) {
