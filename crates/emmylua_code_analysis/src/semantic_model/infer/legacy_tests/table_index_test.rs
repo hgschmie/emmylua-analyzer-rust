@@ -500,3 +500,134 @@ fn table_index_computed_assignment_retains_unsafe_lookup_warning() {
         );
     }
 }
+
+#[gtest]
+fn table_index_computed_guards_preserve_nested_read_contracts() {
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    for table_index in [false, true] {
+        for array_index in [false, true] {
+            let mut ws = workspace(table_index);
+            let mut config = ws.get_emmyrc();
+            config.strict.array_index = array_index;
+            ws.update_emmyrc(config);
+            let source = r#"
+                ---@class Dispatcher
+                ---@field Provided table<string, table<integer, integer>>
+                ---@param dispatcher Dispatcher
+                ---@param key string
+                ---@param id integer
+                local function lookup(dispatcher, key, id)
+                    if dispatcher.Provided[key] and dispatcher.Provided[key][id] then
+                        local count = dispatcher.Provided[key][id]
+                    end
+                end
+            "#;
+            assert!(ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, source));
+            let file = ws.def(source);
+            let model = ws.analysis.semantic_model(file);
+            let index = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaIndexExpr>()
+                .filter(|index| index.syntax().text().to_string() == "dispatcher.Provided[key][id]")
+                .last()
+                .unwrap();
+            let typ = model.type_of_expr_at(index.get_syntax_id(), index.get_position());
+            assert_eq!(typ, ws.ty("integer"));
+
+            let unguarded = r#"
+                ---@param entries table<string, table<integer, integer>>
+                ---@param key string
+                ---@param id integer
+                local function lookup(entries, key, id)
+                    local count = entries[key][id]
+                end
+            "#;
+            assert_eq!(
+                ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, unguarded),
+                !table_index
+            );
+
+            ws.def("---@type string[]\nguard_array = {}\n---@type table<string, string>\nguard_map = {}");
+            let array = ws.expr_ty("guard_array[1]");
+            let dictionary = ws.expr_ty("guard_map['key']");
+            assert_eq!(array, ws.ty(if array_index { "string?" } else { "string" }));
+            assert_eq!(
+                dictionary,
+                ws.ty(if table_index { "string?" } else { "string" })
+            );
+        }
+    }
+}
+
+#[gtest]
+fn table_index_computed_guards_discard_stale_facts() {
+    for mutation in [
+        "key = other_key",
+        "dispatcher = other_dispatcher",
+        "dispatcher.Provided = {}",
+        "dispatcher.Provided[key] = nil",
+        "local alias = dispatcher.Provided; alias[key] = nil",
+        "mutate()",
+        "local unused = mutate()",
+        "local key = other_key",
+    ] {
+        let mut ws = workspace(true);
+        let source = format!(
+            r#"
+            ---@class Dispatcher
+            ---@field Provided table<string, table<integer, integer>>
+            ---@param dispatcher Dispatcher
+            ---@param other_dispatcher Dispatcher
+            ---@param key string
+            ---@param other_key string
+            ---@param id integer
+            local function lookup(dispatcher, other_dispatcher, key, other_key, id)
+                if dispatcher.Provided[key] then
+                    {mutation}
+                    local count = dispatcher.Provided[key][id]
+                end
+            end
+        "#
+        );
+        assert!(
+            !ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+            "{mutation}"
+        );
+    }
+}
+
+#[gtest]
+fn table_index_computed_guards_preserve_asymmetric_fields() {
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    for table_index in [false, true] {
+        let source = r#"
+            ---@class Dispatcher
+            ---@field (read) Provided table<string, table<integer, integer>>
+            ---@field (write) Provided table<string, table<integer, integer>>|string
+            ---@param dispatcher Dispatcher
+            ---@param key string
+            ---@param id integer
+            local function lookup(dispatcher, key, id)
+                dispatcher.Provided = 'reset'
+                if dispatcher.Provided[key] and dispatcher.Provided[key][id] then
+                    local count = dispatcher.Provided[key][id]
+                end
+            end
+        "#;
+        let mut ws = workspace(table_index);
+        assert!(ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, source));
+        assert!(ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, source));
+        let file = ws.def(source);
+        let model = ws.analysis.semantic_model(file);
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .filter(|index| index.syntax().text().to_string() == "dispatcher.Provided[key][id]")
+            .last()
+            .unwrap();
+        let typ = model.type_of_expr_at(index.get_syntax_id(), index.get_position());
+        assert_eq!(typ, ws.ty("integer"));
+    }
+}
