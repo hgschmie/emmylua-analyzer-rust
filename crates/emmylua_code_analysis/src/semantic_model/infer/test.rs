@@ -1905,3 +1905,68 @@ fn expression_casts_use_the_current_file() {
         }
     }
 }
+
+/// The built-in length operator returns an integer, not the operand's type.
+#[test]
+fn test_builtin_length_result() {
+    for (annotation, initializer) in [
+        ("string", "'trains'"),
+        ("string[]", "{}"),
+        ("table<integer, string>", "{}"),
+        ("table", "{}"),
+        ("[string, integer]", "{'train', 1}"),
+    ] {
+        let env = model_of(&format!(
+            "---@type {annotation}\nlocal values = {initializer}\nlocal size = #values"
+        ));
+        let model = env.model();
+        let size = decl_of(&model, "size");
+        assert_eq!(
+            model.type_of_decl(&size),
+            Some(LuaType::Integer),
+            "{annotation}"
+        );
+    }
+    for expression in ["#{}", "#{'train'}", "#'train'"] {
+        let env = model_of(&format!("local size = {expression}"));
+        let model = env.model();
+        assert_eq!(
+            model.type_of_decl(&decl_of(&model, "size")),
+            Some(LuaType::Integer),
+            "{expression}"
+        );
+    }
+}
+
+#[test]
+fn test_array_length_index_does_not_cross_earlier_rhs_call() {
+    use emmylua_parser::LuaIndexExpr;
+    for (assignment, expected_nullable) in [
+        ("s = a[#a]", false),
+        ("local ignored; ignored, s = mutate(a), a[#a]", true),
+        ("s = mutate(a) and a[#a]", true),
+    ] {
+        let source = format!(
+            r#"
+            ---@param a string[]
+            function example(a)
+                ---@type string
+                local s = ''
+                if not a[1] then return end
+                {assignment}
+            end
+        "#
+        );
+        let env = model_of(&source);
+        let model = env.model();
+        let tree = model.syntax_tree().unwrap();
+        let index = tree
+            .get_red_root()
+            .descendants()
+            .filter_map(LuaIndexExpr::cast)
+            .last()
+            .unwrap();
+        let ty = model.type_of_expr_at(index.get_syntax_id(), index.get_range().start());
+        assert_eq!(ty.is_nullable(), expected_nullable, "{source}: {ty:?}");
+    }
+}
