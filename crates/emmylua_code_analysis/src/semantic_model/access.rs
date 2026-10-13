@@ -4,6 +4,44 @@ use crate::check::checker::param_count::callable_functions;
 use crate::check::checker::param_type_check::callable_candidates_uncached;
 
 impl<'db> SemanticModel<'db> {
+    /// Reuse complete, unfiltered constructor checks within one semantic snapshot.
+    /// Re-entry prevents caching even when a callback returns a usable outer result;
+    /// `None` remains unresolved and only `Some` with an empty list proves a match.
+    /// Cached failures contain only code, range and message; consumers re-emit them
+    /// through their active CheckContext to apply user configuration.
+    #[cfg(test)]
+    pub(crate) fn constructor_diagnostics(
+        &self,
+        table: LuaSyntaxId,
+        target: LuaType,
+        check: impl FnOnce() -> Option<Vec<crate::check::checker::ConstructorDiagnostic>>,
+    ) -> Option<Vec<crate::check::checker::ConstructorDiagnostic>> {
+        match self.begin_constructor_diagnostics(table, target) {
+            Ok(query) => query.finish(check()),
+            Err(result) => result,
+        }
+    }
+
+    /// Start a constructor query whose continuation may live on an explicit work stack.
+    /// The guard keeps dependency completeness and active-key cleanup scoped until finish.
+    pub(crate) fn begin_constructor_diagnostics(
+        &self,
+        table: LuaSyntaxId,
+        target: LuaType,
+    ) -> Result<
+        cache::ConstructorQuery<'_>,
+        Option<Vec<crate::check::checker::ConstructorDiagnostic>>,
+    > {
+        let key = (self.file_id(), table, target);
+        {
+            let cache = self.cache.borrow();
+            if let Some(entry) = cache.constructor_diagnostics.get(&key) {
+                return Err(entry.get(&cache).cloned());
+            }
+        }
+        Ok(cache::ConstructorQuery::new(&self.cache, key))
+    }
+
     /// Currently configured runtime version (used for `---@version` visibility checks).
     pub fn lua_version(&self) -> Option<LuaVersionNumber> {
         self.db().lua_version()
@@ -1218,6 +1256,186 @@ impl<'db> SemanticModel<'db> {
                 Some(SemanticId::member(module_file, value_syntax.get_range()))
             }
             _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod constructor_cache_tests {
+    use crate::semantic_model::cache::QueryCacheScope;
+    use crate::{LuaType, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaTableExpr};
+    use std::cell::Cell;
+
+    #[test]
+    fn constructor_cache_is_scoped_to_file_target_and_complete_queries() {
+        let mut ws = VirtualWorkspace::new();
+        let first = ws.def("local value = {}");
+        let second = ws.def("local value = {}");
+        let table = ws.get_node::<LuaTableExpr>(first).get_syntax_id();
+        let model = ws.analysis.semantic_model(first);
+        let calls = Cell::new(0);
+        let check = || {
+            calls.set(calls.get() + 1);
+            Some(Vec::new())
+        };
+        model.constructor_diagnostics(table, LuaType::String, check);
+        model.constructor_diagnostics(table, LuaType::String, check);
+        assert_eq!(calls.get(), 1);
+        model.constructor_diagnostics(table, LuaType::Integer, check);
+        model
+            .model_for(second)
+            .constructor_diagnostics(table, LuaType::String, check);
+        assert_eq!(calls.get(), 3);
+        // A model for a newer semantic snapshot must recompute the result.
+        ws.analysis
+            .semantic_model(first)
+            .constructor_diagnostics(table, LuaType::String, check);
+        assert_eq!(calls.get(), 4);
+    }
+
+    #[test]
+    fn incomplete_constructor_checks_are_not_reused() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def("local value = {}");
+        let table = ws.get_node::<LuaTableExpr>(file).get_syntax_id();
+        let model = ws.analysis.semantic_model(file);
+        model.constructor_diagnostics(table, LuaType::String, || {
+            model.cache.borrow().mark_incomplete();
+            Some(Vec::new())
+        });
+        let retried = Cell::new(false);
+        model.constructor_diagnostics(table, LuaType::String, || {
+            retried.set(true);
+            Some(Vec::new())
+        });
+        assert!(retried.get());
+    }
+
+    #[test]
+    fn constructor_cache_reentry_is_not_a_completed_match() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def("local value = {}");
+        let table = ws.get_node::<LuaTableExpr>(file).get_syntax_id();
+        let model = ws.analysis.semantic_model(file);
+        let result = model.constructor_diagnostics(table, LuaType::String, || {
+            model.constructor_diagnostics(table, LuaType::String, || {
+                panic!("the same constructor query must not be re-entered")
+            })
+        });
+        assert!(result.is_none());
+        let calls = Cell::new(0);
+        let check = || {
+            calls.set(calls.get() + 1);
+            Some(Vec::new())
+        };
+        model.constructor_diagnostics(table, LuaType::String, check);
+        model.constructor_diagnostics(table, LuaType::String, check);
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn constructor_cache_reentry_through_another_key_stays_unresolved() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def("local value = {}");
+        let table = ws.get_node::<LuaTableExpr>(file).get_syntax_id();
+        let model = ws.analysis.semantic_model(file);
+        let result = model.constructor_diagnostics(table, LuaType::String, || {
+            model.constructor_diagnostics(table, LuaType::Integer, || {
+                model.constructor_diagnostics(table, LuaType::String, || {
+                    panic!("the original constructor query must remain active")
+                })
+            })
+        });
+        assert!(result.is_none());
+        for target in [LuaType::String, LuaType::Integer] {
+            let calls = Cell::new(0);
+            for _ in 0..2 {
+                let result = model.constructor_diagnostics(table, target.clone(), || {
+                    calls.set(calls.get() + 1);
+                    Some(Vec::new())
+                });
+                assert!(result.is_some_and(|diagnostics| diagnostics.is_empty()));
+            }
+            assert_eq!(calls.get(), 1);
+        }
+    }
+
+    #[test]
+    fn constructor_cache_panics_do_not_poison_future_queries() {
+        for nested in [false, true] {
+            let mut ws = VirtualWorkspace::new();
+            let file = ws.def("local value = {}");
+            let table = ws.get_node::<LuaTableExpr>(file).get_syntax_id();
+            let model = ws.analysis.semantic_model(file);
+            let _outer = nested.then(|| QueryCacheScope::new(&model.cache));
+            let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                model.constructor_diagnostics(table, LuaType::String, || {
+                    panic!("constructor callback failed")
+                })
+            }));
+            assert!(panic.is_err());
+            let retried = Cell::new(false);
+            let result = model.constructor_diagnostics(table, LuaType::String, || {
+                retried.set(true);
+                Some(Vec::new())
+            });
+            assert!(retried.get(), "nested={nested}");
+            assert!(result.is_some_and(|diagnostics| diagnostics.is_empty()));
+        }
+    }
+
+    #[test]
+    fn constructor_cache_ignored_reentry_result_is_not_cached() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def("local value = {}");
+        let table = ws.get_node::<LuaTableExpr>(file).get_syntax_id();
+        let model = ws.analysis.semantic_model(file);
+        let result = model.constructor_diagnostics(table, LuaType::String, || {
+            let inner = model.constructor_diagnostics(table, LuaType::String, || {
+                panic!("re-entry must not execute the callback")
+            });
+            assert!(inner.is_none());
+            Some(Vec::new())
+        });
+        assert!(result.is_some());
+        let calls = Cell::new(0);
+        for _ in 0..2 {
+            model.constructor_diagnostics(table, LuaType::String, || {
+                calls.set(calls.get() + 1);
+                Some(Vec::new())
+            });
+        }
+        assert_eq!(calls.get(), 1);
+    }
+    #[test]
+    fn suspended_constructor_queries_retain_dependency_completeness() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def("local value = {}");
+        let table = ws.get_node::<LuaTableExpr>(file).get_syntax_id();
+        let model = ws.analysis.semantic_model(file);
+        let parent = model
+            .begin_constructor_diagnostics(table, LuaType::String)
+            .ok()
+            .unwrap();
+        let child = model
+            .begin_constructor_diagnostics(table, LuaType::Integer)
+            .ok()
+            .unwrap();
+        assert!(matches!(
+            model.begin_constructor_diagnostics(table, LuaType::String),
+            Err(None)
+        ));
+        assert!(child.finish(Some(Vec::new())).unwrap().is_empty());
+        assert!(parent.finish(Some(Vec::new())).unwrap().is_empty());
+        for key in [LuaType::String, LuaType::Integer] {
+            let retry = model
+                .begin_constructor_diagnostics(table, key.clone())
+                .expect("incomplete dependency must prevent admission");
+            retry.finish(Some(Vec::new()));
+            assert!(
+                matches!(model.begin_constructor_diagnostics(table, key), Err(Some(diagnostics)) if diagnostics.is_empty())
+            );
         }
     }
 }

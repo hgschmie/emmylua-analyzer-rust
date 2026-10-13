@@ -895,6 +895,89 @@ return items
     }
 }
 
+#[cfg(test)]
+mod finite_union_alias_chains {
+    use crate::DiagnosticCode;
+    use crate::check::test::check_source;
+
+    fn source(reverse: bool, statement: &str) -> String {
+        let mut source = "---@alias A0 {value:number}\n".to_string();
+        for alias in 1..=60 {
+            let previous = alias - 1;
+            let target = if reverse {
+                format!("string|A{previous}")
+            } else {
+                format!("A{previous}|string")
+            };
+            source.push_str(&format!("---@alias A{alias} {target}\n"));
+        }
+        source.push_str(statement);
+        source
+    }
+
+    fn contexts(value: &str) -> Vec<(String, DiagnosticCode)> {
+        vec![
+            (
+                format!("---@type A60\nlocal assigned = {value}\nreturn assigned"),
+                DiagnosticCode::AssignTypeMismatch,
+            ),
+            (
+                format!(
+                    "---@param value A60\nlocal function accept(value) return value end\naccept({value})"
+                ),
+                DiagnosticCode::ParamTypeMismatch,
+            ),
+            (
+                format!(
+                    "---@param ... A60\nlocal function accept(...) return ... end\naccept({value})"
+                ),
+                DiagnosticCode::ParamTypeMismatch,
+            ),
+            (
+                format!(
+                    "---@param ... [A60]...\nlocal function accept(...) return ... end\naccept({value})"
+                ),
+                DiagnosticCode::ParamTypeMismatch,
+            ),
+            (
+                format!(
+                    "---@param value A60\nlocal function accept(value) return value end\npcall(accept, {value})"
+                ),
+                DiagnosticCode::ParamTypeMismatch,
+            ),
+        ]
+    }
+
+    #[test]
+    fn finite_alias_chains_accept_valid_constructors_in_every_context() {
+        for reverse in [false, true] {
+            for (statement, _) in contexts("{value=1}") {
+                let diagnostics: Vec<_> = check_source(&source(reverse, &statement))
+                    .into_iter()
+                    .filter(|d| d.code != DiagnosticCode::Unused)
+                    .collect();
+                assert!(
+                    diagnostics.is_empty(),
+                    "reverse={reverse}: {statement}: {diagnostics:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn finite_alias_chains_reject_invalid_constructors_in_every_context() {
+        for reverse in [false, true] {
+            for (statement, expected) in contexts("{value='bad'}") {
+                let diagnostics = check_source(&source(reverse, &statement));
+                assert!(
+                    diagnostics.iter().any(|d| d.code == expected),
+                    "reverse={reverse}: {statement}: {diagnostics:?}"
+                );
+            }
+        }
+    }
+}
+
 // These tests load the standard library because its `table` declaration is
 // what made dictionaries incorrectly look like closed records.
 
@@ -1042,6 +1125,997 @@ mod dictionary_constructor {
                 eq(true),
                 "{target}"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod union_table_constructors {
+    use crate::DiagnosticCode;
+    use crate::check::test::check_source;
+
+    const TYPES: &str = r#"
+        ---@class Record
+        ---@field valid boolean
+        ---@field members integer[]
+        local record = {}
+        ---@class Named
+        ---@field id integer
+        ---@field name string
+        local named = {}
+        ---@class Enabled
+        ---@field id string
+        ---@field enabled boolean
+        local enabled = {}
+    "#;
+
+    fn diagnostics(target: &str, expression: &str) -> Vec<crate::check::checker::Diagnostic> {
+        let source = format!(
+            r#"
+            {TYPES}
+            ---@alias Choice {target}
+            ---@param value Choice
+            local function accept(value) return value end
+            accept({expression})
+            ---@type Choice
+            local assigned = {expression}
+            return assigned
+        "#
+        );
+        check_source(&source)
+            .into_iter()
+            .filter(|d| d.code != DiagnosticCode::Unused)
+            .collect()
+    }
+
+    #[test]
+    fn accepts_complete_alternatives_independent_of_order() {
+        for (target, expression) in [
+            ("[string, string]|Record|string", "{'message', 'argument'}"),
+            ("Record|string|[string, string]", "{'message', 'argument'}"),
+            ("Record|{x:number,y:number}", "{x=1,y=2}"),
+            ("string|{x:number,y:number}", "{x=1,y=2}"),
+            ("Record|string[]", "{'one', 'two'}"),
+            ("Named|Enabled", "{id='id', enabled=true}"),
+            ("Enabled|Named", "{id=1, name='name'}"),
+            ("Record|table", "{arbitrary=true}"),
+            ("Record|any", "{arbitrary=true}"),
+            ("Record|unknown", "{arbitrary=true}"),
+            ("{nested?:{left:number}}|{name:string}", "{}"),
+            (
+                "{nested:{left:number}}|{nested:{right:string}}",
+                "{nested={}, [('nested')]={left=1}}",
+            ),
+            (
+                "{nested:{left:number}}|{nested:{right:string}}",
+                "{[('nested')]={left=1}}",
+            ),
+            (
+                "{nested: {left:number}|{right:string}}|{name:string}",
+                "{nested={right='text'}}",
+            ),
+            (
+                "{nested:{left:number}}|{nested:{right:string}}",
+                "{nested={right='text'}}",
+            ),
+        ] {
+            let diagnostics = diagnostics(target, expression);
+            assert!(diagnostics.is_empty(), "{target}: {diagnostics:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_incomplete_or_mistyped_constructors() {
+        for (target, expression) in [
+            ("[string, string]|Record", "{1, 'argument'}"),
+            ("[string, string]|Record", "{'message'}"),
+            ("Record|string[]", "{function() end}"),
+            ("Named|Enabled", "{id='id', name='name'}"),
+            ("Enabled|Named", "{id='id', name='name'}"),
+            ("Named|Enabled", "{id=1}"),
+            ("Named|Named[]", "{id=1}"),
+            ("Record|{x:number,y:number}", "{x='wrong',y=2}"),
+            ("string|{x:number,y:number}", "{x='wrong',y=2}"),
+            ("{nested?:{left:number}}|{name:string}", "{nested={}}"),
+            (
+                "{nested:{left:number}}|{nested:{right:string}}",
+                "{nested={left=1}, [('nested')]={}}",
+            ),
+            (
+                "{nested: {left:number}|{right:string}}|{name:string}",
+                "{nested={left=false}}",
+            ),
+            (
+                "{nested:{left:number}}|{nested:{right:string}}",
+                "{nested={left=false}}",
+            ),
+            (
+                "{nested:{left:number}}|{nested:{right:string}}",
+                "{nested={}}",
+            ),
+        ] {
+            let diagnostics = diagnostics(target, expression);
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.code == DiagnosticCode::ParamTypeMismatch),
+                "{target}: {diagnostics:?}"
+            );
+            assert!(
+                diagnostics.iter().any(|d| matches!(
+                    d.code,
+                    DiagnosticCode::AssignTypeMismatch
+                        | DiagnosticCode::MissingFields
+                        | DiagnosticCode::InjectField
+                )),
+                "{target}: {diagnostics:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn follows_aliases_without_requiring_every_branch() {
+        let diagnostics = check_source(&format!(
+            r#"
+            {TYPES}
+            ---@alias Pair [string, string]
+            ---@alias PairAlias Pair
+            ---@alias Choice PairAlias|Record
+            ---@param value Choice
+            local function accept(value) return value end
+            accept({{'message', 'argument'}})
+        "#
+        ));
+        assert!(
+            diagnostics.iter().all(|d| d.code == DiagnosticCode::Unused),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn diagnostic_filters_do_not_select_an_incompatible_branch() {
+        let diagnostics = check_source(&format!(
+            r#"
+            {TYPES}
+            ---@alias Choice Named|Enabled
+            ---@param value Choice
+            local function accept(value) return value end
+            ---@diagnostic disable: assign-type-mismatch
+            accept({{id='id', name='name'}})
+        "#
+        ));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::ParamTypeMismatch),
+            "{diagnostics:?}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::AssignTypeMismatch),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn recursive_union_aliases_terminate_and_keep_matching_branches() {
+        let diagnostics = check_source(
+            r#"
+            ---@alias Recursive Recursive|[string, string]
+            ---@param value Recursive
+            local function accept(value) return value end
+            accept({'message', 'argument'})
+        "#,
+        );
+        assert!(
+            diagnostics.iter().all(|d| d.code == DiagnosticCode::Unused),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn direct_and_protected_calls_keep_selected_union_field_mismatches() {
+        for callee in ["accept(", "pcall(accept, "] {
+            for (fields, value, valid) in [
+                ("{value: number}|{value: string}", "{value=2}", true),
+                ("{value: number}|{value: string}", "{value='text'}", true),
+                ("{value: number}|{value: string}", "{value=false}", false),
+                (
+                    "{[string]: number}|{[string]: string}",
+                    "{value=false}",
+                    false,
+                ),
+                (
+                    "{a: number,b: number}|{a: string,b: string}",
+                    "{a=2,b='text'}",
+                    false,
+                ),
+            ] {
+                let source = format!(
+                    "---@alias Fields {fields}\n---@param value Fields\nlocal function accept(value) return value end\n{callee}{value})"
+                );
+                let diagnostics = check_source(&source);
+                assert_eq!(diagnostics.is_empty(), valid, "{source}: {diagnostics:?}");
+                if !valid {
+                    assert!(
+                        diagnostics.iter().any(|diagnostic| {
+                            diagnostic.code == DiagnosticCode::AssignTypeMismatch
+                        }),
+                        "{source}: {diagnostics:?}"
+                    );
+                    assert!(
+                        diagnostics.iter().any(|diagnostic| {
+                            diagnostic.code == DiagnosticCode::ParamTypeMismatch
+                        }),
+                        "{source}: {diagnostics:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn array_only_unions_reject_named_fields() {
+        for (target, expression) in [
+            ("integer[]|string[]", "{id=1}"),
+            ("integer[]|string[]", "{[('id')]=1}"),
+            ("[string,string]|[number]", "{id=1}"),
+        ] {
+            let diagnostics = diagnostics(target, expression);
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.code == DiagnosticCode::ParamTypeMismatch),
+                "{target} / {expression}: {diagnostics:?}"
+            );
+            assert!(
+                diagnostics.iter().any(|d| matches!(
+                    d.code,
+                    DiagnosticCode::AssignTypeMismatch
+                        | DiagnosticCode::InjectField
+                        | DiagnosticCode::MissingFields
+                )),
+                "{target} / {expression}: {diagnostics:?}"
+            );
+        }
+        for expression in ["{1,2}", "{'one','two'}", "{}"] {
+            let diagnostics = diagnostics("integer[]|string[]", expression);
+            assert!(diagnostics.is_empty(), "{expression}: {diagnostics:?}");
+        }
+    }
+
+    #[test]
+    fn recursive_intersection_union_uses_concrete_alternative() {
+        for (expression, valid) in [
+            ("{next={name='leaf'}}", true),
+            ("{next={next={name='leaf'}}}", true),
+            ("{next={name=1}}", false),
+        ] {
+            let source = format!(
+                "---@alias Chain {{next:Chain}}|{{name:string}}\n---@param value Chain\nlocal function accept(value) return value end\naccept({expression})"
+            );
+            let diagnostics = check_source(&source);
+            assert_eq!(
+                diagnostics.is_empty(),
+                valid,
+                "{expression}: {diagnostics:?}"
+            );
+        }
+        for expression in ["{name='ok'}", "{value='bad'}", "{value=1}"] {
+            let source = format!(
+                "---@alias Recursive (Recursive & {{value:number}})|{{name:string}}\n---@param value Recursive\nlocal function accept(value) return value end\naccept({expression})"
+            );
+            let diagnostics = check_source(&source);
+            assert_eq!(
+                diagnostics.is_empty(),
+                expression == "{name='ok'}",
+                "{expression}: {diagnostics:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn union_selection_does_not_switch_for_disabled_codes() {
+        let source = r#"
+            ---@class First
+            ---@field x number
+            local first = {}
+            ---@class Second
+            ---@field x string
+            ---@field y string
+            local second = {}
+            ---@type First|Second
+            local value = {x=false}
+            return value
+        "#;
+        let diagnostics: Vec<_> = check_source(source)
+            .into_iter()
+            .filter(|d| d.code != DiagnosticCode::Unused)
+            .collect();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0].code, DiagnosticCode::AssignTypeMismatch);
+        let mut config = crate::Emmyrc::default();
+        config
+            .diagnostics
+            .disable
+            .push(DiagnosticCode::AssignTypeMismatch);
+        let diagnostics = crate::check::test::check_source_with_emmyrc(source, config);
+        assert!(
+            diagnostics.iter().all(|d| d.code == DiagnosticCode::Unused),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn union_diagnostics_use_active_severity_and_keep_distinct_fields() {
+        let source = r#"
+            ---@class First
+            ---@field x number
+            local first = {}
+            ---@class Second
+            ---@field y string
+            local second = {}
+            ---@type First|Second
+            local value = {extra=1, other=2}
+            return value
+        "#;
+        let mut config = crate::Emmyrc::default();
+        config.diagnostics.severity.insert(
+            DiagnosticCode::InjectField,
+            crate::DiagnosticSeveritySetting::Error,
+        );
+        config.diagnostics.severity.insert(
+            DiagnosticCode::MissingFields,
+            crate::DiagnosticSeveritySetting::Hint,
+        );
+        let diagnostics: Vec<_> = crate::check::test::check_source_with_emmyrc(source, config)
+            .into_iter()
+            .filter(|d| d.code != DiagnosticCode::Unused)
+            .collect();
+        assert_eq!(diagnostics.len(), 3, "{diagnostics:?}");
+        let injected: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::InjectField)
+            .collect();
+        assert_eq!(injected.len(), 2, "{diagnostics:?}");
+        assert_eq!(injected[0].range, injected[1].range);
+        assert_ne!(injected[0].message, injected[1].message);
+        assert!(
+            injected
+                .iter()
+                .all(|d| d.severity == lsp_types::DiagnosticSeverity::ERROR)
+        );
+        let missing = diagnostics
+            .iter()
+            .find(|d| d.code == DiagnosticCode::MissingFields)
+            .unwrap();
+        assert_eq!(missing.severity, lsp_types::DiagnosticSeverity::HINT);
+    }
+
+    #[test]
+    fn concrete_recursive_result_can_satisfy_an_outer_alternative() {
+        for (expression, valid) in [("{nested={name='ok'}}", true), ("{nested={name=1}}", false)] {
+            let source = format!(
+                "---@alias Recursive (Recursive & {{value:number}})|{{name:string}}\n---@alias Outer {{nested:Recursive}}|{{other:boolean}}\n---@param value Outer\nlocal function accept(value) return value end\naccept({expression})"
+            );
+            let diagnostics = check_source(&source);
+            assert_eq!(
+                diagnostics.is_empty(),
+                valid,
+                "{expression}: {diagnostics:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unresolved_recursive_union_is_not_compatible() {
+        for expression in ["{}", "{value=1,name='ok'}"] {
+            let source = format!(
+                "---@alias Recursive (Recursive & {{value:number}})|(Recursive & {{name:string}})\n---@param value Recursive\nlocal function accept(value) return value end\naccept({expression})\n---@type Recursive\nlocal assigned = {expression}\nreturn assigned"
+            );
+            let diagnostics = check_source(&source);
+            for code in [
+                DiagnosticCode::ParamTypeMismatch,
+                DiagnosticCode::AssignTypeMismatch,
+            ] {
+                assert!(
+                    diagnostics.iter().any(|d| d.code == code),
+                    "{expression}: {diagnostics:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn whole_constructor_mismatch_is_reported_once_per_context() {
+        for (statement, expected) in [
+            (
+                "---@type Choice\nlocal assigned = {}\nreturn assigned",
+                DiagnosticCode::AssignTypeMismatch,
+            ),
+            ("accept({})", DiagnosticCode::ParamTypeMismatch),
+            ("pcall(accept, {})", DiagnosticCode::ParamTypeMismatch),
+        ] {
+            let source = format!(
+                "---@alias Choice string|{{x:number,y:number}}\n---@param value Choice\nlocal function accept(value) return value end\n{statement}"
+            );
+            let diagnostics: Vec<_> = check_source(&source)
+                .into_iter()
+                .filter(|d| d.code != DiagnosticCode::Unused)
+                .collect();
+            assert_eq!(diagnostics.len(), 1, "{source}: {diagnostics:?}");
+            assert_eq!(diagnostics[0].code, expected, "{source}: {diagnostics:?}");
+            assert_eq!(diagnostics[0].range.len(), rowan::TextSize::from(2));
+        }
+    }
+
+    #[test]
+    fn union_aliases_resolve_in_the_defining_file() {
+        for target in ["Shared.Raw", "Shared.Choice", "Choice"] {
+            for (expression, valid) in [("{x=1}", true), ("{y='ok'}", true), ("{x=false}", false)] {
+                let mut ws = crate::VirtualWorkspace::new();
+                ws.def_file("types.lua", "---@namespace Shared\n---@alias Raw {x:number}|{y:string}\n---@alias Choice Raw\nreturn {}");
+                let source = format!(
+                    "---@using Shared\n---@param value {target}\nlocal function accept(value) return value end\naccept({expression})\n---@type {target}\nlocal assigned = {expression}\nreturn assigned"
+                );
+                for code in [
+                    DiagnosticCode::ParamTypeMismatch,
+                    DiagnosticCode::AssignTypeMismatch,
+                ] {
+                    assert_eq!(
+                        ws.has_no_diagnostic(code, &source),
+                        valid,
+                        "{target}: {expression}: {code:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn equal_failure_counts_keep_declared_alternative_order() {
+        for (target, expected) in [
+            ("{value:number}|{value:string}", "number"),
+            ("{value:string}|{value:number}", "string"),
+        ] {
+            let source = format!(
+                "---@alias Choice {target}\n---@type Choice\nlocal assigned = {{value=false}}\nreturn assigned"
+            );
+            for _ in 0..2 {
+                let diagnostics: Vec<_> = check_source(&source)
+                    .into_iter()
+                    .filter(|d| d.code != DiagnosticCode::Unused)
+                    .collect();
+                assert_eq!(diagnostics.len(), 1, "{target}: {diagnostics:?}");
+                assert_eq!(diagnostics[0].code, DiagnosticCode::AssignTypeMismatch);
+                assert!(
+                    diagnostics[0].message.contains(expected),
+                    "{target}: {diagnostics:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn union_arguments_report_structural_failure_with_only_parameter_warnings_enabled() {
+        for signature in [
+            "---@param value Choice\nlocal function accept(value) return value end",
+            "---@param ... Choice\nlocal function accept(...) return ... end",
+            "---@param ... [Choice]...\nlocal function accept(...) return ... end",
+        ] {
+            for (argument, valid) in [("{left=1}", true), ("{}", false), ("{left=false}", false)] {
+                let source = format!(
+                    "---@alias Choice {{left:number}}|{{right:string}}\n{signature}\naccept({argument})"
+                );
+                let mut ws = crate::VirtualWorkspace::new();
+                assert_eq!(
+                    ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, &source),
+                    valid,
+                    "{source}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn union_object_keys_distinguish_integer_and_string_literals() {
+        for (target, value, valid) in [
+            ("{[1]:number}|{name:string}", "{[1]=7}", true),
+            ("{[1]:number}|{name:string}", "{[(1)]=7}", true),
+            ("{[1]:number}|{name:string}", "{[1.0]=7}", true),
+            ("{[1]:number}|{name:string}", "{[(1.0)]=7}", true),
+            ("{[1]:number}|{name:string}", "{[(1)]='bad'}", false),
+            ("{[1]:number}|{name:string}", "{[1.0]='bad'}", false),
+            ("{[1]:number}|{name:string}", "{[(1.0)]='bad'}", false),
+            ("{[1]:number}|{name:string}", "{[1.5]=7}", false),
+            ("{[1]:number}|{name:string}", "{7}", true),
+            ("{[1]:number}|{name:string}", "{['1']=7}", false),
+            ("{['1']:number}|{name:string}", "{['1']=7}", true),
+            ("{['1']:number}|{name:string}", "{[('1')]=7}", true),
+            ("{['1']:number}|{name:string}", "{[('1')]='bad'}", false),
+            ("{['1']:number}|{name:string}", "{[1]=7}", false),
+        ] {
+            let diagnostics = diagnostics(target, value);
+            assert_eq!(
+                diagnostics.is_empty(),
+                valid,
+                "{target} / {value}: {diagnostics:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn union_object_scalar_values_keep_assignment_failures() {
+        for statement in [
+            "---@type Choice\nlocal value = {nested=5}\nreturn value",
+            "---@param value Choice\nlocal function accept(value) return value end\naccept({nested=5})",
+            "---@param value Choice\nlocal function accept(value) return value end\npcall(accept, {nested=5})",
+        ] {
+            let source = format!(
+                "---@alias Choice {{nested:{{value:number}}}}|{{nested:{{name:string}}}}\n{statement}"
+            );
+            let diagnostics = check_source(&source);
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.code == DiagnosticCode::AssignTypeMismatch),
+                "{source}: {diagnostics:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn isolated_union_checkers_keep_structural_and_value_ownership() {
+        use crate::check::CheckConfig;
+        use crate::check::checker::{
+            CheckContext, Checker, assign_type_mismatch::AssignTypeMismatchChecker,
+            check_field::CheckFieldChecker,
+        };
+        use std::sync::Arc;
+        for (value, expected_structural, expected_value) in
+            [("{}", true, false), ("{nested=5}", false, true)]
+        {
+            for field_first in [false, true] {
+                let mut ws = crate::VirtualWorkspace::new();
+                let source = format!(
+                    "---@alias Choice {{nested:{{value:number}}}}|{{nested:{{name:string}}}}\n---@type Choice\nlocal value = {value}\nreturn value"
+                );
+                let file = ws.def(&source);
+                let model = ws.analysis.semantic_model(file);
+                let mut fields = CheckContext::new(&model, Arc::new(CheckConfig::default()));
+                let mut values = CheckContext::new(&model, Arc::new(CheckConfig::default()));
+                if field_first {
+                    CheckFieldChecker::check(&mut fields, &model);
+                    AssignTypeMismatchChecker::check(&mut values, &model);
+                } else {
+                    AssignTypeMismatchChecker::check(&mut values, &model);
+                    CheckFieldChecker::check(&mut fields, &model);
+                }
+                let fields = fields.into_diagnostics();
+                let values = values.into_diagnostics();
+                assert_eq!(
+                    !fields.is_empty(),
+                    expected_structural,
+                    "{source}: {fields:?}"
+                );
+                assert_eq!(!values.is_empty(), expected_value, "{source}: {values:?}");
+                assert!(fields.iter().all(|d| matches!(
+                    d.code,
+                    DiagnosticCode::MissingFields | DiagnosticCode::InjectField
+                )));
+                assert!(
+                    values
+                        .iter()
+                        .all(|d| d.code == DiagnosticCode::AssignTypeMismatch)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn union_computed_object_keys_check_value_types() {
+        for (target, value) in [
+            ("{[1]:number}|{name:string}", "{[(1)]='bad'}"),
+            ("{[1]:number}|{name:string}", "{[1.0]='bad'}"),
+            ("{['1']:number}|{name:string}", "{[('1')]='bad'}"),
+        ] {
+            let diagnostics = diagnostics(target, value);
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.code == DiagnosticCode::AssignTypeMismatch),
+                "{target} / {value}: {diagnostics:?}"
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.code == DiagnosticCode::ParamTypeMismatch),
+                "{target} / {value}: {diagnostics:?}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod constructor_depth_tests {
+    use crate::{DiagnosticCode, check::test::check_source};
+
+    #[test]
+    fn scalar_only_union_reports_once_in_each_context() {
+        for target in ["string|number", "number|string"] {
+            for (statement, expected) in [
+                (
+                    "---@type Choice\nlocal value = {1}\nreturn value",
+                    DiagnosticCode::AssignTypeMismatch,
+                ),
+                (
+                    "---@param value Choice\nlocal function accept(value) return value end\naccept({1})",
+                    DiagnosticCode::ParamTypeMismatch,
+                ),
+                (
+                    "---@param value Choice\nlocal function accept(value) return value end\npcall(accept, {1})",
+                    DiagnosticCode::ParamTypeMismatch,
+                ),
+                (
+                    "---@param ... Choice\nlocal function accept(...) return ... end\naccept({1})",
+                    DiagnosticCode::ParamTypeMismatch,
+                ),
+                (
+                    "---@param ... [Choice]...\nlocal function accept(...) return ... end\naccept({1})",
+                    DiagnosticCode::ParamTypeMismatch,
+                ),
+            ] {
+                let source = format!("---@alias Choice {target}\n{statement}");
+                let diagnostics = check_source(&source)
+                    .into_iter()
+                    .filter(|d| d.code != DiagnosticCode::Unused)
+                    .collect::<Vec<_>>();
+                assert_eq!(diagnostics.len(), 1, "{source}: {diagnostics:?}");
+                assert_eq!(diagnostics[0].code, expected, "{source}: {diagnostics:?}");
+                assert_eq!(diagnostics[0].range.len(), rowan::TextSize::from(3));
+            }
+        }
+    }
+
+    #[test]
+    fn mutual_alias_cycles_keep_the_concrete_exit() {
+        for alternative in ["A|{x:number}", "{x:number}|A"] {
+            for (value, valid) in [("{x=1}", true), ("{x='bad'}", false)] {
+                let source = format!(
+                    "---@alias A B\n---@alias B {alternative}\n---@param value A\nlocal function accept(value) return value end\naccept({value})"
+                );
+                let diagnostics = check_source(&source)
+                    .into_iter()
+                    .filter(|d| d.code != DiagnosticCode::Unused)
+                    .collect::<Vec<_>>();
+                assert_eq!(diagnostics.is_empty(), valid, "{source}: {diagnostics:?}");
+            }
+        }
+    }
+
+    fn isolated_checks(source: String) -> Vec<crate::check::checker::Diagnostic> {
+        use crate::check::{
+            CheckConfig,
+            checker::{
+                CheckContext, Checker, assign_type_mismatch::AssignTypeMismatchChecker,
+                check_field::CheckFieldChecker, param_type_check::ParamTypeChecker,
+            },
+        };
+        // File loading/dropping has a separate inherited native-stack limit.
+        // Only those stages use this helper; every checker runs on the test thread.
+        let (ws, file) = std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || {
+                let mut ws = crate::VirtualWorkspace::new();
+                let file = ws.def(&source);
+                (ws, file)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        let mut diagnostics = Vec::new();
+        for checker in 0..3 {
+            // A fresh model prevents a previous checker's cache from hiding recursion.
+            let model = ws.analysis.semantic_model(file);
+            let mut context =
+                CheckContext::new(&model, std::sync::Arc::new(CheckConfig::default()));
+            match checker {
+                0 => CheckFieldChecker::check(&mut context, &model),
+                1 => AssignTypeMismatchChecker::check(&mut context, &model),
+                _ => ParamTypeChecker::check(&mut context, &model),
+            }
+            diagnostics.extend(context.into_diagnostics());
+        }
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || drop(ws))
+            .unwrap()
+            .join()
+            .unwrap();
+        diagnostics
+    }
+
+    #[test]
+    fn deep_object_constructors_keep_field_and_value_failures() {
+        for depth in [256, 512] {
+            for (leaf, valid) in [("{value=1}", true), ("{value='bad'}", false), ("{}", false)] {
+                let mut value = leaf.to_string();
+                for _ in 0..depth {
+                    value = format!("{{value=1,next={value}}}");
+                }
+                for (statement, expected) in [
+                    (
+                        format!("---@type Node|string\nlocal value = {value}\nreturn value"),
+                        DiagnosticCode::AssignTypeMismatch,
+                    ),
+                    (
+                        format!(
+                            "---@param value Node|string\nlocal function accept(value) return value end\naccept({value})"
+                        ),
+                        DiagnosticCode::ParamTypeMismatch,
+                    ),
+                    (
+                        format!(
+                            "---@param value Node|string\nlocal function accept(value) return value end\npcall(accept, {value})"
+                        ),
+                        DiagnosticCode::ParamTypeMismatch,
+                    ),
+                    (
+                        format!(
+                            "---@param ... Node|string\nlocal function accept(...) return ... end\naccept({value})"
+                        ),
+                        DiagnosticCode::ParamTypeMismatch,
+                    ),
+                    (
+                        format!(
+                            "---@param ... [Node|string]...\nlocal function accept(...) return ... end\naccept({value})"
+                        ),
+                        DiagnosticCode::ParamTypeMismatch,
+                    ),
+                ] {
+                    let source = format!("---@alias Node {{value:number,next:Node?}}\n{statement}");
+                    let diagnostics = isolated_checks(source);
+                    assert_eq!(
+                        diagnostics.is_empty(),
+                        valid,
+                        "depth={depth}, leaf={leaf}: {diagnostics:?}"
+                    );
+                    if !valid {
+                        assert!(
+                            diagnostics.iter().any(|d| d.code == expected),
+                            "depth={depth}, leaf={leaf}: {diagnostics:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn deep_array_and_index_constructors_keep_leaf_failures() {
+        for (definition, array) in [
+            ("---@alias Node {value:number,children:Node[]?}", true),
+            (
+                "---@class Node\n---@field value number\n---@field [integer] Node",
+                false,
+            ),
+        ] {
+            for (leaf, valid) in [("{value=1}", true), ("{value='bad'}", false), ("{}", false)] {
+                let mut value = leaf.to_string();
+                for _ in 0..128 {
+                    value = if array {
+                        format!("{{value=1,children={{{value}}}}}")
+                    } else {
+                        format!("{{value=1,[1]={value}}}")
+                    };
+                }
+                let source = format!(
+                    "{definition}\n---@param value Node|string\nlocal function accept(value) return value end\naccept({value})"
+                );
+                let diagnostics = isolated_checks(source);
+                assert_eq!(
+                    diagnostics.is_empty(),
+                    valid,
+                    "array={array}, leaf={leaf}: {diagnostics:?}"
+                );
+                if !valid {
+                    assert!(
+                        diagnostics
+                            .iter()
+                            .any(|d| d.code == DiagnosticCode::ParamTypeMismatch),
+                        "array={array}, leaf={leaf}: {diagnostics:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn deep_recursive_union_keeps_a_successful_sibling() {
+        for (leaf, valid) in [("{text='ok'}", true), ("{text=1}", false)] {
+            let mut value = leaf.to_string();
+            for _ in 0..128 {
+                value = format!("{{value=1,next={value}}}");
+            }
+            let source = format!(
+                "---@alias Node {{value:number,next:Node?}}|{{text:string,next:Node?}}\n---@param value Node\nlocal function accept(value) return value end\naccept({value})"
+            );
+            let diagnostics = isolated_checks(source);
+            assert_eq!(
+                diagnostics.is_empty(),
+                valid,
+                "leaf={leaf}: {diagnostics:?}"
+            );
+            if !valid {
+                assert!(
+                    diagnostics
+                        .iter()
+                        .any(|d| d.code == DiagnosticCode::ParamTypeMismatch),
+                    "{diagnostics:?}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn deep_named_index_fields_report_a_missing_leaf() {
+        for (leaf, valid) in [("{value=1}", true), ("{}", false)] {
+            let mut value = leaf.to_string();
+            for _ in 0..256 {
+                value = format!("{{value=1,[1]={value}}}");
+            }
+            let source = format!(
+                "---@class Node\n---@field value number\n---@field [integer] Node\n---@type Node\nlocal value = {value}\nreturn value"
+            );
+            let diagnostics = isolated_checks(source);
+            assert_eq!(
+                diagnostics.is_empty(),
+                valid,
+                "leaf={leaf}: {diagnostics:?}"
+            );
+            if !valid {
+                assert!(
+                    diagnostics
+                        .iter()
+                        .any(|d| d.code == DiagnosticCode::MissingFields),
+                    "{diagnostics:?}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod member_union_constructors {
+    use crate::{DiagnosticCode, Emmyrc, check::test::check_source_with_emmyrc};
+
+    fn source(target: &str, value: &str, context: &str) -> String {
+        let body = match context {
+            "name" => {
+                format!("---@type {target}\nlocal assigned\nassigned = {value}\nreturn assigned")
+            }
+            "member" | "indexed-member" => {
+                let lhs = if context == "member" {
+                    "holder.value"
+                } else {
+                    "holder['value']"
+                };
+                format!(
+                    "---@class Holder\n---@field value {target}\nlocal Holder = {{}}\n---@param holder Holder\nlocal function update(holder)\n{lhs} = {value}\nend\nreturn update"
+                )
+            }
+            "self" => format!(
+                "---@class Holder\n---@field value {target}\nlocal Holder = {{}}\nfunction Holder:update()\nself.value = {value}\nend\nreturn Holder"
+            ),
+            _ => unreachable!(),
+        };
+        let declarations = if target == "First|Second" || target == "Second|First" {
+            "---@class First\n---@field x number\nlocal First = {}\n---@class Second\n---@field y string\nlocal Second = {}\n"
+        } else {
+            ""
+        };
+        format!("{declarations}{body}")
+    }
+
+    fn diagnostics(
+        target: &str,
+        value: &str,
+        context: &str,
+        config: Emmyrc,
+    ) -> Vec<crate::check::checker::Diagnostic> {
+        let source = source(target, value, context);
+        let start = source.rfind(value).unwrap();
+        check_source_with_emmyrc(&source, config)
+            .into_iter()
+            .filter(|d| {
+                d.code != DiagnosticCode::Unused
+                    && usize::from(d.range.start()) >= start
+                    && usize::from(d.range.end()) <= start + value.len()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn member_array_unions_reject_named_constructors() {
+        for target in ["integer[]|string[]", "string[]|integer[]"] {
+            for value in ["{id=false}", "{id=1}"] {
+                for context in ["name", "member", "indexed-member", "self"] {
+                    let diagnostics = diagnostics(target, value, context, Emmyrc::default());
+                    assert_eq!(
+                        diagnostics.len(),
+                        1,
+                        "{context}: {target}: {value}: {diagnostics:?}"
+                    );
+                    assert_eq!(
+                        diagnostics[0].code,
+                        DiagnosticCode::InjectField,
+                        "{context}: {target}: {value}: {diagnostics:?}"
+                    );
+                    assert_eq!(usize::from(diagnostics[0].range.len()), value.len());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn member_array_unions_accept_numeric_key_constructors() {
+        for target in ["integer[]|string[]", "string[]|integer[]"] {
+            for value in ["{1}", "{'ok'}", "{}", "{[1]=1}"] {
+                for context in ["name", "member", "indexed-member", "self"] {
+                    let diagnostics = diagnostics(target, value, context, Emmyrc::default());
+                    assert!(
+                        diagnostics.is_empty(),
+                        "{context}: {target}: {value}: {diagnostics:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn member_union_structural_diagnostics_keep_code_ownership() {
+        for context in ["name", "member", "indexed-member", "self"] {
+            for disabled in [
+                DiagnosticCode::AssignTypeMismatch,
+                DiagnosticCode::InjectField,
+            ] {
+                let mut config = Emmyrc::default();
+                config.diagnostics.disable.push(disabled);
+                let diagnostics = diagnostics("integer[]|string[]", "{id=false}", context, config);
+                if disabled == DiagnosticCode::InjectField {
+                    assert!(diagnostics.is_empty(), "{context}: {diagnostics:?}");
+                } else {
+                    assert_eq!(diagnostics.len(), 1, "{context}: {diagnostics:?}");
+                    assert_eq!(diagnostics[0].code, DiagnosticCode::InjectField);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn member_record_unions_check_structure_and_values() {
+        for target in ["First|Second", "Second|First"] {
+            for (value, expected) in [
+                ("{}", Some(DiagnosticCode::MissingFields)),
+                ("{x=1}", None),
+                ("{y='ok'}", None),
+                ("{x=false}", Some(DiagnosticCode::AssignTypeMismatch)),
+                ("{x=1,extra=false}", Some(DiagnosticCode::InjectField)),
+            ] {
+                for context in ["member", "indexed-member", "self"] {
+                    let diagnostics = diagnostics(target, value, context, Emmyrc::default());
+                    assert_eq!(
+                        diagnostics.len(),
+                        usize::from(expected.is_some()),
+                        "{context}: {target}: {value}: {diagnostics:?}"
+                    );
+                    if let Some(expected) = expected {
+                        assert_eq!(
+                            diagnostics[0].code, expected,
+                            "{context}: {target}: {value}: {diagnostics:?}"
+                        );
+                    }
+                }
+            }
         }
     }
 }

@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use emmylua_parser::{
     LuaAssignStat, LuaAst, LuaAstNode, LuaCallExpr, LuaDocType, LuaExpr, LuaIndexKey, LuaLocalStat,
@@ -9,9 +10,10 @@ use crate::DiagnosticCode;
 use crate::semantic_db::def::{SemanticId, TypeDef, TypeDefKind};
 use crate::semantic_model::SemanticModel;
 use crate::semantic_model::type_eval::expand_alias_branches;
-use crate::{LuaMemberKey, LuaType, LuaTypeDeclId};
+use crate::{LuaMemberKey, LuaType, LuaTypeDeclId, LuaUnionType};
 
-use super::assign_type_mismatch::index_key_type;
+use super::assign_type_mismatch::{index_key_type, member_write_target};
+use super::constructor::{Task, UnionMode, evaluate};
 use super::param_type_check::callable_candidates;
 use super::{CheckContext, Checker};
 use crate::semantic_model::render::humanize_type;
@@ -63,7 +65,7 @@ fn check_local(
     }
 }
 
-/// `c = { ... }` (c has a doc type).
+/// Check constructor structure against a reassigned name or member's declared contract.
 fn check_assign(
     context: &mut CheckContext<'_>,
     semantic_model: &SemanticModel<'_>,
@@ -74,13 +76,19 @@ fn check_assign(
         let LuaExpr::TableExpr(table) = expr else {
             continue;
         };
-        let LuaVarExpr::NameExpr(name_expr) = var else {
-            continue;
-        };
-        let Some(decl_id) = semantic_model.resolve_name(name_expr.get_position()) else {
-            continue;
-        };
-        check_against(context, semantic_model, &decl_id, table);
+        match var {
+            LuaVarExpr::NameExpr(name_expr) => {
+                let Some(decl_id) = semantic_model.resolve_name(name_expr.get_position()) else {
+                    continue;
+                };
+                check_against(context, semantic_model, &decl_id, table);
+            }
+            LuaVarExpr::IndexExpr(index_expr) => {
+                if let Some(target) = member_write_target(semantic_model, index_expr, expr) {
+                    check_against_type(context, semantic_model, &target, table);
+                }
+            }
+        }
     }
 }
 
@@ -166,7 +174,10 @@ fn check_index_assign(
 
 /// Follows alias definitions until a non-alias type is reached. Returns `None` when the
 /// input is not an alias (or an alias cycle/unresolved target prevents expansion).
-fn expand_alias_type(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> Option<LuaType> {
+pub(super) fn expand_alias_type(
+    semantic_model: &SemanticModel<'_>,
+    ty: &LuaType,
+) -> Option<LuaType> {
     let mut current = ty.clone();
     let mut visited = Vec::new();
     loop {
@@ -193,6 +204,15 @@ fn expand_alias_type(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> Option
         }
         visited.push(id.clone());
         current = semantic_model.alias_target(&def)?;
+        if def.generic_params.is_empty() && matches!(current, LuaType::Union(_)) {
+            // Preserve object fields inside unions; the shell projection can reduce
+            // an object alternative to `table`, which would accept any constructor.
+            // Leave mapped/generic alias projection with its existing resolver.
+            // Resolve in the defining file so namespace-qualified and imported
+            // alias chains retain the same type-name lookup context.
+            // alias_target above already requires this same definition's alias_type.
+            current = semantic_model.doc_type_lua_rich_in(def.file_id, def.alias_type?);
+        }
     }
 }
 
@@ -221,6 +241,12 @@ pub(super) fn static_member_key(
             }
             LuaType::IntegerConst(i) | LuaType::DocIntegerConst(i) => {
                 Some(LuaMemberKey::Integer(i))
+            }
+            // As for literal tokens above, the rounded 2^63 upper bound is exclusive.
+            LuaType::FloatConst(i)
+                if i.fract() == 0.0 && (i64::MIN as f64..i64::MAX as f64).contains(&i) =>
+            {
+                Some(LuaMemberKey::Integer(i as i64))
             }
             _ => None,
         },
@@ -294,10 +320,24 @@ fn check_against_type(
     target: &LuaType,
     table: &LuaTableExpr,
 ) {
+    if let Some(diagnostics) = evaluate(semantic_model, Task::Fields(target.clone(), table.clone()))
+    {
+        for diagnostic in diagnostics {
+            context.add_diagnostic(diagnostic.code, diagnostic.range, diagnostic.message);
+        }
+    }
+}
+
+pub(super) fn field_tasks(
+    tasks: &mut Vec<Task<'_>>,
+    semantic_model: &SemanticModel<'_>,
+    target: &LuaType,
+    table: &LuaTableExpr,
+) {
     // Expand aliases before checking table literals against them. This makes alias-to-object,
     // alias-to-class and alias-to-unknown behave like their target types.
     if let Some(expanded) = expand_alias_type(semantic_model, target) {
-        check_against_type(context, semantic_model, &expanded, table);
+        tasks.push(Task::Fields(expanded, table.clone()));
         return;
     }
     match target {
@@ -308,37 +348,31 @@ fn check_against_type(
                         .applicable_index_infos(target, &index_key_type(semantic_model, &key))
                         .is_ok_and(|infos| !infos.is_empty())
                 {
-                    check_against_type(context, semantic_model, array.get_base(), &value);
+                    tasks.push(Task::Fields(array.get_base().clone(), value));
                 }
             }
             return;
         }
         LuaType::Intersection(intersection) => {
             for component in intersection.get_types() {
-                check_against_type(context, semantic_model, component, table);
+                tasks.push(Task::Fields(component.clone(), table.clone()));
             }
             return;
         }
         LuaType::Union(union) => {
-            // Check the first named-class component; empty tables pass through the array component.
-            let fields_count = table.get_fields_with_keys().len();
-            for component in union.into_vec() {
-                let named = matches!(
-                    component,
-                    LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_)
-                );
-                if named && fields_count > 0 {
-                    check_against_type(context, semantic_model, &component, table);
-                    return;
-                }
-                if matches!(component, LuaType::Array(_)) && fields_count == 0 {
-                    return;
-                }
-            }
+            tasks.push(Task::Union(
+                Rc::clone(union),
+                table.clone(),
+                UnionMode::Fields,
+            ));
             return;
         }
         LuaType::Object(object) => {
-            let fields = table.get_fields_with_keys().to_vec();
+            let fields: Vec<_> = table
+                .get_fields_with_keys()
+                .into_iter()
+                .map(|(field, key)| (field, static_member_key(semantic_model, &key)))
+                .collect();
             let mut missing = Vec::new();
             for (key, ty) in object.get_fields() {
                 let name = match key {
@@ -348,14 +382,14 @@ fn check_against_type(
                 };
                 if !fields
                     .iter()
-                    .any(|(_, field_key)| field_key.get_path_part() == name)
+                    .any(|(_, field_key)| field_key.as_ref() == Some(key))
                     && !ty.is_nullable()
                 {
                     missing.push(name);
                 }
             }
             if !missing.is_empty() {
-                context.add_diagnostic(
+                tasks.push(Task::diagnostic(
                     DiagnosticCode::MissingFields,
                     table.get_range(),
                     format!(
@@ -366,7 +400,25 @@ fn check_against_type(
                             .collect::<Vec<_>>()
                             .join(", ")
                     ),
-                );
+                ));
+            }
+            // Only the final complete write supplies a nested constructor's fields.
+            let mut overwritten = HashSet::new();
+            for (field, key) in fields.into_iter().rev() {
+                let Some(value) = field.get_value_expr() else {
+                    continue;
+                };
+                let Some(key) = key else {
+                    continue;
+                };
+                if !overwritten.insert(key.clone()) {
+                    continue;
+                }
+                if let Some(expected) = object.get_field(&key)
+                    && let LuaExpr::TableExpr(value) = value
+                {
+                    tasks.push(Task::Fields(expected.clone(), value));
+                }
             }
             return;
         }
@@ -429,17 +481,17 @@ fn check_against_type(
         {
             if let Some(info) = infos.first() {
                 if let Some(LuaExpr::TableExpr(value)) = field.get_value_expr() {
-                    check_against_type(context, semantic_model, &info.value_type, &value);
+                    tasks.push(Task::Fields(info.value_type.clone(), value));
                 }
             } else {
-                context.add_diagnostic(
+                tasks.push(Task::diagnostic(
                     DiagnosticCode::InjectField,
                     table.get_range(),
                     format!(
                         "Field `{}` cannot be injected into the target type.",
                         key.get_path_part()
                     ),
-                );
+                ));
             }
         }
         if let Some(key) = member_key {
@@ -455,7 +507,7 @@ fn check_against_type(
         .collect();
     missing.sort_unstable();
     if !missing.is_empty() {
-        context.add_diagnostic(
+        tasks.push(Task::diagnostic(
             DiagnosticCode::MissingFields,
             table.get_range(),
             format!(
@@ -466,8 +518,47 @@ fn check_against_type(
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-        );
+        ));
     }
+}
+
+/// Select one complete union alternative using both structural and value failures.
+/// Consumers apply their own diagnostic codes and configuration after selection.
+pub(super) fn table_union_diagnostics(
+    semantic_model: &SemanticModel<'_>,
+    union: &Rc<LuaUnionType>,
+    table: &LuaTableExpr,
+) -> Option<Vec<super::ConstructorDiagnostic>> {
+    evaluate(
+        semantic_model,
+        Task::Union(Rc::clone(union), table.clone(), UnionMode::All),
+    )
+}
+
+pub(super) fn union_alternatives(
+    semantic_model: &SemanticModel<'_>,
+    union: &LuaUnionType,
+) -> Vec<LuaType> {
+    let mut alternatives = Vec::new();
+    let mut pending = union.into_vec();
+    pending.reverse();
+    let mut visited = Vec::new();
+    // Alias and union edges form a finite graph; compound types remain leaves.
+    // Preserve the first declaration-order occurrence without a depth cutoff.
+    while let Some(ty) = pending.pop() {
+        if visited.contains(&ty) {
+            continue;
+        }
+        visited.push(ty.clone());
+        if let Some(expanded) = expand_alias_type(semantic_model, &ty) {
+            pending.push(expanded);
+        } else if let LuaType::Union(union) = ty {
+            pending.extend(union.into_vec().into_iter().rev());
+        } else {
+            alternatives.push(ty);
+        }
+    }
+    alternatives
 }
 
 /// Target type -> named type id (Ref/Def/Generic base class).
@@ -497,5 +588,38 @@ fn is_optional(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> bool {
         LuaType::Any | LuaType::Unknown | LuaType::Nil => true,
         LuaType::Union(union) => union.into_vec().iter().any(|t| matches!(t, LuaType::Nil)),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod constructor_selection_limits {
+    use super::*;
+    use crate::{LuaUnionMembers, VirtualWorkspace};
+
+    #[test]
+    fn finite_union_nesting_preserves_complete_alternatives() {
+        let mut ws = VirtualWorkspace::new();
+        let target = ws.ty("{value:number}");
+        let file = ws.def("local value = {value=1}");
+        let table = ws.get_node::<LuaTableExpr>(file);
+        let model = ws.analysis.semantic_model(file);
+        for depth in [99, 100, 200] {
+            let mut nested = target.clone();
+            for _ in 0..depth {
+                nested = LuaType::Union(Rc::new(LuaUnionType::Multi(LuaUnionMembers::new(vec![
+                    nested,
+                ]))));
+            }
+            let union = Rc::new(LuaUnionType::Multi(LuaUnionMembers::new(vec![
+                nested.clone(),
+            ])));
+            let result = table_union_diagnostics(&model, &union, &table);
+            assert!(result.is_some_and(|d| d.is_empty()), "depth={depth}");
+            let union = Rc::new(LuaUnionType::Multi(LuaUnionMembers::new(vec![
+                nested,
+                target.clone(),
+            ])));
+            assert!(table_union_diagnostics(&model, &union, &table).is_some_and(|d| d.is_empty()));
+        }
     }
 }
