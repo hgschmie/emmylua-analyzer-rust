@@ -117,12 +117,12 @@ fn check_ref_class(
             }
             Err(context.mismatch(&LuaType::Ref(source_id.clone()), compact_type))
         }
-        LuaType::Array(array) => {
-            let value = context
-                .require_complete(|| context.model.infer_iter_from_type_def(source_id, 1))?
-                .ok_or_else(|| context.mismatch(&LuaType::Ref(source_id.clone()), compact_type))?;
-            check_general_type_compact(context, &value, array.get_base())
-        }
+        LuaType::Array(array) => check_class_array(
+            context,
+            &LuaType::Ref(source_id.clone()),
+            compact_type,
+            array.get_base(),
+        ),
         LuaType::Table => Ok(()),
         LuaType::Generic(generic) => {
             let base_type_id = generic.get_base_type_id();
@@ -186,4 +186,37 @@ fn check_ref_class(
             }
         }
     }
+}
+
+/// A declared numeric index signature supplies the elements of an array even
+/// when the class has additional named fields. Static fields like `[1]` do not
+/// establish a signature for arbitrary integer indices.
+pub(super) fn check_class_array(
+    context: &mut TypeCheckContext,
+    source: &LuaType,
+    target: &LuaType,
+    element: &LuaType,
+) -> TypeCheckResult {
+    let members = context.require_complete(|| context.model.member_infos(source))?;
+    // A more specific integer signature takes precedence over a number signature.
+    for key in ["integer", "number"] {
+        let value = members.iter().find(|info| {
+            info.key.name() == Some(key)
+                && info
+                    .id
+                    .as_ref()
+                    .zip(info.file_id)
+                    .is_some_and(|(id, file_id)| {
+                        context
+                            .model
+                            .file_facts_of(file_id)
+                            .and_then(|facts| facts.member_by_id(id))
+                            .is_some_and(|member| member.is_index_signature)
+                    })
+        });
+        if let Some(value) = value {
+            return check_general_type_compact(context, &value.typ, element);
+        }
+    }
+    Err(context.mismatch(source, target))
 }
