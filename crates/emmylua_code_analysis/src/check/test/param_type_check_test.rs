@@ -2525,3 +2525,110 @@ mod callback_return_aliases {
         }
     }
 }
+
+#[test]
+fn test_builtin_length_argument_type() {
+    use crate::DiagnosticCode;
+    use crate::check::test::check_source;
+    let check_source = |source: &str| {
+        check_source(source)
+            .into_iter()
+            .filter(|diagnostic| diagnostic.code == DiagnosticCode::ParamTypeMismatch)
+            .collect::<Vec<_>>()
+    };
+    let prelude = r#"
+        ---@class Train
+        ---@class Metrics
+        local Metrics = {}
+        ---@param key string
+        ---@param value integer
+        function Metrics:set(key, value) end
+        ---@type Train[]
+        local selected_trains = {}
+        ---@param value integer
+        local function integer_value(value) end
+        ---@param value Train[]
+        local function train_values(value) end
+        ---@param value string
+        local function string_value(value) end
+    "#;
+    for expression in [
+        "Metrics:set('match_count', #selected_trains)",
+        "integer_value(#selected_trains)",
+        "integer_value(#{})",
+        "integer_value(#'train')",
+    ] {
+        let diagnostics = check_source(&format!("{prelude}\n{expression}"));
+        assert!(diagnostics.is_empty(), "{expression}: {diagnostics:#?}");
+    }
+    for expression in [
+        "Metrics:set('match_count', selected_trains)",
+        "train_values(#selected_trains)",
+        "string_value(#'train')",
+    ] {
+        let diagnostics = check_source(&format!("{prelude}\n{expression}"));
+        assert_eq!(
+            diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+            vec![DiagnosticCode::ParamTypeMismatch],
+            "{expression}: {diagnostics:#?}"
+        );
+    }
+}
+
+#[test]
+fn test_length_argument_preserves_operator_overload() {
+    use crate::DiagnosticCode;
+    use crate::check::test::check_source;
+    let check_source = |source: &str| {
+        check_source(source)
+            .into_iter()
+            .filter(|diagnostic| diagnostic.code == DiagnosticCode::ParamTypeMismatch)
+            .collect::<Vec<_>>()
+    };
+    let prelude = r#"
+        ---@class Collection
+        ---@operator len: string
+        local Collection = {}
+        ---@type Collection
+        local values
+        ---@param value string
+        local function string_value(value) end
+        ---@param value integer
+        local function integer_value(value) end
+    "#;
+    assert!(check_source(&format!("{prelude}\nstring_value(#values)")).is_empty());
+    let diagnostics = check_source(&format!("{prelude}\ninteger_value(#values)"));
+    assert_eq!(
+        diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::ParamTypeMismatch],
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn test_length_argument_preserves_nullable_member_diagnostic() {
+    use crate::DiagnosticCode;
+    use crate::check::test::{check_source, count_by_code};
+    let diagnostics = check_source(
+        r#"
+        ---@class Container
+        ---@field values string[]
+        ---@param value integer
+        local function integer_value(value) return value end
+        ---@param container Container?
+        function length(container)
+            integer_value(#container.values)
+        end
+    "#,
+    );
+    assert_eq!(
+        count_by_code(&diagnostics, DiagnosticCode::NeedCheckNil),
+        1,
+        "{diagnostics:#?}"
+    );
+    assert_eq!(
+        count_by_code(&diagnostics, DiagnosticCode::ParamTypeMismatch),
+        0,
+        "{diagnostics:#?}"
+    );
+}

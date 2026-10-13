@@ -388,3 +388,59 @@ end
 "#
     ));
 }
+
+#[test]
+fn test_nonempty_array_length_index() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for (guard, index, mutation, expected_warning) in [
+        ("if not a[1] then return end", "a[#a]", "", false),
+        ("if #a > 0 then", "a[#a]", "", false),
+        ("if #a >= 1 then", "a[#a]", "", false),
+        ("if #a == 1 then", "a[#a]", "", false),
+        ("if #a <= 0 then return end", "a[#a]", "", false),
+        ("", "a[#a]", "", true),
+        ("if #a <= 1 then", "a[#a]", "", true),
+        ("if 1 >= #a then", "a[#a]", "", true),
+        ("if 1 > #a then", "a[#a]", "", true),
+        ("if #a == 0 then", "a[#a]", "", true),
+        ("if a[1] then return end", "a[#a]", "", true),
+        ("if not a[1] then return end", "b[#b]", "", true),
+        ("if not a[1] then return end", "a[#b]", "", true),
+        ("if not a[1] then return end", "a[#a]", "a[1] = nil", true),
+        ("if not a[1] then return end", "a[#a]", "a = {}", true),
+        (
+            "if not a[1] then return end",
+            "a[#a]",
+            "local alias = a; alias[1] = nil",
+            true,
+        ),
+        ("if not a[1] then return end", "a[#a]", "mutate(a)", true),
+        (
+            "if not a[1] then return end",
+            "a[#a]",
+            "local ignored = mutate(a)",
+            true,
+        ),
+    ] {
+        let closing = if guard.ends_with("then") { "end" } else { "" };
+        let source = format!(
+            r#"
+            ---@param a string[]
+            ---@param b string[]
+            function example(a, b)
+                {guard}
+                {mutation}
+                ---@type string
+                local s = {index}
+                {closing}
+            end
+        "#
+        );
+        let mut ws = VirtualWorkspace::new();
+        assert_eq!(
+            ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
+            !expected_warning,
+            "{source}"
+        );
+    }
+}
