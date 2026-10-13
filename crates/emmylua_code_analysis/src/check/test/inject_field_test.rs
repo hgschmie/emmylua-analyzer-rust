@@ -2636,3 +2636,120 @@ mod dictionary_constructor {
         }
     }
 }
+
+#[cfg(test)]
+mod union_constructor_alternatives {
+    use crate::DiagnosticCode;
+    fn isolated_checks(source: String) -> Vec<crate::check::checker::Diagnostic> {
+        use crate::check::{
+            CheckConfig,
+            checker::{
+                CheckContext, Checker, assign_type_mismatch::AssignTypeMismatchChecker,
+                check_field::CheckFieldChecker, param_type_check::ParamTypeChecker,
+            },
+        };
+        // File loading/dropping has a separate inherited native-stack limit.
+        // Only those stages use this helper; every checker runs on the test thread.
+        let (ws, file) = std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || {
+                let mut ws = crate::VirtualWorkspace::new();
+                let file = ws.def(&source);
+                (ws, file)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        let mut diagnostics = Vec::new();
+        for checker in 0..3 {
+            // A fresh model prevents a previous checker's cache from hiding recursion.
+            let model = ws.analysis.semantic_model(file);
+            let mut context =
+                CheckContext::new(&model, std::sync::Arc::new(CheckConfig::default()));
+            match checker {
+                0 => CheckFieldChecker::check(&mut context, &model),
+                1 => AssignTypeMismatchChecker::check(&mut context, &model),
+                _ => ParamTypeChecker::check(&mut context, &model),
+            }
+            diagnostics.extend(context.into_diagnostics());
+        }
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || drop(ws))
+            .unwrap()
+            .join()
+            .unwrap();
+        diagnostics
+    }
+
+    #[test]
+    fn deep_recursive_union_keeps_a_successful_sibling() {
+        for (leaf, valid) in [("{text='ok'}", true), ("{text=1}", false)] {
+            let mut value = leaf.to_string();
+            for _ in 0..512 {
+                value = format!("{{value=1,next={value}}}");
+            }
+            let source = format!(
+                "---@alias Node {{value:number,next:Node?}}|{{text:string,next:Node?}}\n---@param value Node\nlocal function accept(value) return value end\naccept({value})"
+            );
+            let diagnostics = isolated_checks(source);
+            assert_eq!(
+                diagnostics.is_empty(),
+                valid,
+                "leaf={leaf}: {diagnostics:?}"
+            );
+            if !valid {
+                assert!(
+                    diagnostics
+                        .iter()
+                        .any(|d| d.code == DiagnosticCode::ParamTypeMismatch),
+                    "{diagnostics:?}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn invalid_value_uses_the_record_with_the_matching_field() {
+        for union in ["First|Second", "Second|First"] {
+            let source = format!(
+                "---@class First\n---@field x number\nlocal First = {{}}\n---@class Second\n---@field y string\nlocal Second = {{}}\n---@class Holder\n---@field value {union}\nlocal Holder = {{}}\n---@param holder Holder\nlocal function update(holder)\nholder.value = {{x=false}}\nend\nreturn update"
+            );
+            let diagnostics: Vec<_> = crate::check::test::check_source(&source)
+                .into_iter()
+                .filter(|d| d.code != DiagnosticCode::Unused)
+                .collect();
+            assert_eq!(diagnostics.len(), 1, "{union}: {diagnostics:?}");
+            assert_eq!(diagnostics[0].code, DiagnosticCode::AssignTypeMismatch);
+        }
+    }
+
+    #[test]
+    fn optional_array_checks_required_fields_at_the_leaf() {
+        let source = "---@alias Node {value:number,children:Node[]?}\n---@param root Node|string\nlocal function accept(root) return root end\naccept({value=1,children={{}}})";
+        let diagnostics = isolated_checks(source.to_owned());
+        let leaf = source.find("{}").unwrap();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::MissingFields
+                    && usize::from(d.range.start()) == leaf),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn deeply_nested_missing_fields_use_the_leaf_range() {
+        let mut value = "{}".to_owned();
+        for _ in 0..512 {
+            value = format!("{{value=1,next={value}}}");
+        }
+        let source = format!(
+            "---@alias Node {{value:number,next:Node?}}\n---@type Node|string\nlocal v = {value}\nreturn v"
+        );
+        let start = source.find("{}").unwrap();
+        let diagnostics = isolated_checks(source);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0].code, DiagnosticCode::MissingFields);
+        assert_eq!(usize::from(diagnostics[0].range.start()), start);
+    }
+}

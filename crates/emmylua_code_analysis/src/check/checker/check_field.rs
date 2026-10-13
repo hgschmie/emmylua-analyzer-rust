@@ -131,31 +131,73 @@ fn is_mapped_alias(semantic_model: &SemanticModel<'_>, def: &TypeDef) -> bool {
     matches!(LuaDocType::cast(node), Some(LuaDocType::Mapped(_)))
 }
 
+/// Collect structural errors. Assignment and argument checkers report value
+/// mismatches, including constructors with no viable record alternative.
 pub(super) fn table_literal_mismatches(
     semantic_model: &SemanticModel<'_>,
     target: &LuaType,
     table: &LuaTableExpr,
 ) -> Vec<Mismatch> {
-    let mut mismatches = Vec::new();
-    collect_table_mismatches(&mut mismatches, semantic_model, target, table);
-    mismatches
+    let mut errors = Vec::new();
+    let mut pending = vec![TableCheck::Nested(table.clone(), target.clone())];
+    while let Some(task) = pending.pop() {
+        match task {
+            TableCheck::Nested(table, target) => {
+                if let Some(target) = expand_alias_branches(semantic_model, &target) {
+                    check_table_head(&mut pending, &mut errors, semantic_model, &target, &table);
+                }
+            }
+            TableCheck::Head(table, target) => {
+                check_table_head(&mut pending, &mut errors, semantic_model, &target, &table)
+            }
+            TableCheck::NextAlternative {
+                table,
+                mut remaining,
+                start,
+                best,
+            } => {
+                // Every sibling starts at the same offset. Discard its temporary
+                // errors on success, or keep the shortest complete failure.
+                let branch = errors.split_off(start);
+                if branch.is_empty() {
+                    continue;
+                }
+                let best = match best {
+                    Some(previous) if previous.len() <= branch.len() => previous,
+                    _ => branch,
+                };
+                if let Some(next) = remaining.next() {
+                    pending.push(TableCheck::NextAlternative {
+                        table: table.clone(),
+                        remaining,
+                        start,
+                        best: Some(best),
+                    });
+                    pending.push(TableCheck::Head(table, next));
+                } else {
+                    errors.extend(best);
+                }
+            }
+        }
+    }
+    errors
 }
 
-fn collect_table_mismatches(
-    mismatches: &mut Vec<Mismatch>,
-    semantic_model: &SemanticModel<'_>,
-    target: &LuaType,
-    table: &LuaTableExpr,
-) {
-    // Resolve union aliases once. A remaining alias is an unresolved cycle;
-    // following it again here would bypass the evaluator's active alias path.
-    let Some(target) = expand_alias_branches(semantic_model, target) else {
-        return;
-    };
-    check_table_head(mismatches, semantic_model, &target, table);
+enum TableCheck {
+    // Expand aliases once at a new constructor. A normalized union head
+    // can still contain an unresolved alias cycle and must not expand again.
+    Nested(LuaTableExpr, LuaType),
+    Head(LuaTableExpr, LuaType),
+    NextAlternative {
+        table: LuaTableExpr,
+        remaining: std::vec::IntoIter<LuaType>,
+        start: usize,
+        best: Option<Vec<Mismatch>>,
+    },
 }
 
 fn check_table_head(
+    pending: &mut Vec<TableCheck>,
     mismatches: &mut Vec<Mismatch>,
     semantic_model: &SemanticModel<'_>,
     target: &LuaType,
@@ -167,59 +209,32 @@ fn check_table_head(
                 if table_index_accepts(semantic_model, &LuaType::Integer, &key)
                     && let Some(value) = field.get_value_expr().and_then(|expr| table_expr(&expr))
                 {
-                    collect_table_mismatches(mismatches, semantic_model, array.get_base(), &value);
+                    pending.push(TableCheck::Nested(value, array.get_base().clone()));
                 }
             }
             return;
         }
         LuaType::Intersection(intersection) => {
             for component in intersection.get_types() {
-                check_table_head(mismatches, semantic_model, component, table);
+                pending.push(TableCheck::Head(table.clone(), component.clone()));
             }
             return;
         }
         LuaType::Union(union) => {
-            let source = LuaType::TableConst(crate::InFiled::new(
-                semantic_model.file_id(),
-                table.get_range(),
-            ));
-            let mut best: Option<Vec<Mismatch>> = None;
-            for component in union.iter() {
-                // An unresolved alias must not restart expansion of this branch.
-                if target_def(semantic_model, component)
-                    .is_some_and(|def| def.kind == TypeDefKind::Alias)
-                    || crate::semantic_model::type_check::check_type_at(
-                        semantic_model,
-                        &source,
-                        component,
-                        table.get_range(),
-                        false,
-                    )
-                    .is_err()
-                {
-                    continue;
+            let mut alternatives =
+                constructor_alternatives(semantic_model, union, table).into_iter();
+            if let Some(first) = alternatives.next() {
+                // Schedule the continuation first so the branch and its descendants
+                // finish before comparing their errors against the previous best.
+                if !alternatives.as_slice().is_empty() {
+                    pending.push(TableCheck::NextAlternative {
+                        table: table.clone(),
+                        remaining: alternatives,
+                        start: mismatches.len(),
+                        best: None,
+                    });
                 }
-                let mut errors = Vec::new();
-                check_table_head(&mut errors, semantic_model, component, table);
-                if errors.is_empty() {
-                    return;
-                }
-                if best
-                    .as_ref()
-                    .is_none_or(|current| errors.len() < current.len())
-                {
-                    best = Some(errors);
-                }
-            }
-            if let Some(errors) = best {
-                mismatches.extend(errors);
-            } else if let Some(component) = union.iter().find(|component| {
-                matches!(component, LuaType::Object(_))
-                    || target_def(semantic_model, component)
-                        .is_some_and(|def| def.kind == TypeDefKind::Class)
-            }) {
-                // Keep a missing-field diagnostic when no alternative accepts the record.
-                check_table_head(mismatches, semantic_model, component, table);
+                pending.push(TableCheck::Head(table.clone(), first));
             }
             return;
         }
@@ -253,7 +268,7 @@ fn check_table_head(
             Ok(None) if !is_optional(semantic_model, ty) => missing.push(key.to_path()),
             Ok(Some(value)) => {
                 if let Some(child) = value.expr.and_then(table_expr) {
-                    collect_table_mismatches(mismatches, semantic_model, ty, &child);
+                    pending.push(TableCheck::Nested(child, ty.clone()));
                 }
             }
             _ => {}
@@ -273,7 +288,7 @@ fn check_table_head(
                 .map(|(_, value)| value);
             if let Some(expected) = expected {
                 if let Some(value) = field.get_value_expr().and_then(|expr| table_expr(&expr)) {
-                    collect_table_mismatches(mismatches, semantic_model, expected, &value);
+                    pending.push(TableCheck::Nested(value, expected.clone()));
                 }
             } else {
                 mismatches.push(Mismatch {
@@ -290,6 +305,108 @@ fn check_table_head(
 
     missing.sort_unstable();
     report_missing_fields(mismatches, table, missing);
+}
+
+fn constructor_alternatives(
+    model: &SemanticModel,
+    union: &crate::LuaUnionType,
+    table: &LuaTableExpr,
+) -> Vec<LuaType> {
+    // A constructor cannot match a primitive. A single viable shape needs no
+    // full subtree comparison here; the value checker already performs it.
+    let mut viable = union.iter().filter(|ty| {
+        !matches!(
+            ty,
+            LuaType::Nil
+                | LuaType::Boolean
+                | LuaType::String
+                | LuaType::Integer
+                | LuaType::Number
+                | LuaType::Function
+        )
+    });
+    if let Some(only) = viable.next()
+        && viable.next().is_none()
+        && (matches!(only, LuaType::Object(_) | LuaType::Array(_))
+            || target_def(model, only).is_some_and(|def| def.kind == TypeDefKind::Class))
+    {
+        return vec![only.clone()];
+    }
+    // For named-field constructors, a required key can distinguish plain records
+    // without type-checking the entire remaining subtree at each nesting level.
+    let plain_records = union.iter().all(|ty| {
+        matches!(ty, LuaType::Nil)
+            || matches!(ty, LuaType::Object(obj) if obj.get_index_access().is_empty())
+    }) && table
+        .get_fields_with_keys()
+        .iter()
+        .all(|(_, key)| key.is_name());
+    let ranked = plain_records.then(|| closest_record_shapes(model, union, table));
+    if let Some((0, shapes)) = &ranked
+        && shapes.len() == 1
+    {
+        return shapes.clone();
+    }
+    let source = LuaType::TableConst(crate::InFiled::new(model.file_id(), table.get_range()));
+    let compatible: Vec<_> = union
+        .iter()
+        .filter(|component| {
+            !target_def(model, component).is_some_and(|def| def.kind == TypeDefKind::Alias)
+                && crate::semantic_model::type_check::check_type_at(
+                    model,
+                    &source,
+                    component,
+                    table.get_range(),
+                    false,
+                )
+                .is_ok()
+        })
+        .cloned()
+        .collect();
+    if !compatible.is_empty() {
+        return compatible;
+    }
+
+    // A value mismatch inside an otherwise matching record belongs to the
+    // assignment or argument checker. Prefer that record to unrelated missing fields.
+    let (_, shapes) = ranked.unwrap_or_else(|| closest_record_shapes(model, union, table));
+    shapes
+}
+
+fn closest_record_shapes(
+    model: &SemanticModel,
+    union: &crate::LuaUnionType,
+    table: &LuaTableExpr,
+) -> (usize, Vec<LuaType>) {
+    let constructor = TableConstructor::new(model, table);
+    let mut closest = Vec::new();
+    let mut fewest_missing = usize::MAX;
+    for component in union.iter() {
+        let class;
+        let shape = match component {
+            LuaType::Object(object) => object.as_ref(),
+            _ if target_def(model, component).is_some_and(|def| def.kind == TypeDefKind::Class) => {
+                class = class_fields(model, component);
+                &class
+            }
+            _ => continue,
+        };
+        let missing = shape
+            .get_fields()
+            .iter()
+            .filter(|(key, ty)| {
+                matches!(constructor.member_value(key), Ok(None)) && !is_optional(model, ty)
+            })
+            .count();
+        if missing < fewest_missing {
+            closest.clear();
+            fewest_missing = missing;
+        }
+        if missing == fewest_missing {
+            closest.push(component.clone());
+        }
+    }
+    (fewest_missing, closest)
 }
 
 fn report_missing_fields(
