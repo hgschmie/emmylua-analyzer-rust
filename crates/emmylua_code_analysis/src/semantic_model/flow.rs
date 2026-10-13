@@ -14,6 +14,7 @@
 
 mod array;
 mod computed_guard;
+mod computed_index;
 mod guards;
 mod member_call_effects;
 
@@ -460,6 +461,9 @@ pub(crate) fn type_of_expr_at_node(
             }
             if let Some(typ) = computed_guard::guarded_type(model, index_expr, offset) {
                 return apply_casts(typ, All);
+            }
+            if let Some(typ) = computed_index::assigned_type(model, index_expr, offset) {
+                return apply_expr_casts(model, expr_syntax, typ, All);
             }
             if let Some(resolved) = model.resolve_member(index_expr)
                 && let Some(member_id) = resolved.member_id.clone().or_else(|| {
