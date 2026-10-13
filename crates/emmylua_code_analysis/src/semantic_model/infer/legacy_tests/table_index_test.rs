@@ -426,3 +426,77 @@ fn table_index_nullable_writes_still_check_values_and_required_fields() {
         }
     }
 }
+
+#[gtest]
+fn table_index_computed_assignment_preserves_group_type() {
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+
+    for table_index in [false, true] {
+        for array_index in [false, true] {
+            let mut ws = workspace(table_index);
+            let mut config = ws.get_emmyrc();
+            config.strict.array_index = array_index;
+            ws.update_emmyrc(config);
+            let source = r#"
+                ---@class PriorityGroup
+                ---@field free_trains integer[]
+                ---@param key string
+                local function add(key)
+                    ---@type table<string, PriorityGroup>
+                    local groups = {}
+                    groups[key] = groups[key] or { free_trains = {} }
+                    local trains = groups[key].free_trains
+                    local group = groups[key]
+                end
+            "#;
+            assert!(ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, source));
+            let file = ws.def(source);
+            let model = ws.analysis.semantic_model(file);
+            let index = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaIndexExpr>()
+                .last()
+                .unwrap();
+            let typ = model.type_of_expr_at(index.get_syntax_id(), index.get_position());
+            assert_eq!(ws.humanize_type(typ), "PriorityGroup");
+        }
+    }
+}
+
+#[gtest]
+fn table_index_computed_assignment_retains_unsafe_lookup_warning() {
+    for statement in [
+        "",
+        "groups[key] = nil",
+        "key = other_key",
+        "groups = {}",
+        "mutate()",
+    ] {
+        let mut ws = workspace(true);
+        let source = format!(
+            r#"
+            ---@class PriorityGroup
+            ---@field free_trains integer[]
+            ---@param key string
+            ---@param other_key string
+            local function add(key, other_key)
+                ---@type table<string, PriorityGroup>
+                local groups = {{}}
+                {initialize}
+                {statement}
+                local trains = groups[key].free_trains
+            end
+        "#,
+            initialize = if statement.is_empty() {
+                ""
+            } else {
+                "groups[key] = { free_trains = {} }"
+            }
+        );
+        assert!(
+            !ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+            "{statement}"
+        );
+    }
+}

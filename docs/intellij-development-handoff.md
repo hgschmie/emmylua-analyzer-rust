@@ -1,6 +1,583 @@
 # EmmyLua IntelliJ development handoff
 
-## Current checkpoint: October 11, 2026
+## Current checkpoint: October 13, 2026 — named union parameter aliases
+
+UP-041 is independent of the dictionary and numeric-arithmetic fixes.
+Standalone branch `fix/union-alias-parameters` starts at upstream `a0ce1512`;
+signed fix `20c29828` is integrated as signed cherry-pick `f0413972` with
+provenance. It addresses the two LTN `script.raise_event` warnings in
+request_processor.lua:811 and :910.
+
+The parameter checker expands named union aliases with the existing alias
+resolver, requires every argument alternative to match an accepted alternative,
+and reuses explicit-union leaf checks. Active type-pair tracking and a depth
+bound prevent recursive aliases from looping. General compatibility, casts,
+assignments and strict subtype checks retain their previous behavior. The
+work branch already exposed the alias helper; no integration adapter is needed.
+
+Five regression groups cover enum/class values, alias chains, argument unions,
+nullable and incompatible values, literal alternatives and recursive aliases.
+Standalone validation passes all 2,417 workspace tests, Clippy and formatting.
+Tests run serially after an earlier unrelated formatter benchmark exceeded its
+10 ms threshold under parallel execution. All 2,596 combined workspace tests,
+Clippy and formatting pass. Packaged validation is recorded in the workspace
+handoff and EmmyLua2's PATCHED_BUILD.md.
+
+EmmyLua2 build 148 is the delivery; FDE retains version/archive 0.7.8-dev with
+its development analyzer pin updated. Keep source fixes separate from packaging.
+No new PR or push was requested. Reproduction snapshots and protocol captures:
+`build/investigations/event-type-union-20261013/` in the main analyzer repository.
+
+## Previous checkpoint: October 13, 2026 — nullable writes and numeric aliases
+
+Inventory IDs: UP-016 (`fix/nullable-table-index`) and UP-040
+(`fix/numeric-alias-arithmetic`). Keep the canonical workspace inventory at
+`upstream/FIX_INVENTORY.md` current after upstream tasks.
+
+The old dictionary branch already accepts nullable writes. Signed `ba8080c2`
+adds its missing regression coverage; the fault was in the semantic-rewrite port.
+Work correction `4bee6720` distinguishes dictionary write targets (`T | nil`)
+from read/value queries, preserving required object/class fields and directional
+write contracts. The non-nil arm must still match T. Both strict.tableIndex
+settings, table/object/generic-alias dictionaries, invalid values and required
+fields are covered. The standalone branch remains on its pre-refactor base and
+needs porting before submission; do not cherry-pick the entire work branch.
+
+Arithmetic fix `bb9e92f7` is independently based on fresh upstream `a0ce1512`.
+It recognizes integer aliases in addition, subtraction and multiplication,
+including alias chains, generic aliases and integer-only unions. Mixed/nullable
+operands do not become integers; division/power and nominal operator overloads
+retain their behavior. Alias traversal is bounded. Signed work cherry-pick
+`34a147b2` records provenance and avoids importing unrelated upstream changes.
+
+Validation: arithmetic standalone passes all 1,453 code-analysis tests, including
+five new groups. The combined work workspace passes all 2,591 tests with all
+features, including the two dictionary regression groups and an LTN-shaped
+integration test. Both current implementations pass workspace/all-target Clippy
+with warnings denied and formatting checks. The old dictionary branch passes
+all 11 table-index tests. Generated Chinese stdlib translations from the full
+test run were restored to their original tracked contents.
+
+Original mods stay read-only. Fixed source snapshots, before/after raw LSP probes
+and test logs are under `build/investigations/numeric-assignments-20261013/` in the
+main repository. Packaging/runtime results are recorded in EmmyLua2's
+`PATCHED_BUILD.md` and the workspace handoff. Build 147 is the intended EmmyLua2
+delivery; FDE retains its version/archive, with only its development analyzer
+pin updated. New commits remain local; no PR or push was requested.
+
+## Previous checkpoint: October 13, 2026 — LTN length, guards and constructors
+
+Seven local fix branches address the four request_processor.lua reports. Each starts
+on freshly fetched upstream/main `119d0e10`; inline assertion arguments explicitly
+stacks prerequisites, as described below. No upstream PR or push is authorized for
+this batch. Original mods remain read-only; the fixed replay input is under
+`build/investigations/ltn-batch-20261013/source` (37 Lua files plus a manifest).
+
+| Report / cause | Standalone branch / signed commit | Signed work backport |
+| --- | --- | --- |
+| `#selected_trains` returns the operand type | `fix/builtin-length-result` / `383bcf93`, `2ed70489` | `27cd62db`, `c4acfd51` |
+| Actual argument aliases fail call matching | `fix/aliased-call-arguments` / `0dbba984` | `157872f5` |
+| Member discriminant comparison fails to expand an alias | `fix/aliased-member-discriminants` / `a325c369` | `c26a0d23` |
+| Computed collection reads lose the preceding guard | `fix/computed-index-guards` / `817fdd25` | `ae218be4` |
+| Constructor validation selects an incompatible union arm | `fix/union-table-constructor-checks` / `a5935c2d` | `9b964a2d` |
+| Numeric-index classes are rejected for array parameters | `fix/class-index-array-compatibility` / `498c8f49` | `b68587d5` |
+| Call argument cache and shape checks ignore inline assertions | `fix/inline-assertion-arguments` / `83e7e455` | `fee55890` |
+
+Integration uses signed cherry-picks with provenance to avoid importing unrelated
+upstream changes. Adapters retain this work branch's Arc/into_vec APIs and existing
+read/write, strict dictionary, enum and callback fixes. Test append conflicts
+retain both sides. The new argument assertion gate also wraps union shape checks.
+
+The inline assertion branch contains PR #1290's scope fixes (`36821c98`, `0c436790`,
+cherry-picks of `5aedfb81`, `74d683da`) and the numeric-index class prerequisite
+(`7512adec`, from `498c8f49`). Scope isolation prevents an assertion on an outer
+constructor leaking into a nested call. The array fix preserves existing test
+#573 when its class assertion starts being honored. Submit these prerequisites
+first; they are already integrated in the work branch.
+
+Computed guards are restricted to stable local access paths and ordinary arrays
+or dictionaries; writes, possible mutations, calls, joins, loops and closures
+invalidate their use. Standalone array regressions reproduce upstream; work-only
+`30b5d9f6` adds strict dictionary/array flag combinations, nested guarded lookups,
+stale guards and asymmetric read/write contracts. `1ae5063f` checks asserted
+recursive union constructors alongside ordinary constructors and bad arguments.
+
+The first packaged replay exposed two required follow-ups. A declared aliased
+argument was rejected before discriminant narrowing: formal aliases expanded to
+string while actual aliases remained opaque. Existing assignment compatibility
+now handles aliases at the leaf matcher, preserving generic identity, rejecting
+wrong/nullable/mixed/cyclic aliases and retaining nominal class compatibility.
+This is independent upstream behavior, exposed by the work branch's precise
+dictionary keys. The original upstream mod replay had unknown keys and hid it.
+Five focused tests and the combined real-mod replay restore SignalID? before the
+guard and SignalID on its guarded member access, clearing line 618.
+
+The second length projection path inferred an unannotated member's expected type
+from the coarse operand shell. It now uses full expression inference for length
+assignments (including parentheses), preserving explicit annotations and custom
+operators. Two regression groups and real-mod replay clear init.lua:289. The
+completed standalone length branch passes all 2,410 tests, Clippy and formatting.
+
+The length fix preserves custom len operators and safe array[#array] reads after
+nonempty guards, including existing regression #886. Union checking validates a
+complete alternative, rather than combining fields from different alternatives;
+unfiltered trial diagnostics prevent disabled warnings from selecting an invalid
+arm. Class-to-array compatibility requires a real numeric index signature with
+compatible elements; a lone [1] field, string-only signature or len operator is
+insufficient. Inline assertions use the asserted contract; unrelated nested or
+sibling errors and incompatible asserted parameter types still report errors.
+
+Standalone workspace/all-feature totals: initial length 2,408; aliases/guards 2,405 each;
+union 2,407 (final alias refinement 2,406 plus the previously passed slow stress
+case); class arrays 2,406; inline arguments with prerequisites 2,425; aliased call arguments 2,407. Clippy with
+all targets/features and warnings denied, plus rustfmt, pass. Per-fix build logs
+and INVESTIGATION.md live in their exclusive build/checkouts directories.
+
+All 2,583 final combined workspace/all-feature tests pass. The work-only guard tests
+needed two allocation-free string comparisons to satisfy Clippy; their targeted
+rerun and final workspace/all-target/all-feature Clippy plus rustfmt pass.
+Evidence is in build/logs/ltn-batch-*. Signatures for all source fixes/backports
+were verified. Target is EmmyLua2 build 145 only; FDE remains 0.7.8-dev with its existing archive unchanged.
+Final package replay, archive checks and plugin tests belong in Emmy
+PATCHED_BUILD.md and FDE docs/ACCEPTANCE.md. Custom binary remains macOS arm64 only.
+
+Known separate issue: both literal diagnostic passes check every on_event overload
+at init.lua:328/337. This predates this batch. The preliminary replay changes
+1,147 misleading diagnostics into 466 at the same already-broken calls, rather
+than introducing new failing locations. A correct follow-up needs joint overload
+selection and negative tests; no overload patch or PR was created. Evidence is
+build/investigations/ltn-batch-20261013/OVERLOAD_FOLLOWUP.md. Uncast LocalisedString
+constructors containing nullable values still receive type diagnostics. Correct
+call inference also exposes an undefined-field warning at request_processor.lua:879
+for prototypes[item_info.type], whose declared SignalIDType is broader than just
+item/fluid. No further change is included for that separate index/type-contract issue.
+
+## Previous checkpoint: October 13, 2026 — callback return aliases and tuple tails
+
+LTN `tools.printmsg` rejects a valid `msg_func = fun():LocalisedString` callback,
+including the constructor return at request_processor.lua502. The failure
+reproduces on current upstream119d0e10 without our local patches. The higher-order
+function solver misses assignment semantics through union aliases; table-to-tuple
+checking also treats the variadic tail as a mandatory single field.
+
+- Local-only fix/callback-return-type, based on freshly fetched upstream/main
+  119d0e10; signed/verified13cef7ff. Checkout build/checkouts/callback-return.
+- Signed backport4acdc110 onto work/intellij-modules. The appended-test
+  conflict retains both sets of tests. Two union iterators use this branch's
+  into_vec().iter() instead of upstream iter().
+- Upstream prerequisite3e9bc8d6 (tuple arguments use assignment element checks)
+  was missing from the work baseline; signed backport3fde3155 includes it and
+  applies the same element context to the new variadic tail. Its two existing
+  regressions are preserved. No broad upstream refactor was imported.
+- No dependency on the pending strict dictionary, read/write, or enum fixes.
+
+The solver expands alias pairs with cycle/depth guards, checks every actual union
+alternative against an allowed expected alternative, and uses assignment checks
+for leaf values. Table constructors allow an empty repeated tuple tail and check
+all present numeric tail members; fixed slots and fixed packs retain their checks.
+Six regression groups cover recursive message tables, scalar/alias returns,
+invalid headers and tails, nullable returns, callback parameter variance and cycles.
+Standalone all2408 workspace/all-feature tests, Clippy(-Dwarnings) and fmt pass.
+Combined all2544 workspace/all-feature tests pass; Clippy/fmt evidence is
+recorded in build/logs/callback-return-* and the packaging notes. The standalone server removes all8msg_func warnings on37copied LTN files;
+final no-regression comparison must use the combined packaged server.
+
+Build target EmmyLua2 144 only; FDE stays0.7.8-dev, development pin/tests updated
+without changing its archive. Nothing pushed or installed. Original mods readonly.
+The ignored standalone build/INVESTIGATION.md records evidence and existing
+limitations (generic call-checker fallback and coarse inline-return assertion
+inference are separate). Final package checks belong in Emmy PATCHED_BUILD.md
+and FDE docs/ACCEPTANCE.md.
+
+
+## Previous checkpoint: October 13, 2026 — nominal enum member compatibility
+
+`defines.rail_direction.front/back` retains its precise class type but was
+incorrectly rejected as an argument to a `defines.rail_direction` parameter.
+Upstream refactor3474c99d omitted enum member-value compatibility; work-only
+3f6ecb0f preserves inline API member classes and exposes that omission. Plain
+upstream hides the direct-access case by collapsing the member to the enum, but
+explicitly typed members and predeclared class-valued enums reproduce it there.
+
+- Local-only `fix/nominal-enum-member-compatibility`, based on freshly fetched
+  upstream/main cb05b0c0; signed/verified c6446351.
+- Checkout `build/checkouts/nominal-enum-members`; ignored investigation and
+  future PR description under build/. Do not push/open a PR yet.
+- Signed/verified provenance-preserving backport dd161a18. The only conflict
+  retained this work branch's existing into_vec() iteration instead of upstream's
+  iter(); no other source adaptation or dependency on strict dictionary indexing.
+
+The checker resolves the enum's actual doc owner and initializer in its defining
+file, accepting its nominal member classes and their subclasses. It preserves
+private class identity and rejects unrelated classes, other enums, nil and
+recursive/unresolved enum members. Union arguments must have every alternative
+accepted, so Member|nil does not become valid for a required enum. Primitive enum
+value checks remain in their existing paths. Seven regression groups cover
+calls/assignments, local/global/nested and cross-file enums, optional parameters,
+inheritance and negative cases. The two initial reproductions fail before fixing.
+
+Standalone: all2409 workspace/all-feature tests plus workspace/all-target/
+all-feature Clippy(-Dwarnings) and rustfmt pass. Combined work passes all2536
+workspace/all-feature tests and the same Clippy/rustfmt checks. Logs are in
+build/logs/rail-enum-{workspace-tests,clippy,fmt}. Packaging target is EmmyLua2
+build143 only. FDE stays0.7.8-dev and its archive is preserved; only its development
+pin and integration evidence change. Package and real-mod protocol results are
+recorded in Emmy PATCHED_BUILD.md and FDE docs/ACCEPTANCE.md.
+
+## Previous checkpoint: October 13, 2026 — unbound-table field diagnostics
+
+User reported UndefinedField at LTN request_processor.lua:475/482/490 on
+`seen_train[train.id] = true`. The key still has its declared uint32 type. The
+checker incorrectly bound the unannotated `seen_train = {}` to the nearest
+preceding class (ltn.RequestProcessor); its existing conditional-access exception
+hid the corresponding warning in the `if not seen_train[train.id]` reads.
+
+- Standalone local-only branch `fix/unbound-table-field-diagnostics` on freshly
+  fetched upstream/main `cb05b0c0`, signed/verified `fb18e8d6`.
+- Checkout `build/checkouts/unbound-table-fields`; ignored future description
+  `build/PR_DESCRIPTION.md`. Do NOT push or open a PR yet.
+- Signed/verified backport `3cbe6449` on work/intellij-modules. Test-file append
+  conflict resolved by retaining both sets of tests; production fix applies
+  unchanged. This does not depend on strict dictionary indexing or other local
+  patches.
+
+The checker now uses the existing doc-owner identity rather than a name or
+nearest-position heuristic. Three grouped regressions cover the numeric-index
+loop, unrelated enum/alias and same-name/case collisions, plus retained errors
+for genuinely annotated classes/enums with different runtime variable names.
+Two positive regressions fail before the fix. All 2,405 standalone workspace
+all-feature tests, workspace/all-target/all-feature Clippy (-D warnings), and
+rustfmt pass. Combined work also passes all 2,529 workspace/all-feature tests and the same
+Clippy/rustfmt checks. Generated std-zh_CN translations were restored after testing.
+
+Packaging target: EmmyLua2 build142 only. FDE stays0.7.8-dev with its existing
+archive; only its development analyzer pin and integration evidence are updated.
+Current package/protocol evidence belongs in Emmy PATCHED_BUILD.md and FDE
+ACCEPTANCE.md, with parent agent updating the root workspace HANDOFF.md.
+
+
+## Previous checkpoint: October 13, 2026 — computed-index assignment flow
+
+User reported NeedCheckNil at LTN request_processor.lua:432 immediately after
+`free_trains_by_priority[key] = free_trains_by_priority[key] or {...}`. The
+rewritten flow projection does not associate a nonliteral computed key with the
+preceding write. This also reproduces on unmodified upstream with Group[] and
+default strict.arrayIndex, independent of our strict.tableIndex feature. Upstream
+currently does not preserve nullable generic dictionary values consistently, so
+the standalone reproduction intentionally uses arrays.
+
+- Local-only branch `fix/computed-index-assignment-flow`, based on freshly fetched
+  upstream/main `cb05b0c0`, signed `9fdb3dde`.
+- Checkout `build/checkouts/computed-index-flow`; future submission description
+  is ignored `build/PR_DESCRIPTION.md`. Do NOT push or open a PR yet.
+- Signed backport `3ee94cbc` on work/intellij-modules. Flow dispatch conflict was
+  resolved by retaining existing directional/dictionary handlers and adding the
+  new helper before them. No feature dependency or other source adaptation.
+
+The helper tracks local owner/key declaration identities through bounded
+straight-line flow. A definite nonnil write removes nil from the original
+array/dictionary element type, preserving named element docs and navigation.
+Unknown/nullable writes do not narrow. Calls, alias-capable indexed writes,
+reassigned/shadowed locals, multiple assignments, joins/loops and closure
+boundaries conservatively stop the trace. Nominal read/write classes are left to
+existing flow handling. Five tests cover safe reads, exact Group type and unsafe
+cases. The original array reproduction fails before the patch.
+
+Standalone validation: all 2,407 workspace tests with all features, workspace/
+all-target Clippy (-D warnings), and rustfmt pass. Work adds two integration tests
+for strict.tableIndex on/off, strict.arrayIndex on/off, exact PriorityGroup type
+and retained unsafe lookup diagnostics. Both integration tests pass. The combined workspace passes all 2,526 tests
+with all features, workspace/all-target/all-feature Clippy (-D warnings) and
+rustfmt. Test-generated std-zh_CN files were restored.
+
+This work also integrates reviewed PR follow-ups from the previous task:
+- PR1291: 1550a05a -> e538efd3, builtin dictionary identity/stdlib origin guard
+  and user-defined table<T>/compound regression coverage.
+- PR1292: b1045520 -> 6ad16119, borrowed enum declaration, clarified comments and
+  same-file/dynamic/conditional regression coverage.
+The initial dictionary/enum fixes described below are now draft PRs1291/1292;
+those original no-push notes are historical. The new computed-index fix remains
+local-only at the user's explicit request.
+
+Packaging targets EmmyLua2 build141 and FDE0.7.8-dev; final validation and archive
+paths are recorded in PATCHED_BUILD.md, FDE docs/ACCEPTANCE.md and root HANDOFF.md.
+
+## Previous checkpoint: October 13, 2026 — dictionary constructors and enum tables
+
+Two independent diagnostic fixes are prepared on local branches based directly
+on freshly fetched upstream main `cb05b0c0`. Neither branch was pushed and no PR
+was opened, per the user's request to defer further upstream submissions.
+
+- `fix/dictionary-constructor-fields`, signed `cdf32d10`, checkout
+  `build/checkouts/dictionary-constructor`: do not treat `table<K,V>` as the
+  standard library table class's closed record surface. Matches the existing
+  assignment checker's dictionary policy, without adding new dictionary key/value
+  validation. Tests use the real standard library and cover local/global,
+  computed/literal keys, alias/call/reassignment, and retained class/generic-class
+  missing/injected-field warnings. Two regressions fail before fixing.
+- `fix/cross-file-enum-members`, signed `7727a58f`, checkout
+  `build/checkouts/cross-file-enum`: resolve enum runtime declarations in their
+  owning files, then query their table constructors' members. Enum values and
+  misspelled fields remain invalid, including conditional accesses. Value syntax
+  in the existing fallback is also resolved in its own file. Positive cross-file
+  regression fails before fixing; negative tests cover enum-typed globals,
+  parameters and shadowing locals.
+
+Signed backports `5c39ca41` and `14ac6b9e` integrate both fixes without conflicts,
+retaining all existing patches and the Arc baseline. No compatibility glue was
+needed. Branch-local ignored `build/PR_DESCRIPTION.md` files hold future PR text;
+keep packaging and internal documentation out of the independent fix branches.
+Both faulty checks originate in upstream rewrite `3474c99d`.
+
+Standalone validation: all 639 dictionary and 638 enum checker/type-check tests
+pass, plus workspace/all-target/all-feature Clippy with warnings denied and
+rustfmt. Combined validation passes all 2,515 workspace tests with all features,
+the same Clippy checks and rustfmt. Test-generated std-zh_CN files were restored.
+When sharing a Cargo target across worktrees, touch crate entrypoint mtimes to
+avoid stale test artifacts and verify new tests actually run; one initial enum
+baseline found zero tests, and the corrected run reproduced the failure.
+
+Packaging targets EmmyLua2 `0.30.0-140-IDEA262-patched-modules` and FDE
+`0.7.7-dev`, pinning this committed documentation tip. Final package validation
+is recorded in EmmyLua2 `PATCHED_BUILD.md`, FDE `docs/ACCEPTANCE.md` and workspace
+`HANDOFF.md`. Custom server changes remain macOS arm64 only.
+
+Evidence: work `build/logs/constructor-enum-*`, standalone `build/logs/`, main
+analyzer `build/investigations/constructor-enum/probe.py`. It copies all 37 LTN
+Lua files, checks constants/request_processor/cache diagnostics, and records
+hover. Baseline packaged139 reproduces all 17 constants constructor warnings
+and the reported enum warnings. Original mod files and ordinary IDE profile are
+untouched. Nothing from this task is pushed.
+
+## Previous checkpoint: October 13, 2026 — table rendering and inline assertions
+
+Two independent upstream fixes address the LogisticTrainNetwork reports:
+
+- [PR #1289](https://github.com/EmmyLuaLs/emmylua-analyzer-rust/pull/1289),
+  `fix/render-explicit-generic-arguments`: signed commits `47d734a5` and
+  review follow-up `eb8004e2`. The renderer preserves supplied generic arguments
+  even when the standard-library declaration has no generic parameters, fixing
+  `table<>` display. Existing defaults, aliases and diagnostics remain covered.
+- [PR #1290](https://github.com/EmmyLuaLs/emmylua-analyzer-rust/pull/1290),
+  `fix/inline-as-expression-scope`: signed commits `5aedfb81` and review
+  follow-up `74d683da`. Inline `@as` applies only to its attached expression,
+  retaining assignment assertions without casting constructor fields, call
+  arguments or unrelated later reads. This fixes false FreeTrain mismatches.
+
+Both independent branches start at upstream main `cb05b0c0`. Both draft PRs
+were pushed and their initial bot reviews addressed before integration. Preserve
+current PR status. Signed cherry-picks `71c30d1c`, `6c341ed2`, `f5ee2ad1` and
+`18ea33d9` bring only these fixes onto the existing development baseline, leaving
+upstream's unrelated Arc-to-Rc conversion out. Integration retains the earlier
+named-cast fallback and uses Arc for this baseline's closure types.
+
+Work-only compatibility commit `581ba186` removes ambient inline assertions from
+our read/write-field indexed-read walker as well. Its regression checks explicit
+assertions and unaffected directional/optional reads. Keep this integration glue
+out of the independent PRs. All prior internal patches remain present.
+
+Validation: all 2,510 combined workspace tests with all features pass, as do
+workspace/all-target/all-feature Clippy with warnings denied and rustfmt.
+Standalone original fixes passed 2,405 and 2,411 workspace tests respectively;
+review follow-ups (comments/tests only) pass all five renderer and twelve inline
+assertion regressions plus Clippy/fmt. Eight inline regressions fail on unchanged
+upstream. Test-generated standard-library translations were restored.
+
+Packaging targets EmmyLua2 `0.30.0-139-IDEA262-patched-modules` and FDE
+`0.7.6-dev`, both pinning this work branch's committed documentation tip. Final
+package validation is recorded in EmmyLua2 `PATCHED_BUILD.md`, FDE
+`docs/ACCEPTANCE.md` and workspace `HANDOFF.md`. Custom server patches remain
+macOS arm64 only. Ordinary IDE installations and original mods are untouched.
+
+Evidence: `build/logs/table-annotations-*` here; standalone checkout `build/logs/`
+and main repository `build/investigations/table-annotations/`. The real-mod
+probe copies all 37 Lua files and uses generated Factorio API definitions. Before
+fixing, it reproduces table<> display and three false constructor-field warnings.
+The separate call-return inference limitations explored during investigation
+are not expanded by this correction; direct expression/declaration/member query
+regressions define the tested scope. Only contribution branches are pushed.
+
+## Previous checkpoint: October 12, 2026 — flow-aware union member arguments
+
+[PR #1286](https://github.com/EmmyLuaLs/emmylua-analyzer-rust/pull/1286) contains
+original `430fe1de` and review follow-up `272d3096` on the independent
+`fix/flow-aware-union-member-arguments` branch. Signed merges `b62f2f41` and
+`3862d97d` integrate them here. The missing-member argument check now queries
+the owner's flow type after casts, guards and assignments, rather than its
+original declared union. Eleven regressions cover narrowing/widening, residual
+unions, nested/recursive owners, actual field mismatches and branch isolation.
+A declared-nonunion fast path is intentionally absent: casts can widen it to a
+union with missing members, and the regression confirms that distinction.
+
+Combined validation exposed a compatibility gap with PR #1285: ambiguous union
+members have no unique member ID, so skipping all named expression casts lost
+their immediate cast. Follow-up `4dbecfe5` on `fix/named-cast-expression-scope`
+restores it only for the exact static member path and resolved root declaration,
+when ordinary member tracing has no unique target. Signed merge `525a6f0f`
+integrates it here. Three regressions cover owner/path isolation, dot/string keys,
+shadowing, owner/member reassignment and sixteen-level recursive paths. Both
+contribution branches were pushed independently; both PRs are ready for review
+after draft creation. Keep their current review status.
+
+Validation passed all 2,395 standalone PR #1285 workspace tests and all 2,492
+combined workspace tests with all features, workspace/all-target Clippy with
+warnings denied and rustfmt. The initial PR #1286 source passed all 2,391
+standalone tests; its comment/test-only review follow-up passed all eleven
+focused regressions and the same lint checks. All earlier internal patches
+remain present. Test-generated standard-library translations were restored.
+
+A copied real-mod LSP probe verified the original LogisticTrainNetwork argument
+sites at lines 365/366 with no target diagnostics. Packaging targets EmmyLua2
+`0.30.0-138-IDEA262-patched-modules` and FDE `0.7.5-dev`; both lockfiles identify
+this work branch's committed documentation tip. Final package validation is
+recorded in EmmyLua2 `PATCHED_BUILD.md`, FDE `docs/ACCEPTANCE.md` and workspace
+`HANDOFF.md`. The custom server remains macOS arm64 only.
+
+The immediate ambiguous-member fallback does not add persistence after an
+intervening statement; that limitation was reproduced before PR #1285 as well.
+A separate pre-existing later-member-write inference issue also remains outside
+this correction. Full investigation and evidence are in the named-cast checkout's
+`build/investigations/union-owner/REPORT.md` and `build/logs/union-owner-*`.
+Combined evidence is in `build/logs/union-argument-*`, including the preserved
+initial recursive-case failure and passing final workspace run. Protocol evidence
+is in the main repository's `build/investigations/union-member-argument/`.
+
+## Previous checkpoint: October 12, 2026 — PR #1285 review follow-up
+
+Draft [PR #1285](https://github.com/EmmyLuaLs/emmylua-analyzer-rust/pull/1285)
+now includes signed follow-up `3b0d68319ea3c206425f74ef5ed259d3a000a166`.
+It was pushed normally to `fix/named-cast-expression-scope`; the PR remains a
+draft. The source branch contains only the original fix and review follow-up.
+Signed merge `697f751d` brings the exact follow-up into `work/intellij-modules`
+without conflicts or other changes.
+
+The VM now represents index operands as `Static(member)` or `Dynamic(syntax)`
+and asserts stack shape in debug builds. Flow comments and the local-type test
+helper are clearer. Eight regressions cover the original cases plus named owner
+casts, keyless statement casts, valid nil/never key results, nested computed keys
+and recursive dependencies. Flow queries compute initially and cache by syntax
+and offset; ordinary inference has an in-progress cycle guard. Unknown/Any still
+fall back to the VM's useful key type; valid nil/never results are retained.
+Fresh isolated workspaces for the strictness cases cost under a second together.
+
+The standalone branch passes 2,392 workspace tests with all features, workspace
+Clippy with warnings denied, and rustfmt. The combined work branch passes all
+2,478 workspace tests, the same Clippy checks and rustfmt. Evidence is recorded in
+`build/logs/cast-review-{workspace-tests,clippy,fmt}.log`; standalone evidence is
+in `build/checkouts/named-cast/build/logs/review-*`.
+
+Packaging targets EmmyLua2 `0.30.0-137-IDEA262-patched-modules` and FDE
+`0.7.4-dev`. Both pins identify this work branch's committed documentation tip.
+The previous build 136 / FDE 0.7.3-dev was completed and validated before this
+review follow-up. Only the macOS arm64 server carries internal patches. Final
+package results live in EmmyLua2 `PATCHED_BUILD.md`, FDE `docs/ACCEPTANCE.md` and
+workspace `HANDOFF.md`. Keep packaging/docs off the upstream fix branch.
+
+## Previous checkpoint: October 12, 2026 — named cast expression scope
+
+The standalone branch `fix/named-cast-expression-scope` contains signed commit
+`b9a3d37552b0eccde8ff9a146b0f25eba9ffec26` directly on freshly fetched upstream
+main `4702ac2764e0acb38550e1a9e3679126db858e61`. Its checkout is
+`build/checkouts/named-cast`. Keep local documentation and packaging out of it.
+Draft [PR #1285](https://github.com/EmmyLuaLs/emmylua-analyzer-rust/pull/1285)
+is open for user review. The branch was pushed to the user fork; retain draft
+status until the user requests otherwise. Its body matches the checkout's
+ignored `build/PR_DESCRIPTION.md`.
+
+The fix prevents named `---@cast` effects from being applied as inline casts to
+unrelated expressions. Dynamic key inference now uses the key's flow-sensitive
+type, preserving casts on member keys such as `position.index`. The original
+LogisticTrainNetwork example now gives `ltn.FreeTrain?` for the lookup and
+`ltn.FreeTrain` after `assert`, without changing the mod or its casts.
+
+Signed merge `51288958` applies this branch to `work/intellij-modules`, including
+upstream's two intervening commits (ignore rules and removal of the
+`skip_table_fields_check` attribute). The merge preserves our build ignore rule,
+all local test modules and the existing dynamic-key implementation, using the
+standalone fix's guard against replacing useful VM types with unknown/any.
+The target-aware named-cast check and new regression tests are identical to the
+standalone branch. All earlier internal patches remain present.
+
+Validation:
+
+- Standalone: two new regressions reproduced the upstream failure before the
+  fix; all five final regression tests pass. All 2,389 workspace tests with all
+  features pass (analysis and remaining crates run separately).
+- Combined work branch: all 2,475 workspace tests with all features pass,
+  including dictionary, optional-key and separate read/write-type regressions.
+- Both branches: workspace Clippy (all targets/features, warnings denied),
+  rustfmt, whitespace checks and a debug server build pass.
+- Direct LSP probes confirm the original lookup/assert types on the standalone
+  fix and combined work branch, with an additional work-branch run disabling
+  strict array indexing. No live IDE test was needed for this source patch.
+
+Evidence: each checkout's `build/logs/named-cast-*`; generated input and complete
+LSP responses are in the main repository's
+`build/investigations/cast-index/{fixed-upstream,fixed-work,fixed-work-array-off}`.
+Tests regenerate standard-library translations; these were restored before
+committing. The shared `build/pr-1266-target/debug/emmylua_ls` reflects the combined source.
+Packaging this fix targets EmmyLua2 `0.30.0-136-IDEA262-patched-modules` and FDE
+`0.7.3-dev`. Both analyzer lockfiles identify this work branch's final committed
+revision; packaging validation is recorded in EmmyLua2 `PATCHED_BUILD.md`, FDE
+`docs/ACCEPTANCE.md`, and the workspace `HANDOFF.md`. The custom release server
+remains macOS arm64 only.
+
+
+## Previous checkpoint: October 12, 2026 — diagnostic-refresh review integration
+
+`work/intellij-modules` now merges `fix/cross-file-diagnostic-refresh` through
+signed merge `49a9ed3f`. The standalone PR #1283 contains original patch
+`8cbc71ca` and review follow-up `1c47a240`; the original was already present
+internally as `03b54453`. The merge adds exactly the follow-up's ten-file diff.
+All other internal patches and the upstream `dbb68f47` baseline are preserved.
+
+The follow-up cancels refreshes before shutdown acknowledgement and on context
+close, prevents retained update tasks from restarting them, and avoids retaining
+the client from timer tasks. Close/removal, rename and configuration reload now
+use the same capability-gated scheduler. Tests cover debounce timing with a
+paused clock, client lifetime, mutation paths, capability gating and shutdown.
+The protocol harness bounds process cleanup; this patch does not fix the existing
+general stdio-worker teardown behavior.
+
+Packaging targets EmmyLua2 `0.30.0-135-IDEA262-patched-modules` and FDE
+`0.7.2-dev`. Both lockfiles identify the final internal analyzer commit. Evidence
+uses `build/logs/refresh-review-*` in the active worktrees and FDE, with final
+results in workspace `HANDOFF.md`, EmmyLua2 `PATCHED_BUILD.md`, and FDE
+`docs/ACCEPTANCE.md`. The upstream PR branch is unchanged by this integration.
+Only the macOS arm64 server is rebuilt with the internal patches.
+
+Combined validation passed all 2,473 workspace tests with all features, rustfmt
+and workspace Clippy (all targets/features, warnings denied). Generated
+standard-library translations were restored after the tests before packaging.
+
+## Previous checkpoint: October 12, 2026 — PR #1266 merged
+
+The active branch `work/intellij-modules` is now based on upstream main
+`dbb68f470f1bd7f7bd7761dc661242e794340be8`. Upstream merged PR #1266's exact
+commit `ef3cf3c8`; it is part of the base rather than an outstanding local patch.
+Upstream also merged callable-table and tuple/dictionary compatibility fixes
+(PRs #1279 and #1280). All 20 remaining internal commits were replayed.
+
+One conflict in `FactsBuilder::collect_setmetatable_calls` was resolved by
+retaining our scan of all calls. This includes upstream's declaration/member
+initializers as well as our standalone local-table calls. The other 19 patches
+replayed unchanged. `git range-diff` confirms that scope, and all rebased commits
+have verified signatures. The pre-rebase tip `78c3ea62` is preserved as
+`backup/internal-before-merged-module-rebase-2026-10-12`; all independent fix
+branches retain their previous tips. Use those branches when preparing the next
+upstream contribution, after reviewing their changes against the current base.
+
+All 2,471 workspace tests passed with all features, including the new upstream
+callable/tuple/dictionary regressions. Rustfmt and workspace Clippy (all targets,
+all features, warnings denied) passed.
+
+This rebuild targets EmmyLua2 `0.30.0-134-IDEA262-patched-modules` and FDE
+`0.7.1-dev`. Their lockfiles identify the final analyzer commit. Test/build
+results are recorded in the workspace `HANDOFF.md`, FDE's `docs/ACCEPTANCE.md`,
+and each repository's `build/logs/merged-module-*`. The active worktree, shared
+caches and arm64-only packaging limitation remain as described below.
+
+## Previous checkpoint: October 11, 2026
 
 The active checkout is
 `upstream/emmylua-analyzer-rust/build/checkouts/intellij-work`, branch
