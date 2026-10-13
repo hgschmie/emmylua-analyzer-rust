@@ -2987,3 +2987,51 @@ mod class_index_array_compatibility {
         assert_eq!(mismatch_count(inherited, "ChildList", "string"), 1);
     }
 }
+
+#[cfg(test)]
+mod combined_localised_constructor_tests {
+    use crate::DiagnosticCode;
+    use crate::check::test::check_source;
+
+    #[test]
+    fn union_constructor_checks_respect_assertions_and_other_arguments() {
+        let definitions = r#"
+            ---@class Unit
+            ---@field active boolean
+            ---@alias Message [string, Message...]|{x:number,y:number}|Unit|string|number|boolean
+            ---@param message Message
+            ---@param count integer
+            local function emit(message, count) end
+            ---@type string?
+            local maybe
+        "#;
+        for (call, expected) in [
+            ("emit({'hello', {'nested', 3}, true}, 1)", 0),
+            ("emit({'hello', maybe} --[[@as Message]], 1)", 0),
+            ("emit({'hello', maybe} --[[@as Message]], 'bad')", 1),
+        ] {
+            let diagnostics: Vec<_> = check_source(&format!("{definitions}\n{call}"))
+                .into_iter()
+                .filter(|d| {
+                    matches!(
+                        d.code,
+                        DiagnosticCode::ParamTypeMismatch
+                            | DiagnosticCode::AssignTypeMismatch
+                            | DiagnosticCode::InjectField
+                            | DiagnosticCode::MissingFields
+                    )
+                })
+                .collect();
+            assert_eq!(diagnostics.len(), expected, "{call}: {diagnostics:#?}");
+            if expected == 1 {
+                assert_eq!(diagnostics[0].code, DiagnosticCode::ParamTypeMismatch);
+                assert!(diagnostics[0].message.contains("integer"));
+            }
+        }
+        assert!(
+            check_source(&format!("{definitions}\nemit({{false}}, 1)"))
+                .iter()
+                .any(|d| d.code == DiagnosticCode::ParamTypeMismatch)
+        );
+    }
+}
