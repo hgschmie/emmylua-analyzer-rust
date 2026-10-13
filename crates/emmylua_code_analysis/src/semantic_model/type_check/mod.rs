@@ -327,8 +327,12 @@ fn check_union_intersection_source(
 ) -> TypeCheckResult {
     match source {
         LuaType::Union(union) => {
-            // Assignment mode: every member of the source union must be assignable to the target.
-            if context.assign_mode {
+            // Every possible value must belong to the target enum. In particular,
+            // accepting a nominal member must not also admit `Member | nil`.
+            let enum_target =
+                matches!(compact_type, LuaType::Ref(id) | LuaType::Def(id) if context.is_enum(id));
+            // Assignment mode also requires every source union member to match.
+            if context.assign_mode || enum_target {
                 for member in union.iter() {
                     check_general_type_compact(
                         context,
