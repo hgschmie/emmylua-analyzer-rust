@@ -605,7 +605,7 @@ fn table_index_computed_guards_preserve_nested_read_contracts() {
                 .chunk()
                 .unwrap()
                 .descendants::<LuaIndexExpr>()
-                .filter(|index| index.syntax().text().to_string() == "dispatcher.Provided[key][id]")
+                .filter(|index| index.syntax().text() == "dispatcher.Provided[key][id]")
                 .last()
                 .unwrap();
             let typ = model.type_of_expr_at(index.get_syntax_id(), index.get_position());
@@ -700,7 +700,7 @@ fn table_index_computed_guards_preserve_asymmetric_fields() {
             .chunk()
             .unwrap()
             .descendants::<LuaIndexExpr>()
-            .filter(|index| index.syntax().text().to_string() == "dispatcher.Provided[key][id]")
+            .filter(|index| index.syntax().text() == "dispatcher.Provided[key][id]")
             .last()
             .unwrap();
         let typ = model.type_of_expr_at(index.get_syntax_id(), index.get_position());
