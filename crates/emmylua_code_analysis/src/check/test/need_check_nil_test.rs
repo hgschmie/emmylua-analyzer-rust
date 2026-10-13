@@ -419,3 +419,115 @@ fn test_member_primitive_guards_filter_other_primitives() {
         );
     }
 }
+
+#[test]
+fn test_computed_guards() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for body in [
+        "if rows[key] and rows[key][other] then local value = rows[key][other] end",
+        "if rows[key] ~= nil then local value = rows[key][other] end",
+        "if nil ~= rows[key] then local value = rows[key][other] end",
+        "if not rows[key] then return end local value = rows[key][other]",
+        "if rows[key] == nil then return end local value = rows[key][other]",
+        "if rows[key] then local unrelated = 1 local value = rows[key][other] end",
+        "if rows[key] then local deferred = function() mutate() end local value = rows[key][other] end",
+    ] {
+        for library in [false, true] {
+            let mut ws = if library {
+                VirtualWorkspace::new_with_init_std_lib()
+            } else {
+                VirtualWorkspace::new()
+            };
+            assert!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::NeedCheckNil,
+                    &format!(
+                        r#"
+---@param rows integer[][]
+---@param key integer
+---@param other integer
+local function read(rows, key, other)
+    {body}
+end
+"#
+                    )
+                ),
+                "{body} (stdlib: {library})"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_computed_guards_do_not_cross_mutations() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for body in [
+        "if rows[key] then key = nextkey local value = rows[key][other] end",
+        "if rows[key] then rows = replacement local value = rows[key][other] end",
+        "if rows[key] then rows[key] = nil local value = rows[key][other] end",
+        "if rows[key] then alias[key] = nil local value = rows[key][other] end",
+        "if rows[key] then local key = nextkey local value = rows[key][other] end",
+        "if rows[key] then mutate() local value = rows[key][other] end",
+        "if rows[key] then local changed = mutate() local value = rows[key][other] end",
+        "if rows[key] and mutate() then local value = rows[key][other] end",
+        "if rows[key] then local deferred = function() local value = rows[key][other] end end",
+        "if rows[key] then end local value = rows[key][other]",
+        "if rows[key] or rows[key][other] then end",
+        "if rows[key] == nil then local value = rows[key][other] end",
+        "if rows[nextkey] then local value = rows[key][other] end",
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        assert!(
+            !ws.has_no_diagnostic(
+                DiagnosticCode::NeedCheckNil,
+                &format!(
+                    r#"
+---@param rows integer[][]
+---@param replacement integer[][]
+---@param key integer
+---@param nextkey integer
+---@param other integer
+local function read(rows, replacement, key, nextkey, other)
+    local alias = rows
+    {body}
+end
+"#
+                )
+            ),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn test_nested_computed_guards() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::NeedCheckNil,
+        r#"
+---@class Dispatcher
+---@field Provided integer[][]
+---@param dispatcher Dispatcher
+---@param key integer
+---@param other integer
+local function read(dispatcher, key, other)
+    if dispatcher.Provided[key] and dispatcher.Provided[key][other] then
+        local count = dispatcher.Provided[key][other]
+    end
+end
+"#
+    ));
+    let mut ws = VirtualWorkspace::new();
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::NeedCheckNil,
+        r#"
+---@param rows integer[][]
+---@param key integer
+local function read(rows, key)
+    if rows[key] then local first = rows[key][1] end
+end
+"#
+    ));
+
+}
