@@ -4,6 +4,7 @@
 //! otherwise report type and field errors from the candidate with the fewest mismatches. Colon calls:
 //! strip one slot for the self parameter; plain functions treat the receiver as the first argument.
 
+use crate::semantic_model::flow::{ExprCastMode, type_of_expr_with_cast};
 use crate::semantic_model::type_check::{TypeCheckContext, integer_index_applies};
 use std::rc::Rc;
 
@@ -596,14 +597,45 @@ fn cached_arg_type(
     arg_types: Option<&[LuaType]>,
     index: usize,
 ) -> LuaType {
-    if let Some(types) = arg_types
-        && let Some(ty) = types.get(index)
-    {
-        return ty.clone();
+    let Some(arg) = args.get(index) else {
+        return LuaType::Unknown;
+    };
+    let asserted_type =
+        |syntax: LuaSyntaxId| type_of_expr_with_cast(semantic_model, syntax, ExprCastMode::AsOnly);
+    // Protected calls can supply arguments without a cached type. Apply the explicit @as
+    // assertion at the argument itself before comparing it to the parameter.
+    let ty = arg_types
+        .and_then(|types| types.get(index))
+        .cloned()
+        .unwrap_or_else(|| asserted_type(arg.get_syntax_id()));
+    if matches!(ty, LuaType::TableConst(_)) {
+        return parenthesized_table_assertion(arg, asserted_type).unwrap_or(ty);
     }
-    args.get(index)
-        .map(|arg| semantic_model.type_of_expr(arg.get_syntax_id()))
-        .unwrap_or(LuaType::Unknown)
+    ty
+}
+
+/// A cached literal can carry its assertion on any enclosed expression.
+/// Walk from the outside in so the outermost assertion wins.
+fn parenthesized_table_assertion(
+    arg: &LuaExpr,
+    asserted_type: impl Fn(LuaSyntaxId) -> LuaType,
+) -> Option<LuaType> {
+    let LuaExpr::ParenExpr(paren) = arg else {
+        return None;
+    };
+    // A name can also resolve to TableConst. Only inspect literal syntax here.
+    table_expr(arg)?;
+    let mut inner = paren.get_expr()?;
+    loop {
+        let ty = asserted_type(inner.get_syntax_id());
+        if !matches!(ty, LuaType::TableConst(_)) {
+            return Some(ty);
+        }
+        let LuaExpr::ParenExpr(paren) = inner else {
+            return None;
+        };
+        inner = paren.get_expr()?;
+    }
 }
 
 fn check_arg_pairs(
