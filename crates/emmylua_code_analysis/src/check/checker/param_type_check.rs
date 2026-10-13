@@ -741,6 +741,21 @@ fn check_arg_pairs(
         }
         // Table literals targeting object / intersection: check field by field and then fully take over.
         if let LuaExpr::TableExpr(table) = arg {
+            let table_target = super::check_field::expand_alias_type(semantic_model, &param_ty)
+                .unwrap_or_else(|| param_ty.clone());
+            if let LuaType::Union(union) = &table_target
+                && !table_target.contains_tpl_node()
+            {
+                if !super::check_field::table_union_diagnostics(semantic_model, union, table)
+                    .is_empty()
+                {
+                    out.push(Mismatch {
+                        range: table.get_range(),
+                        message: mismatch_message(semantic_model, &call_arg_ty, &param_ty, name),
+                    });
+                }
+                continue;
+            }
             if has_table_literal_shape(&param_ty) {
                 if let Some(mismatch) = table_literal_mismatch(semantic_model, &param_ty, table) {
                     out.push(mismatch);
