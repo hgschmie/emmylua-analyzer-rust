@@ -161,6 +161,15 @@ fn check_call_args(
             let LuaExpr::TableExpr(table) = arg else {
                 continue;
             };
+            // An explicit assertion replaces the constructor contract. Parameter
+            // compatibility is checked against that asserted type separately.
+            if analysis
+                .arg_types
+                .get(index)
+                .is_some_and(|ty| !matches!(ty, LuaType::TableConst(_)))
+            {
+                continue;
+            }
             if is_structured_table_target(semantic_model, param_ty) {
                 check_table_fields(context, semantic_model, param_ty, &table);
             }
