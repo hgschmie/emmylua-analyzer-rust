@@ -1,11 +1,11 @@
 //! Compatibility of base types and constants (fully ported from the old
 //! `semantic::type_check::simple_type`, with db access going through the semantic context).
 
-use crate::{LuaMemberKey, LuaType, LuaTypeDeclId};
+use crate::{LuaMemberKey, LuaType, LuaTypeDeclId, VariadicType};
 
 use super::context::TypeCheckContext;
 use super::sub_type::{base_type_name, get_base_type_id, is_sub_type_of};
-use super::{TypeCheckResult, check_all};
+use super::{RequiredChecks, TypeCheckResult, check_all};
 
 pub fn check_simple_type_compact(
     context: &mut TypeCheckContext,
@@ -16,19 +16,45 @@ pub fn check_simple_type_compact(
         LuaType::Unknown | LuaType::Any => return Ok(()),
         LuaType::Table | LuaType::TableConst(_) => {
             if let (LuaType::TableConst(_), LuaType::Tuple(tuple)) = (source, compact_type) {
-                return check_all(
-                    tuple
-                        .get_types()
-                        .iter()
-                        .enumerate()
-                        .map(|(index, expected)| {
-                            let key = LuaMemberKey::Integer(index as i64 + 1);
-                            let actual = context
-                                .require_complete(|| context.model.member_type(source, &key))?
-                                .unwrap_or(LuaType::Nil);
-                            super::check_general_type_compact(context, &actual, expected)
-                        }),
-                );
+                let mut checks = RequiredChecks::default();
+                for (index, expected) in tuple.get_types().iter().enumerate() {
+                    if let LuaType::Variadic(variadic) = expected
+                        && matches!(variadic.as_ref(), VariadicType::Base(_))
+                        && index + 1 == tuple.len()
+                    {
+                        // A repeated tuple tail may be empty; validate every present entry.
+                        let members =
+                            context.require_complete(|| context.model.member_infos(source))?;
+                        for member in members {
+                            let LuaMemberKey::Integer(key) = member.key else {
+                                continue;
+                            };
+                            let Some(offset) = key
+                                .checked_sub(1)
+                                .and_then(|key| usize::try_from(key).ok())
+                                .and_then(|key| key.checked_sub(index))
+                            else {
+                                continue;
+                            };
+                            if let Some(expected) = variadic.get_type(offset) {
+                                checks.require(super::check_general_type_compact(
+                                    context,
+                                    &member.typ,
+                                    expected,
+                                ))?;
+                            }
+                        }
+                        continue;
+                    }
+                    let key = LuaMemberKey::Integer(index as i64 + 1);
+                    let actual = context
+                        .require_complete(|| context.model.member_type(source, &key))?
+                        .unwrap_or(LuaType::Nil);
+                    checks.require(super::check_general_type_compact(
+                        context, &actual, expected,
+                    ))?;
+                }
+                return checks.finish();
             }
             if let (LuaType::TableConst(_), LuaType::Object(object)) = (source, compact_type)
                 && context.strict_subtype
