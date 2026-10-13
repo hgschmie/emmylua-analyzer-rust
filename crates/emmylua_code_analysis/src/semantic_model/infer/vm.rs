@@ -4229,6 +4229,15 @@ pub(crate) fn unify_call_bindings(
                 || (matches!(param, Function) && matches!(arg, DocFunction(_) | Signature(_)))
             {
                 true
+            } else if matches!(arg, Ref(id) | Def(id)
+                if model.type_def_of(id).is_some_and(|def| def.kind == TypeDefKind::Alias))
+            {
+                // Named actual arguments keep their alias identity, while overload matching
+                // expands formal aliases. Check the alias target here instead of rejecting
+                // a compatible argument merely because its representation is still named.
+                // Assignment compatibility checks every union member and bounds recursive
+                // aliases; generic binding above must keep the original argument identity.
+                crate::semantic_model::type_check::is_assign_compatible(model, arg, param)
             } else {
                 unify::unify_bindings(param, arg, bindings)
             }

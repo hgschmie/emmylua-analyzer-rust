@@ -1873,3 +1873,157 @@ fn test_array_length_index_does_not_cross_earlier_rhs_call() {
         assert_eq!(ty.is_nullable(), expected_nullable, "{source}: {ty:?}");
     }
 }
+
+#[test]
+fn test_aliased_call_argument_preserves_return_type() {
+    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    ws.def(
+        r#"
+        ---@alias Identifier string
+        ---@alias ChainedIdentifier Identifier
+        ---@param identifier Identifier
+        ---@return integer
+        function parseIdentifier(identifier) end
+        ---@type Identifier
+        identifier = 'x'
+        ---@type ChainedIdentifier
+        chained_identifier = 'x'
+    "#,
+    );
+    assert_eq!(ws.expr_ty("parseIdentifier(identifier)"), LuaType::Integer);
+    assert_eq!(
+        ws.expr_ty("parseIdentifier(chained_identifier)"),
+        LuaType::Integer
+    );
+}
+
+#[test]
+fn test_aliased_call_argument_compatibility() {
+    use super::vm::unify_call_bindings;
+    let env = model_of(
+        r#"
+        ---@alias Identifier string
+        ---@alias Literals 'item'|'fluid'
+        ---@alias Wrong number
+        ---@alias Mixed string|number
+        ---@alias Optional string?
+        ---@alias CycleA CycleB
+        ---@alias CycleB CycleA
+        ---@class Nominal
+        ---@field value string
+        ---@class OtherNominal
+        ---@field value string
+        ---@alias AliasNominal Nominal
+        ---@alias AliasOther OtherNominal
+    "#,
+    );
+    let model = env.model();
+    for (alias, expected) in [
+        ("Identifier", true),
+        ("Literals", true),
+        ("Wrong", false),
+        ("Mixed", false),
+        ("Optional", false),
+        ("CycleA", false),
+        ("Nominal", false),
+    ] {
+        let arg = LuaType::Ref(LuaTypeDeclId::global(alias));
+        assert_eq!(
+            unify_call_bindings(&model, &LuaType::String, &arg, &mut TplBindings::new()),
+            expected,
+            "{alias}"
+        );
+    }
+    let nominal = LuaType::Ref(LuaTypeDeclId::global("Nominal"));
+    for (alias, expected) in [("AliasNominal", true), ("AliasOther", false)] {
+        assert_eq!(
+            unify_call_bindings(
+                &model,
+                &nominal,
+                &LuaType::Ref(LuaTypeDeclId::global(alias)),
+                &mut TplBindings::new()
+            ),
+            expected,
+            "{alias}"
+        );
+    }
+    assert!(unify_call_bindings(
+        &model,
+        &nominal,
+        &nominal,
+        &mut TplBindings::new()
+    ));
+    assert!(!unify_call_bindings(
+        &model,
+        &nominal,
+        &LuaType::Ref(LuaTypeDeclId::global("OtherNominal")),
+        &mut TplBindings::new()
+    ));
+}
+
+#[test]
+fn test_aliased_call_argument_keeps_generic_identity() {
+    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    ws.def(
+        r#"
+        ---@alias Identifier string
+        ---@type Identifier
+        identifier = 'x'
+        ---@generic T
+        ---@param value T
+        ---@return T
+        function identity(value) return value end
+    "#,
+    );
+    assert_eq!(ws.expr_ty("identity(identifier)"), ws.ty("Identifier"));
+}
+
+#[test]
+fn test_aliased_call_argument_keeps_mismatch_diagnostics() {
+    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    ws.def(
+        r#"
+        ---@alias Wrong number
+        ---@type Wrong
+        wrong = 1
+        ---@param value string
+        ---@return integer
+        function parseIdentifier(value) end
+    "#,
+    );
+    assert_eq!(ws.expr_ty("parseIdentifier(wrong)"), LuaType::Unknown);
+    assert!(!ws.has_no_diagnostic(
+        crate::DiagnosticCode::ParamTypeMismatch,
+        "parseIdentifier(wrong)"
+    ));
+}
+
+#[test]
+fn test_aliased_call_argument_imported_nullable_return() {
+    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    ws.def(
+        r#"
+        ---@alias Identifier string
+        ---@class Signal
+        ---@field name string
+        ---@type Identifier
+        identifier = 'x'
+    "#,
+    );
+    ws.def_file(
+        "tools.lua",
+        r#"
+        ---@class Tools
+        local Tools = {}
+        ---@param identifier Identifier
+        ---@return Signal?
+        function Tools.parseIdentifier(identifier) end
+        return Tools
+    "#,
+    );
+    ws.def("tools = require('tools')");
+    assert_eq!(
+        ws.expr_ty("tools.parseIdentifier(identifier)"),
+        ws.ty("Signal?")
+    );
+}
