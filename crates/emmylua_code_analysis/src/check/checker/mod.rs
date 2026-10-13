@@ -13,6 +13,7 @@ pub mod check_field;
 pub mod check_return_count;
 pub mod circle_doc_class;
 pub mod code_style;
+mod constructor;
 pub mod deprecated;
 pub mod discard_returns;
 pub mod duplicate_field;
@@ -63,6 +64,26 @@ pub struct Diagnostic {
     pub tags: Option<Vec<DiagnosticTag>>,
     /// Extra data (consumed by code actions; e.g. tag name for unknown_doc_tag).
     pub data: Option<serde_json::Value>,
+}
+
+/// Unconfigured failure data shared between constructor checker passes.
+/// These producers use no code-action data; consumers apply severity and tags
+/// through their active context after selecting one complete alternative.
+#[derive(Debug, Clone)]
+pub(crate) struct ConstructorDiagnostic {
+    pub range: TextRange,
+    pub code: DiagnosticCode,
+    pub message: String,
+}
+
+impl From<Diagnostic> for ConstructorDiagnostic {
+    fn from(diagnostic: Diagnostic) -> Self {
+        Self {
+            range: diagnostic.range,
+            code: diagnostic.code,
+            message: diagnostic.message,
+        }
+    }
 }
 
 /// Checker trait (mirrors `diagnostic::checker::Checker`).

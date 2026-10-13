@@ -729,7 +729,6 @@ mod test {
     }
 
     #[test]
-    #[ignore = "Known bug before ef507415: table union members are not checked as complete alternatives"]
     fn test_table_union_arguments_accept_each_matching_member() {
         for callee in ["accept(", "pcall(accept, "] {
             for fields in [
@@ -840,7 +839,6 @@ mod test {
     }
 
     #[test]
-    #[ignore = "Known bug before ef507415: table union members are not checked as complete alternatives"]
     fn test_table_union_arguments_require_one_complete_member() {
         for (fields, value, valid) in [
             ("{left: number}|{right: string}", "{left = 2}", true),
