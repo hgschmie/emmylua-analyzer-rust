@@ -1,3 +1,29 @@
+# Workspace diagnostic scheduling replaces UP-008 (2026-10-14)
+
+The active work tree no longer includes UP-008's per-edit global refresh sender.
+The signed contribution `fix/workspace-diagnostic-scheduling` at `7306538d` is based
+on upstream/main `96545f45`. It is applied here with a signed provenance-preserving
+cherry-pick; the unrelated upstream HashMap refactor is not imported. Other local
+analyzer patches remain unchanged.
+
+UP-008 remains on `fix/cross-file-diagnostic-refresh` (`2cfe165c`). The full previous
+work tree is retained at `backup/intellij-modules-before-workspace-diagnostics-20261014`
+(`df28f68a`). Its removal is an explicit revert commit, making rollback reviewable.
+
+Workspace pulls now observe unsaved edits, external changes, removals, renames,
+saves and reloads. Results use open-document versions, clear removed files and
+retry stale/incomplete passes without cancelling the parent request. Pending
+work stops before shutdown acknowledgement. Ordinary edits do not send global
+refresh requests; configuration refreshes respect client capabilities. LSP4IJ
+UP-044 is required in our IntelliJ setup to consume these workspace reports.
+
+The standalone branch passes 226 server tests, Clippy/fmt and seven protocol
+scenarios. The edit regression times out on the unpatched upstream binary.
+Combined validation and package details are recorded in the workspace handoff
+and upstream/FIX_INVENTORY.md. No PR or push is implied by this local integration.
+
+Older checkpoints below are historical.
+
 # Overnight upstream refresh (2026-10-14)
 
 Work is based on upstream/main `7096fef53ce3a06db5d06c90cb3b6bc8d81f5f16`.
