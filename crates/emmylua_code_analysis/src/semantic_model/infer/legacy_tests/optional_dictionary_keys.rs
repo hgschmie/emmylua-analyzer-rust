@@ -348,14 +348,11 @@ fn explicit_index_function_keeps_its_declared_return_type() {
     let mut ws = VirtualWorkspace::new_with_init_std_lib();
     ws.def(
         r#"
-function make_lookup()
-    return setmetatable({}, {
-        ---@param key string
-        ---@return string
-        __index = function(_, key) return key end,
-    })
-end
-metatable_backed = make_lookup()
+metatable_backed = setmetatable({}, {
+    ---@param key string
+    ---@return string
+    __index = function(_, key) return key end,
+})
 ---@class Fallback
 ---@field [string] string
 ---@type Fallback
