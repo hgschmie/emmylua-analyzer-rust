@@ -704,7 +704,9 @@ impl<'db> SemanticModel<'db> {
             .unwrap_or_default();
         let arg_types: Vec<LuaType> = args
             .iter()
-            .map(|arg| self.type_of_expr(arg.get_syntax_id()))
+            .map(|arg| {
+                flow::type_of_expr_with_cast(self, arg.get_syntax_id(), flow::ExprCastMode::AsOnly)
+            })
             .collect();
         let colon_call = call_expr.is_colon_call();
         let receiver_ty = if colon_call {
