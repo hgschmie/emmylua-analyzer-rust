@@ -210,3 +210,119 @@ fn test_alias_recursive_no_crash() {
     // Recursive alias cannot be decided: just ensure no crash (diagnostic count is not important).
     let _ = diagnostics;
 }
+
+#[test]
+fn test_union_alias_parameter_members() {
+    for parameter in ["Event|string", "EventType", "ChainedEvent"] {
+        for actual in ["Event", "string", "Event|string"] {
+            let diagnostics = check_source(&format!(
+                r#"
+                ---@enum Event
+                local Event = {{ one = 1 }}
+                ---@alias EventType Event|string
+                ---@alias ChainedEvent EventType
+                ---@param event {parameter}
+                local function raise_event(event) return event end
+                ---@param event {actual}
+                local function emit(event) raise_event(event) end
+            "#
+            ));
+            assert_eq!(
+                count_by_code(&diagnostics, DiagnosticCode::ParamTypeMismatch),
+                0,
+                "{actual} -> {parameter}: {diagnostics:#?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_union_alias_parameter_rejects_incompatible_values() {
+    for actual in ["boolean", "Event?", "Event|boolean", "Other"] {
+        let diagnostics = check_source(&format!(
+            r#"
+            ---@enum Event
+            local Event = {{ one = 1 }}
+            ---@class Other
+            local Other = {{}}
+            ---@alias EventType Event|string
+            ---@param event EventType
+            local function raise_event(event) return event end
+            ---@param event {actual}
+            local function emit(event) raise_event(event) end
+        "#
+        ));
+        assert_eq!(
+            count_by_code(&diagnostics, DiagnosticCode::ParamTypeMismatch),
+            1,
+            "{actual}: {diagnostics:#?}"
+        );
+    }
+}
+
+#[test]
+fn test_union_alias_parameter_class_and_nullable() {
+    let diagnostics = check_source(
+        r#"
+        ---@class Token
+        local Token = {}
+        ---@alias TokenType Token|string
+        ---@alias OptionalToken TokenType|nil
+        ---@param token TokenType
+        local function accept(token) return token end
+        ---@param token OptionalToken
+        local function optional(token) return token end
+        ---@param token Token
+        ---@param nullable Token?
+        local function use(token, nullable)
+            accept(token)
+            optional(nullable)
+        end
+    "#,
+    );
+    assert_eq!(
+        count_by_code(&diagnostics, DiagnosticCode::ParamTypeMismatch),
+        0,
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn test_union_alias_parameter_preserves_literal_diagnostics() {
+    let diagnostics = check_source(
+        r#"
+        ---@class Token
+        local Token = {}
+        ---@alias Choice Token|"yes"
+        ---@param value Choice
+        local function accept(value) return value end
+        accept("yes")
+        accept("maybe")
+    "#,
+    );
+    assert_eq!(
+        count_by_code(&diagnostics, DiagnosticCode::ParamTypeMismatch),
+        1,
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn test_union_alias_parameter_recursive_aliases() {
+    let diagnostics = check_source(
+        r#"
+        ---@alias First Second|string
+        ---@alias Second First|number
+        ---@param value First
+        local function accept(value) return value end
+        accept("yes")
+        accept(42)
+        accept(false)
+    "#,
+    );
+    assert_eq!(
+        count_by_code(&diagnostics, DiagnosticCode::ParamTypeMismatch),
+        1,
+        "{diagnostics:#?}"
+    );
+}
