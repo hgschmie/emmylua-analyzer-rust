@@ -26,6 +26,7 @@ mod metatable_test;
 mod module_test;
 mod multi_return;
 mod named_cast_scope;
+mod numeric_alias_arithmetic;
 mod optional_dictionary_keys;
 mod out_of_order;
 mod overload_field;
