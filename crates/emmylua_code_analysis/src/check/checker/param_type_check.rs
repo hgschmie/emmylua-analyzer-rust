@@ -569,8 +569,54 @@ fn param_generic_base_match(
         (Some(param_base), Some(arg_base)) if param_base != arg_base => {
             semantic_model.type_check_subtype(arg_ty, param_ty)
         }
-        _ => is_compatible(semantic_model, arg_ty, param_ty),
+        _ => {
+            if let Some(expanded @ LuaType::Union(_)) =
+                super::check_field::expand_alias_type(semantic_model, param_ty)
+            {
+                return union_alias_parameter_matches(
+                    semantic_model,
+                    arg_ty,
+                    &expanded,
+                    &mut Vec::new(),
+                );
+            }
+            is_compatible(semantic_model, arg_ty, param_ty)
+        }
     }
+}
+
+/// Check named union parameters with the same leaf rules as explicit unions.
+/// Every possible argument member must match an alternative; retaining the
+/// general type checker's looser cast semantics here would admit nullable values.
+fn union_alias_parameter_matches(
+    semantic_model: &SemanticModel<'_>,
+    arg_ty: &LuaType,
+    param_ty: &LuaType,
+    visited: &mut Vec<(LuaType, LuaType)>,
+) -> bool {
+    let pair = (arg_ty.clone(), param_ty.clone());
+    if visited.len() >= 32 || visited.contains(&pair) {
+        return false;
+    }
+    visited.push(pair);
+    let arg_ty = super::check_field::expand_alias_type(semantic_model, arg_ty)
+        .unwrap_or_else(|| arg_ty.clone());
+    let param_ty = super::check_field::expand_alias_type(semantic_model, param_ty)
+        .unwrap_or_else(|| param_ty.clone());
+    let accepted =
+        if let LuaType::Union(union) = &arg_ty {
+            union.into_vec().iter().all(|member| {
+                union_alias_parameter_matches(semantic_model, member, &param_ty, visited)
+            })
+        } else if let LuaType::Union(union) = &param_ty {
+            union.into_vec().iter().any(|member| {
+                union_alias_parameter_matches(semantic_model, &arg_ty, member, visited)
+            })
+        } else {
+            union_component_accepts(semantic_model, &arg_ty, &param_ty)
+        };
+    visited.pop();
+    accepted
 }
 
 fn cached_arg_type(
