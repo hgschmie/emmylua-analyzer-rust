@@ -1180,7 +1180,14 @@ fn member_info_of(
     if !member_version_visible(model, facts, &member) {
         return None;
     }
-    let mut typ = model.type_of_member(&member_ref.id)?;
+    let mut typ = if member.access != crate::MemberAccess::ReadWrite {
+        member
+            .value_syntax
+            .map(|syntax| model.doc_type_lua_rich_in(member_ref.file_id, syntax))
+            .or_else(|| model.type_of_member(&member_ref.id))?
+    } else {
+        model.type_of_member(&member_ref.id)?
+    };
     // Cross-file projection of runtime function members: `type_of_member` often returns a wide Function,
     // so look up the real signature in the member's declaring file to let `require(...).module.fn()` keep inferring.
     // Standard library members keep the wide Function behavior to avoid disturbing parameter checks / math library overloads.
