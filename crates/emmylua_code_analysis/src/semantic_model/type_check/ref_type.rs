@@ -182,6 +182,13 @@ fn check_ref_class(
             }
             Err(context.mismatch(&LuaType::Ref(source_id.clone()), compact_type))
         }
+        LuaType::Array(array) => check_class_array(
+            context,
+            &LuaType::Ref(source_id.clone()),
+            compact_type,
+            array.get_base(),
+            check_guard,
+        ),
         LuaType::Table => Ok(()),
         LuaType::Union(union_type) => {
             for typ in union_type.iter() {
@@ -302,4 +309,47 @@ fn enum_contains_class(
                 && super::def_extends_ctx(context.model, &class_def, &member_def, &mut Vec::new())
         })
     })
+}
+
+/// A declared numeric index signature supplies the elements of an array even
+/// when the class has additional named fields. Static fields like `[1]` do not
+/// establish a signature for arbitrary integer indices.
+pub(super) fn check_class_array(
+    context: &mut TypeCheckContext,
+    source: &LuaType,
+    target: &LuaType,
+    element: &LuaType,
+    guard: TypeCheckGuard,
+) -> TypeCheckResult {
+    let members = context.model.member_infos(source);
+    // A more specific integer signature takes precedence over a number signature.
+    for key in ["integer", "number"] {
+        let value = members.iter().find(|info| {
+            info.key.name() == Some(key)
+                && info
+                    .id
+                    .as_ref()
+                    .zip(info.file_id)
+                    .is_some_and(|(id, file_id)| {
+                        context
+                            .model
+                            .file_facts_of(file_id)
+                            .and_then(|facts| facts.member_by_id(id))
+                            .is_some_and(|member| member.is_index_signature)
+                    })
+        });
+        if let Some(value) = value {
+            let mut element_context = TypeCheckContext {
+                assign_mode: true,
+                ..context.clone()
+            };
+            return check_general_type_compact(
+                &mut element_context,
+                &value.typ,
+                element,
+                guard.next_level()?,
+            );
+        }
+    }
+    Err(context.mismatch(source, target))
 }
