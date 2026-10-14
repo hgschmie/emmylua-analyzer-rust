@@ -11,6 +11,7 @@ use crate::semantic_model::SemanticModel;
 use crate::semantic_model::type_check::is_compatible;
 use crate::{DiagnosticCode, SemanticId, SignatureDoc, TypeDef};
 
+use super::check_field::expand_alias_type;
 use super::{CheckContext, Checker};
 use crate::semantic_model::render::humanize_type;
 
@@ -152,11 +153,14 @@ fn return_compatible(
                 .any(|component| return_compatible(semantic_model, component, target))
         };
     }
-    // Integer literal -> number.
+    // Returning an integer into a number slot is widening, including when the
+    // integer is named by an alias. Keep general strict compatibility unchanged.
+    let numeric_source =
+        expand_alias_type(semantic_model, source).unwrap_or_else(|| source.clone());
     if matches!(
-        source,
-        LuaType::IntegerConst(_) | LuaType::DocIntegerConst(_)
-    ) && matches!(target, LuaType::Number)
+        numeric_source,
+        LuaType::Integer | LuaType::IntegerConst(_) | LuaType::DocIntegerConst(_)
+    ) && accepts_number_return(semantic_model, target, 0)
     {
         return true;
     }
@@ -178,6 +182,22 @@ fn return_compatible(
             .any(|component| return_compatible(semantic_model, source, component));
     }
     generic_extends_named(semantic_model, source, target)
+}
+
+/// Only a broad number alternative admits integer widening; literal targets
+/// and unrelated assignment conversions keep the existing return rules.
+fn accepts_number_return(model: &SemanticModel<'_>, target: &LuaType, depth: usize) -> bool {
+    if depth >= 32 {
+        return false;
+    }
+    let expanded = expand_alias_type(model, target).unwrap_or_else(|| target.clone());
+    match expanded {
+        LuaType::Number => true,
+        LuaType::Union(union) => union
+            .iter()
+            .any(|part| accepts_number_return(model, part, depth + 1)),
+        _ => false,
+    }
 }
 
 /// `---@class B<T>: A` (where `A` is an alias/class): assign a `B<string>` instance to `A`.
