@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use emmylua_parser::{LuaAstNode, LuaTableExpr, LuaTableField};
+use emmylua_parser::{LuaAssignStat, LuaAstNode, LuaExpr, LuaTableExpr, LuaTableField};
 
 use crate::semantic_db::def::{DeclKind, MemberRef, SemanticId, TypeDef, TypeDefKind};
 use crate::semantic_model::infer::unify::{self, TplBindings};
@@ -189,6 +189,32 @@ fn direct_member_info(
     prefix_type: &LuaType,
     key: &LuaMemberKey,
 ) -> Option<MemberInfo> {
+    let dictionary = match prefix_type {
+        LuaType::TableGeneric(params) if params.len() == 2 => Some(params.as_slice()),
+        LuaType::Generic(generic)
+            if generic.get_base_type_id().get_name() == "table"
+                && generic.get_params().len() == 2 =>
+        {
+            Some(generic.get_params().as_slice())
+        }
+        _ => None,
+    };
+    if let Some(params) = dictionary {
+        let key_type = match key {
+            LuaMemberKey::Name(name) => LuaType::StringConst(name.clone().into()),
+            LuaMemberKey::Integer(n) => LuaType::IntegerConst(*n),
+            _ => return None,
+        };
+        return super::type_check::is_compatible(model, &params[0], &key_type).then(|| {
+            MemberInfo {
+                key: key.clone(),
+                typ: params[1].clone(),
+                id: None,
+                file_id: None,
+                is_method: false,
+            }
+        });
+    }
     match prefix_type {
         LuaType::Ref(id) | LuaType::Def(id) => {
             let def = model.type_def_of(id)?;
@@ -345,16 +371,37 @@ pub(crate) fn member_info_impl(
     {
         return Some(info);
     }
+    // Module exports can retain both their symbolic owner and literal identity.
+    // Include metatable-provided fields when the ordinary union members are absent.
+    if let LuaType::Union(union) = prefix_type {
+        let types: Vec<_> = union
+            .into_vec()
+            .iter()
+            .filter_map(|ty| member_info(model, ty, key).map(|info| info.typ))
+            .collect();
+        if !types.is_empty() {
+            return Some(MemberInfo {
+                key: key.clone(),
+                typ: LuaType::from_vec(types),
+                id: None,
+                file_id: None,
+                is_method: false,
+            });
+        }
+    }
     // An anonymous table literal can supply missing members through the
     // `__index` function in `setmetatable(t, { __index = function ... end })`:
     // Lua passes the access key to that function, and its return type is the member type.
     if let LuaType::TableConst(table) = prefix_type
         && let Some(index_info) = table_metatable_index_info(model, table)
-        && let Some(ret) = match &index_info.typ {
-            LuaType::DocFunction(fun) => Some(fun.get_ret().clone()),
-            LuaType::Function | LuaType::Signature(_) => None,
-            _ => None,
-        }
+        && let Some(ret) = super::index_function::infer(model, &index_info, key).or_else(|| {
+            match &index_info.typ {
+                LuaType::Any => Some(LuaType::Any),
+                LuaType::DocFunction(fun) => Some(fun.get_ret().clone()),
+                LuaType::Function | LuaType::Signature(_) => None,
+                _ => None,
+            }
+        })
     {
         return Some(MemberInfo {
             key: key.clone(),
@@ -432,17 +479,55 @@ pub(crate) fn table_metatable_type(
         return table_metatable_type(&foreign, table);
     }
     let facts = model.file_facts_of(table.file_id)?;
-    for &(first_range, first_syntax, metatable_syntax) in facts.setmetatable_calls() {
+    for &(first_range, first_syntax, metatable_syntax) in facts.setmetatable_calls().iter().rev() {
         let first_matches = first_range == table.value
-            || matches!(
-                model.type_of_expr(first_syntax),
-                LuaType::TableConst(ft) if ft.file_id == table.file_id && ft.value == table.value
-            );
+            || model
+                .chunk()
+                .and_then(|root| {
+                    let expr = LuaExpr::cast(first_syntax.to_node_from_root(root.syntax())?)?;
+                    stable_local_table(model, expr).map(|expr| expr.get_range() == table.value)
+                })
+                .unwrap_or(false);
         if first_matches {
             return Some(model.type_of_expr(metatable_syntax));
         }
     }
     None
+}
+
+/// Resolve immutable local bindings and aliases to their literal constructor.
+/// Reassigned bindings can retain an old inferred table identity, so inspect
+/// declaration references rather than relying on their inferred type here.
+pub(crate) fn stable_local_table(model: &SemanticModel, mut expr: LuaExpr) -> Option<LuaTableExpr> {
+    let root = model.chunk()?;
+    let facts = model.file_facts()?;
+    let mut visited = hashbrown::HashSet::new();
+    loop {
+        match expr {
+            LuaExpr::TableExpr(table) => return Some(table),
+            LuaExpr::NameExpr(name) => {
+                let id = model.resolve_name(name.get_position())?;
+                if !visited.insert(id.clone()) {
+                    return None;
+                }
+                let decl = facts.decl_by_id(&id)?;
+                if !matches!(decl.kind, DeclKind::Local { .. }) {
+                    return None;
+                }
+                for assign in root.descendants::<LuaAssignStat>() {
+                    for variable in assign.get_var_and_expr_list().0 {
+                        if let emmylua_parser::LuaVarExpr::NameExpr(name) = variable
+                            && model.resolve_name(name.get_position()).as_ref() == Some(&id)
+                        {
+                            return None;
+                        }
+                    }
+                }
+                expr = LuaExpr::cast(decl.value_expr_syntax?.to_node_from_root(root.syntax())?)?;
+            }
+            _ => return None,
+        }
+    }
 }
 
 /// If a table literal is the runtime class table for a `---@class Foo` annotation, returns that class's Ref/Def.
@@ -467,6 +552,22 @@ pub(crate) fn table_metatable_index_info(
 ) -> Option<MemberInfo> {
     let metatable_ty = table_metatable_type(model, table)?;
     let key = LuaMemberKey::Name(SmolStr::new("__index"));
+    if let LuaType::TableConst(meta) = &metatable_ty
+        && let Some(facts) = model.file_facts_of(meta.file_id)
+        && let Some(member_ref) = facts
+            .members_of_owner_named(&SemanticId::member(meta.file_id, meta.value), "__index")
+            .next()
+        && let Some(member) = facts.member_by_id(&member_ref.id)
+        && super::index_function::oversized(model, member, meta.file_id)
+    {
+        return Some(MemberInfo {
+            key,
+            typ: LuaType::Any,
+            id: Some(member.id.clone()),
+            file_id: Some(meta.file_id),
+            is_method: false,
+        });
+    }
     member_info(model, &metatable_ty, &key)
 }
 

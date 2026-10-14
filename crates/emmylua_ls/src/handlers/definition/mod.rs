@@ -3,8 +3,8 @@ mod goto_label;
 mod goto_module_file;
 mod goto_string;
 
-use emmylua_code_analysis::{EmmyLuaAnalysis, FileId};
-use emmylua_parser::{LuaAstNode, LuaAstToken, LuaStringToken, LuaTokenKind};
+use emmylua_code_analysis::{EmmyLuaAnalysis, FileId, SemanticId, SemanticModel};
+use emmylua_parser::{LuaAstNode, LuaAstToken, LuaStringToken, LuaSyntaxToken, LuaTokenKind};
 use lsp_types::{
     ClientCapabilities, GotoDefinitionParams, GotoDefinitionResponse, OneOf, Position,
     ServerCapabilities,
@@ -65,6 +65,12 @@ pub fn definition(
         return Some(response);
     }
 
+    if model.find_decl(token.clone().into()).is_none()
+        && let Some(origin) = find_index_metamethod_definition(&model, &token)
+    {
+        return goto_def_definition::goto_def_definition(&model, &analysis.db, &origin, &token);
+    }
+
     // 2. String token: require module file / string template reference.
     if let Some(string_token) = LuaStringToken::cast(token.clone()) {
         if let Some(response) =
@@ -92,7 +98,9 @@ pub fn definition(
     }
 
     // 3. Semantic declarations (decl / member / typedef).
-    let decl = model.find_decl(token.clone().into())?;
+    let decl = model
+        .find_decl(token.clone().into())
+        .or_else(|| find_index_metamethod_definition(&model, &token))?;
     let decl = prefer_same_file_global(&model, &token).unwrap_or(decl);
     goto_def_definition::goto_def_definition(&model, &analysis.db, &decl, &token)
 }
@@ -143,4 +151,13 @@ fn prefer_same_file_global(
         })
         .max_by_key(|decl| decl.name_range.start())
         .map(|decl| decl.id.clone())
+}
+
+fn find_index_metamethod_definition(
+    model: &SemanticModel,
+    token: &LuaSyntaxToken,
+) -> Option<SemanticId> {
+    let origin = super::common::find_index_metamethod_origin(model, token)?;
+    super::common::resolve_alias_origin(model, &origin).or(Some(origin))
+
 }
