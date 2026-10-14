@@ -85,14 +85,11 @@ fn table_index_preserves_required_fields_and_function_returns() {
         ---@field required string
         ---@type RequiredRecord
         named = {}
-        function make_lookup()
-            return setmetatable({}, {
-                ---@param key string
-                ---@return string
-                __index = function(_, key) return key end
-            })
-        end
-        fallback = make_lookup()
+        fallback = setmetatable({}, {
+            ---@param key string
+            ---@return string
+            __index = function(_, key) return key end
+        })
         ---@type table<string, string>
         local values = {}
         table_fallback = setmetatable({}, { __index = values })
@@ -282,5 +279,79 @@ fn table_index_is_independent_of_array_index() {
         let map_expected = ws.ty(if enabled { "string?" } else { "string" });
         expect_that!(ws.expr_ty("array[123]"), eq(&array_expected));
         expect_that!(ws.expr_ty("map[123]"), eq(&map_expected));
+    }
+}
+
+#[gtest]
+fn table_index_accepts_nullable_dictionary_writes() {
+    for enabled in [false, true] {
+        for annotation in [
+            "table<string, uint32>",
+            "{[string]: uint32}",
+            "Dictionary<uint32>",
+        ] {
+            let mut ws = workspace(enabled);
+            let source = format!(
+                r#"
+                ---@alias uint32 integer
+                ---@alias Dictionary<T> table<string, T>
+                ---@param target {annotation}
+                ---@param key string
+                ---@param value uint32?
+                ---@param positive boolean
+                local function update(target, key, value, positive)
+                    target[key] = value
+                    target[key] = positive and value or nil
+                    target[key] = nil
+                end
+            "#
+            );
+            expect_that!(
+                ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
+                eq(true),
+                "strict.tableIndex={enabled}, {annotation}"
+            );
+        }
+    }
+}
+
+#[gtest]
+fn table_index_nullable_writes_still_check_values_and_required_fields() {
+    for enabled in [false, true] {
+        for (annotation, target, value_type) in [
+            ("table<string, integer>", "target[key]", "string?"),
+            ("{[string]: integer}", "target[key]", "string?"),
+            ("Dictionary<integer>", "target[key]", "boolean?"),
+            (
+                "{required: integer, [string]: integer}",
+                "target.required",
+                "integer?",
+            ),
+            ("Required", "target.required", "integer?"),
+        ] {
+            let mut ws = workspace(enabled);
+            let source = format!(
+                r#"
+                ---@alias Dictionary<T> table<string, T>
+                ---@class Required
+                ---@field required integer
+                ---@type {annotation}
+                target = {{}}
+                ---@type string
+                key = ''
+                ---@type {value_type}
+                value = nil
+            "#
+            );
+            ws.def(&source);
+            expect_that!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::AssignTypeMismatch,
+                    &format!("{target} = value")
+                ),
+                eq(false),
+                "strict.tableIndex={enabled}, {annotation}, {target}, {value_type}"
+            );
+        }
     }
 }
