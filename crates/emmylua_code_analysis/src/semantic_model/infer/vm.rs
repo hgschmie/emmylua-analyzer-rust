@@ -68,6 +68,7 @@ pub enum Instr {
         /// Static member key (`Name` / `Integer`); `None` means a dynamic key (`t[k]`).
         key: Option<LuaMemberKey>,
         dynamic: bool,
+        key_syntax: Option<LuaSyntaxId>,
     },
     /// Pop callee + n args -> call inference (unify and substitute return).
     Call {
@@ -123,6 +124,7 @@ enum CTask {
     },
     EmitIndex {
         key: Option<LuaMemberKey>,
+        key_syntax: LuaSyntaxId,
     },
     Call {
         arg_count: usize,
@@ -156,8 +158,13 @@ pub fn compile(expr: LuaExpr, file_id: FileId, out: &mut Vec<Instr>) {
             CTask::Index { key } => out.push(Instr::IndexMember {
                 key,
                 dynamic: false,
+                key_syntax: None,
             }),
-            CTask::EmitIndex { key } => out.push(Instr::IndexMember { key, dynamic: true }),
+            CTask::EmitIndex { key, key_syntax } => out.push(Instr::IndexMember {
+                key,
+                dynamic: true,
+                key_syntax: Some(key_syntax),
+            }),
             CTask::Call {
                 arg_count,
                 colon_call,
@@ -275,7 +282,10 @@ fn compile_expr(expr: &LuaExpr, file_id: FileId, out: &mut Vec<Instr>, stack: &m
             if let Some(prefix) = index_expr.get_prefix_expr() {
                 if let Some(LuaIndexKey::Expr(key_expr)) = index_key {
                     // Dynamic key: prefix, key, IndexMember(dynamic).
-                    stack.push(CTask::EmitIndex { key });
+                    stack.push(CTask::EmitIndex {
+                        key,
+                        key_syntax: key_expr.get_syntax_id(),
+                    });
                     stack.push(CTask::Expr(key_expr));
                     stack.push(CTask::Expr(prefix));
                 } else {
@@ -472,9 +482,18 @@ impl<'a> InferVm<'a> {
                 let value = self.load_name(&name, offset);
                 self.stack.push(value);
             }
-            Instr::IndexMember { key, dynamic } => {
+            Instr::IndexMember {
+                key,
+                dynamic,
+                key_syntax,
+            } => {
                 if dynamic {
-                    let key_value = self.stack.pop().unwrap_or(Value::plain(LuaType::Unknown));
+                    let mut key_value = self.stack.pop().unwrap_or(Value::plain(LuaType::Unknown));
+                    if let Some(syntax) = key_syntax {
+                        key_value.ty = self
+                            .model
+                            .type_of_expr_at(syntax, syntax.get_range().start());
+                    }
                     let owner_value = self.stack.pop().unwrap_or(Value::plain(LuaType::Unknown));
                     let value = self.index_member_dynamic(owner_value, key_value);
                     self.stack.push(value);
@@ -771,6 +790,9 @@ impl<'a> InferVm<'a> {
     }
 
     fn index_member_dynamic(&mut self, owner: Value, key: Value) -> Value {
+        if let Some(typ) = super::super::dictionary::lookup(self.model, &owner.ty, &key.ty, true) {
+            return Value::plain(typ);
+        }
         match &key.ty {
             LuaType::StringConst(s) | LuaType::DocStringConst(s) => {
                 self.index_member(owner, &LuaMemberKey::Name(SmolStr::new(s.as_str())))
@@ -1401,6 +1423,36 @@ impl<'a> InferVm<'a> {
             .or_else(|| self.callee_member_name(&callee));
         if let Some(name) = builtin_name {
             match name.as_str() {
+                "next" => {
+                    if let Some(Value {
+                        ty: LuaType::Object(object),
+                        ..
+                    }) = args.first()
+                        && !object.get_index_access().is_empty()
+                    {
+                        let mut keys: Vec<_> = object
+                            .get_index_access()
+                            .iter()
+                            .map(|(key, _)| key.clone())
+                            .collect();
+                        let mut values: Vec<_> = object
+                            .get_index_access()
+                            .iter()
+                            .map(|(_, value)| value.clone())
+                            .collect();
+                        for (key, value) in object.get_fields() {
+                            if let Some(key) = super::super::dictionary::key_type(key) {
+                                keys.push(key);
+                                values.push(value.clone());
+                            }
+                        }
+                        keys.push(LuaType::Nil);
+                        values.push(LuaType::Nil);
+                        return Value::plain(LuaType::Variadic(Rc::new(VariadicType::Multi(
+                            vec![LuaType::from_vec(keys), LuaType::from_vec(values)],
+                        ))));
+                    }
+                }
                 // setmetatable(t, mt) -> t; if mt.__index is a named type/class table, the
                 // instance directly takes that type.
                 "setmetatable" => {
