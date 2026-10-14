@@ -1302,3 +1302,103 @@ fn enum_runtime_cross_file_dynamic_and_conditional_keys() {
         eq(false)
     );
 }
+
+#[cfg(test)]
+mod unbound_tables {
+    use googletest::prelude::*;
+
+    use crate::{DiagnosticCode, VirtualWorkspace};
+
+    #[gtest]
+    fn unrelated_class_does_not_constrain_a_local_table() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        expect_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::UndefinedField,
+                r#"
+            ---@class RequestProcessor
+            local Processor = {}
+
+            ---@class uint32: integer
+            ---@class Train
+            ---@field id uint32
+            ---@param trains Train[]
+            local function remember(trains)
+                local seen_train = {}
+                for _, train in pairs(trains) do
+                    if not seen_train[train.id] then
+                        seen_train[train.id] = true
+                    end
+                end
+            end
+        "#
+            ),
+            eq(true)
+        );
+    }
+
+    #[gtest]
+    fn unrelated_types_do_not_bind_tables_by_position_or_name() {
+        for source in [
+            r#"
+                ---@enum Result
+                local Result = { SUCCESS = 1 }
+                local unrelated = {}
+                local value = unrelated.missing
+            "#,
+            r#"
+                ---@class Seen
+                ---@field declared boolean
+                local ClassValue = {}
+                local function remember()
+                    local Seen = {}
+                    local value = Seen.missing
+                end
+            "#,
+            r#"
+                ---@class Seen
+                ---@field declared boolean
+                local ClassValue = {}
+                local function remember()
+                    local seen = {}
+                    local value = seen.missing
+                end
+            "#,
+            r#"
+                ---@alias Alias { declared: boolean }
+                local placeholder = 1
+                local unrelated = {}
+                local value = unrelated.missing
+            "#,
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            expect_that!(
+                ws.has_no_diagnostic(DiagnosticCode::UndefinedField, source),
+                eq(true)
+            );
+        }
+    }
+
+    #[gtest]
+    fn attached_class_and_enum_still_check_missing_members() {
+        for source in [
+            r#"
+                ---@class NamedClass
+                ---@field declared boolean
+                local differently_named_value = {}
+                local value = differently_named_value.missing
+            "#,
+            r#"
+                ---@enum NamedEnum
+                local differently_named_value = { PRESENT = 1 }
+                local value = differently_named_value.MISSING
+            "#,
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            expect_that!(
+                ws.has_no_diagnostic(DiagnosticCode::UndefinedField, source),
+                eq(false)
+            );
+        }
+    }
+}
