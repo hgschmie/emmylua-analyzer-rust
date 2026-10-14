@@ -82,13 +82,42 @@ fn find_member_in_owner(
                 }
             }
         }
-        return None;
     }
     for member_ref in model.members_of_owner(owner).iter() {
         if member_ref_matches_key(model, &member_ref, key) {
             if let Some(info) = member_info_of(model, &member_ref, bindings, name_bindings) {
                 return Some(info);
             }
+        }
+    }
+    // Named class index signatures are declarations, not sparse dictionaries:
+    // preserve their explicit value type even when strict.tableIndex is enabled.
+    let key_type = key.to_index_type()?;
+    for member_ref in model.members_of_owner(owner).iter() {
+        let facts = model.file_facts_of(member_ref.file_id)?;
+        let member = facts.member_by_id(&member_ref.id)?;
+        if !member.is_index_signature {
+            continue;
+        }
+        let tree = model.syntax_tree_of(member_ref.file_id)?;
+        let syntax = member
+            .value_syntax?
+            .to_node_from_root(&tree.get_red_root())?;
+        let tag = syntax
+            .ancestors()
+            .find_map(emmylua_parser::LuaDocTagField::cast)?;
+        let Some(emmylua_parser::LuaDocFieldKey::Type(typ)) = tag.get_field_key() else {
+            continue;
+        };
+        let mut declared = model.doc_type_lua_rich_in(member_ref.file_id, typ.get_syntax_id());
+        if let Some(bindings) = bindings {
+            declared = unify::substitute(&declared, bindings);
+        }
+        if let Some(names) = name_bindings {
+            declared = substitute_named_refs(&declared, names);
+        }
+        if super::type_check::is_compatible(model, &declared, &key_type) {
+            return member_info_of(model, member_ref, bindings, name_bindings);
         }
     }
     None
@@ -189,30 +218,15 @@ fn direct_member_info(
     prefix_type: &LuaType,
     key: &LuaMemberKey,
 ) -> Option<MemberInfo> {
-    let dictionary = match prefix_type {
-        LuaType::TableGeneric(params) if params.len() == 2 => Some(params.as_slice()),
-        LuaType::Generic(generic)
-            if generic.get_base_type_id().get_name() == "table"
-                && generic.get_params().len() == 2 =>
-        {
-            Some(generic.get_params().as_slice())
-        }
-        _ => None,
-    };
-    if let Some(params) = dictionary {
-        let key_type = match key {
-            LuaMemberKey::Name(name) => LuaType::StringConst(name.clone().into()),
-            LuaMemberKey::Integer(n) => LuaType::IntegerConst(*n),
-            _ => return None,
-        };
-        return super::type_check::is_compatible(model, &params[0], &key_type).then(|| {
-            MemberInfo {
-                key: key.clone(),
-                typ: params[1].clone(),
-                id: None,
-                file_id: None,
-                is_method: false,
-            }
+    if let Some(key_type) = super::dictionary::key_type(key)
+        && let Some(typ) = super::dictionary::lookup(model, prefix_type, &key_type, true)
+    {
+        return Some(MemberInfo {
+            key: key.clone(),
+            typ,
+            id: None,
+            file_id: None,
+            is_method: false,
         });
     }
     match prefix_type {
@@ -399,7 +413,7 @@ pub(crate) fn member_info_impl(
                 LuaType::Any => Some(LuaType::Any),
                 LuaType::DocFunction(fun) => Some(fun.get_ret().clone()),
                 LuaType::Function | LuaType::Signature(_) => None,
-                _ => None,
+                _ => member_info(model, &index_info.typ, key).map(|info| info.typ),
             }
         })
     {
