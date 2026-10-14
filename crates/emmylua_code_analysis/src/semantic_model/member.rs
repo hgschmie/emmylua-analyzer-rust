@@ -1207,7 +1207,14 @@ fn member_info_of(
     if !member_version_visible(model, facts, &member) {
         return None;
     }
-    let mut typ = model.type_of_member(&member_ref.id)?;
+    let mut typ = if member.access != crate::MemberAccess::ReadWrite {
+        member
+            .value_syntax
+            .map(|syntax| model.doc_type_lua_rich_in(member_ref.file_id, syntax))
+            .or_else(|| model.type_of_member(&member_ref.id))?
+    } else {
+        model.type_of_member(&member_ref.id)?
+    };
     let mut index_key_type = member.is_index_signature.then(|| {
         (|| {
             let tree = model.syntax_tree_of(member_ref.file_id)?;
