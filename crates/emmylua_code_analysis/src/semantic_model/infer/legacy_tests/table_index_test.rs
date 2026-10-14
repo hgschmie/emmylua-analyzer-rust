@@ -68,6 +68,46 @@ fn table_index_handles_optional_and_fully_matching_union_keys() {
     }
 }
 
+#[gtest]
+fn table_index_nullable_writes_combine_with_integer_alias_arithmetic() {
+    for enabled in [false, true] {
+        let mut ws = workspace(enabled);
+        expect_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::AssignTypeMismatch,
+                r#"
+                ---@alias uint32 integer
+                ---@class LoadingElement
+                ---@field count uint32
+                ---@class Dispatcher
+                ---@field Provided table<string, uint32>
+                ---@field Pending table<string, uint32>
+                ---@param dispatcher Dispatcher
+                ---@param loading LoadingElement
+                ---@param key string
+                ---@param use_stacks boolean
+                local function update(dispatcher, loading, key, use_stacks)
+                    local provided = dispatcher.Provided
+                    provided[key] = assert(provided[key]) - loading.count
+                    local stacks = math.floor(assert(provided[key]) / 10)
+                    if (use_stacks and stacks > 0) or
+                        (not use_stacks and assert(provided[key]) > 0) then
+                        dispatcher.Pending[key] = provided[key]
+                    end
+                    local amount = dispatcher.Pending[key]
+                    if amount then
+                        amount = amount - loading.count
+                        dispatcher.Pending[key] = (amount > 0) and amount or nil
+                    end
+                end
+            "#
+            ),
+            eq(true),
+            "strict.tableIndex={enabled}"
+        );
+    }
+}
+
 fn workspace(table_index: bool) -> VirtualWorkspace {
     let mut ws = VirtualWorkspace::new_with_init_std_lib();
     let mut config = ws.get_emmyrc();
