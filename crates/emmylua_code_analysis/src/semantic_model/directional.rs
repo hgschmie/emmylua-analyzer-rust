@@ -47,7 +47,10 @@ impl SemanticModel<'_> {
                     && other.access == MemberAccess::Write
             })
             .unwrap_or(field);
-        let mut typ = self.type_of_member(&writer.id)?;
+        let mut typ = writer
+            .value_syntax
+            .map(|syntax| self.doc_type_lua_rich_in(id.file_id, syntax))
+            .or_else(|| self.type_of_member(&writer.id))?;
         if writer.is_nullable && !typ.is_nullable() {
             typ = LuaType::from_vec(vec![typ, LuaType::Nil]);
         }
