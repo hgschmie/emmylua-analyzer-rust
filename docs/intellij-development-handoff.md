@@ -1,3 +1,43 @@
+# Current upstream refresh (2026-10-13)
+
+The development tree is reconstructed on upstream/main
+`a0ce1512cb4f44b6e1f6a21f57a08febb0dbc754`. Thirty retained fix branches are
+integrated, plus the existing Factorio compatibility changes and interaction
+tests. Original refs are preserved under `refs/archive/analyzer-refresh-20261013/`.
+
+New independent fixes: UP-042 (`fix/aliased-dynamic-member-keys`) expands
+string aliases in dynamic member-key diagnostics; UP-043
+(`fix/integer-alias-return-types`) permits integer aliases in broad number
+return slots. Both reproduce on upstream; neither depends on the arithmetic fix.
+
+UP-025 is superseded by upstream #1288; only its twelve regression tests remain.
+UP-026 is absorbed into the asymmetric-field patch. The old tuple backport and
+pre-refresh union-API adapter are omitted. Imported function reads no longer
+need UP-018 on upstream, but its redeclaration checks are retained.
+
+Dependencies: association → key-aware metatables → navigation → presentation;
+nullable dictionaries → optional/union dictionary keys (shared implementation);
+class/array compatibility → inline call assertions. Read/write fields no longer
+carry the metatable series as an incidental prerequisite. All runtime options
+retain their previous defaults. Work-only tests cover feature combinations,
+including factory returns and directional write contracts.
+
+Validation before packaging: 2,616 combined workspace/all-feature tests pass,
+plus all twelve retained inline-assertion regressions and twenty dictionary
+integration tests after separating standalone fixtures. Combined Clippy and
+formatting pass. Debug and release server replay both report zero diagnostics
+for the frozen LTN request_processor.lua and interface.lua, with the module's
+existing unnecessary-assert suppression and no additional disabled diagnostics.
+Original mod files are read-only. No interactive IDE installation was performed.
+
+The canonical contribution/test/push matrix and final package details are in
+the workspace documents `upstream/FIX_INVENTORY.md` and
+`upstream/ANALYZER_REFRESH_2026-10-13.md`, with machine-readable evidence under
+`build/investigations/analyzer-refresh-20261013/` in the primary analyzer checkout.
+EmmyLua2 build 150 is the refreshed package target; FDE remains 0.7.8-dev.
+
+Older sections below are historical.
+
 # EmmyLua IntelliJ development handoff
 
 ## Current checkpoint: October 13, 2026 — named union parameter aliases
