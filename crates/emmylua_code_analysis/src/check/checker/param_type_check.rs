@@ -585,7 +585,13 @@ fn cached_arg_type(
         return ty.clone();
     }
     args.get(index)
-        .map(|arg| semantic_model.type_of_expr(arg.get_syntax_id()))
+        .map(|arg| {
+            crate::semantic_model::flow::type_of_expr_with_cast(
+                semantic_model,
+                arg.get_syntax_id(),
+                crate::semantic_model::flow::ExprCastMode::AsOnly,
+            )
+        })
         .unwrap_or(LuaType::Unknown)
 }
 
@@ -740,7 +746,9 @@ fn check_arg_pairs(
             continue;
         }
         // Table literals targeting object / intersection: check field by field and then fully take over.
-        if let LuaExpr::TableExpr(table) = arg {
+        if let LuaExpr::TableExpr(table) = arg
+            && matches!(arg_ty, LuaType::TableConst(_))
+        {
             let table_target = super::check_field::expand_alias_type(semantic_model, &param_ty)
                 .unwrap_or_else(|| param_ty.clone());
             if let LuaType::Union(union) = &table_target
