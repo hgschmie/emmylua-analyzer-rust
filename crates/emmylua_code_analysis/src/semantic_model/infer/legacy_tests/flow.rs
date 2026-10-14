@@ -272,6 +272,88 @@ mod test {
     }
 
     #[test]
+    fn test_aliased_member_discriminants() {
+        for (alias, condition, expected) in [
+            ("'item'|'fluid'", "value.type == 'item'", "Signal"),
+            ("'item'|'fluid'", "'item' == value.type", "Signal"),
+            ("'item'|'fluid'", "value.type == 'unknown'", "never"),
+            ("'item'|'fluid'", "value.type ~= 'item'", "Signal"),
+            ("string", "value.type == 'item'", "Signal"),
+            ("'item'", "value.type == 'item'", "Signal"),
+            ("'item'", "value.type ~= 'item'", "Signal"),
+            ("Cycle", "value.type == 'item'", "Signal"),
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            let file_id = ws.def(&format!(
+                r#"
+---@alias Kind {alias}
+---@alias Cycle Kind
+---@alias Chained Kind
+---@class Signal
+---@field type Chained?
+---@param value Signal?
+local function inspect(value)
+    if value and {condition} then
+        local use = value
+    end
+end
+"#
+            ));
+            let ty = last_name_expr_type(&ws, file_id, "value");
+            assert_eq!(ws.humanize_type(ty), expected, "{alias}: {condition}");
+        }
+    }
+
+    #[test]
+    fn test_required_aliased_discriminant_negative_branch() {
+        for (alias, expected) in [
+            ("'item'", "never"),
+            ("'item'|'fluid'", "Signal"),
+            ("string", "Signal"),
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            let file_id = ws.def(&format!(
+                r#"
+---@alias Kind {alias}
+---@class Signal
+---@field type Kind
+---@param value Signal
+local function inspect(value)
+    if value.type == 'item' then
+    else
+        local use = value
+    end
+end
+"#
+            ));
+            let ty = last_name_expr_type(&ws, file_id, "value");
+            assert_eq!(ws.humanize_type(ty), expected, "{alias}");
+        }
+    }
+
+    #[test]
+    fn test_optional_return_alias_discriminant_in_loop() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+---@alias Kind 'item'|'fluid'
+---@class Signal
+---@field type? Kind
+local Tools = {}
+---@return Signal?
+function Tools.parse() end
+for key in pairs({}) do
+    local value = Tools.parse(key)
+    if value and value.type == 'item' then
+        local use = value
+    end
+end
+"#
+        ));
+    }
+
+    #[test]
     fn test_closure_return() {
         let mut ws = VirtualWorkspace::new_with_init_std_lib();
 
