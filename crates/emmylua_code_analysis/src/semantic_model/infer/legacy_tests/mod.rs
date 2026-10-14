@@ -24,6 +24,7 @@ mod member_infer_test;
 mod metatable_test;
 mod module_test;
 mod multi_return;
+mod numeric_alias_arithmetic;
 mod out_of_order;
 mod overload_field;
 mod overload_test;
