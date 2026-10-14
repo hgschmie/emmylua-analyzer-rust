@@ -278,7 +278,7 @@ fn valid_named_member(
     }
     // `m[expr]`: dynamic string / enum alias / enum member table identity keys are allowed broadly on named types (keyof/enum parameter scenarios).
     if matches!(index_key, LuaIndexKey::Expr(_))
-        && (is_string_key(&key_ty)
+        && (string_key_expanded(semantic_model, &key_ty, &mut Vec::new())
             || is_enum_like_key(semantic_model, &key_ty)
             || matches!(key_ty, LuaType::TableConst(_)))
     {
@@ -370,6 +370,41 @@ fn is_string_key(ty: &LuaType) -> bool {
         LuaType::Union(union) => union.into_vec().iter().any(is_string_key),
         _ => false,
     }
+}
+
+// Dynamic string keys keep the same policy whether their type is written
+// directly or through aliases. Keep recursive union aliases bounded.
+fn string_key_expanded(
+    model: &SemanticModel<'_>,
+    ty: &LuaType,
+    active: &mut Vec<LuaTypeDeclId>,
+) -> bool {
+    if is_string_key(ty) {
+        return true;
+    }
+    if let LuaType::Union(union) = ty {
+        return union
+            .iter()
+            .any(|part| string_key_expanded(model, part, active));
+    }
+    let (LuaType::Ref(id) | LuaType::Def(id)) = ty else {
+        return false;
+    };
+    if active.len() >= 32 || active.contains(id) {
+        return false;
+    }
+    let Some(def) = model.type_def_of(id) else {
+        return false;
+    };
+    if def.kind != TypeDefKind::Alias {
+        return false;
+    }
+    active.push(id.clone());
+    let result = model
+        .alias_target(&def)
+        .is_some_and(|target| string_key_expanded(model, &target, active));
+    active.pop();
+    result
 }
 
 fn numeric_key(ty: &LuaType) -> bool {
