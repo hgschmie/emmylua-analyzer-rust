@@ -15,7 +15,7 @@ impl RegisterCapabilities for DiagnosticCapabilities {
         server_capabilities.diagnostic_provider =
             Some(DiagnosticServerCapabilities::Options(DiagnosticOptions {
                 identifier: Some("EmmyLua".to_string()),
-                inter_file_dependencies: true,
+                inter_file_dependencies: false,
                 workspace_diagnostics: true,
                 ..Default::default()
             }))

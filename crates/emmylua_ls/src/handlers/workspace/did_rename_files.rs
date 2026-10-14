@@ -63,16 +63,10 @@ pub async fn process_did_rename_files_handler(
 
     // If there are renamed files, prompt the user whether to update require paths.
     if !all_renames.is_empty() {
-        let (encoding, interval) = context
+        let encoding = context
             .analysis()
-            .with_snapshot(|analysis| {
-                let config = analysis.get_emmyrc();
-                (
-                    config.workspace.encoding.clone(),
-                    config.diagnostics.diagnostic_interval.unwrap_or(500),
-                )
-            })
-            .unwrap_or_else(|| (String::new(), 500));
+            .with_snapshot(|analysis| analysis.get_emmyrc().workspace.encoding.clone())
+            .unwrap_or_default();
         context
             .analysis()
             .update(|analysis| {
@@ -86,8 +80,6 @@ pub async fn process_did_rename_files_handler(
                 }
             })
             .await;
-
-        context.schedule_diagnostic_refresh(interval).await;
 
         // try_modify_require_path only needs to be computed synchronously on a snapshot; release it immediately and then await the user prompt.
         let changes = context
