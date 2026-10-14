@@ -1,3 +1,18 @@
+# Multi-root duplicate classes (2026-10-14)
+
+UP-046, `fix/unique-workspace-id-aggregation` (`dc511eeb`), fixes an upstream
+multi-root indexing bug. Physical MAIN roots shared one index but that index was
+aggregated once per root, making one class appear duplicated. Logical workspace
+IDs are now unique while retaining lookup order. Removing a file also preserves
+same-name definitions owned by other files, so genuine duplicates remain tracked.
+
+The standalone fix uses upstream/main `96545f45`; signed cherry-pick `37ec8e3c`
+keeps the existing work baseline and other local patches. The false LTN metrics
+warning also exposed an independent UP-044 LSP4IJ routing omission: workspace
+reports must honor DocumentMatchers to exclude the generic server from FDE mod
+files. Both fixes are local; no push or PR. Final validation and package evidence
+are in workspace `upstream/DUPLICATE_METRICS_2026-10-14.md` and FIX_INVENTORY.md.
+
 # Workspace diagnostic scheduling replaces UP-008 (2026-10-14)
 
 The active work tree no longer includes UP-008's per-edit global refresh sender.
