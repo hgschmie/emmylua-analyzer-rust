@@ -1460,7 +1460,7 @@ impl<'a> InferVm<'a> {
                         }
                         keys.push(LuaType::Nil);
                         values.push(LuaType::Nil);
-                        return Value::plain(LuaType::Variadic(Arc::new(VariadicType::Multi(
+                        return Value::plain(LuaType::Variadic(Rc::new(VariadicType::Multi(
                             vec![LuaType::from_vec(keys), LuaType::from_vec(values)],
                         ))));
                     }
