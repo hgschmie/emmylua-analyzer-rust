@@ -1302,3 +1302,66 @@ fn enum_runtime_cross_file_dynamic_and_conditional_keys() {
         eq(false)
     );
 }
+
+#[test]
+fn test_dynamic_string_alias_member_keys() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let mut ws = VirtualWorkspace::new();
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::UndefinedField,
+        r#"
+        ---@class PrototypeMap
+        ---@field item string
+        ---@field fluid string
+        ---@alias Kind "item"|"fluid"
+        ---@alias KindAlias Kind
+        ---@class Signal
+        ---@field type KindAlias
+        ---@param prototypes PrototypeMap
+        ---@param signal Signal
+        local function lookup(prototypes, signal)
+            local direct = prototypes[signal.type]
+            return direct
+        end
+    "#
+    ));
+}
+
+#[test]
+fn test_dynamic_string_alias_key_negative_cases() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for key in ["false", "1"] {
+        let mut ws = VirtualWorkspace::new();
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            &format!(
+                r#"
+            ---@class PrototypeMap
+            ---@field item string
+            ---@alias Key {key}
+            ---@param prototypes PrototypeMap
+            ---@param key Key
+            local function lookup(prototypes, key) return prototypes[key] end
+        "#
+            )
+        ));
+    }
+}
+
+#[test]
+fn test_recursive_dynamic_string_alias_keys_terminate() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let mut ws = VirtualWorkspace::new();
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::UndefinedField,
+        r#"
+        ---@class Map
+        ---@field item string
+        ---@alias A B|false
+        ---@alias B A|1
+        ---@param map Map
+        ---@param key A
+        local function lookup(map, key) return map[key] end
+    "#
+    ));
+}
