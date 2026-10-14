@@ -189,14 +189,11 @@ fn table_index_preserves_required_fields_and_function_returns() {
         ---@field required string
         ---@type RequiredRecord
         named = {}
-        function make_lookup()
-            return setmetatable({}, {
-                ---@param key string
-                ---@return string
-                __index = function(_, key) return key end
-            })
-        end
-        fallback = make_lookup()
+        fallback = setmetatable({}, {
+            ---@param key string
+            ---@return string
+            __index = function(_, key) return key end
+        })
         ---@type table<string, string>
         local values = {}
         table_fallback = setmetatable({}, { __index = values })
@@ -435,7 +432,6 @@ fn table_index_nullable_writes_still_check_values_and_required_fields() {
                 "integer?",
             ),
             ("Required", "target.required", "integer?"),
-            ("Directional", "target.required", "integer?"),
         ] {
             let mut ws = workspace(enabled);
             let source = format!(
@@ -443,9 +439,6 @@ fn table_index_nullable_writes_still_check_values_and_required_fields() {
                 ---@alias Dictionary<T> table<string, T>
                 ---@class Required
                 ---@field required integer
-                ---@class Directional
-                ---@field (read) required integer?
-                ---@field (write) required integer
                 ---@type {annotation}
                 target = {{}}
                 ---@type string
@@ -669,5 +662,40 @@ fn table_index_computed_guards_preserve_asymmetric_fields() {
             .unwrap();
         let typ = model.type_of_expr_at(index.get_syntax_id(), index.get_position());
         assert_eq!(typ, ws.ty("integer"));
+    }
+}
+
+// These combinations require the independent factory and directional patches.
+#[gtest]
+fn table_index_preserves_factory_and_directional_contracts() {
+    for enabled in [false, true] {
+        let mut ws = workspace(enabled);
+        ws.def(
+            r#"
+            function make_lookup()
+                return setmetatable({}, {
+                    ---@param key string
+                    ---@return string
+                    __index = function(_, key) return key end
+                })
+            end
+            fallback = make_lookup()
+            ---@class Directional
+            ---@field (read) required integer?
+            ---@field (write) required integer
+            ---@type Directional
+            target = {}
+            ---@type integer?
+            value = nil
+        "#,
+        );
+        expect_that!(ws.expr_ty("fallback.missing"), eq(&LuaType::String));
+        expect_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::AssignTypeMismatch,
+                "target.required = value"
+            ),
+            eq(false)
+        );
     }
 }
