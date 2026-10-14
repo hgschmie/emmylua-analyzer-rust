@@ -125,9 +125,9 @@ impl RegisterCapabilities for DefinitionCapabilities {
 
 /// Navigation preference only: inference still resolves globals across the workspace.
 fn prefer_same_file_global(
-    model: &emmylua_code_analysis::SemanticModel,
-    token: &emmylua_parser::LuaSyntaxToken,
-) -> Option<emmylua_code_analysis::SemanticId> {
+    model: &SemanticModel,
+    token: &LuaSyntaxToken,
+) -> Option<SemanticId> {
     use emmylua_code_analysis::{DeclKind, SemanticId};
     use emmylua_parser::{LuaAssignStat, LuaCallExpr, LuaNameExpr};
 
