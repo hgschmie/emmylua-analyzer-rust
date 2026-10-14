@@ -81,6 +81,8 @@ pub async fn process_did_rename_files_handler(
             })
             .await;
 
+        context.invalidate_workspace_diagnostics().await;
+
         // try_modify_require_path only needs to be computed synchronously on a snapshot; release it immediately and then await the user prompt.
         let changes = context
             .analysis()

@@ -46,12 +46,24 @@ impl ServerContextSnapshot {
         &self.inner.request_manager
     }
 
+    pub fn shutdown_token(&self) -> &tokio_util::sync::CancellationToken {
+        &self.inner.shutdown
+    }
+
+    pub async fn invalidate_workspace_diagnostics(&self) {
+        self.workspace_manager()
+            .lock()
+            .await
+            .update_workspace_version(super::WorkspaceDiagnosticLevel::Slow, true);
+    }
+
     pub fn update_tx(&self) -> &tokio::sync::mpsc::UnboundedSender<UpdateEvent> {
         &self.inner.update_tx
     }
 }
 
 pub struct ServerContextInner {
+    pub shutdown: tokio_util::sync::CancellationToken,
     pub analysis: Arc<AnalysisState>,
     pub client: Arc<ClientProxy>,
     pub file_diagnostic: Arc<DiagnosticService>,
