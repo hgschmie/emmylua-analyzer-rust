@@ -70,6 +70,9 @@ pub fn hover(analysis: &EmmyLuaAnalysis, file_id: FileId, position: Position) ->
         }
         TokenAtOffset::None => return None,
     };
+    if let Some(hover) = directional::hover(&model, &analysis.db, &token) {
+        return Some(hover);
+    }
     if let Some(hover) = index_metamethod::build_index_metamethod_hover(
         &model,
         &analysis.db,
@@ -113,3 +116,4 @@ impl RegisterCapabilities for HoverCapabilities {
 }
 
 mod index_metamethod;
+mod directional;

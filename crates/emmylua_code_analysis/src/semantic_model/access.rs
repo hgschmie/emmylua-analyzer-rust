@@ -448,6 +448,21 @@ impl<'db> SemanticModel<'db> {
         owner: SemanticId,
         name: SmolStr,
     ) -> ResolvedMember {
+        let member_id = member_id.map(|id| {
+            if let Some(file) = file_id
+                && let Some(facts) = self.file_facts_of(file)
+                && let Some(member) = facts.member_by_id(&id)
+                && member.access == crate::MemberAccess::Write
+                && let Some(read) = facts.members.iter().find(|other| {
+                    other.owner == member.owner
+                        && other.key == member.key
+                        && other.access == crate::MemberAccess::Read
+                })
+            {
+                return read.id.clone();
+            }
+            id
+        });
         let mut member_type = None;
         let mut visibility = None;
         let mut is_method = false;
