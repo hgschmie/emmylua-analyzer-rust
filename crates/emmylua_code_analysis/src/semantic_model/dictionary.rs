@@ -1,4 +1,5 @@
-//! Dictionary lookups keep declared values intact; only a read can miss a key.
+//! Dictionary reads can miss a key; writes may delete it with nil.
+//! Explicit fields retain their declared contract in either context.
 use super::{SemanticModel, type_eval};
 use crate::{LuaMemberKey, LuaType, TypeDefKind};
 use emmylua_parser::{LuaAstNode, LuaIndexExpr, LuaIndexKey};
@@ -8,6 +9,23 @@ pub(crate) fn result(model: &SemanticModel, value: &LuaType, nullable: bool) -> 
         LuaType::from_vec(vec![value.clone(), LuaType::Nil])
     } else {
         value.clone()
+    }
+}
+
+#[derive(Clone, Copy)]
+enum LookupMode {
+    Read,
+    Value,
+    Write,
+}
+
+impl LookupMode {
+    fn value(self, model: &SemanticModel, typ: &LuaType) -> LuaType {
+        match self {
+            Self::Read => result(model, typ, true),
+            Self::Value => typ.clone(),
+            Self::Write => LuaType::from_vec(vec![typ.clone(), LuaType::Nil]),
+        }
     }
 }
 
@@ -25,13 +43,18 @@ pub(crate) fn lookup(
     key: &LuaType,
     nullable: bool,
 ) -> Option<LuaType> {
-    lookup_inner(model, owner, key, nullable, &mut Vec::new())
+    let mode = if nullable {
+        LookupMode::Read
+    } else {
+        LookupMode::Value
+    };
+    lookup_inner(model, owner, key, mode, &mut Vec::new())
 }
 fn lookup_inner(
     model: &SemanticModel,
     owner: &LuaType,
     key: &LuaType,
-    nullable: bool,
+    mode: LookupMode,
     seen: &mut Vec<LuaType>,
 ) -> Option<LuaType> {
     if seen.len() >= 32 || seen.contains(owner) {
@@ -40,14 +63,14 @@ fn lookup_inner(
     seen.push(owner.clone());
     let value = match owner {
         LuaType::TableGeneric(params) if params.len() == 2 => {
-            Some(signature(model, &params[0], &params[1], key, nullable))
+            Some(signature(model, &params[0], &params[1], key, mode))
         }
         LuaType::Generic(generic)
             if generic.get_base_type_id().get_name() == "table"
                 && generic.get_params().len() == 2 =>
         {
             let params = generic.get_params();
-            Some(signature(model, &params[0], &params[1], key, nullable))
+            Some(signature(model, &params[0], &params[1], key, mode))
         }
         LuaType::Object(object) => {
             if let Some(member_key) = type_eval::member_key_from_literal(key)
@@ -60,8 +83,10 @@ fn lookup_inner(
                 let values: Vec<_> = object
                     .get_index_access()
                     .iter()
-                    .filter(|(declared, _)| super::type_check::is_assign_compatible(model, key, declared))
-                    .map(|(_, value)| result(model, value, nullable))
+                    .filter(|(declared, _)| {
+                        super::type_check::is_assign_compatible(model, key, declared)
+                    })
+                    .map(|(_, value)| mode.value(model, value))
                     .collect();
                 Some(if values.is_empty() {
                     LuaType::Nil
@@ -74,20 +99,20 @@ fn lookup_inner(
             .type_def_of(id)
             .filter(|def| def.kind == TypeDefKind::Alias)
             .and_then(|def| model.alias_target(&def))
-            .and_then(|target| lookup_inner(model, &target, key, nullable, seen)),
+            .and_then(|target| lookup_inner(model, &target, key, mode, seen)),
         LuaType::Generic(_) => {
             let target = type_eval::expand_alias_generic(model, owner);
             if target == *owner {
                 None
             } else {
-                lookup_inner(model, &target, key, nullable, seen)
+                lookup_inner(model, &target, key, mode, seen)
             }
         }
         LuaType::Union(union) => {
             let values: Vec<_> = union
                 .into_vec()
                 .iter()
-                .filter_map(|owner| lookup_inner(model, owner, key, nullable, seen))
+                .filter_map(|owner| lookup_inner(model, owner, key, mode, seen))
                 .collect();
             (!values.is_empty()).then(|| LuaType::from_vec(values))
         }
@@ -101,10 +126,10 @@ fn signature(
     declared: &LuaType,
     value: &LuaType,
     key: &LuaType,
-    nullable: bool,
+    mode: LookupMode,
 ) -> LuaType {
     if super::type_check::is_assign_compatible(model, key, declared) {
-        result(model, value, nullable)
+        mode.value(model, value)
     } else {
         LuaType::Nil
     }
@@ -112,6 +137,23 @@ fn signature(
 
 impl SemanticModel<'_> {
     pub fn dictionary_index_type(&self, index: &LuaIndexExpr, nullable: bool) -> Option<LuaType> {
+        let mode = if nullable {
+            LookupMode::Read
+        } else {
+            LookupMode::Value
+        };
+        self.dictionary_index_type_with_mode(index, mode)
+    }
+
+    pub(crate) fn dictionary_index_write_type(&self, index: &LuaIndexExpr) -> Option<LuaType> {
+        self.dictionary_index_type_with_mode(index, LookupMode::Write)
+    }
+
+    fn dictionary_index_type_with_mode(
+        &self,
+        index: &LuaIndexExpr,
+        mode: LookupMode,
+    ) -> Option<LuaType> {
         let prefix = self.type_of_expr(index.get_prefix_expr()?.get_syntax_id());
         let key = match index.get_index_key()? {
             LuaIndexKey::Name(n) => {
@@ -127,6 +169,6 @@ impl SemanticModel<'_> {
             LuaIndexKey::Expr(expr) => self.type_of_expr(expr.get_syntax_id()),
             _ => return None,
         };
-        lookup(self, &prefix, &key, nullable)
+        lookup_inner(self, &prefix, &key, mode, &mut Vec::new())
     }
 }

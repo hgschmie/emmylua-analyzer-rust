@@ -365,7 +365,7 @@ fn check_assign(
                     check_value_against(context, semantic_model, &write.typ, &expr);
                     continue;
                 }
-                if let Some(target) = semantic_model.dictionary_index_type(index_expr, false) {
+                if let Some(target) = semantic_model.dictionary_index_write_type(index_expr) {
                     if !matches!(
                         semantic_model.type_of_expr(expr.get_syntax_id()),
                         LuaType::Nil
