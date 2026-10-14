@@ -670,7 +670,15 @@ impl<'db> SemanticModel<'db> {
                     let position = values
                         .iter()
                         .position(|value| value.get_range() == table.get_range())?;
-                    self.assignment_target_type(vars.get(position)?.to_expr())
+                    {
+                        let target = vars.get(position)?.to_expr();
+                        if let LuaExpr::IndexExpr(index) = &target {
+                            self.dictionary_index_type(index, false)
+                                .unwrap_or_else(|| self.type_of_expr(target.get_syntax_id()))
+                        } else {
+                            self.type_of_expr(target.get_syntax_id())
+                        }
+                    }
                 }
             }
             _ => return None,
