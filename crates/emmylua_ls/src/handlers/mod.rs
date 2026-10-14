@@ -48,7 +48,7 @@ pub use response_handler::on_response_handler;
 pub use text_document::register_files_watch;
 pub use text_document::{
     process_did_change_text_document, process_did_change_watched_files, process_did_close_document,
-    process_did_open_text_document,
+    process_did_open_text_document, process_did_save_text_document,
 };
 pub use workspace::process_did_rename_files_handler;
 
