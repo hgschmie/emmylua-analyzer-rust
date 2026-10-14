@@ -1707,3 +1707,65 @@ return t
         ));
     }
 }
+
+#[test]
+fn test_length_result_initializes_unannotated_runtime_member() {
+    use crate::DiagnosticCode;
+    use crate::check::test::{check_source, count_by_code};
+    for source in [
+        "local result = {}; local values = {}; result.count = #values",
+        "local result = {}; local values = {}; result.count = ((#values))",
+        r#"
+        ---@class Delivery
+        ---@field connections string[]
+        ---@param delivery Delivery
+        local function update(delivery)
+            local connections = {}
+            delivery.connections = connections
+            delivery.count = #connections
+        end
+        "#,
+        r#"
+        ---@class Collection
+        ---@operator len: string
+        local Collection = {}
+        ---@type Collection
+        local values
+        local result = {}
+        result.count = #values
+        "#,
+    ] {
+        let diagnostics = check_source(source);
+        assert_eq!(
+            count_by_code(&diagnostics, DiagnosticCode::AssignTypeMismatch),
+            0,
+            "{source}: {diagnostics:#?}"
+        );
+    }
+}
+
+#[test]
+fn test_length_runtime_member_preserves_declared_contract() {
+    use crate::DiagnosticCode;
+    use crate::check::test::{check_source, count_by_code};
+    for source in [
+        "local result = {}; local values = {};\n---@type string\nresult.count = #values",
+        r#"
+        ---@class Delivery
+        ---@field count string
+        ---@param delivery Delivery
+        local function update(delivery)
+            local values = {}
+            delivery.count = #values
+        end
+        "#,
+        "local result = {}; local values = {}; result.count = #values; result.count = 'bad'",
+    ] {
+        let diagnostics = check_source(source);
+        assert_eq!(
+            count_by_code(&diagnostics, DiagnosticCode::AssignTypeMismatch),
+            1,
+            "{source}: {diagnostics:#?}"
+        );
+    }
+}
