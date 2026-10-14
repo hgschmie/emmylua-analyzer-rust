@@ -4656,14 +4656,8 @@ pub(crate) fn binary_type(
             }
             // Addition like `integer + 1` (one side is the integer base type, the other is an
             // integer literal) still stays integer.
-            let left_is_integer = matches!(
-                left,
-                LuaType::Integer | LuaType::IntegerConst(_) | LuaType::DocIntegerConst(_)
-            );
-            let right_is_integer = matches!(
-                right,
-                LuaType::Integer | LuaType::IntegerConst(_) | LuaType::DocIntegerConst(_)
-            );
+            let left_is_integer = is_integer_operand(model, left, &mut Vec::new());
+            let right_is_integer = is_integer_operand(model, &right, &mut Vec::new());
             if left_is_integer && right_is_integer {
                 LuaType::Integer
             } else {
@@ -4679,6 +4673,41 @@ pub(crate) fn binary_type(
         }
         _ => LuaType::Unknown,
     }
+}
+
+/// Integer aliases have the same built-in arithmetic behavior as `integer`.
+/// Keep nominal classes and nullable/mixed unions out of this classification;
+/// operator overloads have already been dispatched by `binary_type`.
+fn is_integer_operand(model: &SemanticModel, ty: &LuaType, seen: &mut Vec<LuaType>) -> bool {
+    if matches!(
+        ty,
+        LuaType::Integer | LuaType::IntegerConst(_) | LuaType::DocIntegerConst(_)
+    ) {
+        return true;
+    }
+    if seen.len() >= 32 || seen.contains(ty) {
+        return false;
+    }
+    seen.push(ty.clone());
+    let result = match ty {
+        LuaType::Ref(id) | LuaType::Def(id) => model
+            .type_def_of(id)
+            .filter(|def| def.kind == TypeDefKind::Alias)
+            .and_then(|def| model.alias_target(&def))
+            .is_some_and(|target| is_integer_operand(model, &target, seen)),
+        LuaType::Generic(_) => {
+            let target = expand_alias_generic(model, ty);
+            target != *ty && is_integer_operand(model, &target, seen)
+        }
+        LuaType::Union(union) => {
+            let members = union.into_vec();
+            !members.is_empty() && members.iter().all(|ty| is_integer_operand(model, ty, seen))
+        }
+        LuaType::MultiLineUnion(union) => is_integer_operand(model, &union.to_union(), seen),
+        _ => false,
+    };
+    seen.pop();
+    result
 }
 
 /// In short-circuit logical expressions, if the left/right side is a nullable field
