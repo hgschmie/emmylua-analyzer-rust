@@ -93,6 +93,7 @@ pub fn definition(
 
     // 3. Semantic declarations (decl / member / typedef).
     let decl = model.find_decl(token.clone().into())?;
+    let decl = prefer_same_file_global(&model, &token).unwrap_or(decl);
     goto_def_definition::goto_def_definition(&model, &analysis.db, &decl, &token)
 }
 
@@ -102,4 +103,44 @@ impl RegisterCapabilities for DefinitionCapabilities {
     fn register_capabilities(server_capabilities: &mut ServerCapabilities, _: &ClientCapabilities) {
         server_capabilities.definition_provider = Some(OneOf::Left(true));
     }
+}
+
+/// Navigation preference only: inference still resolves globals across the workspace.
+fn prefer_same_file_global(
+    model: &emmylua_code_analysis::SemanticModel,
+    token: &emmylua_parser::LuaSyntaxToken,
+) -> Option<emmylua_code_analysis::SemanticId> {
+    use emmylua_code_analysis::{DeclKind, SemanticId};
+    use emmylua_parser::{LuaAssignStat, LuaCallExpr, LuaNameExpr};
+
+    let name = LuaNameExpr::cast(token.parent()?)?;
+    if name.get_parent::<LuaCallExpr>().is_some() {
+        return None;
+    }
+    let id = model.find_decl(token.clone().into())?;
+    let SemanticId::Decl(key) = &id else {
+        return None;
+    };
+    let original = model.file_facts_of(key.file_id)?.decl_by_id(&id)?;
+    if original.kind != DeclKind::Global {
+        return None;
+    }
+    let root = model.chunk()?;
+    let block = root.get_block()?;
+    model
+        .decls()?
+        .iter()
+        .filter(|decl| decl.kind == DeclKind::Global && decl.name == original.name)
+        .filter_map(|decl| {
+            let assignment =
+                LuaAssignStat::cast(decl.owner_syntax?.to_node_from_root(root.syntax())?)?;
+            if assignment.syntax().parent().as_ref() != Some(block.syntax())
+                || assignment.get_range().end() > name.get_position()
+            {
+                return None;
+            }
+            Some(decl)
+        })
+        .max_by_key(|decl| decl.name_range.start())
+        .map(|decl| decl.id.clone())
 }

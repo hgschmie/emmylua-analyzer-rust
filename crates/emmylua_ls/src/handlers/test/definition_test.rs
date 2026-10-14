@@ -7,6 +7,62 @@ mod tests {
     type Expected = VirtualLocation;
 
     #[gtest]
+    fn test_same_file_global_navigation() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        ws.def_file("other.lua", "---@class Shared\nThis = {}\nFramework = {}\n");
+        ws.def_file("lib/init.lua", "return function() return {}, {} end");
+        for symbol in ["This", "Framework"] {
+            check!(ws.check_definition(
+                &format!("This, Framework = require('lib.init')()\nprint({symbol}<??>)"),
+                vec![Expected {
+                    file: "".to_string(),
+                    line: 0
+                }]
+            ));
+        }
+        // Local bindings and parameters must retain lexical navigation.
+        check!(ws.check_definition(
+            "This = {}\nlocal This = {}\nprint(This<??>)",
+            vec![Expected {
+                file: "".to_string(),
+                line: 1
+            }]
+        ));
+        check!(ws.check_definition(
+            "This = {}\nlocal function f(This)\nprint(This<??>)\nend",
+            vec![Expected {
+                file: "".to_string(),
+                line: 1
+            }]
+        ));
+        Ok(())
+    }
+
+    #[gtest]
+    fn test_global_navigation_fallback() -> Result<()> {
+        // Keep the new semantic model's default global lookup for cases where
+        // there is no completed, unconditional same-file assignment to prefer.
+        for (content, file, line) in [
+            ("print(This<??>)", "other.lua", 1),
+            ("print(This<??>)\nThis = {}", "", 1),
+            ("local function f() This = {} end\nprint(This<??>)", "", 0),
+            ("if flag then This = {} end\nprint(This<??>)", "", 0),
+            ("This = This<??> or {}", "", 0),
+        ] {
+            let mut ws = ProviderVirtualWorkspace::new();
+            ws.def_file("other.lua", "---@class Shared\nThis = {}\n");
+            check!(ws.check_definition(
+                content,
+                vec![Expected {
+                    file: file.to_string(),
+                    line
+                }]
+            ));
+        }
+        Ok(())
+    }
+
+    #[gtest]
     fn test_basic_definition() -> Result<()> {
         let mut ws = ProviderVirtualWorkspace::new();
         check!(ws.check_definition(
