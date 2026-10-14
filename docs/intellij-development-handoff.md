@@ -1,3 +1,26 @@
+# Overnight upstream refresh (2026-10-14)
+
+Work is based on upstream/main `7096fef53ce3a06db5d06c90cb3b6bc8d81f5f16`.
+UP-022/#1285, UP-024/#1289 and UP-027/#1291 are merged upstream; their local
+copies are omitted from the replay. The remaining 27 contribution branches are
+rebased with their prerequisites and integrated. Production source and tests
+are identical to the validated build150 baseline; only ancestry and this handoff
+change. Original refs are in `refs/archive/analyzer-refresh-20261014/`.
+
+UP-025/#1290 was closed as superseded by #1288. UP-008/#1283 was closed without
+merge: the maintainer prefers complete workspace diagnostics. No replacement is
+in this upstream snapshot, so the existing refresh fix remains local-only.
+#1286 and #1292 remain the two open analyzer PRs. No new PRs are created.
+
+The frozen LTN request_processor.lua snapshot remains the zero-diagnostic
+acceptance baseline with the original configuration. Final validation/publication
+and build151 evidence are in workspace `upstream/ANALYZER_REFRESH_2026-10-14.md`
+and analyzer `build/investigations/analyzer-refresh-20261014/`. Standalone branch
+checks exclude the unchanged long linear-file stress case; the full combined
+suite runs it once. No application defaults or mod source are changed.
+
+Older checkpoints below are historical.
+
 # Current upstream refresh (2026-10-13)
 
 The development tree is reconstructed on upstream/main
