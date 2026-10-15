@@ -34,7 +34,7 @@ use crate::{
 
 use super::SemanticModel;
 use super::cache;
-use super::member::find_self_return_cast_member;
+use super::member::{find_self_return_cast_member, has_unrestricted_members};
 use crate::semantic_model::infer::infer_call_with_bindings;
 use crate::semantic_model::infer::unify::substitute;
 use crate::semantic_model::infer::vm::{binary_type, widen_const};
@@ -5086,6 +5086,12 @@ fn filter_type_by_member_discriminant(
     };
     let mut kept = Vec::new();
     for component in components {
+        // An unrestricted table's field may have either value/truthiness.
+        // Absence from the declared member set does not mean the field is nil.
+        if has_unrestricted_members(model, &component) {
+            kept.push(component);
+            continue;
+        }
         if let LuaType::Ref(id) | LuaType::Def(id) = &component {
             if let Some(def) = model.type_def_of(id)
                 && def.kind == TypeDefKind::Alias
@@ -5130,6 +5136,12 @@ fn filter_type_by_member_truthiness(
     };
     let mut kept = Vec::new();
     for component in components {
+        // An unrestricted table's field may have either value/truthiness.
+        // Absence from the declared member set does not mean the field is nil.
+        if has_unrestricted_members(model, &component) {
+            kept.push(component);
+            continue;
+        }
         if let LuaType::Ref(id) | LuaType::Def(id) = &component {
             if let Some(def) = model.type_def_of(id)
                 && def.kind == TypeDefKind::Alias

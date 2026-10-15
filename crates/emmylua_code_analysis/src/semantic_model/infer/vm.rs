@@ -24,7 +24,9 @@ use crate::semantic_db::def::{
 };
 use crate::semantic_db::types::PrimitiveType;
 use crate::semantic_model::flow::{ExprCastMode, type_of_expr_with_cast};
-use crate::semantic_model::member::{MemberInfo, table_const_class_type, table_metatable_type};
+use crate::semantic_model::member::{
+    MemberInfo, has_unrestricted_members, table_const_class_type, table_metatable_type,
+};
 use crate::semantic_model::type_eval::{
     class_generic_map, eval_conditionals, expand_alias_generic, expand_alias_head,
     sanitize_unresolved_generics, sanitize_unresolved_generics_with_model, substitute_named_refs,
@@ -801,41 +803,9 @@ impl<'a> InferVm<'a> {
         model.is_std_file(file_id)
     }
 
-    fn has_unrestricted_members(&self, ty: &LuaType) -> bool {
-        let mut current = ty.clone();
-        // Follow aliases without turning named classes or table literals into
-        // unrestricted tables. Bound traversal for recursive alias definitions.
-        for _ in 0..32 {
-            match &current {
-                LuaType::Table | LuaType::Any => return true,
-                LuaType::Ref(id) | LuaType::Def(id) => {
-                    let Some(def) = self.model.type_def_of(id) else {
-                        return false;
-                    };
-                    if def.kind != TypeDefKind::Alias {
-                        return false;
-                    }
-                    let Some(target) = self.model.alias_target(&def) else {
-                        return false;
-                    };
-                    current = target;
-                }
-                LuaType::Generic(_) => {
-                    let expanded = expand_alias_generic(self.model, &current);
-                    if expanded == current {
-                        return false;
-                    }
-                    current = expanded;
-                }
-                _ => return false,
-            }
-        }
-        false
-    }
-
     fn index_member_dynamic(&mut self, owner: Value, key: Value) -> Value {
         // A bare table has no declared key/value restrictions, just like any.
-        if self.has_unrestricted_members(&owner.ty) {
+        if has_unrestricted_members(self.model, &owner.ty) {
             return Value::plain(LuaType::Any);
         }
         match &key.ty {
@@ -1079,7 +1049,7 @@ impl<'a> InferVm<'a> {
         let receiver_ty = Some(owner.ty.clone());
         // A bare table does not acquire a closed shape from runtime writes.
         // Handle it before owner lookup, which also collects later assignments.
-        if self.has_unrestricted_members(&owner.ty) {
+        if has_unrestricted_members(self.model, &owner.ty) {
             return Value::plain(LuaType::Any);
         }
         // Member access on generic param `T: Base`: use the constraint type as the
