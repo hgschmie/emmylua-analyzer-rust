@@ -142,7 +142,8 @@ pub(crate) fn lookup(model: &SemanticModel<'_>, owner: &LuaType, key: &LuaType) 
     if contracts.is_empty() {
         return None;
     }
-    let result = lookup_key(model, &contracts, key, &mut Vec::new());
+    let fields = model.member_infos(owner);
+    let result = lookup_key(model, &contracts, &fields, key, &mut Vec::new());
     model
         .cache
         .borrow()
@@ -154,6 +155,7 @@ pub(crate) fn lookup(model: &SemanticModel<'_>, owner: &LuaType, key: &LuaType) 
 fn lookup_key(
     model: &SemanticModel<'_>,
     contracts: &[LuaType],
+    fields: &[super::member::MemberInfo],
     key: &LuaType,
     seen: &mut Vec<LuaType>,
 ) -> Option<LuaType> {
@@ -179,13 +181,32 @@ fn lookup_key(
         union
             .into_vec()
             .iter()
-            .map(|key| lookup_key(model, contracts, key, seen))
+            .map(|key| lookup_key(model, contracts, fields, key, seen))
             .collect::<Option<Vec<_>>>()
             .map(LuaType::from_vec)
     } else if let Some(expanded) = expanded {
-        lookup_key(model, contracts, &expanded, seen)
+        lookup_key(model, contracts, fields, &expanded, seen)
     } else {
+        // A literal declared field overrides the inherited index signature.
+        if let Some(literal) = type_eval::member_key_from_literal(key)
+            && let Some(field) = fields.iter().find(|field| field.key == literal)
+        {
+            seen.pop();
+            return Some(field.typ.clone());
+        }
         let mut values = Vec::new();
+        for field in fields {
+            let field_key = match &field.key {
+                crate::LuaMemberKey::Name(name) => LuaType::StringConst(name.clone().into()),
+                crate::LuaMemberKey::Integer(value) => LuaType::IntegerConst(*value),
+                _ => continue,
+            };
+            // A broad key may select any declared field in its domain as well
+            // as an inherited dictionary entry.
+            if type_check::is_compatible(model, &field_key, key) && !values.contains(&field.typ) {
+                values.push(field.typ.clone());
+            }
+        }
         for contract in contracts {
             let pairs: Vec<(&LuaType, &LuaType)> = match contract {
                 LuaType::TableGeneric(params) if params.len() == 2 => {
@@ -214,7 +235,7 @@ fn lookup_key(
 }
 
 #[cfg(test)]
-mod review_tests {
+mod tests {
     use super::*;
     use crate::VirtualWorkspace;
 
@@ -244,5 +265,32 @@ mod review_tests {
         let model = ws.analysis.semantic_model(file);
         assert_eq!(lookup(&model, &ty, &LuaType::String), None);
         assert!(model.cache.borrow().inherited_dictionaries.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod field_contract_tests {
+    use super::*;
+    use crate::VirtualWorkspace;
+
+    #[test]
+    fn inherited_dictionary_dynamic_projection_includes_declared_fields() {
+        let mut ws = VirtualWorkspace::new();
+        let file=ws.def("---@class Person\n---@field name string\n---@class People: table<string,Person>\n---@field count integer");
+        let owner = ws.ty("People");
+        let person = ws.ty("Person");
+        let model = ws.analysis.semantic_model(file);
+        assert_eq!(
+            lookup(&model, &owner, &LuaType::String),
+            Some(LuaType::from_vec(vec![person, LuaType::Integer]))
+        );
+        assert_eq!(
+            lookup(
+                &model,
+                &owner,
+                &LuaType::StringConst(smol_str::SmolStr::new("count").into())
+            ),
+            Some(LuaType::Integer)
+        );
     }
 }
