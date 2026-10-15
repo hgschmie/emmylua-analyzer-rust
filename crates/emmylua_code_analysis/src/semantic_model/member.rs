@@ -341,6 +341,17 @@ pub(crate) fn member_info_impl(
     {
         return Some(info);
     }
+    if let Some(key_type) = key.to_index_type()
+        && let Some(typ) = super::inherited_index::lookup(model, prefix_type, &key_type)
+    {
+        return Some(MemberInfo {
+            key: key.clone(),
+            typ,
+            id: None,
+            file_id: None,
+            is_method: false,
+        });
+    }
     // An anonymous table literal can supply missing members through the
     // `__index` function in `setmetatable(t, { __index = function ... end })`:
     // Lua passes the access key to that function, and its return type is the member type.
