@@ -1188,6 +1188,17 @@ fn member_info_of(
         return None;
     }
     let mut typ = model.type_of_member(&member_ref.id)?;
+    // A shell `table` argument may stand for an object annotation, not the
+    // unrestricted primitive. Preserve its fields before generic substitution
+    // so later indexing does not treat `Wrapper<{foo: T}>` as `Wrapper<table>`.
+    if matches!(&typ, LuaType::Generic(generic) if generic.get_params().iter().any(|param| matches!(param, LuaType::Table)))
+        && matches!(member.owner, SemanticId::TypeDef(_))
+        && let Some(syntax) = member.value_syntax
+        && let LuaType::Generic(rich) = model.doc_type_lua_rich_in(member_ref.file_id, syntax)
+    {
+        typ = LuaType::Generic(rich);
+    }
+
     // Cross-file projection of runtime function members: `type_of_member` often returns a wide Function,
     // so look up the real signature in the member's declaring file to let `require(...).module.fn()` keep inferring.
     // Standard library members keep the wide Function behavior to avoid disturbing parameter checks / math library overloads.
