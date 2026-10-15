@@ -9,11 +9,12 @@ use crate::semantic_model::type_check::{TypeCheckContext, integer_index_applies}
 use std::rc::Rc;
 
 use emmylua_parser::{
-    LuaAst, LuaAstNode, LuaCallExpr, LuaExpr, LuaIndexExpr, LuaSyntaxId, LuaTokenKind,
+    LuaAst, LuaAstNode, LuaCallExpr, LuaExpr, LuaIndexExpr, LuaSyntaxId, LuaTableExpr, LuaTokenKind,
 };
 
 use crate::semantic_model::infer::callable::CallableCandidateSet;
 use crate::semantic_model::infer::function_solver::functions_compatible;
+use crate::semantic_model::infer::overload::{CallArg, match_call_candidate};
 use crate::semantic_model::infer::unify;
 use crate::semantic_model::infer::vm::unify_call_bindings;
 use crate::semantic_model::render::humanize_type;
@@ -221,6 +222,17 @@ fn index_expr_callable_candidates(
     candidates
 }
 
+/// Both consumers honor an explicit local function contract before body inference.
+fn declared_call_candidate(model: &SemanticModel<'_>, callee: &LuaExpr) -> Option<LuaFunctionType> {
+    let LuaExpr::NameExpr(name) = callee else {
+        return None;
+    };
+    let decl = model.resolve_name(name.get_position())?;
+    let facts = model.file_facts()?;
+    let syntax = facts.decl_by_id(&decl)?.doc_type_syntax?;
+    doc_function_of(model, &model.doc_type_lua(syntax))
+}
+
 fn check_call(
     context: &mut CheckContext<'_>,
     semantic_model: &SemanticModel<'_>,
@@ -231,19 +243,8 @@ fn check_call(
     };
     let analysis = semantic_model.call_site_analysis(call_expr);
     let mut candidates = analysis.candidates;
-    // Local `---@type F1` (fun alias) declaration structure takes precedence over closure body inference.
-    if let LuaExpr::NameExpr(name_expr) = &callee
-        && let Some(decl) = semantic_model.resolve_name(name_expr.get_position())
-    {
-        if let Some(facts) = semantic_model.file_facts()
-            && let Some(decl_facts) = facts.decl_by_id(&decl)
-            && let Some(doc_syntax) = decl_facts.doc_type_syntax
-        {
-            let doc_ty = semantic_model.doc_type_lua(doc_syntax);
-            if let Some(func) = doc_function_of(semantic_model, &doc_ty) {
-                candidates = vec![func];
-            }
-        }
+    if let Some(function) = declared_call_candidate(semantic_model, &callee) {
+        candidates = vec![function];
     }
 
     let args = call_expr
@@ -268,7 +269,14 @@ fn check_call(
     // Cheap candidate ordering: check likely overloads first so the common
     // “one candidate matches” case returns before running the expensive
     // parameter-by-parameter check on every other overload.
-    let mut ordered = candidates_for_arg_count(semantic_model, &candidates, &args, colon_call);
+    // Structural and value checks must select the same complete overload.
+    let selected =
+        select_constructor_candidate(context, semantic_model, call_expr, Some(&candidates));
+    let mut ordered = if let Some(selected) = &selected {
+        vec![&selected.function]
+    } else {
+        candidates_for_arg_count(semantic_model, &candidates, &args, colon_call)
+    };
     ordered.sort_by_key(|func| {
         quick_candidate_score(func, &analysis.arg_types, colon_call, &receiver_ty)
     });
@@ -333,6 +341,259 @@ fn candidates_for_arg_count<'a>(
     candidates.iter().collect()
 }
 
+/// Table constructors must use one overload and the same receiver alignment as
+/// other call checks. Checking every overload treats alternatives as simultaneous
+/// contracts (and a colon-call table argument as the receiver).
+pub(super) fn table_argument_targets(
+    context: &mut CheckContext<'_>,
+    semantic_model: &SemanticModel<'_>,
+    call: &LuaCallExpr,
+) -> Vec<(LuaTableExpr, LuaType)> {
+    select_constructor_candidate(context, semantic_model, call, None)
+        .map(|selected| selected.targets.clone())
+        .unwrap_or_default()
+}
+
+pub(super) struct ConstructorCandidate {
+    function: LuaFunctionType,
+    targets: Vec<(LuaTableExpr, LuaType)>,
+}
+
+/// Both diagnostic passes share one file-check context, but either can be disabled.
+/// The first enabled consumer computes the selection; later consumers reuse it
+/// only for the same file, call and complete ordered candidate set.
+pub(super) type ConstructorSelections = hashbrown::HashMap<
+    (crate::FileId, LuaSyntaxId),
+    hashbrown::HashMap<Vec<LuaFunctionType>, Rc<ConstructorCandidate>>,
+>;
+
+fn select_constructor_candidate(
+    context: &mut CheckContext<'_>,
+    semantic_model: &SemanticModel<'_>,
+    call: &LuaCallExpr,
+    candidates: Option<&[LuaFunctionType]>,
+) -> Option<Rc<ConstructorCandidate>> {
+    let args = call
+        .get_args_list()
+        .map(|list| list.get_args().collect::<Vec<_>>())
+        .unwrap_or_default();
+    if !args.iter().any(|arg| matches!(arg, LuaExpr::TableExpr(_))) {
+        return None;
+    }
+    let analysis = semantic_model.call_site_analysis(call);
+    let declared = if candidates.is_none() {
+        call.get_prefix_expr()
+            .and_then(|callee| declared_call_candidate(semantic_model, &callee))
+    } else {
+        None
+    };
+    let candidates = candidates.unwrap_or_else(|| {
+        declared
+            .as_ref()
+            .map(std::slice::from_ref)
+            .unwrap_or(&analysis.candidates)
+    });
+    let key = (semantic_model.file_id(), call.get_syntax_id());
+    if !semantic_model.has_incomplete_queries()
+        && let Some(selected) = context
+            .constructor_selections
+            .get(&key)
+            .and_then(|choices| choices.get(candidates))
+    {
+        return Some(selected.clone());
+    }
+    let selected = Rc::new(select_constructor_candidate_uncached(
+        semantic_model,
+        &analysis,
+        &args,
+        candidates,
+    )?);
+    if !semantic_model.has_incomplete_queries() {
+        context
+            .constructor_selections
+            .entry(key)
+            .or_default()
+            .insert(candidates.to_vec(), selected.clone());
+    }
+    Some(selected)
+}
+
+fn select_constructor_candidate_uncached(
+    semantic_model: &SemanticModel<'_>,
+    analysis: &crate::semantic_model::CallSiteAnalysis,
+    args: &[LuaExpr],
+    candidates: &[LuaFunctionType],
+) -> Option<ConstructorCandidate> {
+    let call_args: Vec<_> = analysis
+        .arg_types
+        .iter()
+        .zip(args)
+        .map(|(ty, arg)| CallArg {
+            ty: ty.clone(),
+            closure_syntax: matches!(arg, LuaExpr::ClosureExpr(_)).then(|| arg.get_syntax_id()),
+        })
+        .collect();
+    // Parameter compatibility alone allows multiple structural alternatives
+    // (notably classes with only optional fields). Include both constructor checks
+    // when choosing an overload, rather than letting the two passes pick different
+    // contracts. Diagnostic suppression must not affect this choice.
+    let mut best: Option<((usize, usize, usize), ConstructorCandidate)> = None;
+    for candidate in candidates {
+        let arity_mismatch = usize::from(
+            !super::param_count::expanded_arg_range(semantic_model, args).accepts(
+                semantic_model,
+                candidate,
+                analysis.colon_call,
+            ),
+        );
+        // Arity is the leading score component, so a worse arity cannot win.
+        if best
+            .as_ref()
+            .is_some_and(|(score, _)| arity_mismatch > score.0)
+        {
+            continue;
+        }
+        let mismatches = if candidates.len() == 1 {
+            0
+        } else {
+            check_candidate(
+                semantic_model,
+                candidate,
+                args,
+                analysis.colon_call,
+                &analysis.receiver_ty,
+                &analysis.explicit_generics,
+                Some(&analysis.arg_types),
+            )
+            .iter()
+            // check_candidate uses AssignTypeMismatch only for constructor fields;
+            // non-table discriminators remain ParamTypeMismatch and affect selection.
+            .filter(|mismatch| mismatch.code != DiagnosticCode::AssignTypeMismatch)
+            .count()
+        };
+        if best
+            .as_ref()
+            .is_some_and(|(score, _)| (arity_mismatch, mismatches) > (score.0, score.1))
+        {
+            continue;
+        }
+        let mut bindings = match_call_candidate(
+            semantic_model,
+            candidate,
+            &call_args,
+            analysis.colon_call,
+            Some(&analysis.receiver_ty),
+        )
+        .map(|(bindings, _)| bindings)
+        .unwrap_or_default();
+        let targets = candidate_table_argument_targets(
+            semantic_model,
+            analysis,
+            candidate,
+            args,
+            &mut bindings,
+        );
+        if candidates.len() == 1 {
+            return Some(ConstructorCandidate {
+                function: candidate.clone(),
+                targets,
+            });
+        }
+        let mut context = CheckContext::unfiltered(semantic_model);
+        let mut value_mismatches = 0;
+        for (table, target) in &targets {
+            super::check_field::check_against_type(&mut context, semantic_model, target, table);
+            value_mismatches +=
+                super::assign_type_mismatch::table_field_mismatches(semantic_model, target, table)
+                    .len();
+        }
+        let score = (
+            arity_mismatch,
+            mismatches,
+            context.into_diagnostics().len() + value_mismatches,
+        );
+        if score == (0, 0, 0) {
+            return Some(ConstructorCandidate {
+                function: candidate.clone(),
+                targets,
+            });
+        }
+        if best.as_ref().is_none_or(|(current, _)| score < *current) {
+            best = Some((
+                score,
+                ConstructorCandidate {
+                    function: candidate.clone(),
+                    targets,
+                },
+            ));
+        }
+    }
+    best.map(|(_, selected)| selected)
+}
+
+fn candidate_table_argument_targets(
+    semantic_model: &SemanticModel<'_>,
+    analysis: &crate::semantic_model::CallSiteAnalysis,
+    candidate: &LuaFunctionType,
+    args: &[LuaExpr],
+    bindings: &mut unify::TplBindings,
+) -> Vec<(LuaTableExpr, LuaType)> {
+    for (syntax, generic) in analysis
+        .explicit_generics
+        .iter()
+        .zip(candidate.get_generic_params())
+    {
+        bindings.insert(
+            generic.get_tpl_id(),
+            semantic_model.doc_type_lua_in(semantic_model.file_id(), *syntax, &[]),
+        );
+    }
+    let self_param = first_param_is_self(candidate);
+    let param_start =
+        usize::from(analysis.colon_call && (self_param || !candidate.is_colon_define()));
+    let arg_start = usize::from(!analysis.colon_call && !self_param && candidate.is_colon_define());
+    let params = candidate.get_params();
+    if param_start > 0
+        && let Some((_, Some(param_ty))) = params.first()
+    {
+        let _ = unify_call_bindings(semantic_model, param_ty, &analysis.receiver_ty, bindings);
+    }
+    let mut targets = Vec::new();
+    for (index, arg) in args.iter().enumerate().skip(arg_start) {
+        let param_index = param_start + index - arg_start;
+        let param = params.get(param_index).or_else(|| {
+            params
+                .last()
+                .filter(|(name, ty)| name == "..." || matches!(ty, Some(LuaType::Variadic(_))))
+        });
+        let Some((_, Some(param_ty))) = param else {
+            continue;
+        };
+        let param_ty = match param_ty {
+            LuaType::Variadic(variadic) => {
+                let slot = param_index.saturating_sub(params.len().saturating_sub(1));
+                let Some(typ) = variadic.get_type(slot) else {
+                    continue;
+                };
+                typ
+            }
+            _ => param_ty,
+        };
+        if let Some(arg_ty) = analysis.arg_types.get(index) {
+            let _ = unify_call_bindings(semantic_model, param_ty, arg_ty, bindings);
+        }
+        if let LuaExpr::TableExpr(table) = arg
+            && analysis
+                .arg_types
+                .get(index)
+                .is_some_and(|typ| matches!(typ, LuaType::TableConst(_)))
+        {
+            targets.push((table.clone(), unify::substitute(param_ty, bindings)));
+        }
+    }
+    targets
+}
+
 /// String literal overload names for a local `---@type fun(name: "A") | fun(name: "B")`.
 fn doc_overload_literal_names(semantic_model: &SemanticModel<'_>, callee: &LuaExpr) -> Vec<String> {
     let LuaExpr::NameExpr(name_expr) = callee else {
@@ -378,7 +639,7 @@ fn has_table_literal_shape(ty: &LuaType) -> bool {
 fn table_literal_mismatch(
     semantic_model: &SemanticModel<'_>,
     param_ty: &LuaType,
-    table: &emmylua_parser::LuaTableExpr,
+    table: &LuaTableExpr,
 ) -> Option<Mismatch> {
     match param_ty {
         LuaType::Object(object) => {
@@ -906,7 +1167,7 @@ fn check_arg_pairs(
 fn generic_table_required_mismatch(
     semantic_model: &SemanticModel<'_>,
     param_ty: &LuaType,
-    table: &emmylua_parser::LuaTableExpr,
+    table: &LuaTableExpr,
 ) -> Option<Mismatch> {
     let id = match param_ty {
         LuaType::Generic(generic) => generic.get_base_type_id().clone(),
@@ -1265,4 +1526,185 @@ fn mismatch_message(
         reason = ""
     )
     .to_string()
+}
+#[cfg(test)]
+mod constructor_selection_cache_tests {
+    use super::super::{CheckConfig, check_field::CheckFieldChecker, run_check};
+    use super::*;
+    use crate::{Emmyrc, LuaTypeDeclId, VirtualWorkspace};
+    use std::sync::Arc;
+
+    const SOURCE: &str = "---@class Left\n---@field left integer\n---@class Right\n---@field right boolean\n---@type fun(kind:'left', options:Left)|fun(kind:'right', options:Right)\nlocal put\nput(false, {})";
+
+    #[test]
+    fn constructor_selection_is_shared_when_both_checkers_run_and_works_with_either() {
+        for (parameters, fields, fields_first) in [
+            (true, true, false),
+            (true, true, true),
+            (true, false, false),
+            (false, true, false),
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            let file = ws.def(SOURCE);
+            let model = ws.analysis.semantic_model(file);
+            let mut config = Emmyrc::default();
+            if !parameters {
+                config.diagnostics.disable.extend([
+                    DiagnosticCode::ParamTypeMismatch,
+                    DiagnosticCode::AssignTypeMismatch,
+                ]);
+            }
+            if !fields {
+                config
+                    .diagnostics
+                    .disable
+                    .extend([DiagnosticCode::MissingFields, DiagnosticCode::InjectField]);
+            }
+            let mut context = CheckContext::new(&model, Arc::new(CheckConfig::new(&config)));
+            if fields_first {
+                run_check::<CheckFieldChecker>(&mut context, &model);
+            } else {
+                run_check::<ParamTypeChecker>(&mut context, &model);
+            }
+            let first = context
+                .constructor_selections
+                .values()
+                .flat_map(|choices| choices.values())
+                .next()
+                .cloned();
+            if fields_first {
+                run_check::<ParamTypeChecker>(&mut context, &model);
+            } else {
+                run_check::<CheckFieldChecker>(&mut context, &model);
+            }
+            assert_eq!(context.constructor_selections.len(), 1);
+            if let Some(first) = first {
+                assert!(
+                    Rc::ptr_eq(
+                        &first,
+                        context
+                            .constructor_selections
+                            .values()
+                            .flat_map(|choices| choices.values())
+                            .next()
+                            .unwrap()
+                    ),
+                    "second checker recomputed selection"
+                );
+            }
+            let diagnostics = context.into_diagnostics();
+            assert_eq!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.code == DiagnosticCode::ParamTypeMismatch),
+                parameters,
+                "{diagnostics:?}"
+            );
+            assert_eq!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.code == DiagnosticCode::MissingFields),
+                fields,
+                "{diagnostics:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn constructor_selection_cache_separates_candidate_sets_and_calls() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def(&format!("{SOURCE}\nput(false, {{}})"));
+        let model = ws.analysis.semantic_model(file);
+        let calls = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaCallExpr>()
+            .collect::<Vec<_>>();
+        assert_eq!(calls.len(), 2);
+        let candidates = model.call_site_analysis(&calls[0]).candidates;
+        assert_eq!(candidates.len(), 2);
+        let mut context = CheckContext::new(&model, Arc::new(CheckConfig::default()));
+        let first =
+            select_constructor_candidate(&mut context, &model, &calls[0], Some(&candidates[..1]))
+                .unwrap();
+        let other =
+            select_constructor_candidate(&mut context, &model, &calls[0], Some(&candidates[1..]))
+                .unwrap();
+        assert_ne!(first.function, other.function);
+        assert!(!Rc::ptr_eq(&first, &other));
+        let repeat =
+            select_constructor_candidate(&mut context, &model, &calls[0], Some(&candidates[..1]))
+                .unwrap();
+        assert!(Rc::ptr_eq(&first, &repeat));
+        let second_call =
+            select_constructor_candidate(&mut context, &model, &calls[1], Some(&candidates[..1]))
+                .unwrap();
+        assert!(!Rc::ptr_eq(&first, &second_call));
+        assert_eq!(context.constructor_selections.len(), 2);
+        assert_eq!(
+            context
+                .constructor_selections
+                .values()
+                .map(|choices| choices.len())
+                .sum::<usize>(),
+            3
+        );
+    }
+
+    #[test]
+    fn constructor_selection_cache_does_not_reuse_results_after_incomplete_queries() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def(&format!("{SOURCE}\n---@alias Recursive Recursive"));
+        let model = ws.analysis.semantic_model(file);
+        let call = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaCallExpr>()
+            .next()
+            .unwrap();
+        let mut context = CheckContext::new(&model, Arc::new(CheckConfig::default()));
+        let first = select_constructor_candidate(&mut context, &model, &call, None).unwrap();
+        assert_eq!(context.constructor_selections.len(), 1);
+        assert_eq!(
+            model.member_type(
+                &LuaType::Ref(LuaTypeDeclId::global("Recursive")),
+                &LuaMemberKey::from("value")
+            ),
+            None
+        );
+        assert!(model.has_incomplete_queries());
+        let retry = select_constructor_candidate(&mut context, &model, &call, None).unwrap();
+        let next = select_constructor_candidate(&mut context, &model, &call, None).unwrap();
+        assert!(!Rc::ptr_eq(&first, &retry));
+        assert!(!Rc::ptr_eq(&retry, &next));
+    }
+    #[test]
+    fn constructor_selection_uses_the_same_local_alias_contract_in_both_passes() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def("---@class Options\n---@field count integer\n---@alias Contract fun(options:Options)\n---@type Contract\nlocal function put(options) end\nput({})");
+        let model = ws.analysis.semantic_model(file);
+        let mut context = CheckContext::new(&model, Arc::new(CheckConfig::default()));
+        run_check::<CheckFieldChecker>(&mut context, &model);
+        let first = context
+            .constructor_selections
+            .values()
+            .flat_map(|choices| choices.values())
+            .next()
+            .unwrap()
+            .clone();
+        run_check::<ParamTypeChecker>(&mut context, &model);
+        let selections = context
+            .constructor_selections
+            .values()
+            .flat_map(|choices| choices.values())
+            .collect::<Vec<_>>();
+        assert_eq!(selections.len(), 1);
+        assert!(Rc::ptr_eq(&first, selections[0]));
+        assert!(
+            context
+                .into_diagnostics()
+                .iter()
+                .any(|d| d.code == DiagnosticCode::MissingFields)
+        );
+    }
 }

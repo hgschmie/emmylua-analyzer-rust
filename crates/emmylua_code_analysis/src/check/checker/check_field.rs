@@ -12,7 +12,7 @@ use crate::semantic_model::type_eval::expand_alias_branches;
 use crate::{LuaMemberKey, LuaType, LuaTypeDeclId};
 
 use super::assign_type_mismatch::index_key_type;
-use super::param_type_check::callable_candidates;
+use super::param_type_check::table_argument_targets;
 use super::{CheckContext, Checker};
 use crate::semantic_model::render::humanize_type;
 
@@ -247,24 +247,8 @@ fn check_call_args(
     semantic_model: &SemanticModel<'_>,
     call_expr: &LuaCallExpr,
 ) {
-    let Some(callee) = call_expr.get_prefix_expr() else {
-        return;
-    };
-    let candidates = callable_candidates(semantic_model, &callee);
-    let Some(args) = call_expr.get_args_list() else {
-        return;
-    };
-    for candidate in &candidates {
-        let params = candidate.get_params();
-        for (index, arg) in args.get_args().enumerate() {
-            let LuaExpr::TableExpr(table) = arg else {
-                continue;
-            };
-            let Some((_, Some(param_ty))) = params.get(index) else {
-                continue;
-            };
-            check_against_type(context, semantic_model, param_ty, &table);
-        }
+    for (table, target) in table_argument_targets(context, semantic_model, call_expr) {
+        check_against_type(context, semantic_model, &target, &table);
     }
 }
 
@@ -288,7 +272,7 @@ fn check_against(
     check_against_type(context, semantic_model, &target, table);
 }
 
-fn check_against_type(
+pub(super) fn check_against_type(
     context: &mut CheckContext<'_>,
     semantic_model: &SemanticModel<'_>,
     target: &LuaType,

@@ -145,6 +145,14 @@ impl<'db> SemanticModel<'db> {
         self.view.analysis()
     }
 
+    /// Whether this request has encountered an incomplete semantic query.
+    /// Diagnostic-level memoization must remain disabled afterward: a prior
+    /// provisional input may have reached a checker before it began selecting.
+    pub(crate) fn has_incomplete_queries(&self) -> bool {
+        let cache = self.cache.borrow();
+        cache.revision() != 0 || cache.evaluation_exhausted
+    }
+
     pub(crate) fn is_closure_return_in_progress(&self, closure_syntax: LuaSyntaxId) -> bool {
         self.cache
             .borrow()
