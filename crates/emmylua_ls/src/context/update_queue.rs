@@ -11,7 +11,7 @@ use lsp_types::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, RenameFilesParams,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::handlers;
 
@@ -24,6 +24,8 @@ pub enum UpdateEvent {
     DidChangeWatchedFiles(DidChangeWatchedFilesParams),
     DidRenameFiles(RenameFilesParams),
     Shutdown,
+    /// Acknowledge preceding updates without running the request on this worker.
+    Barrier(oneshot::Sender<()>),
 }
 
 pub fn spawn_update_queue(
@@ -51,6 +53,10 @@ pub fn spawn_update_queue(
                 }
                 UpdateEvent::Shutdown => {
                     break;
+                }
+                UpdateEvent::Barrier(ready) => {
+                    // The requester may already have been cancelled.
+                    let _ = ready.send(());
                 }
             }
         }

@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod request_ordering_tests;
+
 mod analysis_state;
 mod client;
 mod client_id;
@@ -101,9 +104,27 @@ impl ServerContext {
         let client = self.inner.client.clone();
         let cancellations = self.cancellations.clone();
 
+        // Capture the boundary while dispatching, before the next notification
+        // can be queued. Wait in the request task, not in the message loop or
+        // update worker: cancellation, responses and later edits must keep flowing.
+        let (ready, updates_applied) = tokio::sync::oneshot::channel();
+        let _ = self.inner.update_tx.send(UpdateEvent::Barrier(ready));
+
         tokio::spawn(async move {
             // Catch panics so every request still gets a response.
-            let res = catch_unwind(exec(cancel_token.clone())).await;
+            let res = catch_unwind(async {
+                let ready = tokio::select! {
+                    biased;
+                    _ = cancel_token.cancelled() => false,
+                    result = updates_applied => result.is_ok(),
+                };
+                if !ready {
+                    // A stopped worker cannot guarantee a fresh analysis either.
+                    return RequestOutcome::Cancelled(CancelSource::Client);
+                }
+                exec(cancel_token.clone()).await
+            })
+            .await;
 
             let response = match res {
                 Ok(RequestOutcome::Ready(value)) => Response::new_ok(req_id.clone(), value),
@@ -136,6 +157,9 @@ impl ServerContext {
     }
 
     pub async fn close(&self) {
+        for token in self.cancellations.lock().await.values() {
+            token.cancel();
+        }
         {
             let mut workspace_manager = self.inner.workspace_manager.lock().await;
             workspace_manager.watcher = None;
