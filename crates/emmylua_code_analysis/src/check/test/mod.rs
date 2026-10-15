@@ -27,6 +27,7 @@ mod local_const_reassign_test;
 mod misc_checker_test;
 mod missing_fields_test;
 mod missing_parameter_test;
+mod namespaced_constructor_test;
 mod need_check_nil_test;
 mod param_count_test;
 mod param_type_check_test;

@@ -14,9 +14,7 @@ use crate::semantic_model::SemanticModel;
 use crate::semantic_model::type_check::{
     TypeCheckFailReason, check_assign_type_detail, is_compatible,
 };
-use crate::{
-    Decl, LuaMemberKey, LuaType, LuaTypeNode, SemanticId, TypeDef, TypeDefKind, TypeScope,
-};
+use crate::{Decl, LuaMemberKey, LuaType, LuaTypeNode, SemanticId, TypeDef, TypeDefKind};
 
 use super::{CheckContext, Checker, check_field::static_member_key};
 use crate::semantic_model::render::humanize_type;
@@ -1110,10 +1108,8 @@ fn collect_members_with_index_signatures(
         }
     }
     for super_name in &def.super_names {
-        if let Some(super_def) = semantic_model
-            .type_defs_in_scope(TypeScope::Global, super_name.as_str())
-            .into_iter()
-            .next()
+        if let Some(super_def) =
+            semantic_model.resolve_type_def_in(def.file_id, super_name.as_str())
         {
             collect_members_with_index_signatures(
                 semantic_model,
