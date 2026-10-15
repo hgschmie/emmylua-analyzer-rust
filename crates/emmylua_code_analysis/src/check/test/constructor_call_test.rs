@@ -314,3 +314,32 @@ fn constructor_call_targets_keep_inline_asserted_ownership() {
         );
     }
 }
+
+#[test]
+fn constructor_call_resolves_overloads_differing_only_in_field_value_type() {
+    for annotation in [
+        "fun(options:Text)|fun(options:Number)",
+        "fun(options:Number)|fun(options:Text)",
+    ] {
+        let diagnostics = check_source(&format!(
+            "---@class Text\n---@field value string\n---@class Number\n---@field value integer\n---@type {annotation}\nlocal put\nput({{value=1}})\nput({{value='text'}})"
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+}
+
+#[test]
+fn constructor_call_keeps_asserted_alias_and_union_ownership() {
+    for annotation in ["OptionsAlias", "Options|Alternative"] {
+        let diagnostics = check_source(&format!(
+            "---@class Options\n---@field count integer\n---@class Alternative\n---@field name string\n---@alias OptionsAlias Options\n---@param options Options\nlocal function put(options) end\nput({{}} --[[@as {annotation}]])"
+        ));
+        assert!(
+            !diagnostics.iter().any(|d| matches!(
+                d.code,
+                DiagnosticCode::MissingFields | DiagnosticCode::InjectField
+            )),
+            "{annotation}: {diagnostics:?}"
+        );
+    }
+}
