@@ -195,6 +195,22 @@ fn check_call(
     }
 }
 
+/// Whether a candidate can accept the call's argument count, including receivers
+/// and a final argument that expands to multiple values.
+pub(super) fn accepts_call_argument_count(
+    semantic_model: &SemanticModel<'_>,
+    candidate: &LuaFunctionType,
+    args: &[LuaExpr],
+    colon_call: bool,
+) -> bool {
+    let args = expanded_arg_range(semantic_model, args);
+    let params = param_count_range(semantic_model, candidate, colon_call);
+    let receiver =
+        usize::from(colon_call && !candidate.is_colon_define() && !first_param_is_self(candidate));
+    args.max.is_none_or(|max| max + receiver >= params.min)
+        && params.max.is_none_or(|max| args.min + receiver <= max)
+}
+
 /// `Mock<T>` (generic argument still a TplRef) call overload candidates:
 /// infer the generic arguments from the callee declaration initializer, then expand `fun(...: Parameters<T>...)` into fixed-length parameters.
 fn generic_callee_fallback(
