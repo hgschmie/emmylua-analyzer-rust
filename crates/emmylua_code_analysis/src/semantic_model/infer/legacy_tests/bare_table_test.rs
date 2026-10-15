@@ -103,3 +103,65 @@ fn bare_table_alias_members_are_any() {
         assert_eq!(result_type(&ws, file), LuaType::Any, "{expression}");
     }
 }
+
+#[test]
+fn bare_table_generic_member_call_preserves_open_table() {
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    ws.def(
+        r#"
+        ---@generic T
+        ---@param object T
+        ---@return T
+        function table.deepcopy(object) end
+    "#,
+    );
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::UnnecessaryIf,
+        r#"
+        ---@param prototype table
+        ---@param new_name string
+        local function update(prototype, new_name)
+            if not prototype.type or not prototype.name then error('Invalid prototype') end
+            local p = table.deepcopy(prototype)
+            p.name = new_name
+            if p.minable and p.minable.result then p.minable.result = new_name end
+            if p.place_result then p.place_result = new_name end
+            if p.result then p.result = new_name end
+            return p
+        end
+        return update
+    "#
+    ));
+}
+
+#[test]
+fn bare_table_member_guards_preserve_both_branches() {
+    for (annotation, expected) in [("table", LuaType::Table), ("any", LuaType::Any)] {
+        for condition in [
+            "value.kind",
+            "not value.kind",
+            "value.kind == 'a'",
+            "value.kind ~= 'a'",
+            "value.kind == nil",
+            "value.kind ~= nil",
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            let file = ws.def(&format!(
+                r#"
+                ---@param value {annotation}
+                function guarded(value)
+                    if {condition} then
+                        local result = value
+                        return result
+                    end
+                end
+            "#
+            ));
+            assert_eq!(
+                result_type(&ws, file),
+                expected,
+                "{annotation}: {condition}"
+            );
+        }
+    }
+}
