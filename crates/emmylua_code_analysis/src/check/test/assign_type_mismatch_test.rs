@@ -749,6 +749,74 @@ mod tests {
     }
 
     #[test]
+    fn test_class_member_identity_self_reference() {
+        for annotation in [
+            "---@class Metrics",
+            "---@class Metrics: { [string]: integer }",
+        ] {
+            let diagnostics = check_source(&format!(
+                r#"
+{annotation}
+local M = {{}}
+M.COUNTERS = {{"requests", "misses"}}
+M.__index = M
+M.self = (M)
+function M:get() return self end
+return M
+"#
+            ));
+            assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        }
+    }
+
+    #[test]
+    fn test_class_member_identity_rejects_incompatible_reassignment() {
+        for value in ["1", "Other"] {
+            let source = format!(
+                r#"
+---@class Other
+local Other = {{}}
+---@class Example
+local M = {{}}
+M.__index = M
+M.__index = {value}
+return M, Other
+"#
+            );
+            let diagnostics = check_source(&source);
+            let mismatches = diagnostics
+                .iter()
+                .filter(|d| d.code == DiagnosticCode::AssignTypeMismatch)
+                .collect::<Vec<_>>();
+            assert_eq!(mismatches.len(), 1, "{diagnostics:?}");
+            assert_eq!(
+                mismatches[0].range.start(),
+                rowan::TextSize::from(
+                    (source.rfind("M.__index = ").unwrap() + "M.__index = ".len()) as u32
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn test_class_member_identity_respects_declared_field_type() {
+        let diagnostics = check_source(
+            r#"
+---@class Example
+---@field self string
+local M = {}
+M.self = M
+return M
+"#,
+        );
+        assert_eq!(
+            diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+            vec![DiagnosticCode::AssignTypeMismatch],
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
     fn test_vararg_packing_keeps_tuple_assignment_checks() {
         let source = r#"
             ---@param ... [string, integer]
