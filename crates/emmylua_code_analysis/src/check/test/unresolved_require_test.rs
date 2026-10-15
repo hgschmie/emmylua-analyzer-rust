@@ -33,6 +33,36 @@ mod tests {
     }
 
     #[test]
+    fn test_resolved_require_without_known_export() {
+        for source in [
+            "-- empty module",
+            "Registered = true",
+            "return UnknownExport",
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            ws.def_file("script/register.lua", source);
+            assert!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::UnresolvedRequire,
+                    r#"require("script.register")"#,
+                ),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_hidden_module_is_resolved_but_not_visible() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def_file("hidden.lua", "---@meta no-require\nreturn {}");
+        assert!(ws.has_no_diagnostic(DiagnosticCode::UnresolvedRequire, r#"require("hidden")"#,));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::RequireModuleNotVisible,
+            r#"require("hidden")"#,
+        ));
+    }
+
+    #[test]
     fn test_non_literal_require() {
         let mut ws = VirtualWorkspace::new();
         assert!(ws.has_no_diagnostic(
@@ -67,6 +97,7 @@ mod tests {
             return {}
             "#,
         );
+        ws.def_file("signalstrings/register.lua", "Registered = true");
 
         assert!(ws.has_no_diagnostic(
             DiagnosticCode::UnresolvedRequire,
@@ -74,6 +105,7 @@ mod tests {
             local a = require("__signalstrings__/signalstrings.lua")
             local b = require("__signalstrings__.signalstrings")
             local c = require("__signalstrings__/signalstrings")
+            require("__signalstrings__/register")
             "#,
         ));
     }
