@@ -1,3 +1,31 @@
+# Request/update ordering — UP-054 (2026-10-14)
+
+The user chose to keep UP-045 after testing both completion variants. Build158
+adds `fix/request-update-ordering`, signed `c0f71524`, independently based on
+upstream/main `96545f45`. Work integration is signed/provenance cherry-pick
+`0d95174e`; it preserves UP-045's existing shutdown cancellation rather than
+adding it twice. No unrelated upstream refactor is imported.
+
+Requests now queue a one-shot barrier while being dispatched and await it in
+their own task. Earlier queued notifications are processed before the handler
+reads analysis. The message loop and update worker do not wait for the request;
+later edits, responses, cancellation and long-lived workspace pulls keep flowing.
+Cancelled waits and a stopped update worker do not execute the handler. Server
+close cancels pending requests. This prevents stale semantic colors from an
+immediate request after typing and fixes the same ordering risk for completion.
+
+Five deterministic regressions cover prior edits, cancellation, later edits,
+concurrent pending requests, and close. Three fail on unpatched upstream. The
+standalone server suite passes 229 tests, Clippy and fmt. Package/protocol/platform
+evidence: workspace upstream/REQUEST_ORDERING_2026-10-14.md.
+
+UP-053's completion repair and all previous analyzer fixes remain included.
+The UP-008 experiment remains at build157 as a historical comparison; it is not
+rebuilt or advanced. FDE retains 0.7.9-dev and its existing ZIP, with its development
+pin and immediate-token integration test updated. Only EmmyLua2 needs updating.
+The full-workspace diagnostic contention itself is unchanged; this fix guarantees
+preceding updates are observed, not a bound on latency. No push or PR was requested.
+
 # Annotation type completion — UP-053 (2026-10-14)
 
 Independent fix `fix/doc-type-completion`, signed `7e080f55`, is based on
