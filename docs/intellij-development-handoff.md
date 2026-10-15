@@ -1,3 +1,34 @@
+# data-util analyzer fixes (2026-10-14)
+
+UP-049, `fix/bare-table-member-inference` (`c4694854`), restores `any` results for
+unrestricted bare-table/alias member reads before runtime-collected members can
+supply incorrect conditional types. It also preserves rich structured generic
+arguments that used to be projected to bare `table`; the existing generic test
+now verifies the expected `string`, rather than merely checking for non-`any`.
+
+UP-050, `fix/namespaced-constructor-inheritance` (`5dec3623`), resolves inherited
+constructor members in the declaring file's namespace, for both field-presence
+and field-value checks. Required fields, invalid values, unknown fields, child
+overrides, index signatures, qualified parents and inheritance cycles are covered.
+
+Both independent contribution branches are based on fetched upstream/main
+`96545f45d0dea552a707408fbd024ddbd03e2709`. Signed provenance cherry-picks
+`e205e991` and `e5b1656a` integrate them without importing the unrelated upstream
+HashMap refactor. UP-049's overlaps with dictionary indexing (UP-016) and
+read/write types (UP-015) retain those behaviors; neither is a standalone fix
+prerequisite. No push or PR was requested.
+
+Standalone analysis suites: 1,472 and 1,475 tests pass respectively, with
+Clippy/fmt. The combined workspace/all-feature suite passes 2,643 tests (1,652
+analysis), Clippy with all targets/features and -D warnings, and rustfmt.
+Test-generated std-zh_CN translations were restored. Build155 package and real
+protocol/platform evidence are recorded in workspace
+`upstream/DATA_UTIL_FIXES_2026-10-14.md` and `upstream/FIX_INVENTORY.md`.
+
+Original mod source remains unchanged. Its separate Sprite/SpritePrototype and
+runtime-coordinate/pixel-type annotation problems are outside these fixes.
+FDE keeps its existing version/archive; only EmmyLua2 needs an updated install.
+
 # Configuration merging for workspace ownership (2026-10-14)
 
 UP-048, `fix/mixed-config-key-merging` (`a9684a5c`, upstream/main `96545f45`),
