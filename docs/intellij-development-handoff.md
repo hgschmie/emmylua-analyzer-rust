@@ -1,3 +1,23 @@
+# Matching UP-008 comparison — build158 (2026-10-14)
+
+At the user's request, the one-off experiment now includes UP-054 request/update
+ordering as well as UP-053 annotation completion and all other current fixes.
+Signed cherry-pick `1fddc7ba` applies standalone `c0f71524`; its only conflict was
+server close, where request cancellation is combined with UP-008 refresh cleanup.
+The request barrier and all five ordering regressions match the normal work tree.
+Production differences from normal remain the UP-008/UP-045 scheduler swap.
+
+The full comparison language-server suite passes 262 tests, including all five
+ordering regressions. Server Clippy (all targets/features, warnings denied) and
+rustfmt pass. The packaging branch pins this clean checkout for build158-up008.
+Package/protocol evidence: workspace `upstream/UP008_COMPARISON_BUILD158.md`.
+
+Keep normal work/intellij-modules and the normal prepared plugin on UP-045.
+Do not update FDE's normal analyzer pin, version or existing archive for this
+experiment. Install only one EmmyLua2 variant and restart for each comparison;
+keep FDE 0.7.9-dev and LSP4IJ workspace-diagnostics-patched3. No push, PR, regular
+IDE installation or original mod edits were requested.
+
 # Annotation type completion — UP-053 (2026-10-14)
 
 Independent fix `fix/doc-type-completion`, signed `7e080f55`, is based on
