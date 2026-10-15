@@ -1,3 +1,37 @@
+# Enum assertions and inherited dictionaries — UP-058 / UP-059 (2026-10-15)
+
+Two independent fixes are based on upstream/main `96545f45`:
+
+- UP-058 `fix/enum-cast-compatibility`, signed `183158c5`: permit an explicit
+  cast from a primitive to an enum whose values have a compatible primitive type.
+  Follow aliases and cross-file enum declarations; reject incompatible primitives
+  and empty enums. Ordinary assignment compatibility is unchanged. The assertion
+  does not convert or validate values at runtime.
+- UP-059 `fix/inherited-dictionary-index`, signed `3704f8cd`: retain generic
+  arguments when following a class's dictionary supertypes. Resolve dynamic,
+  literal, aliased and optional keys, nested inheritance/default parameters and
+  aliases. Explicit members retain precedence; invalid keys still warn. Cyclic
+  inheritance and alias expansion are bounded, and inherited contracts are cached
+  per semantic model.
+
+Signed work cherry-picks `671a5d5e` and `246e04d7` retain the development base
+without importing the unrelated upstream HashMap refactor. Neither standalone
+fix depends on another pending contribution. Work-only integration `447eecc1`
+connects UP-059 to UP-016/017's nullable reads and deletion writes; tests exercise
+strict.tableIndex on/off and declared-member precedence.
+
+Both minimal cases pass before the refactor (`aaaca684`), fail immediately after
+it (`3474c99d`), and fail before our first merged analyzer PR (`1c8589bb`). These
+are upstream regressions predating our contributions. In the actual LTN console,
+CustomCommandData.player_index is uint32?, so players[index] should be LuaPlayer?.
+
+The normal UP-045 package advances to EmmyLua2 build161. UP-008 comparison stays
+at build159. Update FDE's development pin only; retain its existing 0.8.3-dev ZIP
+and LSP4IJ patched4. No original mod edits, IDE installation, push or PR.
+Final validation and package evidence: workspace
+`upstream/ENUM_CAST_CUSTOM_INDEX_2026-10-15.md` and analyzer
+`build/investigations/enum-cast-custom-index-20261015/`.
+
 # Class identity in member values — UP-057 (2026-10-15)
 
 Standalone `fix/class-member-value-identity` (`d28acce3`) is independently based
