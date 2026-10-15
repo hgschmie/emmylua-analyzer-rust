@@ -1,3 +1,27 @@
+# Class identity in member values — UP-057 (2026-10-15)
+
+Standalone `fix/class-member-value-identity` (`d28acce3`) is independently based
+on upstream/main `96545f45`. The low-level declaration query now associates
+`@class`/`@enum` annotations with their runtime value before inferring the
+initializer, matching the semantic model. This prevents `M.__index = M` and
+ordinary member references from becoming anonymous recursive table structures.
+Explicit type/module annotations retain priority; no compatibility rule is relaxed.
+
+Signed work cherry-pick `d0097b01` preserves the existing development baseline
+without importing the upstream HashMap refactor. No local prerequisites, including
+the dictionary and read/write patches. Six regressions cover diagnostics, invalid
+assignments, namespaces/scopes, cross-file queries and explicit annotations.
+An older inheritance test was accepting the spurious `a.__index = a` warning;
+its expectation now matches the checker's existing acceptance of inheritance.
+
+Standalone analysis (including stress): 1,475 pass; Clippy and formatting pass.
+Combined work: all 1,679 analysis tests and 257 language-server tests pass.
+The normal UP-045 package advances to EmmyLua2 build160. The one-off UP-008
+comparison remains at build159. FDE's analyzer development pin follows this work
+branch, but its existing 0.8.3-dev ZIP and LSP4IJ patched4 are unchanged. No push,
+PR or installation for this fix. Final integration/protocol/package evidence:
+workspace `upstream/CLASS_MEMBER_IDENTITY_2026-10-15.md`.
+
 # Side-effect module resolution — UP-056 (2026-10-15)
 
 Standalone branch `fix/side-effect-require-resolution`, signed `885a81e1`, is
