@@ -577,6 +577,114 @@ fn test_member_global_root() {
 }
 
 #[test]
+fn test_class_member_identity_from_annotated_declaration() {
+    for (annotation, expected) in [
+        ("---@class Example", "Example"),
+        ("---@class Example: { [string]: integer }", "Example"),
+        ("---@namespace sample\n---@class Example", "sample.Example"),
+        ("---@class (private) Example", "Example"),
+        ("---@class (internal) Example", "Example"),
+        ("---@enum Example", "Example"),
+    ] {
+        let mut db = setup();
+        let fid = set_test_file(
+            &mut db,
+            1,
+            "a.lua",
+            &format!(
+                "{annotation}\nlocal M = {{}}\nM.__index = M\nM.self = (M)\nlocal holder = {{}}\nholder.related = M"
+            ),
+        );
+        let facts = db.analysis().file_facts(fid).expect("facts");
+        let expected_id = facts.type_defs[0].type_decl_id();
+        let model = SemanticModel::new(&db, fid);
+        for name in ["__index", "self", "related"] {
+            let member = facts
+                .members
+                .iter()
+                .find(|m| m.key.name() == Some(name))
+                .unwrap();
+            assert_eq!(
+                db.analysis().member_type(fid, member.id.clone()),
+                Some(TypeShell::from_name(expected)),
+                "{annotation}: {name}",
+            );
+            assert_eq!(
+                model.type_of_member(&member.id),
+                Some(LuaType::Ref(expected_id.clone())),
+                "{annotation}: {name} must retain scope as well as name",
+            );
+        }
+    }
+}
+
+#[test]
+fn test_class_member_identity_across_files() {
+    let mut db = setup();
+    let owner = set_test_file(
+        &mut db,
+        1,
+        "owner.lua",
+        r#"
+---@namespace sample
+---@class (private) Example
+local M = {}
+M.__index = M
+return M
+"#,
+    );
+    let consumer = set_test_file(
+        &mut db,
+        2,
+        "consumer.lua",
+        r#"
+---@namespace sample
+---@class (private) Example
+local Other = {}
+return Other
+"#,
+    );
+    let facts = db.analysis().file_facts(owner).expect("facts");
+    let member = facts
+        .members
+        .iter()
+        .find(|m| m.key.name() == Some("__index"))
+        .unwrap();
+    let model = SemanticModel::new(&db, consumer);
+    assert_eq!(
+        model.type_of_member(&member.id),
+        Some(LuaType::Ref(facts.type_defs[0].type_decl_id()))
+    );
+}
+
+#[test]
+fn test_class_member_identity_keeps_explicit_type_priority() {
+    let mut db = setup();
+    let fid = set_test_file(
+        &mut db,
+        1,
+        "a.lua",
+        r#"
+---@class Example
+---@type string
+local value = 'text'
+local holder = {}
+holder.value = value
+"#,
+    );
+    let facts = db.analysis().file_facts(fid).expect("facts");
+    let member = facts
+        .members
+        .iter()
+        .find(|m| m.key.name() == Some("value"))
+        .unwrap();
+    assert_primitive(
+        &db.analysis().member_type(fid, member.id.clone()).unwrap(),
+        PrimitiveType::String,
+    );
+}
+
+#[test]
 fn test_member_chain_resolution() {
     let mut db = setup();
     // T.a = T.b; T.b = 1 → a resolves to Number through the IndexExpr member chain.
