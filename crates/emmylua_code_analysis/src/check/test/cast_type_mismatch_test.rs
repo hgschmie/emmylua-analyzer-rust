@@ -278,3 +278,88 @@ mod tests {
         ));
     }
 }
+
+#[test]
+fn enum_cast_from_primitive_values() {
+    for (enum_values, origin) in [("A = 0, B = -1", "number"), ("A = 'a', B = 'b'", "string")] {
+        let mut ws = crate::VirtualWorkspace::new();
+        let source = format!(
+            r#"
+---@enum Result
+local Result = {{ {enum_values} }}
+---@param value {origin}
+local function check(value)
+    ---@cast value Result
+    return value
+end
+"#
+        );
+        assert!(
+            ws.has_no_diagnostic(crate::DiagnosticCode::CastTypeMismatch, &source),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn enum_cast_alias_cross_file() {
+    let mut ws = crate::VirtualWorkspace::new();
+    ws.def(
+        r#"
+---@enum Result
+Result = { Available = 0, Missing = -1 }
+---@alias ResultAlias Result
+"#,
+    );
+    assert!(ws.has_no_diagnostic(
+        crate::DiagnosticCode::CastTypeMismatch,
+        r#"
+---@param value number
+local function narrow(value)
+    ---@cast value ResultAlias
+    return value
+end
+"#
+    ));
+}
+
+#[test]
+fn enum_cast_does_not_accept_unrelated_types_or_change_assignments() {
+    for (values, origin) in [
+        ("A = 0, B = -1", "string"),
+        ("A = 'a', B = 'b'", "number"),
+        ("A = 0, B = -1", "boolean"),
+        ("", "number"),
+    ] {
+        let mut ws = crate::VirtualWorkspace::new();
+        let source = format!(
+            r#"
+---@enum Result
+local Result = {{ {values} }}
+---@param value {origin}
+local function narrow(value)
+    ---@cast value Result
+    return value
+end
+"#
+        );
+        assert!(
+            !ws.has_no_diagnostic(crate::DiagnosticCode::CastTypeMismatch, &source),
+            "{source}"
+        );
+    }
+    let mut ws = crate::VirtualWorkspace::new();
+    assert!(!ws.has_no_diagnostic(
+        crate::DiagnosticCode::AssignTypeMismatch,
+        r#"
+---@enum Result
+local Result = { A = 0, B = -1 }
+---@param value number
+local function check(value)
+    ---@type Result
+    local result = value
+    return result
+end
+"#
+    ));
+}
