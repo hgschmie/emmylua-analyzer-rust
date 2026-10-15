@@ -22,6 +22,39 @@ use crate::VariadicType;
 /// chains from making `member_info` / `resolve_member` slow-path expansion unbounded.
 const MAX_MEMBER_INHERITANCE_DEPTH: usize = 16;
 
+/// Whether arbitrary member reads have no declared key/value contract.
+pub(crate) fn has_unrestricted_members(model: &SemanticModel, ty: &LuaType) -> bool {
+    let mut current = ty.clone();
+    // Follow aliases without turning named classes or table literals into
+    // unrestricted tables. Bound traversal for recursive alias definitions.
+    for _ in 0..32 {
+        match &current {
+            LuaType::Table | LuaType::Any => return true,
+            LuaType::Ref(id) | LuaType::Def(id) => {
+                let Some(def) = model.type_def_of(id) else {
+                    return false;
+                };
+                if def.kind != TypeDefKind::Alias {
+                    return false;
+                }
+                let Some(target) = model.alias_target(&def) else {
+                    return false;
+                };
+                current = target;
+            }
+            LuaType::Generic(_) => {
+                let expanded = expand_alias_generic(model, &current);
+                if expanded == current {
+                    return false;
+                }
+                current = expanded;
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
 /// Member information (an entry from a prefix-type query).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemberInfo {
