@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod request_ordering_tests;
+
 mod analysis_state;
 mod client;
 mod client_id;
@@ -24,7 +27,7 @@ pub use snapshot::ServerContextSnapshot;
 pub use status_bar::ProgressTask;
 pub use status_bar::StatusBar;
 use std::{collections::HashMap, future::Future, sync::Arc};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, oneshot};
 use tokio_util::sync::CancellationToken;
 pub use update_queue::{UpdateEvent, spawn_update_queue};
 pub use workspace_manager::*;
@@ -60,6 +63,7 @@ impl ServerContext {
 
         let (update_tx, update_rx) = tokio::sync::mpsc::unbounded_channel();
         let inner = Arc::new(ServerContextInner {
+            rename_client_queue: crate::handlers::RenameClientQueue::new(),
             analysis,
             client,
             file_diagnostic,
@@ -101,20 +105,37 @@ impl ServerContext {
         let client = self.inner.client.clone();
         let cancellations = self.cancellations.clone();
 
+        // Capture the boundary while dispatching, before the next notification
+        // can be queued. Wait in the request task, not in the message loop or
+        // update worker: cancellation, responses and later edits must keep flowing.
+        let (ready, updates_applied) = oneshot::channel();
+        // A refused send drops the sender and uses the same error path as a
+        // worker that stops before acknowledging an accepted barrier.
+        let _ = self.inner.update_tx.send(UpdateEvent::Barrier(ready));
+
         tokio::spawn(async move {
             // Catch panics so every request still gets a response.
-            let res = catch_unwind(exec(cancel_token.clone())).await;
+            let res =
+                catch_unwind(execute_after_updates(updates_applied, cancel_token, exec)).await;
 
             let response = match res {
-                Ok(RequestOutcome::Ready(value)) => Response::new_ok(req_id.clone(), value),
-                Ok(RequestOutcome::Missing) => {
+                Ok(Ok(RequestOutcome::Ready(value))) => Response::new_ok(req_id.clone(), value),
+                Ok(Ok(RequestOutcome::Missing)) => {
                     Response::new_ok(req_id.clone(), serde_json::Value::Null)
                 }
-                Ok(RequestOutcome::Cancelled(_)) => Response::new_err(
+                Ok(Ok(RequestOutcome::Cancelled(_))) => Response::new_err(
                     req_id.clone(),
                     ErrorCode::RequestCanceled as i32,
                     "cancel".to_string(),
                 ),
+                Ok(Err(error)) => {
+                    log::error!("Update worker unavailable for request {req_id:?}: {error}");
+                    Response::new_err(
+                        req_id.clone(),
+                        ErrorCode::InternalError as i32,
+                        "update worker unavailable".to_string(),
+                    )
+                }
                 Err(_) => Response::new_err(
                     req_id.clone(),
                     ErrorCode::InternalError as i32,
@@ -136,6 +157,11 @@ impl ServerContext {
     }
 
     pub async fn close(&self) {
+        let tokens: Vec<_> = self.cancellations.lock().await.values().cloned().collect();
+        for token in tokens {
+            token.cancel();
+        }
+        self.inner.rename_client_queue.close().await;
         {
             let mut workspace_manager = self.inner.workspace_manager.lock().await;
             workspace_manager.watcher = None;
@@ -146,4 +172,23 @@ impl ServerContext {
     pub async fn send_response(&self, response: Response) {
         self.inner.client.on_response(response).await;
     }
+}
+
+async fn execute_after_updates<T, F, Fut>(
+    updates_applied: oneshot::Receiver<()>,
+    cancel_token: CancellationToken,
+    exec: F,
+) -> Result<RequestOutcome<T>, oneshot::error::RecvError>
+where
+    F: FnOnce(CancellationToken) -> Fut,
+    Fut: Future<Output = RequestOutcome<T>>,
+{
+    tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => {
+            return Ok(RequestOutcome::Cancelled(CancelSource::Client));
+        }
+        result = updates_applied => result?,
+    }
+    Ok(exec(cancel_token).await)
 }

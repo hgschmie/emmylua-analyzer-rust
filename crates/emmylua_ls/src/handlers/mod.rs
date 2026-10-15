@@ -33,6 +33,8 @@ mod semantic_token;
 mod signature_helper;
 mod text_document;
 mod workspace;
+
+pub(crate) use workspace::RenameClientQueue;
 mod workspace_symbol;
 
 #[cfg(test)]
