@@ -747,3 +747,79 @@ fn table_index_computed_guards_preserve_asymmetric_fields() {
         assert_eq!(typ, ws.ty("integer"));
     }
 }
+
+// These combinations require the independent factory and directional patches.
+#[gtest]
+fn table_index_preserves_factory_and_directional_contracts() {
+    for enabled in [false, true] {
+        let mut ws = workspace(enabled);
+        ws.def(
+            r#"
+            function make_lookup()
+                return setmetatable({}, {
+                    ---@param key string
+                    ---@return string
+                    __index = function(_, key) return key end
+                })
+            end
+            fallback = make_lookup()
+            ---@class Directional
+            ---@field (read) required integer?
+            ---@field (write) required integer
+            ---@type Directional
+            target = {}
+            ---@type integer?
+            value = nil
+        "#,
+        );
+        expect_that!(ws.expr_ty("fallback.missing"), eq(&LuaType::String));
+        expect_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::AssignTypeMismatch,
+                "target.required = value"
+            ),
+            eq(false)
+        );
+    }
+}
+
+// UP-059 inherits the dictionary contract; UP-016/017 retain read/write policy.
+#[test]
+fn inherited_dictionary_preserves_strict_read_and_write_policy() {
+    for enabled in [false, true] {
+        let mut ws = workspace(enabled);
+        ws.def(
+            r#"
+---@alias uint32 integer
+---@class Player
+---@field name string
+---@generic K: string|uint32 = string|uint32, V = any
+---@class CustomTable<K: string|uint32 = string|uint32, V = any>: userdata, table<K,V>
+---@field count integer
+---@type CustomTable<uint32|string, Player>
+players = {}
+---@type uint32
+key = 1
+---@type uint32?
+optional_key = nil
+"#,
+        );
+        for expr in ["players[key]", "players[1]", "players['alice']"] {
+            assert_eq!(
+                ws.expr_ty(expr),
+                ws.ty(if enabled { "Player?" } else { "Player" }),
+                "{expr}, strict={enabled}"
+            );
+        }
+        assert_eq!(ws.expr_ty("players[optional_key]"), ws.ty("Player?"));
+        assert_eq!(ws.expr_ty("players.count"), ws.ty("integer"));
+        assert_eq!(ws.expr_ty("players['count']"), ws.ty("integer"));
+        assert!(ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, "players[key] = nil"));
+        assert!(!ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, "players[key] = false"));
+        assert!(!ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, "players.count = 'bad'"));
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            "local p = players[optional_key]"
+        ));
+    }
+}

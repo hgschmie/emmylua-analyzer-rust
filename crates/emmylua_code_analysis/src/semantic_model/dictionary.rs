@@ -61,8 +61,8 @@ fn lookup_inner(
         return None;
     }
     seen.push(owner.clone());
-    // Only ordinary dictionaries distribute key unions. Nominal classes and
-    // explicit __index functions retain their own lookup contracts.
+    // Dictionary contracts distribute key unions. Named classes reach this path
+    // through their inherited contracts; __index functions remain separate.
     let dictionary = matches!(owner, LuaType::TableGeneric(_) | LuaType::Object(_))
         || matches!(owner, LuaType::Generic(g) if g.get_base_type_id().get_name() == "table");
     if dictionary {
@@ -226,11 +226,12 @@ fn lookup_atomic(
             .type_def_of(id)
             .filter(|def| def.kind == TypeDefKind::Alias)
             .and_then(|def| model.alias_target(&def))
-            .and_then(|target| lookup_inner(model, &target, key, mode, seen)),
+            .and_then(|target| lookup_inner(model, &target, key, mode, seen))
+            .or_else(|| lookup_inherited(model, owner, key, mode, seen)),
         LuaType::Generic(_) => {
             let target = type_eval::expand_alias_generic(model, owner);
             if target == *owner {
-                None
+                lookup_inherited(model, owner, key, mode, seen)
             } else {
                 lookup_inner(model, &target, key, mode, seen)
             }
@@ -246,6 +247,34 @@ fn lookup_atomic(
         _ => None,
     }
 }
+// Integration of inherited dictionary contracts with nullable reads and deletion writes.
+fn lookup_inherited(
+    model: &SemanticModel,
+    owner: &LuaType,
+    key: &LuaType,
+    mode: LookupMode,
+    seen: &mut Vec<LuaType>,
+) -> Option<LuaType> {
+    let contracts = super::inherited_index::dictionaries(model, owner);
+    if contracts.is_empty() || super::inherited_index::lookup(model, owner, key).is_none() {
+        return None;
+    }
+    // Preserve explicit fields before considering open dictionary entries. Use
+    // enumeration here: member_info itself calls dictionary lookup.
+    if let Some(member_key) = type_eval::member_key_from_literal(key)
+        && super::member::member_infos(model, owner)
+            .iter()
+            .any(|member| member.key == member_key)
+    {
+        return None;
+    }
+    let values: Vec<_> = contracts
+        .iter()
+        .filter_map(|contract| lookup_inner(model, contract, key, mode, seen))
+        .collect();
+    (!values.is_empty()).then(|| LuaType::from_vec(values))
+}
+
 fn signature(
     model: &SemanticModel,
     declared: &LuaType,
