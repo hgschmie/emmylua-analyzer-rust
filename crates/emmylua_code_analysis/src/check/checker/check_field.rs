@@ -247,7 +247,7 @@ fn check_call_args(
     semantic_model: &SemanticModel<'_>,
     call_expr: &LuaCallExpr,
 ) {
-    for (table, target) in table_argument_targets(semantic_model, call_expr) {
+    for (table, target) in table_argument_targets(context, semantic_model, call_expr) {
         check_against_type(context, semantic_model, &target, &table);
     }
 }

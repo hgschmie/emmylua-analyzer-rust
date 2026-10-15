@@ -43,7 +43,7 @@ pub mod unnecessary_if;
 pub mod unresolved_require;
 pub mod unused;
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use lsp_types::{DiagnosticSeverity, DiagnosticTag};
 use rowan::TextRange;
@@ -93,6 +93,7 @@ pub struct CheckContext<'a> {
     pub(crate) config: Arc<CheckConfig>,
     diagnostics: Vec<Diagnostic>,
     filter_diagnostics: bool,
+    constructor_selections: param_type_check::ConstructorSelections,
 }
 
 impl<'a> CheckContext<'a> {
@@ -102,16 +103,20 @@ impl<'a> CheckContext<'a> {
             config,
             diagnostics: Vec::new(),
             filter_diagnostics: true,
+            constructor_selections: Default::default(),
         }
     }
 
     /// Collect structural failures independently of user-facing diagnostic filters.
     pub(super) fn unfiltered(semantic_model: &'a SemanticModel<'a>) -> Self {
+        static CONFIG: LazyLock<Arc<CheckConfig>> =
+            LazyLock::new(|| Arc::new(CheckConfig::default()));
         Self {
             semantic_model,
-            config: Arc::new(CheckConfig::default()),
+            config: CONFIG.clone(),
             diagnostics: Vec::new(),
             filter_diagnostics: false,
+            constructor_selections: Default::default(),
         }
     }
 
