@@ -801,7 +801,43 @@ impl<'a> InferVm<'a> {
         model.is_std_file(file_id)
     }
 
+    fn has_unrestricted_members(&self, ty: &LuaType) -> bool {
+        let mut current = ty.clone();
+        // Follow aliases without turning named classes or table literals into
+        // unrestricted tables. Bound traversal for recursive alias definitions.
+        for _ in 0..32 {
+            match &current {
+                LuaType::Table | LuaType::Any => return true,
+                LuaType::Ref(id) | LuaType::Def(id) => {
+                    let Some(def) = self.model.type_def_of(id) else {
+                        return false;
+                    };
+                    if def.kind != TypeDefKind::Alias {
+                        return false;
+                    }
+                    let Some(target) = self.model.alias_target(&def) else {
+                        return false;
+                    };
+                    current = target;
+                }
+                LuaType::Generic(_) => {
+                    let expanded = expand_alias_generic(self.model, &current);
+                    if expanded == current {
+                        return false;
+                    }
+                    current = expanded;
+                }
+                _ => return false,
+            }
+        }
+        false
+    }
+
     fn index_member_dynamic(&mut self, owner: Value, key: Value) -> Value {
+        // A bare table has no declared key/value restrictions, just like any.
+        if self.has_unrestricted_members(&owner.ty) {
+            return Value::plain(LuaType::Any);
+        }
         match &key.ty {
             LuaType::StringConst(s) | LuaType::DocStringConst(s) => {
                 self.index_member(owner, &LuaMemberKey::Name(SmolStr::new(s.as_str())))
@@ -1041,8 +1077,9 @@ impl<'a> InferVm<'a> {
 
     fn index_member_impl(&mut self, mut owner: Value, key: &LuaMemberKey) -> Value {
         let receiver_ty = Some(owner.ty.clone());
-        // On `any` (including alias cycles that converge to any), any field is still any.
-        if owner.ty.is_any() {
+        // A bare table does not acquire a closed shape from runtime writes.
+        // Handle it before owner lookup, which also collects later assignments.
+        if self.has_unrestricted_members(&owner.ty) {
             return Value::plain(LuaType::Any);
         }
         // Member access on generic param `T: Base`: use the constraint type as the
