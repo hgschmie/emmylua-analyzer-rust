@@ -8,7 +8,7 @@ use emmylua_parser::{
 };
 
 use crate::DiagnosticCode;
-use crate::semantic_db::def::{SemanticId, TypeDef, TypeDefKind, TypeScope};
+use crate::semantic_db::def::{SemanticId, TypeDef, TypeDefKind};
 use crate::semantic_model::SemanticModel;
 use crate::{LuaMemberKey, LuaType, LuaTypeDeclId, LuaUnionType};
 
@@ -571,7 +571,9 @@ fn collect_fields(
     // Inheritance chain: locate the type definition; needs def info.
     if let Some(def) = find_type_def(semantic_model, type_def_id) {
         for super_name in &def.super_names {
-            if let Some(super_def) = super_type_def(semantic_model, super_name) {
+            if let Some(super_def) =
+                semantic_model.resolve_type_def_in(def.file_id, super_name.as_str())
+            {
                 collect_fields(
                     semantic_model,
                     &super_def.id,
@@ -591,15 +593,6 @@ fn find_type_def(semantic_model: &SemanticModel<'_>, type_def_id: &SemanticId) -
     };
     let defs = semantic_model.type_defs_in_scope(key.scope, &key.full_name);
     defs.iter().next().cloned()
-}
-
-/// Parent type (by full name, in Global scope).
-fn super_type_def(semantic_model: &SemanticModel<'_>, full_name: &str) -> Option<TypeDef> {
-    semantic_model
-        .type_defs_in_scope(TypeScope::Global, full_name)
-        .iter()
-        .next()
-        .cloned()
 }
 
 /// Whether the field is optional (nullable / unknown).
