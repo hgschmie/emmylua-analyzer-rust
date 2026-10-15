@@ -446,6 +446,13 @@ fn select_constructor_candidate_uncached(
                 analysis.colon_call,
             ),
         );
+        // Arity is the leading score component, so a worse arity cannot win.
+        if best
+            .as_ref()
+            .is_some_and(|(score, _)| arity_mismatch > score.0)
+        {
+            continue;
+        }
         let mismatches = if candidates.len() == 1 {
             0
         } else {
@@ -459,6 +466,8 @@ fn select_constructor_candidate_uncached(
                 Some(&analysis.arg_types),
             )
             .iter()
+            // check_candidate uses AssignTypeMismatch only for constructor fields;
+            // non-table discriminators remain ParamTypeMismatch and affect selection.
             .filter(|mismatch| mismatch.code != DiagnosticCode::AssignTypeMismatch)
             .count()
         };

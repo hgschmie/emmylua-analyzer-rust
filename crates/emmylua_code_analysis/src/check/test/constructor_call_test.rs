@@ -343,3 +343,25 @@ fn constructor_call_keeps_asserted_alias_and_union_ownership() {
         );
     }
 }
+
+#[test]
+fn constructor_call_scores_non_table_discriminators_with_identical_table_targets() {
+    for annotation in [
+        "fun(kind:'left',options:Opt)|fun(kind:'right',options:Opt)",
+        "fun(kind:'right',options:Opt)|fun(kind:'left',options:Opt)",
+    ] {
+        let prefix =
+            format!("---@class Opt\n---@field value any\n---@type {annotation}\nlocal put\n");
+        let valid = check_source(&format!(
+            "{prefix}put('right', {{value=1}})\nput('left', {{value=1}})"
+        ));
+        assert!(valid.is_empty(), "{annotation}: {valid:?}");
+        let invalid = check_source(&format!("{prefix}put('neither', {{value=1}})"));
+        assert!(
+            invalid
+                .iter()
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::ParamTypeMismatch),
+            "{invalid:?}"
+        );
+    }
+}
