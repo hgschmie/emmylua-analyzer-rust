@@ -1,14 +1,14 @@
 //! # call_non_callable — calling a non-function type
 //!
 //! M0: callee type checked via `is_callable` (Function/DocFunction/Signature/Any/Unknown/
-//! Nil pass; named types with `---@operator call` pass; union passes only if all components are callable).
+//! Nil pass; named types with `---@overload` / `---@operator call` pass; union passes only if all components are callable).
 
 use emmylua_parser::{LuaAstNode, LuaCallExpr, LuaLocalStat};
 
 use crate::DiagnosticCode;
-use crate::LuaType;
 use crate::semantic_db::def::TypeDefKind;
-use crate::semantic_model::SemanticModel;
+use crate::semantic_model::{SemanticModel, type_eval::expand_alias_generic};
+use crate::{LuaType, LuaTypeDeclId};
 
 use super::{CheckContext, Checker};
 use crate::semantic_model::render::humanize_type;
@@ -71,6 +71,14 @@ fn check_call(
 }
 
 fn is_callable(model: &SemanticModel, ty: &LuaType) -> bool {
+    is_callable_inner(model, ty, &mut Vec::new())
+}
+
+fn is_callable_inner(
+    model: &SemanticModel,
+    ty: &LuaType,
+    visited: &mut Vec<LuaTypeDeclId>,
+) -> bool {
     match ty {
         LuaType::Function
         | LuaType::DocFunction(_)
@@ -84,30 +92,56 @@ fn is_callable(model: &SemanticModel, ty: &LuaType) -> bool {
         // Generic parameters: pass when the constraint is a callable type.
         LuaType::TplRef(tpl) => tpl
             .get_constraint()
-            .is_some_and(|constraint| is_callable(model, constraint)),
+            .is_some_and(|constraint| is_callable_inner(model, constraint, visited)),
         // Union: pass only if all non-nil components are callable (function|nil OK, function|integer reports).
-        LuaType::Union(union) => union.into_vec().iter().all(|t| is_callable(model, t)),
+        LuaType::Union(union) => union
+            .into_vec()
+            .iter()
+            .all(|t| is_callable_inner(model, t, visited)),
         // Intersection: callable if any component is callable (`{ field: string } & fun()`).
         LuaType::Intersection(intersection) => intersection
             .get_types()
             .iter()
-            .any(|t| is_callable(model, t)),
-        // Named types: check after alias expansion; otherwise callable if it has `---@operator call`.
-        // Unresolved types are handled by analyze_error, so call-non-callable is not reported here.
-        LuaType::Ref(id) | LuaType::Def(id) => {
-            let Some(def) = model.type_def_of(id) else {
-                return true;
-            };
-            if def.kind == TypeDefKind::Alias
-                && let Some(target) = model.alias_target(&def)
-            {
-                return is_callable(model, &target);
-            }
-            let Some(facts) = model.file_facts_of(def.file_id) else {
-                return false;
-            };
-            facts.operator_of(&def.id, "call").is_some()
+            .any(|t| is_callable_inner(model, t, visited)),
+        // Match the class's call declarations used by call inference. A superclass's
+        // constructor overload does not by itself make instances of a subclass callable.
+        LuaType::Ref(id) | LuaType::Def(id) => is_named_callable(model, ty, id, visited),
+        LuaType::Generic(generic) => {
+            is_named_callable(model, ty, &generic.get_base_type_id(), visited)
         }
         _ => false,
     }
+}
+
+fn is_named_callable(
+    model: &SemanticModel,
+    ty: &LuaType,
+    id: &LuaTypeDeclId,
+    visited: &mut Vec<LuaTypeDeclId>,
+) -> bool {
+    if visited.contains(id) {
+        return false;
+    }
+    // Unresolved types are handled by analyze_error, not call-non-callable.
+    let Some(def) = model.type_def_of(id) else {
+        return true;
+    };
+    if def.kind == TypeDefKind::Alias {
+        let target = if matches!(ty, LuaType::Generic(_)) {
+            Some(expand_alias_generic(model, ty))
+        } else {
+            model.alias_target(&def)
+        };
+        let Some(target) = target else {
+            return false;
+        };
+        visited.push(id.clone());
+        let callable = is_callable_inner(model, &target, visited);
+        visited.pop();
+        return callable;
+    }
+    !def.call_overloads.is_empty()
+        || model
+            .file_facts_of(def.file_id)
+            .is_some_and(|facts| facts.operator_of(&def.id, "call").is_some())
 }

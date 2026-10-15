@@ -104,6 +104,156 @@ mod test {
     }
 
     #[test]
+    fn test_callable_class_overload_from_another_file() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def_file(
+            "merger.lua",
+            r#"
+            ---@namespace example
+            ---@class Merger
+            ---@overload fun<T>(target:T):T
+            local M = {}
+            return M
+            "#,
+        );
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::CallNonCallable,
+            r#"
+            ---@type example.Merger
+            local merge = require('merger')
+            local result = merge('hello')
+            merge('again')
+            "#,
+        ));
+    }
+
+    #[test]
+    fn test_callable_class_overload_aliases_and_generics() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::CallNonCallable,
+            r#"
+            ---@class Callable<T>
+            ---@overload fun(value:T):T
+            ---@alias CallableAlias Callable<string>
+            ---@alias GenericCallableAlias<T> Callable<T>
+            ---@alias FunctionAlias<T> fun(value:T):T
+            ---@type Callable<string>
+            local direct
+            ---@type CallableAlias
+            local alias
+            ---@type GenericCallableAlias<string>
+            local generic_alias
+            ---@type FunctionAlias<string>
+            local function_alias
+            direct('hello')
+            alias('hello')
+            generic_alias('hello')
+            function_alias('hello')
+            "#,
+        ));
+    }
+
+    #[test]
+    fn test_callable_class_overload_unions_and_constraints() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::CallNonCallable,
+            r#"
+            ---@class Callable
+            ---@overload fun():string
+            ---@type Callable|fun():string
+            local either
+            ---@type Callable?
+            local optional
+            either()
+            optional()
+            ---@generic T:Callable
+            ---@param callback T
+            local function invoke(callback)
+                callback()
+            end
+            "#,
+        ));
+    }
+
+    #[test]
+    fn test_callable_class_overload_preserves_non_callable_types() {
+        let mut ws = VirtualWorkspace::new();
+        let file_id = ws.def(
+            r#"
+            ---@class Callable
+            ---@overload fun():string
+            ---@class Plain<T>
+            ---@class Child:Callable
+            ---@type Callable|integer
+            local mixed
+            ---@type Plain<string>
+            local plain
+            ---@type Child
+            local child
+            mixed()
+            plain()
+            child()
+            local table = {}
+            table()
+            "#,
+        );
+        let diagnostics = ws
+            .analysis
+            .diagnose_file(file_id, CancellationToken::new())
+            .unwrap();
+        let non_callable: Vec<_> = diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.code == Some(NumberOrString::String("call-non-callable".into()))
+            })
+            .collect();
+        assert_eq!(non_callable.len(), 4, "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn test_callable_class_overload_keeps_argument_errors() {
+        let mut ws = VirtualWorkspace::new();
+        let file_id = ws.def(
+            r#"
+            ---@class Callable
+            ---@overload fun(value:string):string
+            ---@type Callable
+            local callback
+            callback(42)
+            "#,
+        );
+        let diagnostics = ws
+            .analysis
+            .diagnose_file(file_id, CancellationToken::new())
+            .unwrap();
+        let codes: Vec<_> = diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.clone())
+            .collect();
+        assert_eq!(
+            codes,
+            vec![Some(NumberOrString::String("param-type-mismatch".into()))],
+            "{diagnostics:#?}",
+        );
+    }
+
+    #[test]
+    fn test_callable_class_overload_recursive_alias_is_not_callable() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::CallNonCallable,
+            r#"
+            ---@alias Recursive<T> Recursive<T>
+            ---@type Recursive<string>
+            local callback
+            callback()
+            "#,
+        ));
+    }
+
+    #[test]
     fn test_call_non_callable() {
         let mut ws = VirtualWorkspace::new();
 
