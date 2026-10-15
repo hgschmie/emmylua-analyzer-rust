@@ -811,6 +811,11 @@ impl<'a> InferVm<'a> {
         if has_unrestricted_members(self.model, &owner.ty) {
             return Value::plain(LuaType::Any);
         }
+        if super::super::type_eval::member_key_from_literal(&key.ty).is_none()
+            && let Some(typ) = super::super::inherited_index::lookup(self.model, &owner.ty, &key.ty)
+        {
+            return Value::plain(typ);
+        }
         match &key.ty {
             LuaType::StringConst(s) | LuaType::DocStringConst(s) => {
                 self.index_member(owner, &LuaMemberKey::Name(SmolStr::new(s.as_str())))
