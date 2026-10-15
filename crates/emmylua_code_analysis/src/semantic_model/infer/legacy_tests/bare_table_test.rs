@@ -1,0 +1,105 @@
+use crate::{DiagnosticCode, FileId, LuaType, VirtualWorkspace};
+use emmylua_parser::{LuaAstToken, LuaLocalName};
+
+fn result_type(ws: &VirtualWorkspace, file: FileId) -> LuaType {
+    let result = ws.get_node::<LuaLocalName>(file);
+    let model = ws.analysis.semantic_model(file);
+    let decl = model
+        .decl_by_offset(result.get_name_token().unwrap().get_position())
+        .unwrap();
+    model.type_of_decl(&decl).unwrap()
+}
+
+#[test]
+fn bare_table_members_are_any_for_static_and_dynamic_keys() {
+    for expression in [
+        "value.missing",
+        "value['missing']",
+        "value[1]",
+        "value[key]",
+        "value[number_key]",
+        "value[object_key]",
+        "value[true]",
+        "value.missing.nested",
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def(&format!(
+            r#"
+            ---@param value table
+            ---@param key string
+            ---@param number_key integer
+            ---@param object_key table
+            function read(value, key, number_key, object_key)
+                local result = {expression}
+                return result
+            end
+        "#
+        ));
+        assert_eq!(result_type(&ws, file), LuaType::Any, "{expression}");
+    }
+}
+
+#[test]
+fn bare_table_conditions_do_not_assume_conditional_writes_exist() {
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::UnnecessaryIf,
+        r#"
+        ---@generic T
+        ---@param value T
+        ---@return T
+        local function copy(value) return value end
+
+        ---@param value table
+        local function update(value)
+            local p = copy(value)
+            p.name = 'new'
+            if p.minable and p.minable.result then p.minable.result = 'new' end
+            if p.place_result then p.place_result = 'new' end
+            if p.result then p.result = 'new' end
+            return p
+        end
+        return update
+    "#
+    ));
+}
+
+#[test]
+fn bare_table_fix_preserves_known_record_and_array_types() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def(
+        r#"
+        ---@class Record
+        ---@field name string
+        local Record = {}
+        ---@type Record
+        record = {}
+        ---@type string[]
+        array = {}
+        literal = { count = 1 }
+    "#,
+    );
+    assert_eq!(ws.expr_ty("record.name"), LuaType::String);
+    assert_eq!(ws.expr_ty("array[1]"), ws.ty("string?"));
+    assert_eq!(ws.expr_ty("literal.missing"), LuaType::Nil);
+}
+
+#[test]
+fn bare_table_alias_members_are_any() {
+    for expression in ["value.missing", "value[key]"] {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def(&format!(
+            r#"
+            ---@alias Bag table
+            ---@alias OtherBag Bag
+            ---@param value OtherBag
+            ---@param key string
+            function lookup(value, key)
+                local result = {expression}
+                return result
+            end
+        "#
+        ));
+        assert_eq!(result_type(&ws, file), LuaType::Any, "{expression}");
+    }
+}
