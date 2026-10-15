@@ -43,7 +43,7 @@ pub mod unnecessary_if;
 pub mod unresolved_require;
 pub mod unused;
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use lsp_types::{DiagnosticSeverity, DiagnosticTag};
 use rowan::TextRange;
@@ -92,6 +92,8 @@ pub struct CheckContext<'a> {
     pub semantic_model: &'a SemanticModel<'a>,
     pub(crate) config: Arc<CheckConfig>,
     diagnostics: Vec<Diagnostic>,
+    filter_diagnostics: bool,
+    constructor_selections: param_type_check::ConstructorSelections,
 }
 
 impl<'a> CheckContext<'a> {
@@ -100,6 +102,21 @@ impl<'a> CheckContext<'a> {
             semantic_model,
             config,
             diagnostics: Vec::new(),
+            filter_diagnostics: true,
+            constructor_selections: Default::default(),
+        }
+    }
+
+    /// Collect structural failures independently of user-facing diagnostic filters.
+    pub(super) fn unfiltered(semantic_model: &'a SemanticModel<'a>) -> Self {
+        static CONFIG: LazyLock<Arc<CheckConfig>> =
+            LazyLock::new(|| Arc::new(CheckConfig::default()));
+        Self {
+            semantic_model,
+            config: CONFIG.clone(),
+            diagnostics: Vec::new(),
+            filter_diagnostics: false,
+            constructor_selections: Default::default(),
         }
     }
 
@@ -124,21 +141,23 @@ impl<'a> CheckContext<'a> {
         message: String,
         data: Option<serde_json::Value>,
     ) {
-        if let Some(facts) = self.semantic_model.file_facts() {
-            let force_enable = facts.file_diagnostic_enabled.contains(&code);
-            if !force_enable {
-                if !self.config.is_code_enabled(&code) {
+        if self.filter_diagnostics {
+            if let Some(facts) = self.semantic_model.file_facts() {
+                let force_enable = facts.file_diagnostic_enabled.contains(&code);
+                if !force_enable {
+                    if !self.config.is_code_enabled(&code) {
+                        return;
+                    }
+                    if facts.file_diagnostic_disabled.contains(&code) {
+                        return;
+                    }
+                }
+                if facts.is_range_diagnostic_disabled(&code, &range) {
                     return;
                 }
-                if facts.file_diagnostic_disabled.contains(&code) {
-                    return;
-                }
-            }
-            if facts.is_range_diagnostic_disabled(&code, &range) {
+            } else if !self.config.is_code_enabled(&code) {
                 return;
             }
-        } else if !self.config.is_code_enabled(&code) {
-            return;
         }
         let severity = self.config.severity_of(&code);
         let tags = default_tags(&code);
