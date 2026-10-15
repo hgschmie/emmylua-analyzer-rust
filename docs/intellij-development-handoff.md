@@ -1,3 +1,26 @@
+# Annotation type completion — UP-053 (2026-10-14)
+
+Independent fix `fix/doc-type-completion`, signed `7e080f55`, is based on
+upstream/main `96545f45`. Annotation completion now includes visible library,
+standard-library and metadata declarations. Qualified names match the segment
+after the namespace; only text before the cursor filters candidates. Explicit
+whole-token edits insert the qualified name without duplicating its namespace or
+retaining a stale suffix. File-private/internal visibility and partial-class
+deduplication follow the type resolver. No type-inference behavior changes.
+
+Four new regressions fail before the fix; the standalone language-server suite
+passes 228 tests, Clippy (all targets/features, warnings denied) and rustfmt.
+Signed cherry-picks integrate exactly this fix into normal work/intellij-modules
+and experiment/up008-completion-comparison. Both retain UP-051/UP-052 and all
+other existing analyzer fixes. No push or PR was requested.
+
+Build157 delivers both variants. Normal retains UP-045; the one-off comparison
+retains UP-008 instead. This patch repairs missing suggestions only: workspace
+pass contention and edit/request queue ordering remain separate issues. Preserve
+both schedulers for the A/B test. FDE retains 0.7.9-dev and its existing ZIP; only
+its development pin and integration coverage change. Package and protocol
+validation: workspace upstream/DOC_TYPE_COMPLETION_2026-10-14.md.
+
 # Entities fixes and completion comparison (2026-10-14)
 
 UP-051 (`fix/callable-class-overloads`, `5fbac291`) recognizes class overloads in
