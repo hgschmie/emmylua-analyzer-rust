@@ -1,3 +1,21 @@
+# Side-effect module resolution — UP-056 (2026-10-15)
+
+Standalone branch `fix/side-effect-require-resolution`, signed `885a81e1`, is
+based on upstream/main `96545f45`. It checks the caller-aware module lookup
+instead of using the export type to decide whether a require target exists.
+Empty files, side-effect-only files and unknown exports are valid modules;
+missing files still warn, and module visibility remains separately checked.
+No local prerequisite. Signed work cherry-pick `f8cb6059` avoids importing the
+unrelated upstream HashMap refactor. UP-045 remains the normal scheduler.
+
+Standalone analysis: 1,470 tests plus Clippy/fmt pass; combined analysis: 1,673
+pass. Six focused require tests cover unknown exports, empty modules, mapped
+Factorio paths, missing paths and visibility. This also ships in the UP-008
+comparison, which the user currently has installed. Packages are EmmyLua2
+build159 normal/UP-008. FDE separately fixes service startup in 0.8.1-dev;
+LSP4IJ patched4 remains unchanged. Final protocol/package/client evidence:
+workspace `upstream/PROJECT_SERVICES_2026-10-15.md`. Nothing pushed; no PR.
+
 # Request/update ordering — UP-054 (2026-10-14)
 
 The user chose to keep UP-045 after testing both completion variants. Build158
