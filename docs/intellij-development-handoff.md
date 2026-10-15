@@ -1,10 +1,13 @@
 # data-util analyzer fixes (2026-10-14)
 
-UP-049, `fix/bare-table-member-inference` (`c4694854`), restores `any` results for
+UP-049, `fix/bare-table-member-inference` (`c4694854`, `46d93e89`), restores `any` results for
 unrestricted bare-table/alias member reads before runtime-collected members can
 supply incorrect conditional types. It also preserves rich structured generic
 arguments that used to be projected to bare `table`; the existing generic test
 now verifies the expected `string`, rather than merely checking for non-`any`.
+Member truthiness/equality guards retain unrestricted tables in either branch;
+otherwise the reported prototype validation guard narrowed the copy input to
+`never`. The final regression covers the cross-file generic deepcopy call.
 
 UP-050, `fix/namespaced-constructor-inheritance` (`5dec3623`), resolves inherited
 constructor members in the declaring file's namespace, for both field-presence
@@ -13,13 +16,13 @@ overrides, index signatures, qualified parents and inheritance cycles are covere
 
 Both independent contribution branches are based on fetched upstream/main
 `96545f45d0dea552a707408fbd024ddbd03e2709`. Signed provenance cherry-picks
-`e205e991` and `e5b1656a` integrate them without importing the unrelated upstream
+`e205e991`, `3eabc2c5` and `e5b1656a` integrate them without importing the unrelated upstream
 HashMap refactor. UP-049's overlaps with dictionary indexing (UP-016) and
 read/write types (UP-015) retain those behaviors; neither is a standalone fix
 prerequisite. No push or PR was requested.
 
-Standalone analysis suites: 1,472 and 1,475 tests pass respectively, with
-Clippy/fmt. The combined workspace/all-feature suite passes 2,643 tests (1,652
+Standalone analysis suites: 1,474 and 1,475 tests pass respectively, with
+Clippy/fmt. The combined workspace/all-feature suite passes 2,645 tests (1,654
 analysis), Clippy with all targets/features and -D warnings, and rustfmt.
 Test-generated std-zh_CN translations were restored. Build155 package and real
 protocol/platform evidence are recorded in workspace
