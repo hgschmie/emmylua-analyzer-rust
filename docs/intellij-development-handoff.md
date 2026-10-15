@@ -1,3 +1,28 @@
+# Entities fixes and completion comparison (2026-10-14)
+
+UP-051 (`fix/callable-class-overloads`, `5fbac291`) recognizes class overloads in
+callability diagnostics, including generic classes/aliases and cycle protection.
+UP-052 (`fix/constructor-call-argument-alignment`, `0307732f`) aligns colon/dot
+arguments and selects a complete constructor overload contract. Both standalone
+branches are based on upstream/main `96545f45`; signed work cherry-picks are
+`976c87e1` and `2d2b9890`. The latter preserves UP-038's inline assertion exemption
+in the shared target selector and reuses UP-035's unfiltered diagnostic context.
+UP-050's namespace lookup and other pending patches remain intact.
+
+Normal development retains UP-045. One-off branch
+`experiment/up008-completion-comparison` restores UP-008, removes UP-045, and has
+the identical analyzer fixes. Its only source differences from normal are that
+scheduler swap. Do not make this experiment the default baseline. No push or PR.
+
+Completion investigation independently reproduced upstream defects in qualified
+annotation prefixes and API-library enumeration. An edit/request ordering race
+exists with either scheduler; UP-045 workspace passes add lock contention and
+measured latency spikes. Completion code is deliberately identical in both builds
+so the requested A/B test isolates the scheduling change. Package provenance,
+benchmarks and final validation are in workspace
+`upstream/COMPLETION_COMPARISON_2026-10-14.md`. Original mods are read-only.
+FDE keeps its version/archive; update only its development analyzer pin.
+
 # data-util analyzer fixes (2026-10-14)
 
 UP-049, `fix/bare-table-member-inference` (`c4694854`, `46d93e89`), restores `any` results for
