@@ -69,13 +69,15 @@ pub fn load_configs_raw(config_files: Vec<PathBuf>, partial_emmyrcs: Option<Vec<
         let flatten_config = FlattenConfigObject::parse(first_config);
         flatten_config.to_emmyrc()
     } else {
-        let merge_config =
-            config_jsons
-                .into_iter()
-                .fold(Value::Object(Default::default()), |mut acc, item| {
-                    merge_values(&mut acc, item);
-                    acc
-                });
+        let merge_config = config_jsons
+            .into_iter()
+            // Normalize each layer before merging so dotted and nested keys
+            // share the same precedence and array-append behavior.
+            .map(|item| FlattenConfigObject::parse(item).to_emmyrc())
+            .fold(Value::Object(Default::default()), |mut acc, item| {
+                merge_values(&mut acc, item);
+                acc
+            });
         let flatten_config = FlattenConfigObject::parse(merge_config.clone());
         flatten_config.to_emmyrc()
     }
@@ -114,5 +116,75 @@ fn merge_values(base: &mut Value, overlay: Value) {
         (base_slot, overlay_value) => {
             *base_slot = overlay_value;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::load_configs_raw;
+    use serde_json::{Value, json};
+
+    fn merge(layers: Vec<Value>) -> Value {
+        load_configs_raw(Vec::new(), Some(layers))
+    }
+
+    #[test]
+    fn mixed_key_notation_preserves_array_layers() {
+        let dotted = json!({"workspace.ignoreDir": ["vendor"]});
+        let nested = json!({"workspace": {"ignoreDir": ["managed-mod"]}});
+        assert_eq!(
+            merge(vec![dotted.clone(), nested.clone()])["workspace"]["ignoreDir"],
+            json!(["vendor", "managed-mod"])
+        );
+        assert_eq!(
+            merge(vec![nested, dotted])["workspace"]["ignoreDir"],
+            json!(["managed-mod", "vendor"])
+        );
+    }
+
+    #[test]
+    fn mixed_key_notation_preserves_scalar_precedence() {
+        assert_eq!(
+            merge(vec![
+                json!({"runtime.version": "Lua5.1"}),
+                json!({"runtime": {"version": "Lua5.2"}}),
+            ])["runtime"]["version"],
+            "Lua5.2"
+        );
+        assert_eq!(
+            merge(vec![
+                json!({"runtime": {"version": "Lua5.2"}}),
+                json!({"runtime.version": "Lua5.3"}),
+            ])["runtime"]["version"],
+            "Lua5.3"
+        );
+    }
+
+    #[test]
+    fn normalization_retains_other_settings_and_array_entry_objects() {
+        let library = json!({"path": "library", "ignoreDir": ["test"]});
+        let result = merge(vec![
+            json!({"workspace.library": [library.clone()], "diagnostics.disable": ["unused"]}),
+            json!({"workspace": {"ignoreDir": ["managed-mod"]}}),
+        ]);
+        assert_eq!(result["workspace"]["library"], json!([library]));
+        assert_eq!(result["diagnostics"]["disable"], json!(["unused"]));
+        assert_eq!(result["workspace"]["ignoreDir"], json!(["managed-mod"]));
+    }
+
+    #[test]
+    fn same_notation_retains_existing_merge_behavior() {
+        assert_eq!(
+            merge(vec![
+                json!({"workspace": {"ignoreDir": ["first"]}}),
+                json!({"workspace": {"ignoreDir": ["second", "second"]}}),
+            ])["workspace"]["ignoreDir"],
+            json!(["first", "second"])
+        );
+        assert_eq!(merge(vec![]), json!({}));
+        assert_eq!(
+            merge(vec![json!({"runtime.version": "Lua5.2"})]),
+            json!({"runtime": {"version": "Lua5.2"}})
+        );
     }
 }
