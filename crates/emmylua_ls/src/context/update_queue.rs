@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use lsp_types::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, RenameFilesParams,
+    DidOpenTextDocumentParams, RenameFilesParams,
 };
 use tokio::sync::mpsc;
 
@@ -21,7 +21,6 @@ pub enum UpdateEvent {
     DidOpen(DidOpenTextDocumentParams),
     DidChange(DidChangeTextDocumentParams),
     DidClose(DidCloseTextDocumentParams),
-    DidSave(DidSaveTextDocumentParams),
     DidChangeWatchedFiles(DidChangeWatchedFilesParams),
     DidRenameFiles(RenameFilesParams),
 }
@@ -31,15 +30,7 @@ pub fn spawn_update_queue(
     mut rx: mpsc::UnboundedReceiver<UpdateEvent>,
 ) {
     tokio::spawn(async move {
-        loop {
-            let event = tokio::select! {
-                biased;
-                _ = inner.shutdown.cancelled() => break,
-                event = rx.recv() => match event {
-                    Some(event) => event,
-                    None => break,
-                },
-            };
+        while let Some(event) = rx.recv().await {
             let snapshot = ServerContextSnapshot::new(inner.clone());
             match event {
                 UpdateEvent::DidOpen(params) => {
@@ -47,9 +38,6 @@ pub fn spawn_update_queue(
                 }
                 UpdateEvent::DidChange(params) => {
                     handlers::process_did_change_text_document(snapshot, params).await;
-                }
-                UpdateEvent::DidSave(params) => {
-                    handlers::process_did_save_text_document(snapshot, params).await;
                 }
                 UpdateEvent::DidClose(params) => {
                     handlers::process_did_close_document(snapshot, params).await;

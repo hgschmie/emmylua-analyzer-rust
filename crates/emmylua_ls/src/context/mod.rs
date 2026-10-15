@@ -52,11 +52,13 @@ impl ServerContext {
             status_bar.clone(),
             client.clone(),
         ));
-        let workspace_manager = Arc::new(Mutex::new(WorkspaceManager::new()));
+        let workspace_manager = Arc::new(Mutex::new(WorkspaceManager::new(
+            file_diagnostic.clone(),
+            lsp_features.clone(),
+        )));
 
         let (update_tx, update_rx) = tokio::sync::mpsc::unbounded_channel();
         let inner = Arc::new(ServerContextInner {
-            shutdown: CancellationToken::new(),
             analysis,
             client,
             file_diagnostic,
@@ -133,15 +135,10 @@ impl ServerContext {
     }
 
     pub async fn close(&self) {
-        self.inner.shutdown.cancel();
-        for token in self.cancellations.lock().await.values() {
-            token.cancel();
-        }
         self.inner
             .file_diagnostic
-            .cancel_workspace_diagnostic()
+            .shutdown_diagnostic_refresh()
             .await;
-        self.inner.file_diagnostic.cancel_all().await;
         let mut workspace_manager = self.inner.workspace_manager.lock().await;
         workspace_manager.watcher = None;
     }

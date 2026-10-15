@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::Arc,
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
@@ -18,11 +18,12 @@ pub struct DiagnosticService {
     client: Arc<ClientProxy>,
     status_bar: Arc<StatusBar>,
     diagnostic_tokens: Arc<Mutex<HashMap<FileId, CancellationToken>>>,
+    refresh_token: Arc<Mutex<Option<CancellationToken>>>,
+    refresh_shutdown: CancellationToken,
     workspace_diagnostic_token: Arc<Mutex<Option<CancellationToken>>>,
     workspace_run_lock: Arc<Mutex<()>>,
     workspace_diagnostic_done: AtomicBool,
     last_workspace_version: Arc<Mutex<Option<i64>>>,
-    reported_workspace_uris: Mutex<HashSet<Uri>>,
 }
 
 impl DiagnosticService {
@@ -35,12 +36,59 @@ impl DiagnosticService {
             analysis,
             client,
             diagnostic_tokens: Arc::new(Mutex::new(HashMap::new())),
+            refresh_token: Arc::new(Mutex::new(None)),
+            refresh_shutdown: CancellationToken::new(),
             workspace_diagnostic_token: Arc::new(Mutex::new(None)),
             workspace_run_lock: Arc::new(Mutex::new(())),
             workspace_diagnostic_done: AtomicBool::new(false),
             last_workspace_version: Arc::new(Mutex::new(None)),
-            reported_workspace_uris: Mutex::new(HashSet::new()),
             status_bar,
+        }
+    }
+
+    /// Coalesce cross-file invalidations after analysis has incorporated an edit.
+    /// `interval` is in milliseconds; zero requests a refresh without a debounce delay.
+    pub async fn schedule_diagnostic_refresh(&self, interval: u64) {
+        let mut pending = self.refresh_token.lock().await;
+        if self.refresh_shutdown.is_cancelled() {
+            return;
+        }
+        if let Some(token) = pending.take() {
+            token.cancel();
+        }
+        let token = CancellationToken::new();
+        *pending = Some(token.clone());
+        drop(pending);
+        let client = Arc::downgrade(&self.client);
+        let pending = self.refresh_token.clone();
+        let shutdown = self.refresh_shutdown.clone();
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(interval);
+        tokio::spawn(async move {
+            tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => {},
+                _ = token.cancelled() => {},
+                _ = tokio::time::sleep_until(deadline) => {
+                    // Serialize the final send with replacement and shutdown, so no
+                    // refresh can be sent after shutdown_diagnostic_refresh returns.
+                    let mut pending = pending.lock().await;
+                    if !shutdown.is_cancelled() && !token.is_cancelled() {
+                        if let Some(client) = client.upgrade() {
+                            client.refresh_workspace_diagnostics();
+                        }
+                        pending.take();
+                    }
+                }
+            }
+        });
+    }
+
+    /// Stop pending refreshes and reject scheduling by outstanding update tasks.
+    pub async fn shutdown_diagnostic_refresh(&self) {
+        let mut pending = self.refresh_token.lock().await;
+        self.refresh_shutdown.cancel();
+        if let Some(token) = pending.take() {
+            token.cancel();
         }
     }
 
@@ -200,24 +248,10 @@ impl DiagnosticService {
         *self.last_workspace_version.lock().await = Some(version);
     }
 
-    /// Full reports must also clear files removed since the previous pull.
-    pub async fn include_removed_workspace_files(
-        &self,
-        diagnostics: &mut Vec<(Uri, Vec<Diagnostic>)>,
-    ) {
-        let current: HashSet<_> = diagnostics.iter().map(|(uri, _)| uri.clone()).collect();
-        let mut previous = self.reported_workspace_uris.lock().await;
-        for uri in previous.difference(&current) {
-            diagnostics.push((uri.clone(), Vec::new()));
-        }
-        *previous = current;
-    }
-
     pub async fn pull_workspace_diagnostics_slow(
         &self,
         cancel_token: CancellationToken,
     ) -> Option<Vec<(Uri, Vec<Diagnostic>)>> {
-        let cancel_token = cancel_token.child_token();
         let mut token = self.workspace_diagnostic_token.lock().await;
         if let Some(token) = token.as_ref() {
             token.cancel();
@@ -258,7 +292,6 @@ impl DiagnosticService {
         &self,
         cancel_token: CancellationToken,
     ) -> Option<Vec<(Uri, Vec<Diagnostic>)>> {
-        let cancel_token = cancel_token.child_token();
         let mut token = self.workspace_diagnostic_token.lock().await;
         if let Some(token) = token.as_ref() {
             token.cancel();
@@ -359,7 +392,6 @@ async fn run_workspace_batch(
     drop(tx);
 
     let mut count = 0;
-    let mut completed = true;
     if valid_file_count != 0 {
         if progress {
             let mut last_percentage = 0;
@@ -369,8 +401,6 @@ async fn run_workspace_batch(
                 }
                 if let Some((uri, diagnostics)) = item {
                     result.push((uri, diagnostics));
-                } else {
-                    completed = false;
                 }
                 count += 1;
                 let percentage_done = ((count as f32 / valid_file_count as f32) * 100.0) as u32;
@@ -387,8 +417,7 @@ async fn run_workspace_batch(
                 }
             }
         } else {
-            while let Some(item) = rx.recv().await {
-                completed &= item.is_some();
+            while rx.recv().await.is_some() {
                 count += 1;
                 if count == valid_file_count {
                     break;
@@ -404,73 +433,108 @@ async fn run_workspace_batch(
         );
     }
 
-    (
-        result,
-        completed && count == valid_file_count && !cancel_token.is_cancelled(),
-    )
+    (result, count == valid_file_count)
+}
+
+impl Drop for DiagnosticService {
+    fn drop(&mut self) {
+        self.refresh_shutdown.cancel();
+    }
 }
 
 #[cfg(test)]
-mod tests {
+mod refresh_tests {
     use super::*;
     use crate::context::ServerContext;
-    use lsp_server::Connection;
-    use lsp_types::ClientCapabilities;
+    use lsp_server::{Connection, Message};
 
-    #[tokio::test]
-    async fn workspace_attempts_do_not_cancel_the_parent_request() {
-        let (server, _client) = Connection::memory();
-        let context = ServerContext::new(Arc::new(server), ClientCapabilities::default());
-        let snapshot = context.snapshot();
-        let service = snapshot.file_diagnostic();
-        let request = CancellationToken::new();
-        assert!(
-            service
-                .pull_workspace_diagnostics_fast(request.clone())
-                .await
-                .is_some()
-        );
-        service.cancel_workspace_diagnostic().await;
-        assert!(!request.is_cancelled());
-        assert!(
-            service
-                .pull_workspace_diagnostics_slow(request.clone())
-                .await
-                .is_some()
-        );
-        assert!(
-            service
-                .pull_workspace_diagnostics_slow(request.clone())
-                .await
-                .is_some()
-        );
-        assert!(!request.is_cancelled());
-        context.close().await;
+    fn diagnostic() -> (Arc<DiagnosticService>, Connection) {
+        let (server, client_connection) = Connection::memory();
+        let client = Arc::new(ClientProxy::new(Arc::new(server)));
+        let status = Arc::new(StatusBar::new(client.clone(), false));
+        (
+            Arc::new(DiagnosticService::new(
+                Arc::new(AnalysisState::new()),
+                status,
+                client,
+            )),
+            client_connection,
+        )
     }
 
-    #[tokio::test]
-    async fn removed_workspace_files_are_cleared_once() {
-        let (server, _client) = Connection::memory();
-        let context = ServerContext::new(Arc::new(server), ClientCapabilities::default());
+    async fn advance(milliseconds: u64) {
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(milliseconds)).await;
+        tokio::task::yield_now().await;
+    }
+
+    fn expect_refresh(client: &Connection) {
+        let Message::Request(request) = client.receiver.try_recv().unwrap() else {
+            panic!("expected request")
+        };
+        assert_eq!(request.method, "workspace/diagnostic/refresh");
+        assert!(client.receiver.try_recv().is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn refresh_coalesces_and_is_scoped_to_its_client() {
+        let (first, client) = diagnostic();
+        let (_second, other_client) = diagnostic();
+        for _ in 0..10 {
+            first.schedule_diagnostic_refresh(1000).await;
+        }
+        advance(999).await;
+        assert!(client.receiver.try_recv().is_err());
+        advance(1).await;
+        expect_refresh(&client);
+        assert!(other_client.receiver.try_recv().is_err());
+        assert!(first.refresh_token.lock().await.is_none());
+        first.schedule_diagnostic_refresh(0).await;
+        advance(0).await;
+        expect_refresh(&client);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_later_edit_restarts_the_debounce_interval() {
+        let (diagnostic, client) = diagnostic();
+        diagnostic.schedule_diagnostic_refresh(1000).await;
+        advance(900).await;
+        diagnostic.schedule_diagnostic_refresh(1000).await;
+        advance(100).await;
+        assert!(client.receiver.try_recv().is_err());
+        advance(900).await;
+        expect_refresh(&client);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dropping_diagnostics_cancels_without_retaining_the_client() {
+        let (diagnostic, client) = diagnostic();
+        let weak_client = Arc::downgrade(&diagnostic.client);
+        let references = Arc::strong_count(&diagnostic.client);
+        diagnostic.schedule_diagnostic_refresh(1000).await;
+        assert_eq!(Arc::strong_count(&diagnostic.client), references);
+        drop(diagnostic);
+        assert!(weak_client.upgrade().is_none());
+        advance(1000).await;
+        assert!(client.receiver.try_recv().is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn closing_context_stops_refreshes_while_snapshots_remain_alive() {
+        let (server, client) = Connection::memory();
+        let context = ServerContext::new(Arc::new(server), Default::default());
         let snapshot = context.snapshot();
-        let uri: Uri = "file:///workspace/deleted.lua".parse().unwrap();
-        let mut first = vec![(uri.clone(), vec![])];
         snapshot
             .file_diagnostic()
-            .include_removed_workspace_files(&mut first)
+            .schedule_diagnostic_refresh(1000)
             .await;
-        let mut removed = vec![];
-        snapshot
-            .file_diagnostic()
-            .include_removed_workspace_files(&mut removed)
-            .await;
-        assert_eq!(removed, vec![(uri, vec![])]);
-        let mut next = vec![];
-        snapshot
-            .file_diagnostic()
-            .include_removed_workspace_files(&mut next)
-            .await;
-        assert!(next.is_empty());
         context.close().await;
+        // An already queued update must not restart refreshes during shutdown.
+        snapshot
+            .file_diagnostic()
+            .schedule_diagnostic_refresh(0)
+            .await;
+        advance(1000).await;
+        assert!(client.receiver.try_recv().is_err());
     }
 }
