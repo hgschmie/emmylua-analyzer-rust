@@ -206,41 +206,9 @@ fn check_call_args(
     semantic_model: &SemanticModel<'_>,
     call: &LuaCallExpr,
 ) {
-    if call.get_prefix_expr().is_none() {
-        return;
-    }
-    let analysis = semantic_model.call_site_analysis(call);
-    let candidates = analysis.candidates;
-    if candidates.is_empty() {
-        return;
-    }
-    let Some(args) = call.get_args_list() else {
-        return;
-    };
-    for candidate in &candidates {
-        let params = candidate.get_params();
-        for (index, arg) in args.get_args().enumerate() {
-            let Some((_, Some(param_ty))) = params.get(index) else {
-                break;
-            };
-            if !matches!(arg, LuaExpr::TableExpr(_)) {
-                continue;
-            }
-            let LuaExpr::TableExpr(table) = arg else {
-                continue;
-            };
-            // An explicit assertion replaces the constructor contract. Parameter
-            // compatibility is checked against that asserted type separately.
-            if analysis
-                .arg_types
-                .get(index)
-                .is_some_and(|ty| !matches!(ty, LuaType::TableConst(_)))
-            {
-                continue;
-            }
-            if is_structured_table_target(semantic_model, param_ty) {
-                check_table_fields(context, semantic_model, param_ty, &table);
-            }
+    for (table, target) in param_type_check::table_argument_targets(semantic_model, call) {
+        if is_structured_table_target(semantic_model, &target) {
+            check_table_fields(context, semantic_model, &target, &table);
         }
     }
 }
@@ -800,7 +768,7 @@ fn is_assign_compatible(
     false
 }
 
-fn check_table_fields(
+pub(super) fn check_table_fields(
     context: &mut CheckContext<'_>,
     semantic_model: &SemanticModel<'_>,
     target: &LuaType,
