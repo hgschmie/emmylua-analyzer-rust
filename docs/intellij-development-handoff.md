@@ -1,3 +1,17 @@
+# Configuration merging for workspace ownership (2026-10-14)
+
+UP-048, `fix/mixed-config-key-merging` (`a9684a5c`, upstream/main `96545f45`),
+normalizes dotted/nested keys in each configuration layer before merging. The
+old loader merged raw keys first, letting an earlier dotted key override a later
+nested value and discarding one side of array settings. This affected both Lua
+runtime precedence and EmmyLua2's new workspace-ownership exclusions (UP-047).
+
+Signed cherry-pick `7f8244c0` integrates this independent fix without the upstream
+HashMap refactor. No contribution PR or push. The standalone branch passes 1,472
+analysis tests and Clippy; mixed array/scalar regressions fail before the fix.
+The same failure was reproduced through the real LSP4IJ/FDE default server.
+Final combined tests and packages: workspace upstream/WORKSPACE_OWNERSHIP_2026-10-14.md.
+
 # Multi-root duplicate classes (2026-10-14)
 
 UP-046, `fix/unique-workspace-id-aggregation` (`dc511eeb`), fixes an upstream
@@ -10,7 +24,7 @@ The standalone fix uses upstream/main `96545f45`; signed cherry-pick `37ec8e3c`
 keeps the existing work baseline and other local patches. The false LTN metrics
 warning also exposed an independent UP-044 LSP4IJ routing omission: workspace
 reports must honor DocumentMatchers to exclude the generic server from FDE mod
-files. Both fixes are local; no push or PR. Final validation and package evidence
+files. UP-046 is open PR #1296 (ready for review); its work copy and LSP4IJ follow-up remain local. Final validation and package evidence
 are in workspace `upstream/DUPLICATE_METRICS_2026-10-14.md` and FIX_INVENTORY.md.
 
 # Workspace diagnostic scheduling replaces UP-008 (2026-10-14)
