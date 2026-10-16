@@ -2,6 +2,7 @@
 
 mod access_invisible_test;
 mod analyze_error_test;
+mod array_union_alias_test;
 mod assign_type_mismatch_test;
 mod attribute_check_test;
 mod await_in_sync_test;

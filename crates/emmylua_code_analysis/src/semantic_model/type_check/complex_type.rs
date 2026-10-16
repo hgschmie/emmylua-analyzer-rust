@@ -16,6 +16,19 @@ pub fn check_complex_type_compact(
         LuaType::Array(source_array) => {
             let base = source_array.get_base().clone();
             match compact_type {
+                // Alias expansion can expose a union here. An array only needs
+                // to match one alternative, with its element type still checked.
+                LuaType::Union(union) => {
+                    let next_guard = check_guard.next_level()?;
+                    for alternative in union.iter() {
+                        if check_general_type_compact(context, source, alternative, next_guard)
+                            .is_ok()
+                        {
+                            return Ok(());
+                        }
+                    }
+                    Err(context.mismatch(source, compact_type))
+                }
                 LuaType::Array(compact_array) => check_general_type_compact(
                     context,
                     &base,
