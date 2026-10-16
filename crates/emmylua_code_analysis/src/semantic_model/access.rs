@@ -306,8 +306,10 @@ impl<'db> SemanticModel<'db> {
         // 4. Index-expression member key (the `x` in `T.x` at use sites) -> Member (falls back to the expression type if not found).
         if kind == LuaSyntaxKind::IndexExpr
             && let Some(index_expr) = LuaIndexExpr::cast(parent.clone())
-            && let Some(resolved) = self.resolve_member(&index_expr)
-            && let Some(member_id) = resolved.member_id
+            && let Some(member_id) = self
+                .resolve_member(&index_expr)
+                .and_then(|resolved| resolved.member_id)
+                .or_else(|| self.nullable_member_identity(&index_expr))
         {
             // A generic instance prefix (`c.aaa` with `local c ---@type MyTable<int>` and `@field aaa T`)
             // must report the projected member type (`integer`), not the declaration-site `T`.
@@ -334,6 +336,25 @@ impl<'db> SemanticModel<'db> {
         }
         None
     }
+    /// Presentation can retain a member's documentation even when its receiver
+    /// is nullable. Keep this fallback out of flow resolution: declaration
+    /// identity must not change the analysis of optional-field guards.
+    fn nullable_member_identity(&self, index: &LuaIndexExpr) -> Option<SemanticId> {
+        let prefix = index.get_prefix_expr()?;
+        let LuaType::Union(union) = self.prefix_type_for_member_resolution(&prefix) else {
+            return None;
+        };
+        let mut alternatives = union.iter().filter(|ty| !ty.is_nil());
+        let receiver = alternatives.next()?;
+        if alternatives.next().is_some() {
+            return None;
+        }
+        let (_, name) = self
+            .analysis()
+            .member_ref_of_index(self.file_id(), index.get_syntax_id())?;
+        self.member_info(receiver, &LuaMemberKey::Name(name))?.id
+    }
+
     /// Hover type for assignment target `x = value`: when the right-hand type is known and non-nil,
     /// show the actual type after assignment (`x = create()` no longer shows the old `T?`).
     pub(crate) fn assignment_target_value_type(&self, expr: &LuaExpr) -> Option<LuaType> {
@@ -810,21 +831,7 @@ impl<'db> SemanticModel<'db> {
         // must not repeatedly infer the same prefix expression (3 / 3.5 / inherited fallback).
         let prefix_ty = index_expr
             .get_prefix_expr()
-            .map(|prefix| self.prefix_type_for_member_resolution(&prefix))
-            .map(|ty| {
-                // Nil has no competing member declaration. A nullable receiver
-                // can still identify its sole non-nil member for documentation
-                // and navigation; flow/diagnostics independently check safety.
-                if let LuaType::Union(union) = &ty {
-                    let mut members = union.iter().filter(|member| !member.is_nil());
-                    if let Some(member) = members.next()
-                        && members.next().is_none()
-                    {
-                        return member.clone();
-                    }
-                }
-                ty
-            });
+            .map(|prefix| self.prefix_type_for_member_resolution(&prefix));
 
         // 3. Prefix type is a named type -> its `@field` members (cross-file, e.g. `c.secret` where c: C).
         //    Also look up the runtime value declaration for that type (`---@class Game` + `local Game = {}`),
