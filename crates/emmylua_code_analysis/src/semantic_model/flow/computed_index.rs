@@ -5,31 +5,24 @@
 //! joins and loops rather than carrying a fact across a possibly different key.
 
 use emmylua_parser::{
-    LuaAstNode, LuaExpr, LuaIndexExpr, LuaIndexKey, LuaStat, LuaSyntaxKind, LuaSyntaxNode,
-    LuaVarExpr,
+    LuaAstNode, LuaExpr, LuaIndexExpr, LuaStat, LuaSyntaxKind, LuaSyntaxNode, LuaVarExpr,
 };
 use rowan::TextSize;
 
-use super::{FlowAntecedent, FlowEffect, FlowNodeKind, LuaType, SemanticId, SemanticModel};
+use super::{FlowAntecedent, FlowEffect, FlowNodeKind, LuaType, SemanticModel};
 
 pub(super) fn assigned_type(
     model: &SemanticModel,
     index: &LuaIndexExpr,
     offset: TextSize,
 ) -> Option<LuaType> {
-    let (owner, key) = local_index(model, index)?;
+    let access = super::computed_guard::access(model, &LuaExpr::IndexExpr(index.clone()))?;
     let prefix = index.get_prefix_expr()?;
     let owner_type = model.type_of_expr_at(prefix.get_syntax_id(), offset);
     // An arbitrary class can transform writes through __newindex independently
     // of reads through __index. Only use ordinary array/dictionary contracts.
-    match &owner_type {
-        LuaType::Array(_) | LuaType::TableGeneric(_) => {}
-        LuaType::Generic(generic)
-            if generic.get_base_type_id() == crate::LuaTypeDeclId::global("table")
-                && model
-                    .type_def_of(&generic.get_base_type_id())
-                    .is_some_and(|def| model.is_std_file(def.file_id)) => {}
-        _ => return None,
+    if !super::computed_guard::ordinary_collection(model, &owner_type) {
+        return None;
     }
     let base = model.type_of_expr(index.get_syntax_id());
     if !base.is_nullable() {
@@ -58,8 +51,9 @@ pub(super) fn assigned_type(
                     if vars.len() == 1
                         && values.len() == 1
                         && let LuaVarExpr::IndexExpr(target) = &vars[0]
-                        && local_index(model, target).as_ref()
-                            == Some(&(owner.clone(), key.clone()))
+                        && super::computed_guard::access(model, &LuaExpr::IndexExpr(target.clone()))
+                            .as_ref()
+                            == Some(&access)
                     {
                         let value = &values[0];
                         if contains_call(value.syntax(), offset) {
@@ -78,10 +72,14 @@ pub(super) fn assigned_type(
                     }
                     // Any indexed write might alias this table or key. Multiple
                     // assignment also evaluates keys before replacing locals.
-                    if vars
-                        .iter()
-                        .any(|var| matches!(var, LuaVarExpr::IndexExpr(_)))
-                    {
+                    if vars.iter().any(|var| match var {
+                        LuaVarExpr::IndexExpr(_) => true,
+                        LuaVarExpr::NameExpr(name) => {
+                            name.get_name_text().as_deref() == Some("_ENV")
+                                || super::computed_guard::reference(model, name)
+                                    .is_some_and(|decl| access.depends_on(&decl))
+                        }
+                    }) {
                         return None;
                     }
                 }
@@ -104,7 +102,7 @@ pub(super) fn assigned_type(
         }
         for effect in tree.get_flow_effects(current) {
             if let FlowEffect::AssignDecl { decl, value_syntax } = effect {
-                if value_syntax.get_range().end() <= offset && (decl == &owner || decl == &key) {
+                if value_syntax.get_range().end() <= offset && access.depends_on(decl) {
                     return None;
                 }
                 let value = LuaExpr::cast(value_syntax.to_node_from_root(root.syntax())?)?;
@@ -119,20 +117,6 @@ pub(super) fn assigned_type(
         current = next;
     }
     None
-}
-
-fn local_index(model: &SemanticModel, index: &LuaIndexExpr) -> Option<(SemanticId, SemanticId)> {
-    let LuaExpr::NameExpr(owner) = index.get_prefix_expr()? else {
-        return None;
-    };
-    let LuaIndexKey::Expr(LuaExpr::NameExpr(key)) = index.get_index_key()? else {
-        return None;
-    };
-    let owner = model.resolve_name(owner.get_position())?;
-    let key = model.resolve_name(key.get_position())?;
-    let facts = model.file_facts()?;
-    (facts.decl_by_id(&owner)?.kind.is_local() && facts.decl_by_id(&key)?.kind.is_local())
-        .then_some((owner, key))
 }
 
 fn contains_call(node: &LuaSyntaxNode, before: TextSize) -> bool {
@@ -256,6 +240,59 @@ mod tests {
             "groups[key] = {}; if mutate() then local values = groups[key].values end",
             "groups[key] = {}; print(mutate(), groups[key].values)",
             "groups[key] = {}; local unused, values = mutate(), groups[key].values",
+        ] {
+            check(body, false);
+        }
+    }
+}
+
+#[cfg(test)]
+mod stable_path_tests {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    fn check(body: &str, safe: bool) {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let src = format!(
+            r#"
+---@class Group
+---@field values integer[]
+---@alias Groups Group[]
+---@class Storage
+---@field groups Group[]
+---@param storage Storage
+---@param other_storage Storage
+---@param key integer
+---@param other integer
+---@param value Group?
+local function f(storage, other_storage, key, other, value)
+{body}
+end
+"#
+        );
+        assert_eq!(
+            ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &src),
+            safe,
+            "{body}"
+        );
+    }
+    #[test]
+    fn stable_nested_assignment_paths() {
+        for body in [
+            "storage.groups[key] = storage.groups[key] or {}; local result = storage.groups[key]; print(result.values)",
+            "local groups = storage.groups; groups[key] = groups[key] or {}; print(groups[key].values)",
+            "storage.groups[key] = {}; local count = #storage.groups[key].values",
+        ] {
+            check(body, true);
+        }
+    }
+    #[test]
+    fn stable_nested_assignment_invalidations() {
+        for body in [
+            "storage.groups[key] = {}; key = other; print(storage.groups[key].values)",
+            "storage.groups[key] = {}; storage.groups = {}; print(storage.groups[key].values)",
+            "storage.groups[key] = {}; storage = other_storage; print(storage.groups[key].values)",
+            "storage.groups[key] = {}; mutate(); print(storage.groups[key].values)",
+            "storage.groups[key] = value; print(storage.groups[key].values)",
+            "if key > 0 then storage.groups[key] = {} end; print(storage.groups[key].values)",
         ] {
             check(body, false);
         }
