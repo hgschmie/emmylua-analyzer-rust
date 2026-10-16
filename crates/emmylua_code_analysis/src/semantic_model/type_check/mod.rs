@@ -27,6 +27,8 @@ pub use context::TypeCheckContext;
 pub use fail_reason::TypeCheckFailReason;
 pub(crate) use func_type::function_param_pairs;
 
+use emmylua_parser::{LuaAst, LuaAstNode, LuaExpr};
+
 use crate::semantic_model::SemanticModel;
 use crate::semantic_model::type_eval::expand_alias_head;
 use crate::{InFiled, LuaType, SemanticId, TypeDef, TypeDefKind};
@@ -424,10 +426,24 @@ fn def_extends_ctx(
 }
 
 fn enum_value_type(model: &SemanticModel, def: &TypeDef) -> Option<LuaType> {
-    let facts = model.file_facts_of(def.file_id)?;
-    let decl = facts.decl_named(def.name.as_str())?;
+    // An enum's annotation name need not match its runtime variable, and the
+    // initializer may belong to a table field rather than a declaration.
+    let owner = model
+        .syntax_tree_of(def.file_id)
+        .and_then(|tree| def.owner_syntax?.to_node_from_root(&tree.get_red_root()))
+        .and_then(LuaAst::cast)
+        .and_then(|owner| match owner {
+            LuaAst::LuaLocalStat(stat) => stat.get_value_exprs().next(),
+            LuaAst::LuaAssignStat(stat) => stat.get_var_and_expr_list().1.into_iter().next(),
+            LuaAst::LuaTableField(field) => field.get_value_expr(),
+            _ => None,
+        })
+        .and_then(|value| match value {
+            LuaExpr::TableExpr(table) => Some(SemanticId::member(def.file_id, table.get_range())),
+            _ => None,
+        })?;
     let mut values = Vec::new();
-    for member_ref in model.members_of_owner(&decl.id).iter() {
+    for member_ref in model.members_of_owner(&owner).iter() {
         let facts = model.file_facts_of(member_ref.file_id)?;
         let member = facts.member_by_id(&member_ref.id)?;
         let syntax = member.value_syntax?;
