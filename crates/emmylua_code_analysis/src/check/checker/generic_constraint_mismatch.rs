@@ -306,6 +306,12 @@ fn check_call(
                     .unwrap_or(constraint),
                 _ => constraint.clone(),
             };
+            let resolved_constraint = crate::semantic_model::infer::call_generics::instantiate(
+                semantic_model,
+                &resolved_constraint,
+                fun.get_generic_params(),
+                bindings,
+            );
             if call_constraint_compatible(semantic_model, &actual, &resolved_constraint) {
                 continue;
             }

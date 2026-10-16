@@ -433,7 +433,7 @@ impl<'db> SemanticModel<'db> {
                     if matches!(target, LuaDocType::IndexAccess(_)) {
                         return LuaType::Call(Rc::new(LuaAliasCallType::new(
                             LuaAliasCallKind::KeyOf,
-                            vec![self.doc_type_lua_rich_in(file_id, target.get_syntax_id())],
+                            vec![self.project_doc_type_node(&target, scope)],
                         )));
                     }
                     return self.analysis().doc_type_node_lua(file_id, doc_ty, generics);
