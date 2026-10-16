@@ -922,7 +922,7 @@ pub(crate) fn type_of_expr_at_node(
                             let MemberSource::Runtime { access } = member.source else {
                                 return false;
                             };
-                            facts.member_use(access).is_some_and(|usage| {
+                            member.value_syntax.is_some_and(|value| runtime_member_assignment_precedes(model, value, offset)) && facts.member_use(access).is_some_and(|usage| {
                                 usage.access_path.as_ref() == Some(access_path)
                             })
                         })
@@ -1157,6 +1157,26 @@ fn narrow_index_condition(
             .as_ref()
             == Some(target))
     .then_some(Narrowing::Truthy)
+}
+
+/// All right-hand expressions are evaluated before any parallel assignment takes effect.
+fn runtime_member_assignment_precedes(
+    model: &SemanticModel,
+    value: emmylua_parser::LuaSyntaxId,
+    offset: TextSize,
+) -> bool {
+    if value.get_range().end() > offset {
+        return false;
+    }
+    let Some(tree) = model.syntax_tree() else {
+        return false;
+    };
+    let Some(node) = value.to_node_from_root(&tree.get_red_root()) else {
+        return false;
+    };
+    node.parent()
+        .and_then(LuaAssignStat::cast)
+        .is_none_or(|assignment| assignment.get_range().end() <= offset)
 }
 
 /// Infer the VM type, then apply the selected inline casts.
