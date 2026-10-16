@@ -27,6 +27,7 @@ mod global_in_non_module_test;
 mod incomplete_signature_doc_test;
 mod inject_field_test;
 mod local_const_reassign_test;
+mod member_self_assignment_test;
 mod misc_checker_test;
 mod missing_fields_test;
 mod missing_parameter_test;
