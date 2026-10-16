@@ -13,7 +13,12 @@ Standalone branches are based on freshly fetched upstream/main ca9bec3b:
 Both fixes are independently reproducible on upstream main and need no pending
 patches. UP-075 complements UP-042; UP-076 complements UP-061's loop-read widening.
 Each standalone suite passes 1,521 analysis tests with all features, Clippy and
-rustfmt. No PR or push was performed. Original mods remain read-only.
+rustfmt. The work-only negative test uses ordinary dictionaries: its older
+member resolver accepts an invalid integer alias on a string-indexed class
+before this checker runs. Reproduced independently using packaged build168;
+this pre-existing false negative is not introduced by UP-075. The standalone
+negative test checks both classes and dictionaries. Track the discrepancy when
+refreshing the newer upstream member/inference changes. No PR or push was performed. Original mods remain read-only.
 
 The minimal nullable-next condition already passes upstream ca9bec3b but fails
 our existing integration baseline. Do not submit a duplicate fix; evaluate it
