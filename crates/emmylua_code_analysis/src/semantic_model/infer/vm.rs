@@ -1217,6 +1217,10 @@ impl<'a> InferVm<'a> {
         // back so call inference can parse `---@return` from the member signature.
         // `Signature` also needs the member identity (especially stdlib `---@class mathlib`
         // + `math = {}` runtime tables associated with the class).
+        // A projected DocFunction can omit runtime overload/generic metadata.
+        // Recover runtime generics only for uninstantiated receivers. Generic
+        // receiver projections carry substitution and method-generic shadowing,
+        // so replacing those with the raw signature loses that context.
         let needs_method_owner = self
             .model
             .member_info(&owner.ty, &lua_key)
@@ -1230,7 +1234,13 @@ impl<'a> InferVm<'a> {
                         .member_info(&owner.ty, &lua_key)
                         .and_then(|info| info.id)
                         .and_then(|id| self.signature_candidates(&id))
-                        .is_some_and(|candidates| candidates.len() > 1)));
+                        .is_some_and(|candidates| {
+                            candidates.len() > 1
+                                || (!matches!(owner.ty, LuaType::Generic(_))
+                                    && candidates.iter().any(|candidate| {
+                                        !candidate.get_generic_params().is_empty()
+                                    }))
+                        })));
         if let Some(ty) = &member_type_fallback
             && !matches!(ty, LuaType::Unknown)
             && !needs_member_owner

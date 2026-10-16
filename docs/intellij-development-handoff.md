@@ -11,19 +11,34 @@ by signed provenance-preserving cherry-picks onto the existing work baseline:
   preserves nil/false and the RHS alternatives instead of collapsing to Nil.
   This repairs the unannotated oldVersion migration guards independently of the
   stable collection-guard patches.
-- UP-066 fix/dependent-generic-call-constraints: a5b16f22 -> 5c26f716. Instantiate
+- UP-066 fix/dependent-generic-call-constraints: a5b16f22 / 10dd78d3 -> 5c26f716 / 8b59d7d6. Instantiate
   dependent function constraints from earlier arguments, retain literal bindings,
   and resolve computed Parameters/ReturnType fallbacks without prebinding ordinary
   inference sites. Declared interfaces keep argument/return contracts; undeclared
   interfaces retain the generic fallback. Existing variadic/callback inference
   retains raw templates; non-generic calls keep their previous fast path.
 
+The packaged LTN check exposed a second constraint-checking path; UP-066's
+10dd78d3 also instantiates constraints before GenericConstraintMismatch checks.
+One added regression fails before that follow-up, with a negative control.
+There are eleven standalone regressions plus a work-only generated global API
+class test. This exact global-table form uses existing UP-019 ownership support.
+Its integration now retains runtime method identity for generic signatures as
+well as overloads, preserving declared remote-call returns. This small UP-019
+compatibility adjustment is work-only; UP-066's standalone fixes remain independent.
+Generic receivers retain their projected signature: the existing issue_925
+regression protects receiver substitution and method-generic shadowing.
+
 UP-066's named-interface historical reproducer passes before the refactor at
 aaaca684, fails at initial refactor 3474c99d and pre-contribution 1c8589bb.
 It predates our merged contributions. UP-064/065 reproduce on current upstream;
 no earlier historical attribution is claimed for those two.
 Standalone analysis suites pass: 1,478 / 1,476 / 1,478 tests respectively.
-All new branches are signed/DCO and local only; no new PRs. Previous outstanding
+UP-066 checker follow-up passes 1,479 tests plus the previously passed unchanged
+linear-assignment stress test; Clippy and rustfmt pass.
+Combined analysis: all 1,731 tests pass, including generated API calls and
+existing method-generic shadowing. All 267 server tests, Clippy and rustfmt pass. All new branches are signed/DCO and local only;
+no new PRs. Previous outstanding
 UP-060/061/062/063 and prior work/package/FDE heads were pushed first as requested.
 
 Normal UP-045 packaging advances to EmmyLua2 build165 (macOS arm64 patched).
