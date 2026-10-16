@@ -13,6 +13,7 @@
 //! - Flow type for member assignment `t.x = v` / `self.x = v` (FlowEffect::AssignMember).
 
 mod array;
+mod computed_effects;
 mod computed_guard;
 mod computed_index;
 mod guards;
