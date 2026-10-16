@@ -1187,4 +1187,82 @@ function KPlayer.GetPlayerObjById() end",
             "#
         ));
     }
+    #[test]
+    fn string_alias_keys_match_dictionary_and_class_indices() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def(
+            r#"
+            ---@alias Identifier string
+            ---@alias ChainedIdentifier Identifier
+            ---@alias OptionalIdentifier ChainedIdentifier|nil
+            ---@alias LiteralIdentifier 'item'|'fluid'
+            ---@class StringDictionary
+            ---@field [string] number
+        "#,
+        );
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            r#"
+            ---@param key ChainedIdentifier
+            ---@param optional OptionalIdentifier
+            ---@param literal LiteralIdentifier
+            ---@param mixed ChainedIdentifier|integer
+            ---@param map table<string, number>
+            ---@param object StringDictionary
+            local function update(key, optional, literal, mixed, map, object)
+                map[key] = (map[key] or 0) + 1
+                object[key] = map[literal]
+                if optional then map[optional] = object[literal] end
+                map[mixed] = 0
+            end
+        "#
+        ));
+    }
+
+    #[test]
+    fn string_alias_keys_keep_rejecting_incompatible_keys() {
+        let mut ws = VirtualWorkspace::new();
+        let source = r#"
+            ---@alias NumericKey integer
+            ---@class StringDictionary
+            ---@field [string] number
+            ---@param key NumericKey
+            ---@param map table<string, number>
+            ---@param object StringDictionary
+            local function update(key, map, object)
+                map[key] = 1
+                object[key] = 2
+            end
+        "#;
+        let diagnostics = crate::check::test::check_source(source);
+        let fields = diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::UndefinedField)
+            .collect::<Vec<_>>();
+        assert_eq!(fields.len(), 2, "{diagnostics:#?}");
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            r#"
+            ---@alias Identifier string
+            ---@param key Identifier
+            ---@param map table<integer, number>
+            local function update(key, map) map[key] = 1 end
+        "#
+        ));
+    }
+
+    #[test]
+    fn string_alias_keys_handle_cycles() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            r#"
+            ---@alias CycleA CycleB
+            ---@alias CycleB CycleA
+            ---@param key CycleA
+            ---@param map table<string, number>
+            local function update(key, map) map[key] = 1 end
+        "#
+        ));
+    }
 }
