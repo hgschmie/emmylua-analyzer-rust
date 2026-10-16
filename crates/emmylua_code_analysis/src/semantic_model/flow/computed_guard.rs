@@ -18,13 +18,13 @@ enum Part {
 }
 
 #[derive(PartialEq, Eq)]
-struct Access {
+pub(super) struct Access {
     root: SemanticId,
     parts: Vec<Part>,
 }
 
 impl Access {
-    fn depends_on(&self, decl: &SemanticId) -> bool {
+    pub(super) fn depends_on(&self, decl: &SemanticId) -> bool {
         &self.root == decl
             || self
                 .parts
@@ -49,22 +49,8 @@ pub(super) fn guarded_type(
     let access = access(model, &LuaExpr::IndexExpr(index.clone()))?;
     let prefix = index.get_prefix_expr()?;
     let owner_type = model.type_of_expr_at(prefix.get_syntax_id(), offset);
-    // Dictionary contracts can be inherited or aliased. Explicit __index handlers
-    // may return a different value on each read, so they remain excluded.
-    match &owner_type {
-        LuaType::Array(_) | LuaType::TableGeneric(_) => {}
-        LuaType::Generic(generic)
-            if generic.get_base_type_id() == crate::LuaTypeDeclId::global("table")
-                && model
-                    .type_def_of(&generic.get_base_type_id())
-                    .is_some_and(|def| model.is_std_file(def.file_id)) => {}
-        _ if !crate::semantic_model::inherited_index::dictionaries(model, &owner_type)
-            .is_empty()
-            && !model
-                .member_infos(&owner_type)
-                .iter()
-                .any(|member| member.key == LuaMemberKey::Name("__index".into())) => {}
-        _ => return None,
+    if !ordinary_collection(model, &owner_type) {
+        return None;
     }
     let base = model.type_of_expr(index.get_syntax_id());
     if !base.is_nullable() {
@@ -146,9 +132,37 @@ pub(super) fn guarded_type(
     None
 }
 
+// Both guard and assignment facts require ordinary collection semantics.
+pub(super) fn ordinary_collection(model: &SemanticModel, owner_type: &LuaType) -> bool {
+    match &owner_type {
+        LuaType::Array(_) | LuaType::TableGeneric(_) => true,
+        LuaType::Generic(generic)
+            if generic.get_base_type_id() == crate::LuaTypeDeclId::global("table")
+                && model
+                    .type_def_of(&generic.get_base_type_id())
+                    .is_some_and(|def| model.is_std_file(def.file_id)) =>
+        {
+            true
+        }
+        _ if !crate::semantic_model::inherited_index::dictionaries(model, &owner_type)
+            .is_empty()
+            && !model
+                .member_infos(&owner_type)
+                .iter()
+                .any(|member| member.key == LuaMemberKey::Name("__index".into())) =>
+        {
+            true
+        }
+        _ => false,
+    }
+}
+
 // Globals use their binding name rather than a particular declaration site.
 // Locals retain declaration identity, keeping shadowed names separate.
-fn reference(model: &SemanticModel, name: &emmylua_parser::LuaNameExpr) -> Option<SemanticId> {
+pub(super) fn reference(
+    model: &SemanticModel,
+    name: &emmylua_parser::LuaNameExpr,
+) -> Option<SemanticId> {
     if let Some(decl) = model.resolve_name(name.get_position())
         && model
             .file_facts()?
@@ -168,7 +182,7 @@ fn reference(model: &SemanticModel, name: &emmylua_parser::LuaNameExpr) -> Optio
     Some(SemanticId::name(name.get_name_text()?.into()))
 }
 
-fn access(model: &SemanticModel, expr: &LuaExpr) -> Option<Access> {
+pub(super) fn access(model: &SemanticModel, expr: &LuaExpr) -> Option<Access> {
     match expr {
         LuaExpr::NameExpr(name) => Some(Access {
             root: reference(model, name)?,
