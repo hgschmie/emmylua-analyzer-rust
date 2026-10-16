@@ -1,3 +1,30 @@
+# Numeric enum literal compatibility — UP-062 (2026-10-15)
+
+LTN `script/dispatcher.lua` rejects `ltn_tick_state.reset` (numeric value 0)
+in two returns and one assignment. The enum declaration is valid. Independent
+`fix/enum-literal-compatibility`, signed `8b7d14af`, is based on freshly fetched
+upstream/main `96545f45`. It resolves numeric members from the enum initializer
+in its defining file, applies membership checks consistently to strict and
+assignment compatibility, and checks every source alternative for enum contracts.
+Optional enum targets cannot hide an invalid value behind a valid nil alternative.
+The existing policy accepting broad integer assignments is preserved; arbitrary
+numbers do not become valid strict enum returns. This is not a general Lua
+constant-expression evaluator or a string/boolean enum rewrite.
+
+Signed work cherry-pick `e5b987cf` retains the existing development base and all
+local fixes. UP-028 handles cross-file enum lookup, UP-031 class-valued enum
+members, and UP-058 explicit primitive-to-enum casts. UP-062 complements those
+patches without a pending prerequisite. All six regressions fail on current
+upstream without UP-062. Historical pre-contribution anchors were not run for
+this issue, so no claim is made about the first introducing commit.
+
+Normal UP-045 packaging advances to EmmyLua2 build163. Update only FDE's
+analyzer development pin; retain FDE 0.8.3-dev and LSP4IJ patched4 archives.
+UP-008 comparison remains build159. No push, PR, original-mod edit or IDE
+installation. Final validation and archive details are recorded in workspace
+`upstream/ENUM_LITERAL_COMPATIBILITY_2026-10-15.md` and analyzer
+`build/investigations/dispatcher-enum-20261015/`.
+
 # Guarded collections and loop-carried values — UP-060 / UP-061 (2026-10-15)
 
 LTN `script/console.lua` exposed two flow-analysis regressions. UP-060
