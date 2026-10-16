@@ -442,6 +442,15 @@ fn candidate_table_argument_targets(
             let _ = unify_call_bindings(semantic_model, param_ty, arg_ty, bindings);
         }
         if let LuaExpr::TableExpr(table) = arg {
+            // UP-038: an inline assertion replaces the raw constructor contract.
+            // Parameter checks validate the asserted type separately.
+            if analysis
+                .arg_types
+                .get(index)
+                .is_some_and(|ty| !matches!(ty, LuaType::TableConst(_)))
+            {
+                continue;
+            }
             targets.push((table.clone(), unify::substitute(param_ty, bindings)));
         }
     }

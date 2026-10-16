@@ -1,3 +1,39 @@
+# Work-branch rebuild on upstream/main — 2026-10-16
+
+The development branch is rebuilt from upstream/main
+`ef6c06a79f635cc014028539519fffd74e6f24da`. It contains all 54 retained analyzer
+contributions (51 without PRs and the three open-PR patches), applied as 63
+signed, provenance-preserving cherry-picks. Replayed prerequisite copies are
+included once. UP-008 remains an inactive rollback; obsolete UP-009 and the
+already-upstream UP-077 backport are omitted.
+
+Work-only API table/callback signatures (UP-019), factory inference (UP-020),
+exported class navigation (UP-021), directional/dictionary integration, constructor
+assertions, generic remote methods, loop casts and optional-field guards are
+preserved. The existing inline-assertion and first-result truthiness tests remain.
+Standalone contribution branches are unchanged by this integration. Submission
+order remains UP-059 before the combined UP-033/UP-060 work.
+
+The prior work head `0f6001bb5bdb7c64abd7e918e1dff1d676805df9` is preserved under
+`refs/backup/work-rebuild-20261016/work-intellij-modules`. The contribution mapping,
+full validation logs and package receipt are in the workspace report
+`upstream/ANALYZER_WORK_REBUILD_2026-10-16.md` and analyzer
+`build/investigations/work-rebuild-20261016/`. These sources supersede the historical
+heads below. This task does not push branches or change PRs.
+
+Validation: 2,832 workspace/all-feature tests pass (1,823 analysis, 267 server),
+plus Clippy with warnings denied and rustfmt. The frozen LTN replay improves
+82 → 81 diagnostics (67 warnings + 14 hints), with no new diagnostic locations;
+request_processor.lua remains clear. The newer tools.lua snapshot also remains
+clear. The existing frozen tools.lua LocalisedString warning is unchanged.
+
+The delivery is EmmyLua2 build171 (normal UP-045, macOS arm64 custom
+analyzer). FDE keeps 0.8.6-dev and its existing ZIP; only its development pin and
+compatibility evidence change. LSP4IJ is maintained separately and is not rebuilt
+or modified in this task. See the final workspace report for acceptance results.
+
+Older checkpoints below are historical.
+
 # LTN tools.lua guards and first-result conditions — UP-077/078 (2026-10-16)
 
 UP-077 is a small internal backport of upstream 0bc11af2's first-result truthiness

@@ -71,7 +71,7 @@ pub(super) fn guarded_type(
         _ => return None,
     }
     let inferred = model.type_of_expr(index.get_syntax_id());
-    let base = match (&inferred, &owner_type) {
+    let mut base = match (&inferred, &owner_type) {
         // Recursive element inference can be unknown at a loop/write site. The
         // owner's array contract is still available, as in guarded_index_type.
         (LuaType::Unknown, LuaType::Array(array)) => {
@@ -79,6 +79,15 @@ pub(super) fn guarded_type(
         }
         _ => inferred,
     };
+    // Ordinary projection omits nil for some optional named reference fields.
+    // Apply their full contract before deciding whether a guard is needed.
+    if let Some(key) = super::member_key_from_index_expr(model, index)
+        && let Some(member) = model.member_info(&owner_type, &key)
+        && let Some(id) = member.id
+    {
+        base = super::apply_field_nullable(model, &id, base);
+    }
+
     if !base.is_nullable() {
         return None;
     }

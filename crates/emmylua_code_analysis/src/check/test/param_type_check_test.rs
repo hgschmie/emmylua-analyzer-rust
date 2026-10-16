@@ -2787,7 +2787,6 @@ fn test_length_argument_preserves_nullable_member_diagnostic() {
     );
 }
 
-
 #[cfg(test)]
 mod class_index_array_compatibility {
     use crate::DiagnosticCode;

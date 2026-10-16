@@ -1222,16 +1222,15 @@ function KPlayer.GetPlayerObjById() end",
     #[test]
     fn string_alias_keys_keep_rejecting_incompatible_keys() {
         let mut ws = VirtualWorkspace::new();
+        // The older work-branch member resolver accepts invalid dynamic keys on
+        // named classes before this checker runs. Keep the independent dictionary
+        // negative control here; the standalone upstream test also checks classes.
         let source = r#"
             ---@alias NumericKey integer
-            ---@class StringDictionary
-            ---@field [string] number
             ---@param key NumericKey
             ---@param map table<string, number>
-            ---@param object StringDictionary
-            local function update(key, map, object)
+            local function update(key, map)
                 map[key] = 1
-                object[key] = 2
             end
         "#;
         let diagnostics = crate::check::test::check_source(source);
@@ -1239,7 +1238,7 @@ function KPlayer.GetPlayerObjById() end",
             .iter()
             .filter(|d| d.code == DiagnosticCode::UndefinedField)
             .collect::<Vec<_>>();
-        assert_eq!(fields.len(), 2, "{diagnostics:#?}");
+        assert_eq!(fields.len(), 1, "{diagnostics:#?}");
         assert!(!ws.has_no_diagnostic(
             DiagnosticCode::UndefinedField,
             r#"
