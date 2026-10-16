@@ -913,3 +913,120 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod member_use_site {
+    use crate::handlers::{hover::hover, test_lib::ProviderVirtualWorkspace};
+    use lsp_types::HoverContents;
+
+    fn text(definitions: &str, source: &str, separate: bool) -> String {
+        let mut ws = ProviderVirtualWorkspace::new();
+        let source = if separate {
+            ws.def(definitions);
+            source.to_owned()
+        } else {
+            format!("{definitions}\n{source}")
+        };
+        let (content, position) = ProviderVirtualWorkspace::handle_file_content(&source).unwrap();
+        let file = ws.def(&content);
+        let result = hover(&ws.analysis, file, position).unwrap();
+        let HoverContents::Markup(markup) = result.contents else {
+            panic!("markup required")
+        };
+        markup.value
+    }
+
+    const DEFINITIONS: &str = r#"
+    ---@class Train
+    local Train = {
+        ---Count stored items.
+        ---@param item? string
+        ---@return integer
+        get_count = function(item) end,
+    }
+    ---@class Stop
+    ---@field train Train? The parked train.
+    "#;
+
+    #[test]
+    fn narrowed_member_hover_uses_read_type() {
+        for separate in [false, true] {
+            let result = text(
+                DEFINITIONS,
+                r#"
+            ---@param stop Stop
+            local function test(stop)
+                if stop.train then
+                    print(stop.<??>train)
+                end
+            end
+            "#,
+                separate,
+            );
+            assert!(result.contains("train: Train\n"), "{separate}: {result}");
+            assert!(result.contains("The parked train."), "{result}");
+        }
+    }
+
+    #[test]
+    fn narrowed_member_hover_preserves_method_documentation() {
+        for separate in [false, true] {
+            let result = text(
+                DEFINITIONS,
+                r#"
+            ---@param stop Stop
+            local function test(stop)
+                if stop.train then
+                    stop.train.<??>get_count('iron')
+                end
+            end
+            "#,
+                separate,
+            );
+            assert!(result.contains("get_count"), "{separate}: {result}");
+            assert!(result.contains("Count stored items."), "{result}");
+            assert!(result.contains("item"), "{result}");
+            assert!(result.contains("integer"), "{result}");
+        }
+    }
+    #[test]
+    fn member_hover_keeps_unguarded_and_write_contracts() {
+        for body in [
+            "print(stop.<??>train)",
+            "if stop.train then stop.<??>train = nil end",
+        ] {
+            let source = format!("---@param stop Stop\nlocal function test(stop)\n{body}\nend");
+            let result = text(DEFINITIONS, &source, true);
+            assert!(result.contains("train: Train?"), "{result}");
+        }
+        let result = text(
+            DEFINITIONS,
+            r#"
+        ---@param stop Stop
+        local function test(stop)
+            if not stop.train then print(stop.<??>train) end
+        end
+        "#,
+            true,
+        );
+        assert!(!result.contains("train: Train\n"), "{result}");
+    }
+
+    #[test]
+    fn nullable_receiver_identity_does_not_remove_nil_diagnostic() {
+        use emmylua_code_analysis::{DiagnosticCode, VirtualWorkspace};
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            &format!(
+                r#"
+        {DEFINITIONS}
+        ---@param stop Stop
+        local function test(stop)
+            stop.train.get_count('iron')
+        end
+        "#
+            )
+        ));
+    }
+}
