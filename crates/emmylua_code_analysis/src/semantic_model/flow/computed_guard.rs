@@ -49,8 +49,8 @@ pub(super) fn guarded_type(
     let access = access(model, &LuaExpr::IndexExpr(index.clone()))?;
     let prefix = index.get_prefix_expr()?;
     let owner_type = model.type_of_expr_at(prefix.get_syntax_id(), offset);
-    // Dictionary contracts can be inherited or aliased. Explicit __index handlers
-    // may return a different value on each read, so they remain excluded.
+    // A computed key can select declared class fields as well as collection entries.
+    // Explicit __index handlers can change values between reads and remain excluded.
     match &owner_type {
         LuaType::Array(_) | LuaType::TableGeneric(_) => {}
         LuaType::Generic(generic)
@@ -58,8 +58,12 @@ pub(super) fn guarded_type(
                 && model
                     .type_def_of(&generic.get_base_type_id())
                     .is_some_and(|def| model.is_std_file(def.file_id)) => {}
-        _ if !crate::semantic_model::inherited_index::dictionaries(model, &owner_type)
+        _ if (!crate::semantic_model::inherited_index::dictionaries(model, &owner_type)
             .is_empty()
+            || model
+                .member_infos(&owner_type)
+                .iter()
+                .any(|member| member.id.is_some()))
             && !model
                 .member_infos(&owner_type)
                 .iter()
@@ -306,5 +310,56 @@ fn primitive_read_pure_call(model: &SemanticModel, call: &emmylua_parser::LuaCal
                 )
             }),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod class_field_tests {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    fn check(body: &str, safe: bool) {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let src = format!(
+            r#"
+---@class Record
+---@field value integer
+---@class Registry
+---@field first Record?
+---@field second Record?
+---@alias Key 'first'|'second'
+---@param registry Registry
+---@param key Key
+---@param other Key
+local function f(registry, key, other)
+{body}
+end
+"#
+        );
+        assert_eq!(
+            ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &src),
+            safe,
+            "{body}"
+        );
+    }
+    #[test]
+    fn computed_class_fields_keep_matching_guards() {
+        for body in [
+            "if registry[key] then print(registry[key].value) end",
+            "local value = registry[key] and registry[key].value",
+            "if not (registry[key] and registry[key].value) then return end",
+        ] {
+            check(body, true);
+        }
+    }
+    #[test]
+    fn computed_class_fields_reject_stale_or_different_guards() {
+        for body in [
+            "print(registry[key].value)",
+            "if registry[key] then key = other; print(registry[key].value) end",
+            "if registry[key] then mutate(); print(registry[key].value) end",
+            "if registry[key] then print(registry[other].value) end",
+            "if registry[key] then registry[key] = nil; print(registry[key].value) end",
+        ] {
+            check(body, false);
+        }
     }
 }
