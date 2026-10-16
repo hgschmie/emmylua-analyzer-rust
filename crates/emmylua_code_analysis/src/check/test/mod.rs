@@ -13,6 +13,7 @@ mod check_return_count_test;
 mod circle_doc_class_test;
 mod code_style;
 mod code_style_test;
+mod dependent_call_test;
 mod deprecated_test;
 mod disable_line_test;
 mod duplicate_field_test;

@@ -442,9 +442,8 @@ fn match_call_candidate_impl(
         let Some(param_ty) = param_ty else {
             continue;
         };
-        let mut param_ty = bind_signature_generics(param_ty, fun.get_generic_params());
-        let raw_param_ty = param_ty.clone();
-        param_ty = unify::substitute(&param_ty, &bindings);
+        let raw_param_ty = bind_signature_generics(param_ty, fun.get_generic_params());
+        let mut param_ty = super::call_generics::parameter_type(model, param_ty, fun, &bindings);
         // Only expand conditional aliases; plain structural aliases (e.g. `Arrayable<T>`)
         // keep their Generic form so unify can back-infer T from the generic-parameter
         // structure instead of binding the whole union to T.
