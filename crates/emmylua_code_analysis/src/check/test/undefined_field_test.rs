@@ -1187,6 +1187,84 @@ function KPlayer.GetPlayerObjById() end",
             "#
         ));
     }
+    #[test]
+    fn string_alias_keys_match_dictionary_and_class_indices() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def(
+            r#"
+            ---@alias Identifier string
+            ---@alias ChainedIdentifier Identifier
+            ---@alias OptionalIdentifier ChainedIdentifier|nil
+            ---@alias LiteralIdentifier 'item'|'fluid'
+            ---@class StringDictionary
+            ---@field [string] number
+        "#,
+        );
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            r#"
+            ---@param key ChainedIdentifier
+            ---@param optional OptionalIdentifier
+            ---@param literal LiteralIdentifier
+            ---@param mixed ChainedIdentifier|integer
+            ---@param map table<string, number>
+            ---@param object StringDictionary
+            local function update(key, optional, literal, mixed, map, object)
+                map[key] = (map[key] or 0) + 1
+                object[key] = map[literal]
+                if optional then map[optional] = object[literal] end
+                map[mixed] = 0
+            end
+        "#
+        ));
+    }
+
+    #[test]
+    fn string_alias_keys_keep_rejecting_incompatible_keys() {
+        let mut ws = VirtualWorkspace::new();
+        let source = r#"
+            ---@alias NumericKey integer
+            ---@class StringDictionary
+            ---@field [string] number
+            ---@param key NumericKey
+            ---@param map table<string, number>
+            ---@param object StringDictionary
+            local function update(key, map, object)
+                map[key] = 1
+                object[key] = 2
+            end
+        "#;
+        let diagnostics = crate::check::test::check_source(source);
+        let fields = diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::UndefinedField)
+            .collect::<Vec<_>>();
+        assert_eq!(fields.len(), 2, "{diagnostics:#?}");
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            r#"
+            ---@alias Identifier string
+            ---@param key Identifier
+            ---@param map table<integer, number>
+            local function update(key, map) map[key] = 1 end
+        "#
+        ));
+    }
+
+    #[test]
+    fn string_alias_keys_handle_cycles() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            r#"
+            ---@alias CycleA CycleB
+            ---@alias CycleB CycleA
+            ---@param key CycleA
+            ---@param map table<string, number>
+            local function update(key, map) map[key] = 1 end
+        "#
+        ));
+    }
 }
 
 #[googletest::gtest]
@@ -1381,4 +1459,67 @@ fn enum_runtime_cross_file_dynamic_and_conditional_keys() {
         ),
         eq(false)
     );
+}
+
+#[test]
+fn test_dynamic_string_alias_member_keys() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let mut ws = VirtualWorkspace::new();
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::UndefinedField,
+        r#"
+        ---@class PrototypeMap
+        ---@field item string
+        ---@field fluid string
+        ---@alias Kind "item"|"fluid"
+        ---@alias KindAlias Kind
+        ---@class Signal
+        ---@field type KindAlias
+        ---@param prototypes PrototypeMap
+        ---@param signal Signal
+        local function lookup(prototypes, signal)
+            local direct = prototypes[signal.type]
+            return direct
+        end
+    "#
+    ));
+}
+
+#[test]
+fn test_dynamic_string_alias_key_negative_cases() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for key in ["false", "1"] {
+        let mut ws = VirtualWorkspace::new();
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            &format!(
+                r#"
+            ---@class PrototypeMap
+            ---@field item string
+            ---@alias Key {key}
+            ---@param prototypes PrototypeMap
+            ---@param key Key
+            local function lookup(prototypes, key) return prototypes[key] end
+        "#
+            )
+        ));
+    }
+}
+
+#[test]
+fn test_recursive_dynamic_string_alias_keys_terminate() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let mut ws = VirtualWorkspace::new();
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::UndefinedField,
+        r#"
+        ---@class Map
+        ---@field item string
+        ---@alias A B|false
+        ---@alias B A|1
+        ---@param map Map
+        ---@param key A
+        local function lookup(map, key) return map[key] end
+    "#
+    ));
 }

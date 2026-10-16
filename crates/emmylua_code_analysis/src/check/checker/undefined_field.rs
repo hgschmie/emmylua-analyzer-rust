@@ -287,7 +287,7 @@ fn valid_named_member(
     }
     // `m[expr]`: dynamic string / enum alias / enum member table identity keys are allowed broadly on named types (keyof/enum parameter scenarios).
     if matches!(index_key, LuaIndexKey::Expr(_))
-        && (is_string_key(&key_ty)
+        && (string_key_expanded(semantic_model, &key_ty)
             || is_enum_like_key(semantic_model, &key_ty)
             || matches!(key_ty, LuaType::TableConst(_)))
     {
@@ -394,6 +394,43 @@ fn is_string_key(ty: &LuaType) -> bool {
     }
 }
 
+/// String keys may be named aliases (including aliases inside unions).
+/// Track visited definitions so recursive aliases cannot loop indefinitely.
+fn string_key_expanded(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> bool {
+    fn expand(
+        semantic_model: &SemanticModel<'_>,
+        ty: &LuaType,
+        visited: &mut Vec<LuaTypeDeclId>,
+    ) -> bool {
+        if is_string_key(ty) {
+            return true;
+        }
+        match ty {
+            LuaType::Union(union) => union
+                .into_vec()
+                .iter()
+                .any(|ty| expand(semantic_model, ty, visited)),
+            LuaType::MultiLineUnion(union) => expand(semantic_model, &union.to_union(), visited),
+            LuaType::Ref(id) | LuaType::Def(id) => {
+                if visited.len() >= 32 || visited.contains(id) {
+                    return false;
+                }
+                visited.push(id.clone());
+                let result = named_type_def(semantic_model, ty).is_some_and(|def| {
+                    def.kind == TypeDefKind::Alias
+                        && semantic_model
+                            .alias_target(&def)
+                            .is_some_and(|target| expand(semantic_model, &target, visited))
+                });
+                visited.pop();
+                result
+            }
+            _ => false,
+        }
+    }
+    expand(semantic_model, ty, &mut Vec::new())
+}
+
 fn numeric_key(ty: &LuaType) -> bool {
     match ty {
         LuaType::Number
@@ -454,7 +491,7 @@ fn key_matches(semantic_model: &SemanticModel<'_>, key: &LuaType, table_key: &Lu
     }
     match table_key {
         LuaType::String | LuaType::StringConst(_) | LuaType::DocStringConst(_) => {
-            is_string_key(key)
+            string_key_expanded(semantic_model, key)
         }
         LuaType::Integer
         | LuaType::Number
