@@ -407,8 +407,10 @@ fn check_variadic_type_compact(
                 }
             },
             _ => {
-                check_simple_type_compact(
-                    context,
+                // A variadic element can be a named type, alias or composite.
+                // Use the same result-value rules as a fixed target slot.
+                super::check_general_type_compact(
+                    &mut element_context,
                     source_base,
                     compact_type,
                     check_guard.next_level()?,
