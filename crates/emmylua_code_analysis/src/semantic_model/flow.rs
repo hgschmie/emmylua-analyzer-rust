@@ -12,6 +12,7 @@
 //! - `---@cast x +string` adds string to x's path type;
 //! - Flow type for member assignment `t.x = v` / `self.x = v` (FlowEffect::AssignMember).
 
+mod computed_effects;
 mod computed_guard;
 mod computed_index;
 mod loop_carried;
