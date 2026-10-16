@@ -446,3 +446,50 @@ fn test_discard_returns_ok() {
         0
     );
 }
+
+#[test]
+fn test_unknown_logical_guarded_version_comparison() {
+    let diagnostics = check_source(
+        r#"
+        local function initialize(old_version, stops)
+            if old_version and old_version < '01.13.01' then end
+            if old_version and old_version < '01.13.01' and stops then end
+            if old_version and true then end
+            if old_version and { 'migrate' } then end
+        end
+    "#,
+    );
+    assert_eq!(
+        count_by_code(&diagnostics, DiagnosticCode::UnnecessaryIf),
+        0,
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn test_unknown_logical_falsy_rhs_still_warns() {
+    let diagnostics = check_source(
+        r#"
+        local function initialize(value)
+            if value and false then end
+            if value and nil then end
+            if false and value then end
+            if nil and value then end
+        end
+    "#,
+    );
+    assert_eq!(
+        count_by_code(&diagnostics, DiagnosticCode::UnnecessaryIf),
+        4,
+        "{diagnostics:?}"
+    );
+    for diagnostic in diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == DiagnosticCode::UnnecessaryIf)
+    {
+        assert!(
+            diagnostic.message.contains("always falsy"),
+            "{diagnostic:?}"
+        );
+    }
+}
