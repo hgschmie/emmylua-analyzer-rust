@@ -1927,7 +1927,7 @@ n = n + 1
     }
 
     #[test]
-    fn test_dynamic_numeric_for_post_flow_ignores_body_assignment_for_print_arg() {
+    fn test_dynamic_numeric_for_post_flow_includes_body_assignment_for_print_arg() {
         let mut ws = VirtualWorkspace::new();
 
         let file_id = ws.def(
@@ -1945,7 +1945,7 @@ n = n + 1
         );
         let thing_type = last_name_expr_type(&ws, file_id, "thing");
 
-        assert_eq!(ws.humanize_type(thing_type), "nil");
+        assert_eq!(ws.humanize_type(thing_type), "MyClass?");
     }
 
     #[test]
@@ -1972,7 +1972,7 @@ n = n + 1
     }
 
     #[test]
-    fn test_dynamic_while_post_flow_ignores_body_assignment_for_print_arg() {
+    fn test_dynamic_while_post_flow_includes_body_assignment_for_print_arg() {
         let mut ws = VirtualWorkspace::new();
 
         let file_id = ws.def(
@@ -1991,7 +1991,7 @@ n = n + 1
         );
         let thing_type = last_name_expr_type(&ws, file_id, "thing");
 
-        assert_eq!(ws.humanize_type(thing_type), "nil");
+        assert_eq!(ws.humanize_type(thing_type), "MyClass?");
     }
 
     #[test]
