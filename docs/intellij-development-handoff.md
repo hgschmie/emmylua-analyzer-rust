@@ -1,3 +1,36 @@
+# Named variadic values and remote return shapes — UP-067/068 (2026-10-15)
+
+UP-067 is an independent analyzer fix on upstream/main 96545f45:
+fix/variadic-named-type-compatibility, signed 4982e0ee; work pick 792564e1.
+Variadic base elements use general compatibility when matching scalar or fixed
+multiple-result targets, preserving named enum/class/alias rules. Eight regressions
+include incompatible types; 1,477 standalone and 1,739 combined analysis tests,
+267 combined server tests, Clippy and rustfmt pass. UP-041 (union aliases), UP-032
+(callback return sequences) and UP-066 (dependent remote-call constraints) are
+complementary, not standalone prerequisites.
+
+The user's challenge revealed that this is not the whole remote.call fix.
+LuaRemote.InterfaceMap lookup already succeeds. FMTK emits ReturnType<FF>...
+unconditionally; ReturnType already carries the return shape in EmmyLua. The
+extra ellipsis repeats a scalar and wraps an existing sequence again. Removing
+it for EmmyLua alone preserves known single/fixed multiple/genuine variadic
+returns, and the unknown-interface Any?... fallback. The existing build165 clears
+all four LTN Interface_Demo/control.lua warnings with only this annotation change.
+The separate real Event... incompatibility still reproduces in build165.
+
+UP-068 lives in the toolkit, fix/emmylua-remote-return-shape at 177588b, integrated
+by fast-forward into work/intellij-toolkit. It builds on the UP-014 target selector;
+LuaLS annotations and argument-pack metadata are unchanged. Its CLI regression
+fails before and passes after the fix for default/LuaLS/EmmyLua targets.
+
+EmmyLua2 build166 packages UP-067 (macOS arm64). FDE 0.8.4-dev packages the updated
+FMTK generator, so this task requires an FDE archive as well as its analyzer pin.
+The CLI-content hash already invalidates generated API caches; no cache migration
+is needed. Keep LSP4IJ patched4 and the existing UP-008 comparison159. No original
+mod edits, IDE installation, PR, or push. All new commits are signed/DCO and local.
+Final package/native checks and hashes are in workspace
+upstream/VARIADIC_NAMED_TYPES_2026-10-15.md.
+
 # init.lua member reads, guards and remote calls — UP-064/065/066 (2026-10-15)
 
 Three independent fixes based on current upstream/main 96545f45 are integrated
