@@ -29,7 +29,7 @@ use rowan::TextSize;
 
 use ExprCastMode::{All, AsOnly};
 
-use crate::semantic_db::def::{SemanticId, Signature};
+use crate::semantic_db::def::{DeclKind, SemanticId, Signature};
 use crate::semantic_db::flow::{
     FlowAntecedent, FlowEffect, FlowId, FlowNodeKind, FlowTree, LuaClosureId,
 };
@@ -156,7 +156,7 @@ pub fn type_of_decl_assign_target_at(
     decl: &SemanticId,
     offset: TextSize,
 ) -> LuaType {
-    let fallback = || model.type_of_decl(decl).unwrap_or(LuaType::Unknown);
+    let fallback = || decl_assignment_type(model, decl).unwrap_or(LuaType::Unknown);
     let Some(tree) = model.flow_tree() else {
         return fallback();
     };
@@ -185,6 +185,42 @@ pub fn type_of_decl_assign_target_at(
         &mut path,
     )
     .unwrap_or_else(fallback)
+}
+
+/// Inferred literal initializers describe a value, not an immutable assignment
+/// contract. Widen only mutable, unannotated locals when checking writes; reads
+/// still retain the literal, and explicit annotations/inline casts stay exact.
+fn decl_assignment_type(model: &SemanticModel, decl: &SemanticId) -> Option<LuaType> {
+    let ty = model.type_of_decl(decl)?;
+    let Some(facts) = model.file_facts() else {
+        return Some(ty);
+    };
+    let Some(def) = facts.decl_by_id(decl) else {
+        return Some(ty);
+    };
+    if !matches!(
+        def.kind,
+        DeclKind::Local {
+            is_const: false,
+            is_iter: false
+        }
+    ) || def.readonly
+        || def.doc_type_syntax.is_some()
+    {
+        return Some(ty);
+    }
+    let widened = match ty {
+        LuaType::IntegerConst(_) | LuaType::DocIntegerConst(_) | LuaType::FloatConst(_) => {
+            LuaType::Number
+        }
+        LuaType::StringConst(_) | LuaType::DocStringConst(_) => LuaType::String,
+        LuaType::BooleanConst(_) | LuaType::DocBooleanConst(_) => LuaType::Boolean,
+        _ => return Some(ty),
+    };
+    Some(match def.value_expr_syntax {
+        Some(expr) => apply_expr_casts(model, expr, widened, AsOnly),
+        None => widened,
+    })
 }
 
 /// Return only original signatures that reach this read. The value path supplies
@@ -2120,8 +2156,9 @@ fn decl_trace_base(
     path: &PathState,
 ) -> Option<LuaType> {
     match purpose {
-        DeclTracePurpose::ReadValue | DeclTracePurpose::AssignTarget => {
-            model.type_of_decl(decl).map(|ty| finalize(model, ty, path))
+        DeclTracePurpose::ReadValue => model.type_of_decl(decl).map(|ty| finalize(model, ty, path)),
+        DeclTracePurpose::AssignTarget => {
+            decl_assignment_type(model, decl).map(|ty| finalize(model, ty, path))
         }
         DeclTracePurpose::OriginalSignatures(seed) => Some(LuaType::from_vec(
             seed.signatures
@@ -2469,7 +2506,7 @@ fn trace_decl_uncached(
                 .unwrap_or_else(|| {
                     finalize(
                         model,
-                        model.type_of_decl(decl).unwrap_or(LuaType::Unknown),
+                        decl_trace_base(model, decl, purpose, path).unwrap_or(LuaType::Unknown),
                         path,
                     )
                 });
