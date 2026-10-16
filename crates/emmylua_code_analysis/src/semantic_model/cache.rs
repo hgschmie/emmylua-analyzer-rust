@@ -43,6 +43,7 @@ pub(crate) struct TraceStateKey {
 
 #[derive(Default)]
 pub(crate) struct SemanticLocalCache {
+    pub(crate) loop_carried: HashMap<(LuaSyntaxId, SemanticId), CacheEntry<Option<LuaType>>>,
     pub(crate) expr_type: HashMap<(FileId, LuaSyntaxId), CacheEntry<LuaType>>,
     pub(crate) decl_type: HashMap<(FileId, SemanticId), CacheEntry<Option<LuaType>>>,
     pub(crate) member_type: HashMap<(FileId, SemanticId), CacheEntry<Option<LuaType>>>,
