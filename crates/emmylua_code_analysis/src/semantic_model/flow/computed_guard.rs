@@ -51,14 +51,26 @@ pub(super) fn guarded_type(
                     .type_def_of(&generic.get_base_type_id())
                     .is_some_and(|def| model.is_std_file(def.file_id)) => {}
         _ if (!crate::semantic_model::inherited_index::dictionaries(model, &owner_type)
-            .is_empty() || model.member_infos(&owner_type).iter().any(|member| member.id.is_some()))
+            .is_empty()
+            || model
+                .member_infos(&owner_type)
+                .iter()
+                .any(|member| member.id.is_some()))
             && !model
                 .member_infos(&owner_type)
                 .iter()
                 .any(|member| member.key == LuaMemberKey::Name("__index".into())) => {}
         _ => return None,
     }
-    let base = model.type_of_expr(index.get_syntax_id());
+    let mut base = model.type_of_expr(index.get_syntax_id());
+    // Ordinary projection omits nil for some optional named reference fields.
+    // Apply their full contract before deciding whether a guard is needed.
+    if let Some(key) = super::member_key_from_index_expr(model, index)
+        && let Some(member) = model.member_info(&owner_type, &key)
+        && let Some(id) = member.id
+    {
+        base = super::apply_field_nullable(model, &id, base);
+    }
     if !base.is_nullable() {
         return None;
     }
@@ -276,7 +288,8 @@ mod class_field_tests {
     use crate::{DiagnosticCode, VirtualWorkspace};
     fn check(body: &str, safe: bool) {
         let mut ws = VirtualWorkspace::new_with_init_std_lib();
-        let src = format!(r#"
+        let src = format!(
+            r#"
 ---@class Record
 ---@field value integer
 ---@class Registry
@@ -289,8 +302,13 @@ mod class_field_tests {
 local function f(registry, key, other)
 {body}
 end
-"#);
-        assert_eq!(ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &src), safe, "{body}");
+"#
+        );
+        assert_eq!(
+            ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &src),
+            safe,
+            "{body}"
+        );
     }
     #[test]
     fn computed_class_fields_keep_matching_guards() {
@@ -298,7 +316,9 @@ end
             "if registry[key] then print(registry[key].value) end",
             "local value = registry[key] and registry[key].value",
             "if not (registry[key] and registry[key].value) then return end",
-        ] { check(body, true); }
+        ] {
+            check(body, true);
+        }
     }
     #[test]
     fn computed_class_fields_reject_stale_or_different_guards() {
@@ -308,6 +328,8 @@ end
             "if registry[key] then mutate(); print(registry[key].value) end",
             "if registry[key] then print(registry[other].value) end",
             "if registry[key] then registry[key] = nil; print(registry[key].value) end",
-        ] { check(body, false); }
+        ] {
+            check(body, false);
+        }
     }
 }

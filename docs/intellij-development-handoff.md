@@ -1,3 +1,26 @@
+# LTN loop, guard and initialization diagnostics — UP-071–074
+
+2026-10-15 task, final validation 2026-10-16. Standalone signed fix branches:
+UP-071 70df73bf (UP-029/060 prerequisites), UP-072 d47ab845 (UP-060 prerequisite),
+UP-073 dd6db84a and UP-074 8d1db76d (independent upstream/main96545f45).
+Initial signed work picks: 5637d942, 0409767e, 2b2e09ce, 22066620. Follow-up
+integration includes the final standalone optional-field and loop performance
+adjustments, plus two work-only interactions: UP-061 loop-entry widening must
+preserve inline casts, and computed guards need optional named-field contracts
+before testing nullability. Guard/invalid-value controls remain enabled.
+
+All 1,758 combined analysis tests and 267 server tests pass with all features;
+Clippy with all targets/features and -Dwarnings and rustfmt pass. Standalone
+UP-074 passes 1,473 tests, including loop-summary trace counts and cycle checks.
+Other standalone branch validation is recorded in the workspace triage report.
+The generated std-zh_CN test outputs were restored; no mod files were edited.
+
+Build EmmyLua2 168, update FDE's development pin and ship FDE0.8.6-dev for its
+separate information/hint summary and filters. Keep normal UP-045 and LSP4IJ
+patched4. Package/protocol evidence and remaining-diagnostic triage are maintained
+in workspace upstream/LTN_FLOW_TRIAGE_2026-10-15.md. New fixes remain local; no PRs.
+Previous UP-069/070 plus all outstanding work/package heads were pushed first.
+
 # LocalisedString arrays — UP-069/070 (2026-10-15)
 
 Independent UP-069 fix/array-union-alias-compatibility is signed a916fa61 on

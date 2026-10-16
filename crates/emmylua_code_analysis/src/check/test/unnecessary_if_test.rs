@@ -227,7 +227,9 @@ end
 #[test]
 fn optional_named_fields_are_not_always_truthy() {
     let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
-    assert!(ws.has_no_diagnostic(crate::DiagnosticCode::UnnecessaryIf, r#"
+    assert!(ws.has_no_diagnostic(
+        crate::DiagnosticCode::UnnecessaryIf,
+        r#"
 ---@alias Id integer
 ---@class Event
 ---@field first? Id
@@ -237,12 +239,15 @@ local function f(event)
     if event.first then print(event.first) end
     if event.second then print(event.second) end
 end
-"#));
+"#
+    ));
 }
 #[test]
 fn required_named_fields_are_always_truthy() {
     let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
-    assert!(!ws.has_no_diagnostic(crate::DiagnosticCode::UnnecessaryIf, r#"
+    assert!(!ws.has_no_diagnostic(
+        crate::DiagnosticCode::UnnecessaryIf,
+        r#"
 ---@alias Id integer
 ---@class Event
 ---@field first Id
@@ -250,7 +255,8 @@ fn required_named_fields_are_always_truthy() {
 local function f(event)
     if event.first then print(event.first) end
 end
-"#));
+"#
+    ));
 }
 
 #[test]
@@ -263,8 +269,13 @@ fn loop_exit_preserves_possible_boolean_assignments() {
         "for _, value in pairs(values) do for _, other in pairs(values) do found = true end end",
     ] {
         let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
-        let source = format!("---@param values boolean[]\n---@param limit integer\n---@param flag boolean\nlocal function f(values, limit, flag)\nlocal found = false\n{body}\nif found then print(found) end\nend");
-        assert!(ws.has_no_diagnostic(crate::DiagnosticCode::UnnecessaryIf, &source), "{body}");
+        let source = format!(
+            "---@param values boolean[]\n---@param limit integer\n---@param flag boolean\nlocal function f(values, limit, flag)\nlocal found = false\n{body}\nif found then print(found) end\nend"
+        );
+        assert!(
+            ws.has_no_diagnostic(crate::DiagnosticCode::UnnecessaryIf, &source),
+            "{body}"
+        );
     }
 }
 
@@ -279,7 +290,12 @@ fn loop_exit_retains_definite_and_unreachable_cases() {
         "repeat found = true until flag",
     ] {
         let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
-        let source = format!("---@param values boolean[]\n---@param flag boolean\nlocal function f(values, flag)\nlocal found = false\n{body}\nif found then print(found) end\nend");
-        assert!(!ws.has_no_diagnostic(crate::DiagnosticCode::UnnecessaryIf, &source), "{body}");
+        let source = format!(
+            "---@param values boolean[]\n---@param flag boolean\nlocal function f(values, flag)\nlocal found = false\n{body}\nif found then print(found) end\nend"
+        );
+        assert!(
+            !ws.has_no_diagnostic(crate::DiagnosticCode::UnnecessaryIf, &source),
+            "{body}"
+        );
     }
 }

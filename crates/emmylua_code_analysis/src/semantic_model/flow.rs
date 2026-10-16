@@ -614,7 +614,9 @@ pub fn type_of_expr_at(
                     && let Some(prefix) = index_expr.get_prefix_expr()
                 {
                     let prefix_ty = type_of_expr_at(model, prefix.get_syntax_id(), offset);
-                    if let Some(prefix_member_ty) = model.member_type(&prefix_ty, &key).map(|typ| apply_field_nullable(model, &member_id, typ))
+                    if let Some(prefix_member_ty) = model
+                        .member_type(&prefix_ty, &key)
+                        .map(|typ| apply_field_nullable(model, &member_id, typ))
                         && !matches!(prefix_member_ty, LuaType::Unknown | LuaType::Any)
                         && (member_type_more_specific(model, &prefix_member_ty, &member_ty)
                             || matches!(&prefix_ty, LuaType::Generic(_)))
@@ -1518,7 +1520,12 @@ fn trace_decl(
     // conditional chain otherwise re-derives the same states along exponentially
     // many routes. Graphs with loops keep the uncached path (see the type note on
     // `cache::TraceStateKey`).
-    if tree.has_complex_control() {
+    // Summarized loops often have no graph cycles. With no incoming guard/cast
+    // facts, their state is independent of both the route and visited set too.
+    // Keep nonempty paths and actual cycles on the conservative uncached route.
+    if tree.has_complex_control()
+        && (tree.has_cycles() || !path.narrowings.is_empty() || !path.casts.is_empty())
+    {
         return trace_decl_uncached(model, decl, tree, flow_id, options, mode, visited, path);
     }
     let key = cache::TraceStateKey {
