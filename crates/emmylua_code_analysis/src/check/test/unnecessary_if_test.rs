@@ -274,3 +274,38 @@ end
     assert_eq!(array.get_base(), &ws.ty("Item"));
     assert_eq!(array.get_len(), &crate::LuaArrayLen::Min(1));
 }
+
+#[test]
+fn optional_named_fields_are_not_always_truthy() {
+    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    assert!(ws.has_no_diagnostic(
+        crate::DiagnosticCode::UnnecessaryIf,
+        r#"
+---@alias Id integer
+---@class Event
+---@field first? Id
+---@field second? Id
+---@param event Event
+local function f(event)
+    if event.first then print(event.first) end
+    if event.second then print(event.second) end
+end
+"#
+    ));
+}
+#[test]
+fn required_named_fields_are_always_truthy() {
+    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    assert!(!ws.has_no_diagnostic(
+        crate::DiagnosticCode::UnnecessaryIf,
+        r#"
+---@alias Id integer
+---@class Event
+---@field first Id
+---@param event Event
+local function f(event)
+    if event.first then print(event.first) end
+end
+"#
+    ));
+}
