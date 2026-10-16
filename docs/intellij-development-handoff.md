@@ -1,3 +1,41 @@
+# Guarded collections and loop-carried values — UP-060 / UP-061 (2026-10-15)
+
+LTN `script/console.lua` exposed two flow-analysis regressions. UP-060
+`fix/stable-global-index-guards` (`d5b17179`) extends the shared stable-access
+representation to global roots, field/literal keys and inherited dictionary
+contracts. It reuses existing condition facts for guards, including short-circuit
+expressions; it does not add another special case for one `and/or` spelling.
+Mutation, calls, scope changes, custom `_ENV` and explicit `__index` handlers
+remain conservative. Its upstream/main `96545f45` stack has real prerequisites:
+UP-033 (`878d838d`, from `c5bc9d11`) and UP-059 (`702bf9e2`, from `3704f8cd`).
+Submit those first. UP-016 is not a standalone prerequisite; integration also
+exercises its nullable read policy.
+
+UP-061 `fix/loop-carried-literal-types` (`54ea951c`) is independent on the same
+upstream base. It preserves loop-entry nodes and combines the entry value with
+possible later-iteration assignments, widening mutable literals. It covers all
+four loop forms, nested loops, multiple return slots and pre-loop assignments.
+Locals created inside a loop, shadowed declarations, independent resets and
+explicit local/parameter contracts retain their appropriate precision. This is a
+conservative loop-entry transfer, not a complete fixed-point CFG rewrite.
+
+Signed work cherry-picks `f309871b` / `54640e51` preserve the development base
+and all existing patches. A real-mod regression check caught an initial widening
+of an annotated array parameter to `Array|{}`; UP-061 now preserves the parameter
+annotation, with an exact-type regression. That intermediate build is not shipped.
+
+Both minimal reproductions pass before the upstream refactor (`aaaca684`) and
+fail in its first commit (`3474c99d`) and before our first merged contribution
+(`1c8589bb`). They were not introduced by our merged patches.
+
+The normal UP-045 package advances to EmmyLua2 build162. Keep the existing FDE
+0.8.3-dev and LSP4IJ patched4 ZIPs; update only FDE's development analyzer pin.
+The one-off UP-008 package stays build159. Prior outstanding UP-058/059 and
+work/package/pin changes were pushed first, at the user's request; these new
+fixes remain local, with no PR or IDE installation. Final validation and archive
+provenance are recorded in workspace `upstream/CONSOLE_GUARDS_LOOP_2026-10-15.md`
+and analyzer `build/investigations/console-guards-loop-20261015/`.
+
 # Enum assertions and inherited dictionaries — UP-058 / UP-059 (2026-10-15)
 
 Two independent fixes are based on upstream/main `96545f45`:
