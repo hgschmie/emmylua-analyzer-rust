@@ -194,8 +194,56 @@ end
             .chunk()
             .unwrap()
             .descendants::<LuaIndexExpr>()
-            .find(|index| index.syntax().text().to_string() == "rows[key]")
+            .find(|index| index.syntax().text() == "rows[key]")
             .unwrap();
         assert!(super::entry_type(&model, &index, index.get_position()).is_none());
+    }
+}
+
+// Work integration with UP-016's opt-in dictionary reads.
+#[cfg(test)]
+mod strict_dictionary_tests {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    #[test]
+    fn iterator_facts_work_with_strict_dictionary_reads() {
+        for strict in [false, true] {
+            for (body, guarded) in [
+                (
+                    "for train_id in pairs(dispatcher.Deliveries) do print(dispatcher.Deliveries[train_id].count) end",
+                    true,
+                ),
+                (
+                    "for train_id in pairs(dispatcher.Deliveries) do opaque(); dispatcher.Deliveries[train_id].count = 1 end",
+                    true,
+                ),
+                (
+                    "for train_id in pairs(dispatcher.Deliveries) do dispatcher.Deliveries[train_id] = nil; print(dispatcher.Deliveries[train_id].count) end",
+                    false,
+                ),
+                ("print(dispatcher.Deliveries[1].count)", false),
+            ] {
+                let mut ws = VirtualWorkspace::new_with_init_std_lib();
+                let mut config = ws.get_emmyrc();
+                config.strict.table_index = strict;
+                ws.update_emmyrc(config);
+                let source = format!(
+                    r#"
+                ---@class Delivery
+                ---@field count integer
+                ---@class Dispatcher
+                ---@field Deliveries table<integer,Delivery>
+                ---@param dispatcher Dispatcher
+                local function test(dispatcher)
+                    {body}
+                end
+                "#
+                );
+                assert_eq!(
+                    ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+                    !strict || guarded,
+                    "strict={strict}: {body}"
+                );
+            }
+        }
     }
 }

@@ -1,3 +1,37 @@
+# Stop-update fixes and short package versions — 2026-10-16
+
+The work branch continues from validated build171 (`ea1f7fbb`) on upstream
+`ef6c06a7`, adding three local contributions:
+
+- UP-079 `fix/optional-alias-parameters`, `581343c6`: compare an optional
+  parameter's complete contract with every possible argument type.
+- UP-080 `fix/member-use-site-hover`, `dbe5f0ec` (two commits): show member
+  read types at the cursor, and recover nullable-receiver documentation through
+  presentation identity only. Do not strip nil in general member resolution:
+  that regressed the existing many-loop optional-reference guard test.
+- UP-081 `fix/iterator-entry-guards`, `96f8d38d`: pairs/ipairs keys identify
+  existing entries until conflicting effects. Depends on UP-078 and its
+  prerequisites; work-only integration tests strict.tableIndex off/on.
+
+UP-079/080 reproduce after the upstream refactor and before our first merged
+contribution, but pass before the refactor. Iterator entry tracking was absent
+before the refactor too (array controls); strict dictionary reads expose it for
+Deliveries. The previous guard patches address explicit tests/assignments, not
+iterator provenance. No original mod files were edited.
+
+All 2,844 workspace/all-feature tests pass, including 1,831 analysis and 271
+server tests, plus Clippy with warnings denied and rustfmt. The copied LTN mod
+now shows LuaTrain after the parked-train guard, full get_item_count docs, no
+warnings at348/378, and no warnings in request_processor.lua. Eight unrelated
+stop-update warnings remain. Evidence: analyzer
+`build/investigations/stop-update-20261016/`.
+
+Package: EmmyLua2 `0.30.0-172` (suffix removed), custom analyzer on macOS arm64.
+FDE keeps 0.8.6-dev and its existing ZIP; update development pins. LSP4IJ now
+uses `0.21.1-6` with a monotonic local `pluginBuild` counter. See workspace
+`upstream/LTN_STOP_UPDATE_2026-10-16.md` for final package receipts.
+These changes and branches are local; no PRs were opened and nothing pushed.
+
 # Work-branch rebuild on upstream/main — 2026-10-16
 
 The development branch is rebuilt from upstream/main
