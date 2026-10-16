@@ -282,6 +282,9 @@ mod test {
 fn test_computed_guards() {
     use crate::{DiagnosticCode, VirtualWorkspace};
     for body in [
+        "if rows[key] then mutate() local value = rows[key][other] end",
+        "if rows[key] then local changed = mutate() local value = rows[key][other] end",
+        "if rows[key] and mutate() then local value = rows[key][other] end",
         "if rows[key] and rows[key][other] then local value = rows[key][other] end",
         "if rows[key] ~= nil then local value = rows[key][other] end",
         "if nil ~= rows[key] then local value = rows[key][other] end",
@@ -325,9 +328,6 @@ fn test_computed_guards_do_not_cross_mutations() {
         "if rows[key] then rows[key] = nil local value = rows[key][other] end",
         "if rows[key] then alias[key] = nil local value = rows[key][other] end",
         "if rows[key] then local key = nextkey local value = rows[key][other] end",
-        "if rows[key] then mutate() local value = rows[key][other] end",
-        "if rows[key] then local changed = mutate() local value = rows[key][other] end",
-        "if rows[key] and mutate() then local value = rows[key][other] end",
         "if rows[key] then local deferred = function() local value = rows[key][other] end end",
         "if rows[key] then end local value = rows[key][other]",
         "if rows[key] or rows[key][other] then end",
@@ -484,6 +484,8 @@ end
 #[test]
 fn guarded_global_inherited_index_reads() {
     for body in [
+        "if registry.entries[key] then refresh(); return registry.entries[key].label end",
+        "if registry.entries[key] then local result = refresh(); return registry.entries[key].label end",
         "return registry.entries[key] and registry.entries[key].label or ''",
         "if registry.entries[key] then return registry.entries[key].label end",
         "if not registry.entries[key] then return end; return registry.entries[key].label",
@@ -499,7 +501,7 @@ fn guarded_global_inherited_index_reads() {
 }
 
 #[test]
-fn guarded_global_index_facts_expire_on_mutations_and_calls() {
+fn guarded_global_index_facts_expire_on_mutations() {
     for body in [
         "return registry.entries[key].label",
         "if registry.entries[record.id] then record.id = other; return registry.entries[record.id].label end",
@@ -510,8 +512,6 @@ fn guarded_global_index_facts_expire_on_mutations_and_calls() {
         "if registry.entries[key] then registry = replacement; return registry.entries[key].label end",
         "if registry.entries[key] then registry.entries[key] = nil; return registry.entries[key].label end",
         "if registry.entries[key] then local alias = registry.entries; alias[key] = nil; return registry.entries[key].label end",
-        "if registry.entries[key] then refresh(); return registry.entries[key].label end",
-        "if registry.entries[key] then local result = refresh(); return registry.entries[key].label end",
         "if registry.entries[key] then local key = other; return registry.entries[key].label end",
         "if registry.entries[key] then local registry = replacement; return registry.entries[key].label end",
         "if registry.entries[key] then return function() return registry.entries[key].label end end",
