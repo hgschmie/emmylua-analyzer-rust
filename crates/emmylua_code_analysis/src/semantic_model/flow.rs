@@ -16,6 +16,7 @@ mod array;
 #[cfg(test)]
 mod callable_tests;
 mod guards;
+mod loop_carried;
 
 use std::collections::HashSet;
 use std::ops::ControlFlow;
@@ -71,7 +72,42 @@ fn decl_owner_syntax_start(model: &SemanticModel, decl: &SemanticId) -> Option<T
         .map(|syntax| syntax.get_range().start())
 }
 
-/// Flow-sensitive type of `decl` at `offset` (assignment-aware + condition narrowing; `Unknown` falls back to the declared type).
+// Captured assignments require closure-entry handling even when the current
+// closure has no loop. Keep newly enabled fast reads within the declaration's
+// own closure; text order alone cannot describe an enclosing writer's effects.
+// The public query selects a lexical offset, not necessarily a read node.
+// At token boundaries the token on the right supplies the scope; missing owner
+// or query syntax declines this shortcut. This does not detect token ambiguity.
+fn declaration_is_in_query_closure(
+    model: &SemanticModel,
+    decl: &SemanticId,
+    offset: TextSize,
+) -> bool {
+    let Some(chunk) = model.chunk() else {
+        return false;
+    };
+    let Some(owner) = model
+        .file_facts()
+        .and_then(|facts| facts.decl_by_id(decl))
+        .and_then(|decl| decl.owner_syntax)
+        .and_then(|syntax| syntax.to_node_from_root(chunk.syntax()))
+    else {
+        return false;
+    };
+    let Some(query) = chunk
+        .syntax()
+        .token_at_offset(offset)
+        .right_biased()
+        .and_then(|token| token.parent())
+    else {
+        return false;
+    };
+    LuaClosureId::from_node(&owner) == LuaClosureId::from_node(&query)
+}
+
+/// Flow-sensitive type of `decl` at the lexical program point `offset`.
+/// Expression readers normally pass the read start; token boundaries select the
+/// scope on their right. Unknown flow results fall back to the declared type.
 ///
 /// When `offset` lies on the assignment flow node for `x = value`, **this assignment does not participate in the target type** —
 /// the query answers "what x was before the assignment" (`---@cast x +T` / narrowing still applies).
@@ -86,9 +122,20 @@ pub fn type_of_decl_at(model: &SemanticModel, decl: &SemanticId, offset: TextSiz
     // No assignment to this decl and no narrowing/merge event after declaration:
     // the flow value is exactly the declared value. This keeps straight-line
     // initialization sections from walking O(offset) CFG nodes for every read.
+    // A reachable loop/label can bring a textually later assignment back to
+    // this read. Unrelated loops elsewhere in the file must not disable this
+    // fast path; use the existing per-node CFG reachability index.
+    // Only assigned declarations pay for the closure lookup. Keep this lazy so
+    // missing declaration metadata still takes the normal fallback immediately.
+    let can_skip_assignment_trace = || {
+        !tree.has_decl_assignment(decl)
+            || (!tree.is_loop_reachable(flow_id)
+                && declaration_is_in_query_closure(model, decl, offset))
+    };
     if let Some(decl_start) = decl_owner_syntax_start(model, decl)
+        && can_skip_assignment_trace()
         && tree.latest_decl_assignment(decl, offset).is_none()
-        && !tree.has_flow_event_between(decl_start, offset, true)
+        && !tree.has_flow_event_between_at(flow_id, decl_start, offset, true)
     {
         #[cfg(test)]
         flow_metrics::record_fast_decl_hit();
@@ -2233,6 +2280,32 @@ fn trace_decl_uncached(
                     if !is_decl_self_assignment(model, decl, *value_syntax) {
                         break 'trace Some(LuaType::Unknown);
                     }
+                }
+            }
+        }
+        // An independent assignment in this iteration overwrites the loop-entry
+        // state. Keep its literal precision instead of widening through the loop.
+        // Backtracking pushes frames in reverse execution order, so last() is
+        // the earliest reached assignment and decides whether entry is needed.
+        // Assignment frames record the write before following its antecedent.
+        // ReadValue enables assignments; AssignTarget intentionally retains only
+        // the declaration/cast contract. An empty frame stack is a direct read,
+        // so it also receives loop-entry state.
+        if matches!(purpose, DeclTracePurpose::ReadValue) {
+            for effect in tree.get_flow_effects(current) {
+                if let FlowEffect::LoopEntry(syntax) = effect
+                    // Inspect an RHS only when backtracking actually reaches a
+                    // loop entry. The syntax dependency is cached across traces.
+                    && frames.iter().rev().find_map(|frame| match frame {
+                        DeclTraceFrame::Assignment(frame) => Some(frame),
+                        _ => None,
+                    }).is_none_or(|frame| {
+                        loop_carried::references_decl(model, frame.value_syntax, decl)
+                    })
+                    && let Some(entry) = first_antecedent(tree, node.antecedent.as_ref())
+                    && let Some(typ) = loop_carried::loop_carried_type(model, decl, *syntax, entry)
+                {
+                    break 'trace Some(finalize(model, typ, path));
                 }
             }
         }

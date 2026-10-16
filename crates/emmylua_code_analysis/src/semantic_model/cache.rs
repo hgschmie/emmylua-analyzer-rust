@@ -2,6 +2,9 @@
 //!
 //! A root model and its `model_for` views share one cache. Recursion state is
 //! represented by `CacheEntry::InProgress` so re-entry checks stay O(1).
+//! Each root model borrows an immutable database and creates a fresh cache. File
+//! edits require a new model; the incompleteness revision below is a query-state
+//! counter, not a file revision. Syntax-only facts can live for the whole model.
 
 use hashbrown::{HashMap, HashSet};
 use std::cell::Cell;
@@ -243,6 +246,13 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) evaluation_errors: HashSet<Option<LuaTypeDeclId>>,
     /// Closure returns depend on the VM environment: track active queries only.
     pub(crate) closure_return_in_progress: HashSet<(FileId, LuaSyntaxId)>,
+    pub(crate) loop_carried:
+        HashMap<(FileId, LuaSyntaxId, SemanticId), CacheEntry<Option<LuaType>>>,
+    /// Completed syntax/CFG reachability within one immutable model snapshot.
+    /// File edits create a fresh model/cache, so FileId needs no revision here.
+    pub(crate) loop_statement_reachable: HashMap<FileId, Rc<Vec<bool>>>,
+    /// Syntax/name-identity facts are stable for the shared model snapshot.
+    pub(crate) loop_rhs_dependencies: HashMap<(FileId, LuaSyntaxId, SemanticId), bool>,
     pub(crate) expr_type: HashMap<(FileId, LuaSyntaxId), CacheEntry<LuaType>>,
     pub(crate) decl_type: HashMap<(FileId, SemanticId), CacheEntry<Option<LuaType>>>,
     pub(crate) member_type: HashMap<(FileId, SemanticId), CacheEntry<Option<LuaType>>>,
@@ -302,6 +312,7 @@ impl SemanticLocalCache {
         self.member_type.retain(|_, entry| entry.is_ready());
         self.expr_type_at.retain(|_, entry| entry.is_ready());
         self.trace_state.retain(|_, entry| entry.is_ready());
+        self.loop_carried.retain(|_, entry| entry.is_ready());
         self.type_check.retain(|_, entry| entry.is_ready());
         self.alias_targets.retain(|_, entry| entry.is_ready());
         self.alias_heads.retain(|_, entry| entry.is_ready());
