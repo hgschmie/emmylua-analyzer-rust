@@ -390,7 +390,7 @@ fn check_variadic_type_compact(
                 }
                 VariadicType::Multi(compact_multi) => {
                     for compact_type in compact_multi {
-                        check_simple_type_compact(
+                        super::check_general_type_compact(
                             context,
                             source_base,
                             compact_type,
@@ -400,7 +400,9 @@ fn check_variadic_type_compact(
                 }
             },
             _ => {
-                check_simple_type_compact(
+                // A variadic element can be a named type, alias or composite,
+                // so it must use the same dispatcher as an ordinary value.
+                super::check_general_type_compact(
                     context,
                     source_base,
                     compact_type,
