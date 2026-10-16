@@ -1,3 +1,592 @@
+# LTN tools.lua guards and first-result conditions — UP-077/078 (2026-10-16)
+
+UP-077 is a small internal backport of upstream 0bc11af2's first-result truthiness
+predicates. Branch fix/condition-first-result-backport at signed b78a0b61; work
+pick db7e8d02. Do not submit it upstream. It fixes next(table) being classified
+as always truthy by looking at the first return result, not the entire pack.
+
+UP-078 fix/computed-guard-effect-boundaries at signed ca4dec98 starts from fresh
+upstream ef6c06a7 and replays prerequisites UP-033/059/060/029/071/072/061. Work
+pick bcee9563 imports only the new patch, retaining UP-073 optional-field glue.
+Opaque calls preserve facts by explicit user choice. Visible local-closure
+mutations, known mutators and parent/key/alias writes still invalidate them.
+Child writes and fresh unescaped local output tables preserve parent guards;
+loop effects include later writes that may have run on a preceding iteration.
+This is a pragmatic flow policy, not a proof that opaque calls are pure.
+
+The work-only strict-table-index tests now reflect that policy. The standalone
+also preserves newer upstream static-member assignment precision and recovers
+array contracts when recursive element inference is unknown. All 1,547 standalone
+analysis tests, and 1,770 combined analysis plus 267 server tests pass, with
+Clippy/all-targets/all-features/-Dwarnings and rustfmt. The known std-zh_CN test
+outputs were inspected/restored. No original mod edits, push or PR operation.
+
+Release raw-LSP comparison on a fresh read-only copy of the current LTN sources:
+script/tools.lua goes from exactly the requested three warnings (284, 522, 577)
+to zero diagnostics. Its capacity hover remains number. Package EmmyLua2 build170
+only; FDE stays0.8.6-dev with its development pin updated. Final archive, native
+integration and frozen full-mod comparison evidence is recorded in workspace
+upstream/LTN_TOOLS_GUARDS_2026-10-16.md and versioned in FDE docs/. Retain normal
+UP-045 and LSP4IJ patched4. Only macOS arm64 receives the patched analyzer.
+
+# LTN priority follow-ups — UP-075/076 (2026-10-16)
+
+Standalone branches are based on freshly fetched upstream/main ca9bec3b:
+
+- UP-075 `fix/string-alias-index-keys`, a0d5b4db: accept aliases of string
+  as dictionary/class index keys. Regression tests cover aliases/chains/unions,
+  cross-file definitions, incompatible keys and alias cycles. Signed work pick
+  2f1174f0 consolidates its helper with UP-042 and retains the existing depth cap.
+- UP-076 `fix/inferred-literal-assignment-contracts`, f360eb96: widen inferred
+  mutable-local literal contracts for writes, retaining literal reads, explicit
+  annotations/aliases, inline assertions and named casts. Signed work pick 9a0696aa.
+
+Both fixes are independently reproducible on upstream main and need no pending
+patches. UP-075 complements UP-042; UP-076 complements UP-061's loop-read widening.
+Each standalone suite passes 1,521 analysis tests with all features, Clippy and
+rustfmt. The work-only negative test uses ordinary dictionaries: its older
+member resolver accepts an invalid integer alias on a string-indexed class
+before this checker runs. Reproduced independently using packaged build168;
+this pre-existing false negative is not introduced by UP-075. The standalone
+negative test checks both classes and dictionaries. Track the discrepancy when
+refreshing the newer upstream member/inference changes. No PR or push was performed. Original mods remain read-only.
+
+The minimal nullable-next condition already passes upstream ca9bec3b but fails
+our existing integration baseline. Do not submit a duplicate fix; evaluate it
+when refreshing the larger union/variadic upstream changes. That upstream
+refactor was not imported as part of these targeted changes.
+
+Build EmmyLua2 169 only; retain FDE0.8.6-dev and update its development pin/tests.
+See workspace upstream/LTN_PRIORITY_FOLLOWUPS_2026-10-16.md for prioritization,
+packaged validation and remaining limitations. Keep normal UP-045/LSP4IJ patched4.
+
+# LTN loop, guard and initialization diagnostics — UP-071–074
+
+2026-10-15 task, final validation 2026-10-16. Standalone signed fix branches:
+UP-071 70df73bf (UP-029/060 prerequisites), UP-072 d47ab845 (UP-060 prerequisite),
+UP-073 dd6db84a and UP-074 8d1db76d (independent upstream/main96545f45).
+Initial signed work picks: 5637d942, 0409767e, 2b2e09ce, 22066620. Follow-up
+integration includes the final standalone optional-field and loop performance
+adjustments, plus two work-only interactions: UP-061 loop-entry widening must
+preserve inline casts, and computed guards need optional named-field contracts
+before testing nullability. Guard/invalid-value controls remain enabled.
+
+All 1,758 combined analysis tests and 267 server tests pass with all features;
+Clippy with all targets/features and -Dwarnings and rustfmt pass. Standalone
+UP-074 passes 1,473 tests, including loop-summary trace counts and cycle checks.
+Other standalone branch validation is recorded in the workspace triage report.
+The generated std-zh_CN test outputs were restored; no mod files were edited.
+
+Build EmmyLua2 168, update FDE's development pin and ship FDE0.8.6-dev for its
+separate information/hint summary and filters. Keep normal UP-045 and LSP4IJ
+patched4. Package/protocol evidence and remaining-diagnostic triage are maintained
+in workspace upstream/LTN_FLOW_TRIAGE_2026-10-15.md. New fixes remain local; no PRs.
+Previous UP-069/070 plus all outstanding work/package heads were pushed first.
+
+# LocalisedString arrays — UP-069/070 (2026-10-15)
+
+Independent UP-069 fix/array-union-alias-compatibility is signed a916fa61 on
+upstream/main 96545f45, integrated with signed work pick bcb37d34. Array values
+now try union alternatives after alias expansion, retaining element checks and
+recursion guards. Five of eight regressions failed before; all eight pass after,
+including invalid elements, nil, recursive aliases and alias cycles. Standalone
+1,476 standard analysis tests, combined 1,746 standard analysis and 264 standard
+server tests, Clippy/fmt pass. Slow-feature coverage is recorded in the final report.
+UP-041 is complementary (the parameter path); no pending prerequisite or work glue.
+
+UP-070 in the toolkit (fix/localised-string-api-types, 11419a3) changes handwritten
+runtime/data aliases to the API's recursive array types and restores runtime nil.
+Issue #1195's false optional-field diagnostics no longer reproduce on upstream
+or our work build; invalid-field controls remain rejected. The old coordinate
+object allowance is removed to match the documented union. Both fixes are needed
+for the user's array-to-LocalisedString cast/return case.
+
+EmmyLua2 build167 and FDE 0.8.5-dev package the analyzer and toolkit respectively.
+Retain LSP4IJ patched4, normal UP-045 and UP-008 comparison159. Prior outstanding
+UP-067/068 and work/package/FDE commits were pushed before this task. The new
+fixes remain local; no PR or IDE install. Native/package validation details and
+hashes live in workspace upstream/LOCALISED_STRING_FIXES_2026-10-15.md.
+
+# Named variadic values and remote return shapes — UP-067/068 (2026-10-15)
+
+UP-067 is an independent analyzer fix on upstream/main 96545f45:
+fix/variadic-named-type-compatibility, signed 4982e0ee; work pick 792564e1.
+Variadic base elements use general compatibility when matching scalar or fixed
+multiple-result targets, preserving named enum/class/alias rules. Eight regressions
+include incompatible types; 1,477 standalone and 1,739 combined analysis tests,
+267 combined server tests, Clippy and rustfmt pass. UP-041 (union aliases), UP-032
+(callback return sequences) and UP-066 (dependent remote-call constraints) are
+complementary, not standalone prerequisites.
+
+The user's challenge revealed that this is not the whole remote.call fix.
+LuaRemote.InterfaceMap lookup already succeeds. FMTK emits ReturnType<FF>...
+unconditionally; ReturnType already carries the return shape in EmmyLua. The
+extra ellipsis repeats a scalar and wraps an existing sequence again. Removing
+it for EmmyLua alone preserves known single/fixed multiple/genuine variadic
+returns, and the unknown-interface Any?... fallback. The existing build165 clears
+all four LTN Interface_Demo/control.lua warnings with only this annotation change.
+The separate real Event... incompatibility still reproduces in build165.
+
+UP-068 lives in the toolkit, fix/emmylua-remote-return-shape at 177588b, integrated
+by fast-forward into work/intellij-toolkit. It builds on the UP-014 target selector;
+LuaLS annotations and argument-pack metadata are unchanged. Its CLI regression
+fails before and passes after the fix for default/LuaLS/EmmyLua targets.
+
+EmmyLua2 build166 packages UP-067 (macOS arm64). FDE 0.8.4-dev packages the updated
+FMTK generator, so this task requires an FDE archive as well as its analyzer pin.
+The CLI-content hash already invalidates generated API caches; no cache migration
+is needed. Keep LSP4IJ patched4 and the existing UP-008 comparison159. No original
+mod edits, IDE installation, PR, or push. All new commits are signed/DCO and local.
+Final package/native checks and hashes are in workspace
+upstream/VARIADIC_NAMED_TYPES_2026-10-15.md.
+
+# init.lua member reads, guards and remote calls — UP-064/065/066 (2026-10-15)
+
+Three independent fixes based on current upstream/main 96545f45 are integrated
+by signed provenance-preserving cherry-picks onto the existing work baseline:
+
+- UP-064 fix/member-self-assignment-types: 652760ef -> 2033427e. Only completed
+  earlier assignments may override a declared class field during read inference.
+  This fixes stop.depot_priority = stop.depot_priority or 0; the literal 0 itself
+  was already integer. Parallel assignments read the previous state.
+- UP-065 fix/unknown-logical-and: fb58fb53 -> 4e9493cd. Unknown/Any logical-and
+  preserves nil/false and the RHS alternatives instead of collapsing to Nil.
+  This repairs the unannotated oldVersion migration guards independently of the
+  stable collection-guard patches.
+- UP-066 fix/dependent-generic-call-constraints: a5b16f22 / 10dd78d3 -> 5c26f716 / 8b59d7d6. Instantiate
+  dependent function constraints from earlier arguments, retain literal bindings,
+  and resolve computed Parameters/ReturnType fallbacks without prebinding ordinary
+  inference sites. Declared interfaces keep argument/return contracts; undeclared
+  interfaces retain the generic fallback. Existing variadic/callback inference
+  retains raw templates; non-generic calls keep their previous fast path.
+
+The packaged LTN check exposed a second constraint-checking path; UP-066's
+10dd78d3 also instantiates constraints before GenericConstraintMismatch checks.
+One added regression fails before that follow-up, with a negative control.
+There are eleven standalone regressions plus a work-only generated global API
+class test. This exact global-table form uses existing UP-019 ownership support.
+Its integration now retains runtime method identity for generic signatures as
+well as overloads, preserving declared remote-call returns. This small UP-019
+compatibility adjustment is work-only; UP-066's standalone fixes remain independent.
+Generic receivers retain their projected signature: the existing issue_925
+regression protects receiver substitution and method-generic shadowing.
+
+UP-066's named-interface historical reproducer passes before the refactor at
+aaaca684, fails at initial refactor 3474c99d and pre-contribution 1c8589bb.
+It predates our merged contributions. UP-064/065 reproduce on current upstream;
+no earlier historical attribution is claimed for those two.
+Standalone analysis suites pass: 1,478 / 1,476 / 1,478 tests respectively.
+UP-066 checker follow-up passes 1,479 tests plus the previously passed unchanged
+linear-assignment stress test; Clippy and rustfmt pass.
+Combined analysis: all 1,731 tests pass, including generated API calls and
+existing method-generic shadowing. All 267 server tests, Clippy and rustfmt pass. All new branches are signed/DCO and local only;
+no new PRs. Previous outstanding
+UP-060/061/062/063 and prior work/package/FDE heads were pushed first as requested.
+
+Normal UP-045 packaging advances to EmmyLua2 build165 (macOS arm64 patched).
+Update FDE's development analyzer pin only; retain FDE 0.8.3-dev, LSP4IJ patched4
+and UP-008 comparison159. Original mods and installed IDE plugins remain untouched.
+Final combined/native/package evidence and hashes are recorded in workspace
+upstream/INIT_REMOTE_FIXES_2026-10-15.md and analyzer
+build/investigations/remote-call-20261015/.
+
+Two additional probes are out of scope: inline-object interface member projection,
+and integer? or 0.5 losing the noninteger alternative. These are not required to
+resolve the reported init.lua diagnostics and are not claimed fixed here.
+
+# Declared field hover on assignment targets — UP-063 (2026-10-15)
+
+LTN dispatcher.lua:322 shows `tick_state: number = 0` despite the field's
+`ltn.TickState` annotation. Reads retain the enum type; the write-side hover uses
+its synthetic runtime member record instead of the class field. Numeric value
+compatibility (UP-062) and core inference are unchanged by this presentation fix.
+
+Independent branch `fix/declared-field-hover`, signed `aa1a7abc`, is based on
+fresh upstream/main `96545f45`. It projects assignment-target fields through the
+scoped receiver type, falling back to a named receiver's declared assignment
+contract when its initializer projects to an anonymous table. Existing hover
+rendering retains literal values and field documentation. Explicit runtime
+annotations, function signatures, generic substitution and ordinary untyped
+members keep their existing behavior. Read hovers bypass the new projection.
+
+Signed work cherry-pick `3eed5f00` preserves all local fixes without importing
+the unrelated upstream HashMap refactor. No pending prerequisite; UP-062 is
+complementary. UP-015's asymmetric read/write hover path remains separate.
+Normal UP-045 packaging advances to EmmyLua2 build164. Update FDE's development
+pin only; retain FDE 0.8.3-dev and LSP4IJ patched4. UP-008 comparison stays159.
+No push, PR, original-mod edit or IDE installation. Final validation and archive
+provenance: workspace `upstream/DECLARED_FIELD_HOVER_2026-10-15.md` and analyzer
+`build/investigations/field-contract-hover-20261015/`.
+
+# Numeric enum literal compatibility — UP-062 (2026-10-15)
+
+LTN `script/dispatcher.lua` rejects `ltn_tick_state.reset` (numeric value 0)
+in two returns and one assignment. The enum declaration is valid. Independent
+`fix/enum-literal-compatibility`, signed `8b7d14af`, is based on freshly fetched
+upstream/main `96545f45`. It resolves numeric members from the enum initializer
+in its defining file, applies membership checks consistently to strict and
+assignment compatibility, and checks every source alternative for enum contracts.
+Optional enum targets cannot hide an invalid value behind a valid nil alternative.
+The existing policy accepting broad integer assignments is preserved; arbitrary
+numbers do not become valid strict enum returns. This is not a general Lua
+constant-expression evaluator or a string/boolean enum rewrite.
+
+Signed work cherry-pick `e5b987cf` retains the existing development base and all
+local fixes. UP-028 handles cross-file enum lookup, UP-031 class-valued enum
+members, and UP-058 explicit primitive-to-enum casts. UP-062 complements those
+patches without a pending prerequisite. All six regressions fail on current
+upstream without UP-062. Historical pre-contribution anchors were not run for
+this issue, so no claim is made about the first introducing commit.
+
+Normal UP-045 packaging advances to EmmyLua2 build163. Update only FDE's
+analyzer development pin; retain FDE 0.8.3-dev and LSP4IJ patched4 archives.
+UP-008 comparison remains build159. No push, PR, original-mod edit or IDE
+installation. Final validation and archive details are recorded in workspace
+`upstream/ENUM_LITERAL_COMPATIBILITY_2026-10-15.md` and analyzer
+`build/investigations/dispatcher-enum-20261015/`.
+
+# Guarded collections and loop-carried values — UP-060 / UP-061 (2026-10-15)
+
+LTN `script/console.lua` exposed two flow-analysis regressions. UP-060
+`fix/stable-global-index-guards` (`d5b17179`) extends the shared stable-access
+representation to global roots, field/literal keys and inherited dictionary
+contracts. It reuses existing condition facts for guards, including short-circuit
+expressions; it does not add another special case for one `and/or` spelling.
+Mutation, calls, scope changes, custom `_ENV` and explicit `__index` handlers
+remain conservative. Its upstream/main `96545f45` stack has real prerequisites:
+UP-033 (`878d838d`, from `c5bc9d11`) and UP-059 (`702bf9e2`, from `3704f8cd`).
+Submit those first. UP-016 is not a standalone prerequisite; integration also
+exercises its nullable read policy.
+
+UP-061 `fix/loop-carried-literal-types` (`54ea951c`) is independent on the same
+upstream base. It preserves loop-entry nodes and combines the entry value with
+possible later-iteration assignments, widening mutable literals. It covers all
+four loop forms, nested loops, multiple return slots and pre-loop assignments.
+Locals created inside a loop, shadowed declarations, independent resets and
+explicit local/parameter contracts retain their appropriate precision. This is a
+conservative loop-entry transfer, not a complete fixed-point CFG rewrite.
+
+Signed work cherry-picks `f309871b` / `54640e51` preserve the development base
+and all existing patches. A real-mod regression check caught an initial widening
+of an annotated array parameter to `Array|{}`; UP-061 now preserves the parameter
+annotation, with an exact-type regression. That intermediate build is not shipped.
+
+Both minimal reproductions pass before the upstream refactor (`aaaca684`) and
+fail in its first commit (`3474c99d`) and before our first merged contribution
+(`1c8589bb`). They were not introduced by our merged patches.
+
+The normal UP-045 package advances to EmmyLua2 build162. Keep the existing FDE
+0.8.3-dev and LSP4IJ patched4 ZIPs; update only FDE's development analyzer pin.
+The one-off UP-008 package stays build159. Prior outstanding UP-058/059 and
+work/package/pin changes were pushed first, at the user's request; these new
+fixes remain local, with no PR or IDE installation. Final validation and archive
+provenance are recorded in workspace `upstream/CONSOLE_GUARDS_LOOP_2026-10-15.md`
+and analyzer `build/investigations/console-guards-loop-20261015/`.
+
+# Enum assertions and inherited dictionaries — UP-058 / UP-059 (2026-10-15)
+
+Two independent fixes are based on upstream/main `96545f45`:
+
+- UP-058 `fix/enum-cast-compatibility`, signed `183158c5`: permit an explicit
+  cast from a primitive to an enum whose values have a compatible primitive type.
+  Follow aliases and cross-file enum declarations; reject incompatible primitives
+  and empty enums. Ordinary assignment compatibility is unchanged. The assertion
+  does not convert or validate values at runtime.
+- UP-059 `fix/inherited-dictionary-index`, signed `3704f8cd`: retain generic
+  arguments when following a class's dictionary supertypes. Resolve dynamic,
+  literal, aliased and optional keys, nested inheritance/default parameters and
+  aliases. Explicit members retain precedence; invalid keys still warn. Cyclic
+  inheritance and alias expansion are bounded, and inherited contracts are cached
+  per semantic model.
+
+Signed work cherry-picks `671a5d5e` and `246e04d7` retain the development base
+without importing the unrelated upstream HashMap refactor. Neither standalone
+fix depends on another pending contribution. Work-only integration `447eecc1`
+connects UP-059 to UP-016/017's nullable reads and deletion writes; tests exercise
+strict.tableIndex on/off and declared-member precedence.
+
+Both minimal cases pass before the refactor (`aaaca684`), fail immediately after
+it (`3474c99d`), and fail before our first merged analyzer PR (`1c8589bb`). These
+are upstream regressions predating our contributions. In the actual LTN console,
+CustomCommandData.player_index is uint32?, so players[index] should be LuaPlayer?.
+
+The normal UP-045 package advances to EmmyLua2 build161. UP-008 comparison stays
+at build159. Update FDE's development pin only; retain its existing 0.8.3-dev ZIP
+and LSP4IJ patched4. No original mod edits, IDE installation, push or PR.
+Final validation and package evidence: workspace
+`upstream/ENUM_CAST_CUSTOM_INDEX_2026-10-15.md` and analyzer
+`build/investigations/enum-cast-custom-index-20261015/`.
+
+# Class identity in member values — UP-057 (2026-10-15)
+
+Standalone `fix/class-member-value-identity` (`d28acce3`) is independently based
+on upstream/main `96545f45`. The low-level declaration query now associates
+`@class`/`@enum` annotations with their runtime value before inferring the
+initializer, matching the semantic model. This prevents `M.__index = M` and
+ordinary member references from becoming anonymous recursive table structures.
+Explicit type/module annotations retain priority; no compatibility rule is relaxed.
+
+Signed work cherry-pick `d0097b01` preserves the existing development baseline
+without importing the upstream HashMap refactor. No local prerequisites, including
+the dictionary and read/write patches. Six regressions cover diagnostics, invalid
+assignments, namespaces/scopes, cross-file queries and explicit annotations.
+An older inheritance test was accepting the spurious `a.__index = a` warning;
+its expectation now matches the checker's existing acceptance of inheritance.
+
+Standalone analysis (including stress): 1,475 pass; Clippy and formatting pass.
+Combined work: all 1,679 analysis tests and 257 language-server tests pass.
+The normal UP-045 package advances to EmmyLua2 build160. The one-off UP-008
+comparison remains at build159. FDE's analyzer development pin follows this work
+branch, but its existing 0.8.3-dev ZIP and LSP4IJ patched4 are unchanged. No push,
+PR or installation for this fix. Final integration/protocol/package evidence:
+workspace `upstream/CLASS_MEMBER_IDENTITY_2026-10-15.md`.
+
+# Side-effect module resolution — UP-056 (2026-10-15)
+
+Standalone branch `fix/side-effect-require-resolution`, signed `885a81e1`, is
+based on upstream/main `96545f45`. It checks the caller-aware module lookup
+instead of using the export type to decide whether a require target exists.
+Empty files, side-effect-only files and unknown exports are valid modules;
+missing files still warn, and module visibility remains separately checked.
+No local prerequisite. Signed work cherry-pick `f8cb6059` avoids importing the
+unrelated upstream HashMap refactor. UP-045 remains the normal scheduler.
+
+Standalone analysis: 1,470 tests plus Clippy/fmt pass; combined analysis: 1,673
+pass. Six focused require tests cover unknown exports, empty modules, mapped
+Factorio paths, missing paths and visibility. This also ships in the UP-008
+comparison, which the user currently has installed. Packages are EmmyLua2
+build159 normal/UP-008. FDE separately fixes service startup in 0.8.1-dev;
+LSP4IJ patched4 remains unchanged. Final protocol/package/client evidence:
+workspace `upstream/PROJECT_SERVICES_2026-10-15.md`. Nothing pushed; no PR.
+
+# Request/update ordering — UP-054 (2026-10-14)
+
+The user chose to keep UP-045 after testing both completion variants. Build158
+adds `fix/request-update-ordering`, signed `c0f71524`, independently based on
+upstream/main `96545f45`. Work integration is signed/provenance cherry-pick
+`0d95174e`; it preserves UP-045's existing shutdown cancellation rather than
+adding it twice. No unrelated upstream refactor is imported.
+
+Requests now queue a one-shot barrier while being dispatched and await it in
+their own task. Earlier queued notifications are processed before the handler
+reads analysis. The message loop and update worker do not wait for the request;
+later edits, responses, cancellation and long-lived workspace pulls keep flowing.
+Cancelled waits and a stopped update worker do not execute the handler. Server
+close cancels pending requests. This prevents stale semantic colors from an
+immediate request after typing and fixes the same ordering risk for completion.
+
+Five deterministic regressions cover prior edits, cancellation, later edits,
+concurrent pending requests, and close. Three fail on unpatched upstream. The
+standalone server suite passes 229 tests, Clippy and fmt. Package/protocol/platform
+evidence: workspace upstream/REQUEST_ORDERING_2026-10-14.md.
+
+UP-053's completion repair and all previous analyzer fixes remain included.
+The UP-008 experiment remains at build157 as a historical comparison; it is not
+rebuilt or advanced. FDE retains 0.7.9-dev and its existing ZIP, with its development
+pin and immediate-token integration test updated. Only EmmyLua2 needs updating.
+The full-workspace diagnostic contention itself is unchanged; this fix guarantees
+preceding updates are observed, not a bound on latency. No push or PR was requested.
+
+# Annotation type completion — UP-053 (2026-10-14)
+
+Independent fix `fix/doc-type-completion`, signed `7e080f55`, is based on
+upstream/main `96545f45`. Annotation completion now includes visible library,
+standard-library and metadata declarations. Qualified names match the segment
+after the namespace; only text before the cursor filters candidates. Explicit
+whole-token edits insert the qualified name without duplicating its namespace or
+retaining a stale suffix. File-private/internal visibility and partial-class
+deduplication follow the type resolver. No type-inference behavior changes.
+
+Four new regressions fail before the fix; the standalone language-server suite
+passes 228 tests, Clippy (all targets/features, warnings denied) and rustfmt.
+Signed cherry-picks integrate exactly this fix into normal work/intellij-modules
+and experiment/up008-completion-comparison. Both retain UP-051/UP-052 and all
+other existing analyzer fixes. No push or PR was requested.
+
+Build157 delivers both variants. Normal retains UP-045; the one-off comparison
+retains UP-008 instead. This patch repairs missing suggestions only: workspace
+pass contention and edit/request queue ordering remain separate issues. Preserve
+both schedulers for the A/B test. FDE retains 0.7.9-dev and its existing ZIP; only
+its development pin and integration coverage change. Package and protocol
+validation: workspace upstream/DOC_TYPE_COMPLETION_2026-10-14.md.
+
+# Entities fixes and completion comparison (2026-10-14)
+
+UP-051 (`fix/callable-class-overloads`, `5fbac291`) recognizes class overloads in
+callability diagnostics, including generic classes/aliases and cycle protection.
+UP-052 (`fix/constructor-call-argument-alignment`, `0307732f`) aligns colon/dot
+arguments and selects a complete constructor overload contract. Both standalone
+branches are based on upstream/main `96545f45`; signed work cherry-picks are
+`976c87e1` and `2d2b9890`. The latter preserves UP-038's inline assertion exemption
+in the shared target selector and reuses UP-035's unfiltered diagnostic context.
+UP-050's namespace lookup and other pending patches remain intact.
+
+Normal development retains UP-045. One-off branch
+`experiment/up008-completion-comparison` restores UP-008, removes UP-045, and has
+the identical analyzer fixes. Its only source differences from normal are that
+scheduler swap. Do not make this experiment the default baseline. No push or PR.
+
+Completion investigation independently reproduced upstream defects in qualified
+annotation prefixes and API-library enumeration. An edit/request ordering race
+exists with either scheduler; UP-045 workspace passes add lock contention and
+measured latency spikes. Completion code is deliberately identical in both builds
+so the requested A/B test isolates the scheduling change. Package provenance,
+benchmarks and final validation are in workspace
+`upstream/COMPLETION_COMPARISON_2026-10-14.md`. Original mods are read-only.
+FDE keeps its version/archive; update only its development analyzer pin.
+
+# data-util analyzer fixes (2026-10-14)
+
+UP-049, `fix/bare-table-member-inference` (`c4694854`, `46d93e89`), restores `any` results for
+unrestricted bare-table/alias member reads before runtime-collected members can
+supply incorrect conditional types. It also preserves rich structured generic
+arguments that used to be projected to bare `table`; the existing generic test
+now verifies the expected `string`, rather than merely checking for non-`any`.
+Member truthiness/equality guards retain unrestricted tables in either branch;
+otherwise the reported prototype validation guard narrowed the copy input to
+`never`. The final regression covers the cross-file generic deepcopy call.
+
+UP-050, `fix/namespaced-constructor-inheritance` (`5dec3623`), resolves inherited
+constructor members in the declaring file's namespace, for both field-presence
+and field-value checks. Required fields, invalid values, unknown fields, child
+overrides, index signatures, qualified parents and inheritance cycles are covered.
+
+Both independent contribution branches are based on fetched upstream/main
+`96545f45d0dea552a707408fbd024ddbd03e2709`. Signed provenance cherry-picks
+`e205e991`, `3eabc2c5` and `e5b1656a` integrate them without importing the unrelated upstream
+HashMap refactor. UP-049's overlaps with dictionary indexing (UP-016) and
+read/write types (UP-015) retain those behaviors; neither is a standalone fix
+prerequisite. No push or PR was requested.
+
+Standalone analysis suites: 1,474 and 1,475 tests pass respectively, with
+Clippy/fmt. The combined workspace/all-feature suite passes 2,645 tests (1,654
+analysis), Clippy with all targets/features and -D warnings, and rustfmt.
+Test-generated std-zh_CN translations were restored. Build155 package and real
+protocol/platform evidence are recorded in workspace
+`upstream/DATA_UTIL_FIXES_2026-10-14.md` and `upstream/FIX_INVENTORY.md`.
+
+Original mod source remains unchanged. Its separate Sprite/SpritePrototype and
+runtime-coordinate/pixel-type annotation problems are outside these fixes.
+FDE keeps its existing version/archive; only EmmyLua2 needs an updated install.
+
+# Configuration merging for workspace ownership (2026-10-14)
+
+UP-048, `fix/mixed-config-key-merging` (`a9684a5c`, upstream/main `96545f45`),
+normalizes dotted/nested keys in each configuration layer before merging. The
+old loader merged raw keys first, letting an earlier dotted key override a later
+nested value and discarding one side of array settings. This affected both Lua
+runtime precedence and EmmyLua2's new workspace-ownership exclusions (UP-047).
+
+Signed cherry-pick `7f8244c0` integrates this independent fix without the upstream
+HashMap refactor. No contribution PR or push. The standalone branch passes 1,472
+analysis tests and Clippy; mixed array/scalar regressions fail before the fix.
+The same failure was reproduced through the real LSP4IJ/FDE default server.
+Final combined tests and packages: workspace upstream/WORKSPACE_OWNERSHIP_2026-10-14.md.
+
+# Multi-root duplicate classes (2026-10-14)
+
+UP-046, `fix/unique-workspace-id-aggregation` (`dc511eeb`), fixes an upstream
+multi-root indexing bug. Physical MAIN roots shared one index but that index was
+aggregated once per root, making one class appear duplicated. Logical workspace
+IDs are now unique while retaining lookup order. Removing a file also preserves
+same-name definitions owned by other files, so genuine duplicates remain tracked.
+
+The standalone fix uses upstream/main `96545f45`; signed cherry-pick `37ec8e3c`
+keeps the existing work baseline and other local patches. The false LTN metrics
+warning also exposed an independent UP-044 LSP4IJ routing omission: workspace
+reports must honor DocumentMatchers to exclude the generic server from FDE mod
+files. UP-046 is open PR #1296 (ready for review); its work copy and LSP4IJ follow-up remain local. Final validation and package evidence
+are in workspace `upstream/DUPLICATE_METRICS_2026-10-14.md` and FIX_INVENTORY.md.
+
+# Workspace diagnostic scheduling replaces UP-008 (2026-10-14)
+
+The active work tree no longer includes UP-008's per-edit global refresh sender.
+The signed contribution `fix/workspace-diagnostic-scheduling` at `7306538d` is based
+on upstream/main `96545f45`. It is applied here with a signed provenance-preserving
+cherry-pick; the unrelated upstream HashMap refactor is not imported. Other local
+analyzer patches remain unchanged.
+
+UP-008 remains on `fix/cross-file-diagnostic-refresh` (`2cfe165c`). The full previous
+work tree is retained at `backup/intellij-modules-before-workspace-diagnostics-20261014`
+(`df28f68a`). Its removal is an explicit revert commit, making rollback reviewable.
+
+Workspace pulls now observe unsaved edits, external changes, removals, renames,
+saves and reloads. Results use open-document versions, clear removed files and
+retry stale/incomplete passes without cancelling the parent request. Pending
+work stops before shutdown acknowledgement. Ordinary edits do not send global
+refresh requests; configuration refreshes respect client capabilities. LSP4IJ
+UP-044 is required in our IntelliJ setup to consume these workspace reports.
+
+The standalone branch passes 226 server tests, Clippy/fmt and seven protocol
+scenarios. The edit regression times out on the unpatched upstream binary.
+Combined validation and package details are recorded in the workspace handoff
+and upstream/FIX_INVENTORY.md. No PR or push is implied by this local integration.
+
+Older checkpoints below are historical.
+
+# Overnight upstream refresh (2026-10-14)
+
+Work is based on upstream/main `7096fef53ce3a06db5d06c90cb3b6bc8d81f5f16`.
+UP-022/#1285, UP-024/#1289 and UP-027/#1291 are merged upstream; their local
+copies are omitted from the replay. The remaining 27 contribution branches are
+rebased with their prerequisites and integrated. Production source and tests
+are identical to the validated build150 baseline; only ancestry and this handoff
+change. Original refs are in `refs/archive/analyzer-refresh-20261014/`.
+
+UP-025/#1290 was closed as superseded by #1288. UP-008/#1283 was closed without
+merge: the maintainer prefers complete workspace diagnostics. No replacement is
+in this upstream snapshot, so the existing refresh fix remains local-only.
+#1286 and #1292 remain the two open analyzer PRs. No new PRs are created.
+
+The frozen LTN request_processor.lua snapshot remains the zero-diagnostic
+acceptance baseline with the original configuration. Final validation/publication
+and build151 evidence are in workspace `upstream/ANALYZER_REFRESH_2026-10-14.md`
+and analyzer `build/investigations/analyzer-refresh-20261014/`. Standalone branch
+checks exclude the unchanged long linear-file stress case; the full combined
+suite runs it once. No application defaults or mod source are changed.
+
+Older checkpoints below are historical.
+
+# Current upstream refresh (2026-10-13)
+
+The development tree is reconstructed on upstream/main
+`a0ce1512cb4f44b6e1f6a21f57a08febb0dbc754`. Thirty retained fix branches are
+integrated, plus the existing Factorio compatibility changes and interaction
+tests. Original refs are preserved under `refs/archive/analyzer-refresh-20261013/`.
+
+New independent fixes: UP-042 (`fix/aliased-dynamic-member-keys`) expands
+string aliases in dynamic member-key diagnostics; UP-043
+(`fix/integer-alias-return-types`) permits integer aliases in broad number
+return slots. Both reproduce on upstream; neither depends on the arithmetic fix.
+
+UP-025 is superseded by upstream #1288; only its twelve regression tests remain.
+UP-026 is absorbed into the asymmetric-field patch. The old tuple backport and
+pre-refresh union-API adapter are omitted. Imported function reads no longer
+need UP-018 on upstream, but its redeclaration checks are retained.
+
+Dependencies: association → key-aware metatables → navigation → presentation;
+nullable dictionaries → optional/union dictionary keys (shared implementation);
+class/array compatibility → inline call assertions. Read/write fields no longer
+carry the metatable series as an incidental prerequisite. All runtime options
+retain their previous defaults. Work-only tests cover feature combinations,
+including factory returns and directional write contracts.
+
+Validation before packaging: 2,616 combined workspace/all-feature tests pass,
+plus all twelve retained inline-assertion regressions and twenty dictionary
+integration tests after separating standalone fixtures. Combined Clippy and
+formatting pass. Debug and release server replay both report zero diagnostics
+for the frozen LTN request_processor.lua and interface.lua, with the module's
+existing unnecessary-assert suppression and no additional disabled diagnostics.
+Original mod files are read-only. No interactive IDE installation was performed.
+
+The canonical contribution/test/push matrix and final package details are in
+the workspace documents `upstream/FIX_INVENTORY.md` and
+`upstream/ANALYZER_REFRESH_2026-10-13.md`, with machine-readable evidence under
+`build/investigations/analyzer-refresh-20261013/` in the primary analyzer checkout.
+EmmyLua2 build 150 is the refreshed package target; FDE remains 0.7.8-dev.
+
+Older sections below are historical.
+
 # EmmyLua IntelliJ development handoff
 
 ## Current checkpoint: October 13, 2026 — named union parameter aliases

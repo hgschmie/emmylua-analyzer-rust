@@ -192,3 +192,38 @@ fn dependent_call_constraints_reject_invalid_method_and_arguments() {
         "invoke('known', 'send', false, 42)"
     ));
 }
+
+// Integration with UP-019: generated Factorio API classes use global table
+// initializers, whose member ownership is not yet connected on upstream/main.
+#[test]
+fn dependent_call_generated_global_api_table() {
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    let (defs, signature) = DEFS.split_once("---@generic").unwrap();
+    ws.def(defs);
+    ws.def(&format!(
+        "---@meta _\ndo\n---@class Remote\nremote = {{\n---@generic{}\n}}\nend",
+        signature.replace(
+            "function invoke(interface,fname,...) end",
+            "call = function(interface,fname,...) end"
+        )
+    ));
+    for code in [
+        DiagnosticCode::ParamTypeMismatch,
+        DiagnosticCode::GenericConstraintMismatch,
+    ] {
+        assert!(ws.has_no_diagnostic(code,
+            "remote.call('other', 'send', 'hello', true)\nremote.call('known', 'send', 'hello', true)"));
+    }
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::GenericConstraintMismatch,
+        "remote.call('known', 'missing')"
+    ));
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::ParamTypeMismatch,
+        "remote.call('known', 'send', false, 42)"
+    ));
+    assert_eq!(
+        ws.expr_ty("remote.call('known', 'send', 'hello', true)"),
+        LuaType::Integer
+    );
+}
