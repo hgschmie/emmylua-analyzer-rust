@@ -8,7 +8,7 @@ use emmylua_parser::{LuaAstNode, LuaClosureExpr, LuaReturnStat};
 
 use crate::LuaType;
 use crate::semantic_model::SemanticModel;
-use crate::semantic_model::type_check::is_compatible;
+use crate::semantic_model::type_check::{contains_enum_target, is_compatible};
 use crate::{DiagnosticCode, SemanticId, SignatureDoc, TypeDef, TypeScope};
 
 use super::{CheckContext, Checker};
@@ -141,7 +141,10 @@ fn return_compatible(
                 LuaType::Function | LuaType::DocFunction(_) | LuaType::Signature(_)
             )
         });
-        let require_all = target_is_named_class && has_function;
+        // Enum contracts also require every value to match: a valid nil alternative
+        // must not conceal an invalid numeric member in an optional enum return.
+        let require_all =
+            (target_is_named_class && has_function) || contains_enum_target(semantic_model, target);
         return if require_all {
             components
                 .iter()
