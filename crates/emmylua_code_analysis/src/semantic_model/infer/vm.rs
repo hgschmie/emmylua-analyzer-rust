@@ -1625,6 +1625,7 @@ impl<'a> InferVm<'a> {
             }
         }
 
+        let inferred_ids = bindings.keys().copied().collect::<Vec<_>>();
         // Fill unresolved function generics with defaults/constraints; class-method defaults
         // may reference class generics (`U = T`).
         let class_map = callee
@@ -1657,6 +1658,17 @@ impl<'a> InferVm<'a> {
                 if let Some(value) = bindings.get(&param.get_tpl_id()).cloned() {
                     let new_value = substitute_named_refs(&value, &name_bindings);
                     let new_value = unify::substitute(&new_value, &bindings);
+                    // Normalize computed defaults, preserving the identity of inferred/explicit aliases.
+                    let new_value = if inferred_ids.contains(&param.get_tpl_id()) {
+                        new_value
+                    } else {
+                        super::call_generics::instantiate(
+                            self.model,
+                            &new_value,
+                            callee_fun.get_generic_params(),
+                            &bindings,
+                        )
+                    };
                     if new_value != value {
                         changed = true;
                     }

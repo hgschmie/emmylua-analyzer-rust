@@ -527,7 +527,7 @@ fn check_candidate(
             semantic_model,
             remainder_params,
             args,
-            func.is_variadic(),
+            func,
             &mut bindings,
             arg_types,
         ));
@@ -545,7 +545,7 @@ fn check_candidate(
         semantic_model,
         &params[param_start..],
         &args[arg_offset..],
-        func.is_variadic(),
+        func,
         &mut bindings,
         dot_arg_types,
     )
@@ -593,13 +593,13 @@ fn check_arg_pairs(
     semantic_model: &SemanticModel<'_>,
     params: &[(String, Option<LuaType>)],
     args: &[LuaExpr],
-    is_variadic: bool,
+    func: &LuaFunctionType,
     bindings: &mut unify::TplBindings,
     arg_types: Option<&[LuaType]>,
 ) -> Vec<Mismatch> {
     let mut out = Vec::new();
     for (index, (name, param_ty)) in params.iter().enumerate() {
-        let is_vararg_slot = is_variadic && index + 1 == params.len();
+        let is_vararg_slot = func.is_variadic() && index + 1 == params.len();
         if is_vararg_slot {
             // A call may pass fewer arguments than the variadic slot position
             // (`function f(a, b, ...)` called as `f(1)`), in which case the variadic
@@ -608,7 +608,12 @@ fn check_arg_pairs(
             let rest_start = index.min(args.len());
             let rest_args = &args[rest_start..];
             if let Some(param_ty) = param_ty {
-                let param_ty = unify::substitute(param_ty, bindings);
+                let param_ty = crate::semantic_model::infer::call_generics::parameter_type(
+                    semantic_model,
+                    param_ty,
+                    func,
+                    bindings,
+                );
                 let param_ty = type_eval::expand_alias_generic(semantic_model, &param_ty);
                 let param_ty = type_eval::eval_conditionals(semantic_model, &param_ty);
                 if let LuaType::Variadic(variadic) = &param_ty {
@@ -725,7 +730,12 @@ fn check_arg_pairs(
         let arg_ty = normalize_arg_for_check(semantic_model, &arg_ty);
         let call_arg_ty = call_argument_type(semantic_model, arg, &arg_ty);
         let call_arg_ty = normalize_arg_for_check(semantic_model, &call_arg_ty);
-        let param_ty = unify::substitute(param_ty, bindings);
+        let param_ty = crate::semantic_model::infer::call_generics::parameter_type(
+            semantic_model,
+            param_ty,
+            func,
+            bindings,
+        );
         let param_ty = type_eval::expand_alias_generic(semantic_model, &param_ty);
         let param_ty = type_eval::eval_conditionals(semantic_model, &param_ty);
         // Missing union member: when only A in `A|C` has `handle`, accessing `target.handle`
