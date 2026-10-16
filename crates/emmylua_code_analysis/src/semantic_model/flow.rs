@@ -23,7 +23,7 @@ use rowan::TextSize;
 
 use ExprCastMode::{All, AsOnly};
 
-use crate::semantic_db::def::{SemanticId, Signature};
+use crate::semantic_db::def::{DeclKind, SemanticId, Signature};
 use crate::semantic_db::flow::{
     FlowAntecedent, FlowEffect, FlowId, FlowNodeKind, FlowTree, LuaClosureId,
 };
@@ -171,7 +171,8 @@ pub fn type_of_decl_assign_target_at(
     decl: &SemanticId,
     offset: TextSize,
 ) -> LuaType {
-    let fallback = || model.type_of_decl(decl).unwrap_or(LuaType::Unknown);
+    let fallback =
+        || decl_trace_base(model, decl, TraceOptions::ASSIGN_TARGET).unwrap_or(LuaType::Unknown);
     let Some(tree) = model.flow_tree() else {
         return fallback();
     };
@@ -200,6 +201,49 @@ pub fn type_of_decl_assign_target_at(
         &mut path,
     )
     .unwrap_or_else(fallback)
+}
+
+/// Inferred literal initializers describe a value, not an immutable assignment
+/// contract. Widen only mutable, unannotated locals when checking writes; reads
+/// still retain the literal, and explicit annotations/inline casts stay exact.
+fn decl_trace_base(
+    model: &SemanticModel,
+    decl: &SemanticId,
+    options: TraceOptions,
+) -> Option<LuaType> {
+    let ty = model.type_of_decl(decl)?;
+    if options.assignments {
+        return Some(ty);
+    }
+    let Some(facts) = model.file_facts() else {
+        return Some(ty);
+    };
+    let Some(def) = facts.decl_by_id(decl) else {
+        return Some(ty);
+    };
+    if !matches!(
+        def.kind,
+        DeclKind::Local {
+            is_const: false,
+            is_iter: false
+        }
+    ) || def.readonly
+        || def.doc_type_syntax.is_some()
+    {
+        return Some(ty);
+    }
+    let widened = match ty {
+        LuaType::IntegerConst(_) | LuaType::DocIntegerConst(_) | LuaType::FloatConst(_) => {
+            LuaType::Number
+        }
+        LuaType::StringConst(_) | LuaType::DocStringConst(_) => LuaType::String,
+        LuaType::BooleanConst(_) | LuaType::DocBooleanConst(_) => LuaType::Boolean,
+        _ => return Some(ty),
+    };
+    Some(match def.value_expr_syntax {
+        Some(expr) => apply_expr_casts(model, expr, widened, AsOnly),
+        None => widened,
+    })
 }
 
 /// Skip this assignment only when `offset` is inside the `x = value` assignment statement and that node assigns `decl`.
@@ -2005,7 +2049,7 @@ fn trace_decl_uncached(
                         tree,
                         finalize(
                             model,
-                            model.type_of_decl(decl).unwrap_or(LuaType::Unknown),
+                            decl_trace_base(model, decl, options).unwrap_or(LuaType::Unknown),
                             path,
                         ),
                         frames,
@@ -2064,8 +2108,7 @@ fn trace_decl_uncached(
                 {
                     return Some(LuaType::Never);
                 } else {
-                    let base = model
-                        .type_of_decl(decl)
+                    let base = decl_trace_base(model, decl, options)
                         .map(|ty| finalize(model, ty, path))
                         .unwrap_or(LuaType::Unknown);
                     return finish_decl_frames(model, decl, tree, base, frames, root_mode);
@@ -2076,8 +2119,7 @@ fn trace_decl_uncached(
 
         match &node.antecedent {
             None => {
-                let base = model
-                    .type_of_decl(decl)
+                let base = decl_trace_base(model, decl, options)
                     .map(|ty| finalize(model, ty, path))
                     .unwrap_or(LuaType::Unknown);
                 return finish_decl_frames(model, decl, tree, base, frames, root_mode);
@@ -2125,7 +2167,7 @@ fn trace_decl_uncached(
                 .unwrap_or_else(|| {
                     finalize(
                         model,
-                        model.type_of_decl(decl).unwrap_or(LuaType::Unknown),
+                        decl_trace_base(model, decl, options).unwrap_or(LuaType::Unknown),
                         path,
                     )
                 });
@@ -5365,7 +5407,7 @@ fn walk_decl(
 ) -> Option<LuaType> {
     match antecedent {
         // Backtracked to the start: use the declaration type as the base and apply guards / casts collected on the path.
-        None => model.type_of_decl(decl).map(|ty| finalize(model, ty, path)),
+        None => decl_trace_base(model, decl, options).map(|ty| finalize(model, ty, path)),
         Some(FlowAntecedent::Single(next)) => {
             trace_decl(model, decl, tree, *next, options, mode, visited, path)
         }
