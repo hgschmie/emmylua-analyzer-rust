@@ -35,7 +35,8 @@ fn check_condition(
     semantic_model: &SemanticModel<'_>,
     condition: &emmylua_parser::LuaExpr,
 ) {
-    let expr_type = semantic_model.type_of_expr(condition.get_syntax_id());
+    // Use the read at the condition, including optional field contracts and prior guards.
+    let expr_type = semantic_model.type_of_expr_at(condition.get_syntax_id(), condition.get_position());
     if expr_type.is_always_truthy() {
         context.add_diagnostic(
             DiagnosticCode::UnnecessaryIf,
