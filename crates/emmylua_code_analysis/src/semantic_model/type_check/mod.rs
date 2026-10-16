@@ -30,6 +30,8 @@ pub use fail_reason::TypeCheckFailReason;
 pub(crate) use func_type::function_param_pairs;
 pub(crate) use simple_type::table_index_accepts;
 
+use emmylua_parser::{LuaAst, LuaAstNode, LuaExpr};
+
 use crate::semantic_model::SemanticModel;
 use crate::semantic_model::type_eval::expand_alias_head;
 use crate::{InFiled, LuaMemberKey, LuaObjectType, LuaType, SemanticId, TypeDef, TypeDefKind};
