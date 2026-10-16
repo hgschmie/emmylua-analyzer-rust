@@ -1523,3 +1523,18 @@ fn test_recursive_dynamic_string_alias_keys_terminate() {
     "#
     ));
 }
+
+#[test]
+fn string_alias_keys_follow_long_cross_file_chains() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let mut ws = VirtualWorkspace::new();
+    let mut definitions = String::from("---@alias Key0 string\n");
+    for n in 1..80 {
+        definitions.push_str(&format!("---@alias Key{n} Key{}\n", n - 1));
+    }
+    ws.def_file("keys.lua", &definitions);
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::UndefinedField,
+        "---@type table<string,integer>\nlocal values\n---@type Key79\nlocal key\nvalues[key] = 1"
+    ));
+}

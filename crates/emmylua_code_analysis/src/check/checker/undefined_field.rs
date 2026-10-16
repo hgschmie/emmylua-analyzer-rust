@@ -397,38 +397,30 @@ fn is_string_key(ty: &LuaType) -> bool {
 /// String keys may be named aliases (including aliases inside unions).
 /// Track visited definitions so recursive aliases cannot loop indefinitely.
 fn string_key_expanded(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> bool {
-    fn expand(
-        semantic_model: &SemanticModel<'_>,
-        ty: &LuaType,
-        visited: &mut Vec<LuaTypeDeclId>,
-    ) -> bool {
-        if is_string_key(ty) {
+    // This is an existential query: one reachable string branch is enough.
+    // A work queue visits each alias once, so long finite chains resolve while
+    // cycles with no string branch terminate without claiming a match.
+    let mut pending = vec![ty.clone()];
+    let mut visited = hashbrown::HashSet::new();
+    while let Some(ty) = pending.pop() {
+        if is_string_key(&ty) {
             return true;
         }
-        match ty {
-            LuaType::Union(union) => union
-                .into_vec()
-                .iter()
-                .any(|ty| expand(semantic_model, ty, visited)),
-            LuaType::MultiLineUnion(union) => expand(semantic_model, &union.to_union(), visited),
-            LuaType::Ref(id) | LuaType::Def(id) => {
-                if visited.len() >= 32 || visited.contains(id) {
-                    return false;
+        match &ty {
+            LuaType::Union(union) => pending.extend(union.iter().cloned()),
+            LuaType::MultiLineUnion(union) => pending.push(union.to_union()),
+            LuaType::Ref(id) | LuaType::Def(id) if visited.insert(id.clone()) => {
+                if let Some(def) = named_type_def(semantic_model, &ty)
+                    && def.kind == TypeDefKind::Alias
+                    && let Some(target) = semantic_model.alias_target(&def)
+                {
+                    pending.push(target);
                 }
-                visited.push(id.clone());
-                let result = named_type_def(semantic_model, ty).is_some_and(|def| {
-                    def.kind == TypeDefKind::Alias
-                        && semantic_model
-                            .alias_target(&def)
-                            .is_some_and(|target| expand(semantic_model, &target, visited))
-                });
-                visited.pop();
-                result
             }
-            _ => false,
+            _ => {}
         }
     }
-    expand(semantic_model, ty, &mut Vec::new())
+    false
 }
 
 fn numeric_key(ty: &LuaType) -> bool {
