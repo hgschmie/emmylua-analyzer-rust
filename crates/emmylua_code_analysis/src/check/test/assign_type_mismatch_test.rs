@@ -2933,4 +2933,27 @@ return t
         assert_eq!(changed.0, expected.0);
         assert_eq!(changed.1.len(), 1, "{changed:?}");
     }
+    #[test]
+    fn loop_generic_integer_assignment_preserves_integer() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+            ---@generic T: number
+            ---@param x T
+            ---@param y integer
+            ---@return T
+            local function one_mod(x, y) return ((x - 1) % y) + 1 end
+            ---@param initial integer
+            ---@param size integer
+            local function update(initial, size)
+                local index = initial
+                for i = 1, size do
+                    ---@cast i integer
+                    index = one_mod(index + i, size)
+                end
+            end
+        "#
+        ));
+    }
 }
