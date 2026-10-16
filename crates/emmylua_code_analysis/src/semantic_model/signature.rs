@@ -131,7 +131,7 @@ impl<'db> SemanticModel<'db> {
             && let ModuleExport::Expr { value_syntax } = facts.module_export
             && let Some(signature) = self.type_of_signature_in_file(module_file, value_syntax)
         {
-            return LuaType::DocFunction(Arc::new(signature));
+            return LuaType::DocFunction(signature.into());
         }
         let Some(shell) = self.analysis().module_export_type(module_file) else {
             return LuaType::Unknown;

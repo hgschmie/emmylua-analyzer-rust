@@ -621,3 +621,26 @@ end
         );
     }
 }
+
+#[test]
+fn guarded_optional_reference_field_after_many_loop_merges() {
+    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    let mut source = String::from(
+        r#"
+---@class SignalValue
+---@field name string
+---@class Signal
+---@field value? SignalValue
+---@param values boolean[]
+---@param signal Signal?
+local function f(values, signal)
+"#,
+    );
+    for _ in 0..12 {
+        source.push_str("for _, value in pairs(values) do print(value) end\n");
+    }
+    source.push_str("local color = (signal and signal.value and signal.value.name == 'blue') and 'blue' or 'yellow'\nend");
+    assert!(ws.has_no_diagnostic(crate::DiagnosticCode::NeedCheckNil, &source));
+    let unguarded = source.replace("signal.value and ", "");
+    assert!(!ws.has_no_diagnostic(crate::DiagnosticCode::NeedCheckNil, &unguarded));
+}
