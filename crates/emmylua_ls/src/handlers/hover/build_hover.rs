@@ -68,12 +68,14 @@ pub fn build_semantic_info_hover(
         let call_typ = in_call
             .then(|| member_type_at_token(model, &token))
             .flatten();
-        call_typ.or_else(|| {
-            // Non-function member of an instantiated generic (`c.aaa` with `local c ---@type MyTable<int>`
-            // and `---@field aaa T`): `info.typ` already carries the prefix projection (`integer`) and must
-            // win over the declaration-site member type (`T`) that `build_member_hover` would otherwise use.
-            member_prefix_is_generic_instance(model, &token).then(|| info.typ.clone())
-        })
+        call_typ
+            .or_else(|| {
+                // Non-function member of an instantiated generic (`c.aaa` with `local c ---@type MyTable<int>`
+                // and `---@field aaa T`): `info.typ` already carries the prefix projection (`integer`) and must
+                // win over the declaration-site member type (`T`) that `build_member_hover` would otherwise use.
+                member_prefix_is_generic_instance(model, &token).then(|| info.typ.clone())
+            })
+            .or_else(|| member_read_type_at_token(model, &token).filter(|ty| ty != &info.typ))
     } else {
         None
     };
@@ -256,6 +258,32 @@ pub fn build_semantic_info_hover(
         }),
         range: document.to_lsp_range(range),
     })
+}
+
+/// A member read should display the type at the cursor, retaining the member's
+/// declaration identity for documentation. Assignment targets still describe
+/// their writable contract, and callable members keep signature rendering.
+fn member_read_type_at_token(model: &SemanticModel, token: &LuaSyntaxToken) -> Option<LuaType> {
+    let index = LuaIndexExpr::cast(token.parent()?)?;
+    if index
+        .ancestors::<LuaAssignStat>()
+        .next()
+        .is_some_and(|assign| {
+            assign
+                .get_var_and_expr_list()
+                .0
+                .iter()
+                .any(|var| var.to_expr().syntax() == index.syntax())
+        })
+    {
+        return None;
+    }
+    let ty = model.type_of_expr_at(index.get_syntax_id(), index.get_position());
+    (!matches!(
+        ty,
+        LuaType::Unknown | LuaType::Function | LuaType::Signature(_) | LuaType::DocFunction(_)
+    ))
+    .then_some(ty)
 }
 
 /// Whether the token is exactly the call callee's bare function name (`f(...)`), not a method-call receiver/argument.
