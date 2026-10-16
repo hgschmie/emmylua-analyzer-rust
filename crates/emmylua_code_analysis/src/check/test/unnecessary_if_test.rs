@@ -252,3 +252,34 @@ local function f(event)
 end
 "#));
 }
+
+#[test]
+fn loop_exit_preserves_possible_boolean_assignments() {
+    for body in [
+        "for _, value in pairs(values) do if value then found = true end end",
+        "for i = 1, limit do found = true end",
+        "while flag do found = true; break end",
+        "for _, value in pairs(values) do found = true; break end",
+        "for _, value in pairs(values) do for _, other in pairs(values) do found = true end end",
+    ] {
+        let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+        let source = format!("---@param values boolean[]\n---@param limit integer\n---@param flag boolean\nlocal function f(values, limit, flag)\nlocal found = false\n{body}\nif found then print(found) end\nend");
+        assert!(ws.has_no_diagnostic(crate::DiagnosticCode::UnnecessaryIf, &source), "{body}");
+    }
+}
+
+#[test]
+fn loop_exit_retains_definite_and_unreachable_cases() {
+    for body in [
+        "for i = 2, 1 do found = true end",
+        "while false do found = true end",
+        "for _, value in pairs(values) do return end",
+        "for _, value in pairs(values) do local found = true end",
+        "for i = 1, 3 do found = true end",
+        "repeat found = true until flag",
+    ] {
+        let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+        let source = format!("---@param values boolean[]\n---@param flag boolean\nlocal function f(values, flag)\nlocal found = false\n{body}\nif found then print(found) end\nend");
+        assert!(!ws.has_no_diagnostic(crate::DiagnosticCode::UnnecessaryIf, &source), "{body}");
+    }
+}
