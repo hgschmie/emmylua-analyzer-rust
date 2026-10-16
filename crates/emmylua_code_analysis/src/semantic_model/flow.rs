@@ -584,7 +584,15 @@ pub(crate) fn type_of_expr_at_node(
                     if let Some(facts) = runtime_owner_facts
                         && let Some(runtime_member) = facts
                             .members_of_owner(&resolved.owner)
-                            .find(|m| m.key.name() == Some(resolved.name.as_str()))
+                            .find(|m| {
+                                m.key.name() == Some(resolved.name.as_str())
+                                    // Before a write completes, its value cannot override
+                                    // the declared field (including reads in its own RHS).
+                                    && (facts.file_id != model.file_id()
+                                        || m.value_syntax.is_some_and(|value| {
+                                            runtime_member_assignment_precedes(model, value, offset)
+                                        }))
+                            })
                         && runtime_member
                                 .id
                                 .member_key_range()
@@ -827,6 +835,26 @@ fn narrow_index_condition(
             .as_ref()
             == Some(target))
     .then_some(Narrowing::Truthy)
+}
+
+/// All right-hand expressions are evaluated before any parallel assignment takes effect.
+fn runtime_member_assignment_precedes(
+    model: &SemanticModel,
+    value: emmylua_parser::LuaSyntaxId,
+    offset: TextSize,
+) -> bool {
+    if value.get_range().end() > offset {
+        return false;
+    }
+    let Some(tree) = model.syntax_tree() else {
+        return false;
+    };
+    let Some(node) = value.to_node_from_root(&tree.get_red_root()) else {
+        return false;
+    };
+    node.parent()
+        .and_then(LuaAssignStat::cast)
+        .is_none_or(|assignment| assignment.get_range().end() <= offset)
 }
 
 /// Infer the VM type, then apply the selected inline casts.
