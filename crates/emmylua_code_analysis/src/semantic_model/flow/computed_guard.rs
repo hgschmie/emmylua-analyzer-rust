@@ -14,7 +14,7 @@ use crate::{LuaMemberKey, LuaType};
 #[derive(PartialEq, Eq)]
 enum Part {
     Member(LuaMemberKey),
-    Local(SemanticId),
+    Key(Box<Access>),
 }
 
 #[derive(PartialEq, Eq)]
@@ -29,7 +29,7 @@ impl Access {
             || self
                 .parts
                 .iter()
-                .any(|part| matches!(part, Part::Local(key) if key == decl))
+                .any(|part| matches!(part, Part::Key(key) if key.depends_on(decl)))
     }
 }
 
@@ -38,18 +38,19 @@ pub(super) fn guarded_type(
     index: &LuaIndexExpr,
     offset: TextSize,
 ) -> Option<LuaType> {
-    let access = access(model, &LuaExpr::IndexExpr(index.clone()))?;
-    if !access
-        .parts
-        .iter()
-        .any(|part| matches!(part, Part::Local(_)))
+    // Static members already have assignment-aware flow; do not replace their
+    // more precise value with the collection's declared element contract.
+    if model
+        .resolve_member(index)
+        .is_some_and(|member| member.member_id.is_some())
     {
         return None;
     }
+    let access = access(model, &LuaExpr::IndexExpr(index.clone()))?;
     let prefix = index.get_prefix_expr()?;
     let owner_type = model.type_of_expr_at(prefix.get_syntax_id(), offset);
-    // Only ordinary collection contracts; arbitrary __index implementations
-    // need not return the same value on successive reads.
+    // Dictionary contracts can be inherited or aliased. Explicit __index handlers
+    // may return a different value on each read, so they remain excluded.
     match &owner_type {
         LuaType::Array(_) | LuaType::TableGeneric(_) => {}
         LuaType::Generic(generic)
@@ -57,6 +58,12 @@ pub(super) fn guarded_type(
                 && model
                     .type_def_of(&generic.get_base_type_id())
                     .is_some_and(|def| model.is_std_file(def.file_id)) => {}
+        _ if !crate::semantic_model::inherited_index::dictionaries(model, &owner_type)
+            .is_empty()
+            && !model
+                .member_infos(&owner_type)
+                .iter()
+                .any(|member| member.key == LuaMemberKey::Name("__index".into())) => {}
         _ => return None,
     }
     let base = model.type_of_expr(index.get_syntax_id());
@@ -98,10 +105,14 @@ pub(super) fn guarded_type(
                         return None;
                     }
                     let (vars, _) = assignment.get_var_and_expr_list();
-                    if vars
-                        .iter()
-                        .any(|var| matches!(var, LuaVarExpr::IndexExpr(_)))
-                    {
+                    if vars.iter().any(|var| match var {
+                        LuaVarExpr::IndexExpr(_) => true,
+                        LuaVarExpr::NameExpr(name) => {
+                            name.get_name_text().as_deref() == Some("_ENV")
+                                || reference(model, name)
+                                    .is_some_and(|decl| access.depends_on(&decl))
+                        }
+                    }) {
                         return None;
                     }
                 }
@@ -135,33 +146,50 @@ pub(super) fn guarded_type(
     None
 }
 
+// Globals use their binding name rather than a particular declaration site.
+// Locals retain declaration identity, keeping shadowed names separate.
+fn reference(model: &SemanticModel, name: &emmylua_parser::LuaNameExpr) -> Option<SemanticId> {
+    if let Some(decl) = model.resolve_name(name.get_position())
+        && model
+            .file_facts()?
+            .decl_by_id(&decl)
+            .is_some_and(|decl| decl.kind.is_local())
+    {
+        return Some(decl);
+    }
+    // A custom lexical environment can change the meaning of a global name.
+    if model
+        .file_facts()?
+        .find_visible_decl_before_offset("_ENV", name.get_position())
+        .is_some()
+    {
+        return None;
+    }
+    Some(SemanticId::name(name.get_name_text()?.into()))
+}
+
 fn access(model: &SemanticModel, expr: &LuaExpr) -> Option<Access> {
     match expr {
-        LuaExpr::NameExpr(name) => {
-            let root = model.resolve_name(name.get_position())?;
-            model
-                .file_facts()?
-                .decl_by_id(&root)?
-                .kind
-                .is_local()
-                .then_some(Access {
-                    root,
-                    parts: Vec::new(),
-                })
-        }
+        LuaExpr::NameExpr(name) => Some(Access {
+            root: reference(model, name)?,
+            parts: Vec::new(),
+        }),
         LuaExpr::IndexExpr(index) => {
             let mut result = access(model, &index.get_prefix_expr()?)?;
             let part = match index.get_index_key()? {
                 LuaIndexKey::Name(name) => {
                     Part::Member(LuaMemberKey::Name(name.get_name_text().into()))
                 }
-                LuaIndexKey::Expr(LuaExpr::NameExpr(name)) => {
-                    let decl = model.resolve_name(name.get_position())?;
-                    if !model.file_facts()?.decl_by_id(&decl)?.kind.is_local() {
-                        return None;
-                    }
-                    Part::Local(decl)
+                LuaIndexKey::String(string) => {
+                    Part::Member(LuaMemberKey::Name(string.get_value().into()))
                 }
+                LuaIndexKey::Integer(number) => match number.get_number_value() {
+                    emmylua_parser::NumberResult::Int(value) => {
+                        Part::Member(LuaMemberKey::Integer(value))
+                    }
+                    _ => return None,
+                },
+                LuaIndexKey::Expr(expr) => Part::Key(Box::new(access(model, &expr)?)),
                 _ => return None,
             };
             result.parts.push(part);

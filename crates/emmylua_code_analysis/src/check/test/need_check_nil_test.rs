@@ -406,3 +406,97 @@ end
 "#
     ));
 }
+
+fn check_global_collection_guard(body: &str, safe: bool) {
+    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    ws.def(
+        r#"
+---@class Entry
+---@field label string
+---@class Collection<K,V>: table<K,V>
+---@alias Entries Collection<string, Entry?>
+---@class Registry
+---@field entries Entries
+---@field array Entry[]
+---@type Registry
+registry = {}
+---@type string
+selected = ''
+"#,
+    );
+    let source = format!(
+        r#"
+---@param key string
+---@param other string
+---@param flag boolean
+---@param replacement Registry
+---@param record {{id: string}}
+local function label(key, other, flag, replacement, record)
+    {body}
+end
+"#
+    );
+    assert_eq!(
+        ws.has_no_diagnostic(crate::DiagnosticCode::NeedCheckNil, &source),
+        safe,
+        "{body}"
+    );
+}
+
+#[test]
+fn guarded_global_inherited_index_reads() {
+    for body in [
+        "return registry.entries[key] and registry.entries[key].label or ''",
+        "if registry.entries[key] then return registry.entries[key].label end",
+        "if not registry.entries[key] then return end; return registry.entries[key].label",
+        "local same = registry; return same.entries[key] and same.entries[key].label or ''",
+        "return registry.entries[selected] and registry.entries[selected].label or ''",
+        "return registry.entries[record.id] and registry.entries[record.id].label or ''",
+        "return registry.entries['fixed'] and registry.entries['fixed'].label or ''",
+        "if registry.array[1] then return registry.array[1].label end",
+        "for i = 1, 10 do if registry.entries[key] then return registry.entries[key].label end end",
+    ] {
+        check_global_collection_guard(body, true);
+    }
+}
+
+#[test]
+fn guarded_global_index_facts_expire_on_mutations_and_calls() {
+    for body in [
+        "return registry.entries[key].label",
+        "if registry.entries[record.id] then record.id = other; return registry.entries[record.id].label end",
+        "if registry.entries[key] then local _ENV = replacement; return registry.entries[key].label end",
+        "return registry.entries[key] and registry.entries[other].label or ''",
+        "if registry.entries[key] then key = other; return registry.entries[key].label end",
+        "if registry.entries[selected] then selected = other; return registry.entries[selected].label end",
+        "if registry.entries[key] then registry = replacement; return registry.entries[key].label end",
+        "if registry.entries[key] then registry.entries[key] = nil; return registry.entries[key].label end",
+        "if registry.entries[key] then local alias = registry.entries; alias[key] = nil; return registry.entries[key].label end",
+        "if registry.entries[key] then refresh(); return registry.entries[key].label end",
+        "if registry.entries[key] then local result = refresh(); return registry.entries[key].label end",
+        "if registry.entries[key] then local key = other; return registry.entries[key].label end",
+        "if registry.entries[key] then local registry = replacement; return registry.entries[key].label end",
+        "if registry.entries[key] then return function() return registry.entries[key].label end end",
+    ] {
+        check_global_collection_guard(body, false);
+    }
+}
+
+#[test]
+fn guarded_inherited_indexes_do_not_assume_pure_metamethods() {
+    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    assert!(!ws.has_no_diagnostic(
+        crate::DiagnosticCode::NeedCheckNil,
+        r#"
+---@class Entry
+---@field label string
+---@class Changing: table<string, Entry?>
+---@field __index fun(self: Changing, key: string): Entry?
+---@param changing Changing
+---@param key string
+local function label(changing, key)
+    return changing[key] and changing[key].label or ''
+end
+"#
+    ));
+}
