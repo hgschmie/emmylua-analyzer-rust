@@ -592,7 +592,9 @@ pub(crate) fn type_of_expr_at_node(
                     && let Some(prefix) = index_expr.get_prefix_expr()
                 {
                     let prefix_ty = model.type_of_expr_at(prefix.get_syntax_id(), offset);
-                    if let Some(prefix_member_ty) = model.member_type(&prefix_ty, &key)
+                    if let Some(prefix_member_ty) = model
+                        .member_type(&prefix_ty, &key)
+                        .map(|typ| apply_field_nullable(model, &member_id, typ))
                         && !matches!(prefix_member_ty, LuaType::Unknown | LuaType::Any)
                         && (member_type_more_specific(model, &prefix_member_ty, &member_ty)
                             || matches!(&prefix_ty, LuaType::Generic(_)))
