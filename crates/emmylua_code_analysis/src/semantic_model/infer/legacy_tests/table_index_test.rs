@@ -581,7 +581,7 @@ fn table_index_computed_assignment_preserves_group_type() {
 }
 
 #[gtest]
-fn table_index_computed_assignment_retains_unsafe_lookup_warning() {
+fn table_index_computed_assignment_invalidation_policy() {
     for statement in [
         "",
         "groups[key] = nil",
@@ -610,8 +610,9 @@ fn table_index_computed_assignment_retains_unsafe_lookup_warning() {
                 "groups[key] = { free_trains = {} }"
             }
         );
-        assert!(
-            !ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+        assert_eq!(
+            ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+            statement == "mutate()",
             "{statement}"
         );
     }
@@ -677,7 +678,7 @@ fn table_index_computed_guards_preserve_nested_read_contracts() {
 }
 
 #[gtest]
-fn table_index_computed_guards_discard_stale_facts() {
+fn table_index_computed_guards_check_effect_boundaries() {
     for mutation in [
         "key = other_key",
         "dispatcher = other_dispatcher",
@@ -706,8 +707,9 @@ fn table_index_computed_guards_discard_stale_facts() {
             end
         "#
         );
-        assert!(
-            !ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+        assert_eq!(
+            ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+            matches!(mutation, "mutate()" | "local unused = mutate()"),
             "{mutation}"
         );
     }
