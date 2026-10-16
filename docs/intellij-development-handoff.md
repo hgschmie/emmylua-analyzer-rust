@@ -1,3 +1,27 @@
+# Declared field hover on assignment targets — UP-063 (2026-10-15)
+
+LTN dispatcher.lua:322 shows `tick_state: number = 0` despite the field's
+`ltn.TickState` annotation. Reads retain the enum type; the write-side hover uses
+its synthetic runtime member record instead of the class field. Numeric value
+compatibility (UP-062) and core inference are unchanged by this presentation fix.
+
+Independent branch `fix/declared-field-hover`, signed `aa1a7abc`, is based on
+fresh upstream/main `96545f45`. It projects assignment-target fields through the
+scoped receiver type, falling back to a named receiver's declared assignment
+contract when its initializer projects to an anonymous table. Existing hover
+rendering retains literal values and field documentation. Explicit runtime
+annotations, function signatures, generic substitution and ordinary untyped
+members keep their existing behavior. Read hovers bypass the new projection.
+
+Signed work cherry-pick `3eed5f00` preserves all local fixes without importing
+the unrelated upstream HashMap refactor. No pending prerequisite; UP-062 is
+complementary. UP-015's asymmetric read/write hover path remains separate.
+Normal UP-045 packaging advances to EmmyLua2 build164. Update FDE's development
+pin only; retain FDE 0.8.3-dev and LSP4IJ patched4. UP-008 comparison stays159.
+No push, PR, original-mod edit or IDE installation. Final validation and archive
+provenance: workspace `upstream/DECLARED_FIELD_HOVER_2026-10-15.md` and analyzer
+`build/investigations/field-contract-hover-20261015/`.
+
 # Numeric enum literal compatibility — UP-062 (2026-10-15)
 
 LTN `script/dispatcher.lua` rejects `ltn_tick_state.reset` (numeric value 0)
