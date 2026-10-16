@@ -1,3 +1,29 @@
+# LTN priority follow-ups — UP-075/076 (2026-10-16)
+
+Standalone branches are based on freshly fetched upstream/main ca9bec3b:
+
+- UP-075 `fix/string-alias-index-keys`, a0d5b4db: accept aliases of string
+  as dictionary/class index keys. Regression tests cover aliases/chains/unions,
+  cross-file definitions, incompatible keys and alias cycles. Signed work pick
+  2f1174f0 consolidates its helper with UP-042 and retains the existing depth cap.
+- UP-076 `fix/inferred-literal-assignment-contracts`, f360eb96: widen inferred
+  mutable-local literal contracts for writes, retaining literal reads, explicit
+  annotations/aliases, inline assertions and named casts. Signed work pick 9a0696aa.
+
+Both fixes are independently reproducible on upstream main and need no pending
+patches. UP-075 complements UP-042; UP-076 complements UP-061's loop-read widening.
+Each standalone suite passes 1,521 analysis tests with all features, Clippy and
+rustfmt. No PR or push was performed. Original mods remain read-only.
+
+The minimal nullable-next condition already passes upstream ca9bec3b but fails
+our existing integration baseline. Do not submit a duplicate fix; evaluate it
+when refreshing the larger union/variadic upstream changes. That upstream
+refactor was not imported as part of these targeted changes.
+
+Build EmmyLua2 169 only; retain FDE0.8.6-dev and update its development pin/tests.
+See workspace upstream/LTN_PRIORITY_FOLLOWUPS_2026-10-16.md for prioritization,
+packaged validation and remaining limitations. Keep normal UP-045/LSP4IJ patched4.
+
 # LTN loop, guard and initialization diagnostics — UP-071–074
 
 2026-10-15 task, final validation 2026-10-16. Standalone signed fix branches:
