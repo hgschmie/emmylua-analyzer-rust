@@ -1,15 +1,13 @@
 //! Narrow reads through a stable local key after a definite write.
 //!
 //! Computed keys do not have a static member ID. Track the declarations of the
-//! table and key instead, within straight-line flow. Stop at mutations, calls,
-//! joins and loops rather than carrying a fact across a possibly different key.
+//! table and key instead. Stop at conflicting effects and uncertain joins;
+//! preserve facts across opaque calls and loops without visible conflicting writes.
 
-use emmylua_parser::{
-    LuaAstNode, LuaExpr, LuaIndexExpr, LuaStat, LuaSyntaxKind, LuaSyntaxNode, LuaVarExpr,
-};
+use emmylua_parser::{LuaAstNode, LuaExpr, LuaIndexExpr, LuaStat, LuaVarExpr};
 use rowan::TextSize;
 
-use super::{FlowAntecedent, FlowEffect, FlowNodeKind, LuaType, SemanticModel};
+use super::{FlowAntecedent, FlowEffect, FlowNodeKind, LuaType, SemanticModel, computed_effects};
 
 pub(super) fn assigned_type(
     model: &SemanticModel,
@@ -32,11 +30,24 @@ pub(super) fn assigned_type(
     if !super::computed_guard::ordinary_collection(model, &owner_type) {
         return None;
     }
-    let base = model.type_of_expr(index.get_syntax_id());
+    let inferred = model.type_of_expr(index.get_syntax_id());
+    let base = match (&inferred, &owner_type) {
+        // Recursive element inference can be unknown at a loop/write site. The
+        // owner's array contract is still available, as in guarded_index_type.
+        (LuaType::Unknown, LuaType::Array(array)) => {
+            LuaType::from_vec(vec![array.get_base().clone(), LuaType::Nil])
+        }
+        _ => inferred,
+    };
     if !base.is_nullable() {
         return None;
     }
-    if contains_call(index.ancestors::<LuaStat>().next()?.syntax(), offset) {
+    if computed_effects::calls_conflict(
+        model,
+        &access,
+        index.ancestors::<LuaStat>().next()?.syntax(),
+        offset,
+    ) {
         return None;
     }
     let closure = crate::semantic_db::flow::LuaClosureId::from_node(index.syntax());
@@ -55,6 +66,10 @@ pub(super) fn assigned_type(
                     {
                         return None;
                     }
+                    if computed_effects::calls_conflict(model, &access, assignment.syntax(), offset)
+                    {
+                        return None;
+                    }
                     let (vars, values) = assignment.get_var_and_expr_list();
                     if vars.len() == 1
                         && values.len() == 1
@@ -64,7 +79,8 @@ pub(super) fn assigned_type(
                             == Some(&access)
                     {
                         let value = &values[0];
-                        if contains_call(value.syntax(), offset) {
+                        if computed_effects::calls_conflict(model, &access, value.syntax(), offset)
+                        {
                             return None;
                         }
                         let assigned =
@@ -78,43 +94,48 @@ pub(super) fn assigned_type(
                             ))
                         .then(|| super::remove_type(base, &LuaType::Nil));
                     }
-                    // Any indexed write might alias this table or key. Multiple
-                    // assignment also evaluates keys before replacing locals.
-                    if vars.iter().any(|var| match var {
-                        LuaVarExpr::IndexExpr(_) => true,
-                        LuaVarExpr::NameExpr(name) => {
-                            name.get_name_text().as_deref() == Some("_ENV")
-                                || super::computed_guard::reference(model, name)
-                                    .is_some_and(|decl| access.depends_on(&decl))
-                        }
-                    }) {
+                    if vars
+                        .iter()
+                        .any(|var| computed_effects::write_conflicts(model, &access, var, offset))
+                    {
                         return None;
                     }
                 }
             }
             FlowNodeKind::CallExprStat(ptr) => {
                 let call = LuaExpr::CallExpr(ptr.to_node(&root)?.get_call_expr()?);
-                if contains_call(call.syntax(), offset) {
+                if computed_effects::calls_conflict(model, &access, call.syntax(), offset) {
                     return None;
                 }
             }
-            FlowNodeKind::LoopLabel | FlowNodeKind::NamedLabel(_) | FlowNodeKind::ImplFunc(_) => {
+            FlowNodeKind::NamedLabel(_) | FlowNodeKind::ImplFunc(_) => {
                 return None;
             }
             FlowNodeKind::TrueCondition(ptr) | FlowNodeKind::FalseCondition(ptr) => {
-                if contains_call(ptr.to_node(&root)?.syntax(), offset) {
+                if computed_effects::calls_conflict(
+                    model,
+                    &access,
+                    ptr.to_node(&root)?.syntax(),
+                    offset,
+                ) {
                     return None;
                 }
             }
             _ => {}
         }
         for effect in tree.get_flow_effects(current) {
+            if let FlowEffect::LoopEntry(syntax) = effect {
+                let loop_node = syntax.to_node_from_root(root.syntax())?;
+                if computed_effects::loop_conflicts(model, &access, &loop_node) {
+                    return None;
+                }
+            }
             if let FlowEffect::AssignDecl { decl, value_syntax } = effect {
                 if value_syntax.get_range().end() <= offset && access.depends_on(decl) {
                     return None;
                 }
                 let value = LuaExpr::cast(value_syntax.to_node_from_root(root.syntax())?)?;
-                if contains_call(value.syntax(), offset) {
+                if computed_effects::calls_conflict(model, &access, value.syntax(), offset) {
                     return None;
                 }
             }
@@ -125,18 +146,6 @@ pub(super) fn assigned_type(
         current = next;
     }
     None
-}
-
-fn contains_call(node: &LuaSyntaxNode, before: TextSize) -> bool {
-    let mut pending = vec![node.clone()];
-    while let Some(node) = pending.pop() {
-        match node.kind().into() {
-            LuaSyntaxKind::ClosureExpr => {}
-            LuaSyntaxKind::CallExpr if node.text_range().end() <= before => return true,
-            _ => pending.extend(node.children()),
-        }
-    }
-    false
 }
 
 #[cfg(test)]
@@ -241,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn computed_index_assignment_stops_at_calls() {
+    fn computed_index_assignment_survives_opaque_calls() {
         for body in [
             "groups[key] = {}; mutate(); local values = groups[key].values",
             "groups[key] = {}; local unused = mutate(); local values = groups[key].values",
@@ -249,7 +258,7 @@ mod tests {
             "groups[key] = {}; print(mutate(), groups[key].values)",
             "groups[key] = {}; local unused, values = mutate(), groups[key].values",
         ] {
-            check(body, false);
+            check(body, true);
         }
     }
 }
@@ -285,6 +294,7 @@ end
     #[test]
     fn stable_nested_assignment_paths() {
         for body in [
+            "storage.groups[key] = {}; mutate(); print(storage.groups[key].values)",
             "storage.groups[key] = storage.groups[key] or {}; local result = storage.groups[key]; print(result.values)",
             "local groups = storage.groups; groups[key] = groups[key] or {}; print(groups[key].values)",
             "storage.groups[key] = {}; local count = #storage.groups[key].values",
@@ -298,7 +308,6 @@ end
             "storage.groups[key] = {}; key = other; print(storage.groups[key].values)",
             "storage.groups[key] = {}; storage.groups = {}; print(storage.groups[key].values)",
             "storage.groups[key] = {}; storage = other_storage; print(storage.groups[key].values)",
-            "storage.groups[key] = {}; mutate(); print(storage.groups[key].values)",
             "storage.groups[key] = value; print(storage.groups[key].values)",
             "if key > 0 then storage.groups[key] = {} end; print(storage.groups[key].values)",
         ] {

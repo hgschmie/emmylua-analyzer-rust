@@ -2,25 +2,25 @@
 
 use emmylua_parser::{
     BinaryOperator, LuaAstNode, LuaExpr, LuaIndexExpr, LuaIndexKey, LuaLiteralToken, LuaStat,
-    LuaSyntaxKind, LuaSyntaxNode, LuaVarExpr, UnaryOperator,
+    UnaryOperator,
 };
 use rowan::TextSize;
 
-use super::SemanticModel;
+use super::{SemanticModel, computed_effects};
 use crate::semantic_db::def::SemanticId;
 use crate::semantic_db::flow::{FlowAntecedent, FlowEffect, FlowNodeKind, LuaClosureId};
 use crate::{LuaMemberKey, LuaType};
 
 #[derive(PartialEq, Eq)]
-enum Part {
+pub(super) enum Part {
     Member(LuaMemberKey),
     Key(Box<Access>),
 }
 
 #[derive(PartialEq, Eq)]
 pub(super) struct Access {
-    root: SemanticId,
-    parts: Vec<Part>,
+    pub(super) root: SemanticId,
+    pub(super) parts: Vec<Part>,
 }
 
 impl Access {
@@ -70,9 +70,24 @@ pub(super) fn guarded_type(
                 .any(|member| member.key == LuaMemberKey::Name("__index".into())) => {}
         _ => return None,
     }
-    let mut base = model.type_of_expr(index.get_syntax_id());
-    let mut narrowed = false;
-    if contains_call(model, index.ancestors::<LuaStat>().next()?.syntax(), offset) {
+    let inferred = model.type_of_expr(index.get_syntax_id());
+    let base = match (&inferred, &owner_type) {
+        // Recursive element inference can be unknown at a loop/write site. The
+        // owner's array contract is still available, as in guarded_index_type.
+        (LuaType::Unknown, LuaType::Array(array)) => {
+            LuaType::from_vec(vec![array.get_base().clone(), LuaType::Nil])
+        }
+        _ => inferred,
+    };
+    if !base.is_nullable() {
+        return None;
+    }
+    if computed_effects::calls_conflict(
+        model,
+        &access,
+        index.ancestors::<LuaStat>().next()?.syntax(),
+        offset,
+    ) {
         return None;
     }
     let closure = LuaClosureId::from_node(index.syntax());
@@ -84,83 +99,79 @@ pub(super) fn guarded_type(
         match &node.kind {
             FlowNodeKind::TrueCondition(ptr) | FlowNodeKind::FalseCondition(ptr) => {
                 let condition = ptr.to_node(&chunk)?;
-                if LuaClosureId::from_node(condition.syntax()) != closure {
-                    return narrowed.then_some(base);
-                }
-                let primitive = super::primitive_guard_target(
-                    model,
-                    &condition,
-                    matches!(node.kind, FlowNodeKind::TrueCondition(_)),
-                )
-                .filter(|(target, _, _)| access_matches(model, target, &access));
-                if condition.get_range().end() <= offset
-                    && let Some((_, primitive, keep_matching)) = primitive
+                if LuaClosureId::from_node(condition.syntax()) != closure
+                    || computed_effects::calls_conflict(model, &access, condition.syntax(), offset)
                 {
-                    base = super::filter_type_by_primitive(model, base, &primitive, keep_matching);
-                    narrowed = true;
-                } else {
-                    if contains_call(model, condition.syntax(), offset) {
-                        return narrowed.then_some(base);
-                    }
-                    if condition.get_range().end() <= offset
-                        && excludes_nil(
-                            model,
-                            &condition,
-                            &access,
-                            matches!(node.kind, FlowNodeKind::TrueCondition(_)),
-                        )
-                    {
-                        base = super::remove_type(base, &LuaType::Nil);
-                        narrowed = true;
-                    }
+                    return None;
+                }
+                if condition.get_range().end() <= offset
+                    && excludes_nil(
+                        model,
+                        &condition,
+                        &access,
+                        matches!(node.kind, FlowNodeKind::TrueCondition(_)),
+                    )
+                {
+                    return Some(super::remove_type(base, &LuaType::Nil));
                 }
             }
             FlowNodeKind::Assignment(ptr) => {
                 let assignment = ptr.to_node(&chunk)?;
                 if assignment.get_range().end() <= offset {
                     if LuaClosureId::from_node(assignment.syntax()) != closure {
-                        return narrowed.then_some(base);
+                        return None;
+                    }
+                    if computed_effects::calls_conflict(model, &access, assignment.syntax(), offset)
+                    {
+                        return None;
                     }
                     let (vars, _) = assignment.get_var_and_expr_list();
-                    if vars.iter().any(|var| match var {
-                        LuaVarExpr::IndexExpr(_) => true,
-                        LuaVarExpr::NameExpr(name) => {
-                            name.get_name_text().as_deref() == Some("_ENV")
-                                || reference(model, name)
-                                    .is_some_and(|decl| access.depends_on(&decl))
-                        }
-                    }) {
-                        return narrowed.then_some(base);
+                    if vars
+                        .iter()
+                        .any(|var| computed_effects::write_conflicts(model, &access, var, offset))
+                    {
+                        return None;
                     }
                 }
             }
             FlowNodeKind::CallExprStat(ptr) => {
-                if contains_call(model, ptr.to_node(&chunk)?.syntax(), offset) {
-                    return narrowed.then_some(base);
+                if computed_effects::calls_conflict(
+                    model,
+                    &access,
+                    ptr.to_node(&chunk)?.syntax(),
+                    offset,
+                ) {
+                    return None;
                 }
             }
-            FlowNodeKind::LoopLabel | FlowNodeKind::NamedLabel(_) | FlowNodeKind::ImplFunc(_) => {
-                return narrowed.then_some(base);
+            FlowNodeKind::NamedLabel(_) | FlowNodeKind::ImplFunc(_) => {
+                return None;
             }
             _ => {}
         }
         for effect in tree.get_flow_effects(current) {
+            if let FlowEffect::LoopEntry(syntax) = effect {
+                let loop_node = syntax.to_node_from_root(chunk.syntax())?;
+                if computed_effects::loop_conflicts(model, &access, &loop_node) {
+                    return None;
+                }
+            }
             if let FlowEffect::AssignDecl { decl, value_syntax } = effect {
                 if value_syntax.get_range().end() <= offset && access.depends_on(decl) {
-                    return narrowed.then_some(base);
+                    return None;
                 }
                 let value = value_syntax.to_node_from_root(chunk.syntax())?;
-                if contains_call(model, &value, offset) {
-                    return narrowed.then_some(base);
+                if computed_effects::calls_conflict(model, &access, &value, offset) {
+                    return None;
                 }
             }
         }
         let Some(FlowAntecedent::Single(next)) = node.antecedent else {
-            return narrowed.then_some(base);
+            return None;
         };
         current = next;
     }
-    narrowed.then_some(base)
+    None
 }
 
 // Both guard and assignment facts require ordinary collection semantics.
@@ -245,10 +256,6 @@ pub(super) fn access(model: &SemanticModel, expr: &LuaExpr) -> Option<Access> {
     }
 }
 
-fn access_matches(model: &SemanticModel, target: &LuaExpr, expected: &Access) -> bool {
-    access(model, target).as_ref() == Some(expected)
-}
-
 fn excludes_nil(model: &SemanticModel, expr: &LuaExpr, expected: &Access, truthy: bool) -> bool {
     if access(model, expr).as_ref() == Some(expected) {
         return truthy;
@@ -288,59 +295,6 @@ fn excludes_nil(model: &SemanticModel, expr: &LuaExpr, expected: &Access, truthy
     }
 }
 
-fn contains_call(model: &SemanticModel, node: &LuaSyntaxNode, before: TextSize) -> bool {
-    let mut pending = vec![node.clone()];
-    while let Some(node) = pending.pop() {
-        match node.kind().into() {
-            LuaSyntaxKind::ClosureExpr => {}
-            _ if node.text_range().end() <= before
-                && emmylua_parser::LuaCallExpr::cast(node.clone())
-                    .is_some_and(|call| !primitive_read_pure_call(model, &call)) =>
-            {
-                return true;
-            }
-            _ => pending.extend(node.children()),
-        }
-    }
-    false
-}
-
-fn primitive_read_pure_call(model: &SemanticModel, call: &emmylua_parser::LuaCallExpr) -> bool {
-    let Some(LuaExpr::NameExpr(callee)) = call.get_prefix_expr() else {
-        return false;
-    };
-    let Some(SemanticId::Decl(decl)) = model.resolve_name(callee.get_position()) else {
-        return false;
-    };
-    if !model.is_std_file(decl.file_id) {
-        return false;
-    }
-    match callee.get_name_text().as_deref() {
-        Some("type") => true,
-        Some("tostring") => call
-            .get_args_list()
-            .and_then(|args| args.get_args().next())
-            .is_some_and(|arg| {
-                matches!(
-                    model.type_of_expr_at(arg.get_syntax_id(), arg.get_position()),
-                    LuaType::Nil
-                        | LuaType::Boolean
-                        | LuaType::BooleanConst(_)
-                        | LuaType::DocBooleanConst(_)
-                        | LuaType::String
-                        | LuaType::StringConst(_)
-                        | LuaType::DocStringConst(_)
-                        | LuaType::Number
-                        | LuaType::Integer
-                        | LuaType::IntegerConst(_)
-                        | LuaType::DocIntegerConst(_)
-                        | LuaType::FloatConst(_)
-                )
-            }),
-        _ => false,
-    }
-}
-
 #[cfg(test)]
 mod class_field_tests {
     use crate::{DiagnosticCode, VirtualWorkspace};
@@ -371,6 +325,7 @@ end
     #[test]
     fn computed_class_fields_keep_matching_guards() {
         for body in [
+            "if registry[key] then mutate(); print(registry[key].value) end",
             "if registry[key] then print(registry[key].value) end",
             "local value = registry[key] and registry[key].value",
             "if not (registry[key] and registry[key].value) then return end",
@@ -383,9 +338,116 @@ end
         for body in [
             "print(registry[key].value)",
             "if registry[key] then key = other; print(registry[key].value) end",
-            "if registry[key] then mutate(); print(registry[key].value) end",
             "if registry[key] then print(registry[other].value) end",
             "if registry[key] then registry[key] = nil; print(registry[key].value) end",
+        ] {
+            check(body, false);
+        }
+    }
+}
+
+#[cfg(test)]
+mod effect_boundary_tests {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+
+    fn check(body: &str, safe: bool) {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let src = format!(
+            r#"
+---@param rows integer[][]
+---@param key integer
+---@param other integer
+---@param predicate fun():boolean
+local function f(rows, key, other, predicate)
+{body}
+end
+"#
+        );
+        assert_eq!(
+            ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &src),
+            safe,
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn computed_facts_survive_opaque_calls_and_child_writes() {
+        for body in [
+            "if rows[key] then predicate(); print(rows[key][1]) end",
+            "rows[key] = rows[key] or {}; local v = rows[key][other] or predicate() or 0; rows[key][other] = v",
+            "if rows[key] then rows[key][other] = nil; print(rows[key][1]) end",
+            "if rows[key] then local out = {}; out[other] = 1; print(rows[key][1]) end",
+            "if rows[key] then local deferred = function() rows[key] = nil end; print(rows[key][1]) end",
+        ] {
+            check(body, true);
+        }
+    }
+
+    #[test]
+    fn global_dictionary_initialization_survives_callback() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+---@class Storage
+---@field capacity table<string, table<string, number>?>
+---@type Storage
+storage = {}
+---@param name string
+---@param quality string
+---@param callback fun():number?
+local function capacity(name, quality, callback)
+    storage.capacity[name] = storage.capacity[name] or {}
+    local value = storage.capacity[name][quality] or callback() or 0
+    storage.capacity[name][quality] = value
+    return math.floor(value)
+end
+"#
+        ));
+    }
+
+    #[test]
+    fn computed_facts_cross_nonconflicting_nested_loop() {
+        check(
+            r#"
+local result = {}
+for i = 1, 32 do
+    if rows[i] and predicate() then
+        for id in pairs(rows[i]) do
+            if predicate() then result[id] = 1
+            else rows[i][id] = nil end
+        end
+    end
+end
+return result
+"#,
+            true,
+        );
+        check(
+            "rows[key] = {}; for id = 1, 10 do rows[key][id] = id end",
+            true,
+        );
+    }
+
+    #[test]
+    fn computed_facts_stop_at_visible_conflicts() {
+        for body in [
+            "if rows[key] then rawset(rows, key, nil); print(rows[key][1]) end",
+            "if rows[key] then rows[key][other] = rawset(rows, key, nil); print(rows[key][1]) end",
+            "rows[key] = {}; rawset(rows, key, nil); print(rows[key][1])",
+            "rows[key] = {}; for i = 1, 10 do print(rows[key][1]); rows[key] = nil end",
+            "local function clear() rows[key] = nil end; rows[key] = {}; clear(); print(rows[key][1])",
+            "if rows[key] then setmetatable(rows, {}); print(rows[key][1]) end",
+            "if rows[key] then local other = {}; other = rows; other[key] = nil; print(rows[key][1]) end",
+            "if rows[key] then table.remove(rows, key); print(rows[key][1]) end",
+            "local function clear() rows[key] = nil end; if rows[key] then clear(); print(rows[key][1]) end",
+            "local clear = function() rows[key] = nil end; if rows[key] then clear(); print(rows[key][1]) end",
+            "if rows[key] then (function() rows[key] = nil end)(); print(rows[key][1]) end",
+            "if rows[key] then for i = 1, 10 do print(rows[key][1]); rows[key] = nil end end",
+            "if rows[key] then for i = 1, 10 do print(rows[key][1]); key = other end end",
+            "local alias = rows; if rows[key] then for i = 1, 10 do print(rows[key][1]); alias[key] = nil end end",
+            "local out = {}; escape(out); if rows[key] then out[other] = nil; print(rows[key][1]) end",
+            "if rows[key] then for i = 1, 10 do print(rows[key][1]); rawset(rows, key, nil) end end",
         ] {
             check(body, false);
         }
