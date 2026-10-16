@@ -110,3 +110,33 @@ fn p11_flow_repeated_nested_index_guard_chain_is_not_exponential() {
         "cost grew faster than linear in the number of guard blocks: {measurements:?}"
     );
 }
+
+#[test]
+fn p11_sequential_loop_summaries_do_not_expand_exponentially() {
+    use emmylua_parser::LuaNameExpr;
+    for count in [4, 8] {
+        let mut ws = VirtualWorkspace::new();
+        let mut source = String::from(
+            "---@param values boolean[]\nlocal function f(values)\nlocal result = 1\n",
+        );
+        for _ in 0..count {
+            source.push_str("for _, value in pairs(values) do if value then result = 2 end end\n");
+        }
+        source.push_str("return result\nend");
+        let fid = ws.def_file("loops.lua", &source);
+        let model = ws.analysis.semantic_model(fid);
+        let name = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaNameExpr>()
+            .last()
+            .unwrap();
+        flow_metrics::reset();
+        let _ = model.type_of_expr_at(name.get_syntax_id(), name.get_position());
+        let entries = flow_metrics::trace_decl_entries();
+        assert!(
+            entries < 100 * count,
+            "{count} loops took {entries} trace entries"
+        );
+    }
+}

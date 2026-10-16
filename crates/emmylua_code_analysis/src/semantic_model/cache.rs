@@ -30,7 +30,8 @@ pub(crate) enum CacheEntry<T> {
 /// The incoming path is deliberately absent. It is safe to omit only for flow
 /// graphs without loops, where every route to a flow node crosses the same
 /// guards, so the path is a function of the node. [`super::flow`] consults this
-/// memo only in that case and recomputes otherwise.
+/// memo in that case, or for an acyclic loop summary with an empty incoming
+/// path. Actual cycles and nonempty loop paths are recomputed.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct TraceStateKey {
     pub(crate) decl: SemanticId,
