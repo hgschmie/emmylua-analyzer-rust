@@ -114,6 +114,36 @@ pub(super) fn loop_conflicts(
     scan(model, expected, node, node.text_range().end(), true, 0)
 }
 
+/// An iterator establishes existence anew on each iteration. Only preceding
+/// effects in its body matter, but a nested loop may already have run its tail.
+pub(super) fn iteration_conflicts(
+    model: &SemanticModel,
+    expected: &Access,
+    body: &LuaSyntaxNode,
+    before: TextSize,
+) -> bool {
+    let mut pending = vec![body.clone()];
+    while let Some(node) = pending.pop() {
+        if node.text_range().start() >= before || node.kind() == LuaSyntaxKind::ClosureExpr.into() {
+            continue;
+        }
+        if matches!(
+            node.kind().into(),
+            LuaSyntaxKind::ForRangeStat
+                | LuaSyntaxKind::ForStat
+                | LuaSyntaxKind::WhileStat
+                | LuaSyntaxKind::RepeatStat
+        ) {
+            if loop_conflicts(model, expected, &node) {
+                return true;
+            }
+        } else {
+            pending.extend(node.children());
+        }
+    }
+    scan(model, expected, body, before, true, 0)
+}
+
 fn scan(
     model: &SemanticModel,
     expected: &Access,
