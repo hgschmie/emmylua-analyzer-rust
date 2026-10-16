@@ -54,6 +54,7 @@ mod unnecessary_assert_test;
 mod unnecessary_if_test;
 mod unresolved_require_test;
 mod unused_test;
+mod variadic_named_types_test;
 
 use std::str::FromStr;
 use std::sync::Arc;
