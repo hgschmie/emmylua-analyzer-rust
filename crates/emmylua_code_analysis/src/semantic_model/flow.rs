@@ -14,6 +14,7 @@
 
 mod array;
 mod guards;
+mod loop_carried;
 
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -90,6 +91,36 @@ fn decl_owner_syntax_start(model: &SemanticModel, decl: &SemanticId) -> Option<T
         .map(|syntax| syntax.get_range().start())
 }
 
+// Captured assignments require closure-entry handling even when the current
+// closure has no loop. Keep newly enabled fast reads within the declaration's
+// own closure; text order alone cannot describe an enclosing writer's effects.
+fn declaration_is_in_query_closure(
+    model: &SemanticModel,
+    decl: &SemanticId,
+    offset: TextSize,
+) -> bool {
+    let Some(chunk) = model.chunk() else {
+        return false;
+    };
+    let Some(owner) = model
+        .file_facts()
+        .and_then(|facts| facts.decl_by_id(decl))
+        .and_then(|decl| decl.owner_syntax)
+        .and_then(|syntax| syntax.to_node_from_root(chunk.syntax()))
+    else {
+        return false;
+    };
+    let Some(query) = chunk
+        .syntax()
+        .token_at_offset(offset)
+        .right_biased()
+        .and_then(|token| token.parent())
+    else {
+        return false;
+    };
+    LuaClosureId::from_node(&owner) == LuaClosureId::from_node(&query)
+}
+
 /// Flow-sensitive type of `decl` at `offset` (assignment-aware + condition narrowing; `Unknown` falls back to the declared type).
 ///
 /// When `offset` lies on the assignment flow node for `x = value`, **this assignment does not participate in the target type** —
@@ -105,9 +136,15 @@ pub fn type_of_decl_at(model: &SemanticModel, decl: &SemanticId, offset: TextSiz
     // No assignment to this decl and no narrowing/merge event after declaration:
     // the flow value is exactly the declared value. This keeps straight-line
     // initialization sections from walking O(offset) CFG nodes for every read.
+    // A reachable loop/label can bring a textually later assignment back to
+    // this read. Unrelated loops elsewhere in the file must not disable this
+    // fast path; use the existing per-node CFG reachability index.
     if let Some(decl_start) = decl_owner_syntax_start(model, decl)
+        && (!tree.has_decl_assignment(decl)
+            || (!tree.is_loop_reachable(flow_id)
+                && declaration_is_in_query_closure(model, decl, offset)))
         && tree.latest_decl_assignment(decl, offset).is_none()
-        && !tree.has_flow_event_between(decl_start, offset, true)
+        && !tree.has_flow_event_between_at(flow_id, decl_start, offset, true)
     {
         #[cfg(test)]
         flow_metrics::record_fast_decl_hit();
@@ -1871,6 +1908,35 @@ fn trace_decl_uncached(
             return None;
         }
         let node = tree.get_flow_node(current)?;
+        // An independent assignment in this iteration overwrites the loop-entry
+        // state. Keep its literal precision instead of widening through the loop.
+        // Backtracking pushes frames in reverse execution order, so last() is
+        // the earliest reached assignment and decides whether entry is needed.
+        // FLOW_READ enables assignments; ASSIGN_TARGET intentionally retains only
+        // the declaration/cast contract. An empty frame stack is a direct read,
+        // so it also receives loop-entry state.
+        if options.assignments {
+            for effect in tree.get_flow_effects(current) {
+                if let FlowEffect::LoopEntry(syntax) = effect
+                    // Inspect an RHS only when backtracking actually reaches a
+                    // loop entry. The syntax dependency is cached across traces.
+                    && frames.last().is_none_or(|frame| {
+                        loop_carried::references_decl(model, frame.value_syntax, decl)
+                    })
+                    && let Some(entry) = first_antecedent(tree, node.antecedent.as_ref())
+                    && let Some(typ) = loop_carried::loop_carried_type(model, decl, *syntax, entry)
+                {
+                    return finish_decl_frames(
+                        model,
+                        decl,
+                        tree,
+                        finalize(model, typ, path),
+                        frames,
+                        root_mode,
+                    );
+                }
+            }
+        }
         match &node.kind {
             FlowNodeKind::Assignment(assign_ptr) => {
                 // Effect summary: assignment of decl ← value on this node (ASSIGN_TARGET mode ignores assignments).
