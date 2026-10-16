@@ -1,3 +1,42 @@
+# init.lua member reads, guards and remote calls — UP-064/065/066 (2026-10-15)
+
+Three independent fixes based on current upstream/main 96545f45 are integrated
+by signed provenance-preserving cherry-picks onto the existing work baseline:
+
+- UP-064 fix/member-self-assignment-types: 652760ef -> 2033427e. Only completed
+  earlier assignments may override a declared class field during read inference.
+  This fixes stop.depot_priority = stop.depot_priority or 0; the literal 0 itself
+  was already integer. Parallel assignments read the previous state.
+- UP-065 fix/unknown-logical-and: fb58fb53 -> 4e9493cd. Unknown/Any logical-and
+  preserves nil/false and the RHS alternatives instead of collapsing to Nil.
+  This repairs the unannotated oldVersion migration guards independently of the
+  stable collection-guard patches.
+- UP-066 fix/dependent-generic-call-constraints: a5b16f22 -> 5c26f716. Instantiate
+  dependent function constraints from earlier arguments, retain literal bindings,
+  and resolve computed Parameters/ReturnType fallbacks without prebinding ordinary
+  inference sites. Declared interfaces keep argument/return contracts; undeclared
+  interfaces retain the generic fallback. Existing variadic/callback inference
+  retains raw templates; non-generic calls keep their previous fast path.
+
+UP-066's named-interface historical reproducer passes before the refactor at
+aaaca684, fails at initial refactor 3474c99d and pre-contribution 1c8589bb.
+It predates our merged contributions. UP-064/065 reproduce on current upstream;
+no earlier historical attribution is claimed for those two.
+Standalone analysis suites pass: 1,478 / 1,476 / 1,478 tests respectively.
+All new branches are signed/DCO and local only; no new PRs. Previous outstanding
+UP-060/061/062/063 and prior work/package/FDE heads were pushed first as requested.
+
+Normal UP-045 packaging advances to EmmyLua2 build165 (macOS arm64 patched).
+Update FDE's development analyzer pin only; retain FDE 0.8.3-dev, LSP4IJ patched4
+and UP-008 comparison159. Original mods and installed IDE plugins remain untouched.
+Final combined/native/package evidence and hashes are recorded in workspace
+upstream/INIT_REMOTE_FIXES_2026-10-15.md and analyzer
+build/investigations/remote-call-20261015/.
+
+Two additional probes are out of scope: inline-object interface member projection,
+and integer? or 0.5 losing the noninteger alternative. These are not required to
+resolve the reported init.lua diagnostics and are not claimed fixed here.
+
 # Declared field hover on assignment targets — UP-063 (2026-10-15)
 
 LTN dispatcher.lua:322 shows `tick_state: number = 0` despite the field's
