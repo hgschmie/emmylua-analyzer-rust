@@ -287,7 +287,7 @@ fn valid_named_member(
     }
     // `m[expr]`: dynamic string / enum alias / enum member table identity keys are allowed broadly on named types (keyof/enum parameter scenarios).
     if matches!(index_key, LuaIndexKey::Expr(_))
-        && (is_string_key(&key_ty)
+        && (string_key_expanded(semantic_model, &key_ty)
             || is_enum_like_key(semantic_model, &key_ty)
             || matches!(key_ty, LuaType::TableConst(_)))
     {
@@ -394,6 +394,35 @@ fn is_string_key(ty: &LuaType) -> bool {
     }
 }
 
+/// String keys may be named aliases (including aliases inside unions).
+/// Track visited definitions so recursive aliases cannot loop indefinitely.
+fn string_key_expanded(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> bool {
+    // This is an existential query: one reachable string branch is enough.
+    // A work queue visits each alias once, so long finite chains resolve while
+    // cycles with no string branch terminate without claiming a match.
+    let mut pending = vec![ty.clone()];
+    let mut visited = hashbrown::HashSet::new();
+    while let Some(ty) = pending.pop() {
+        if is_string_key(&ty) {
+            return true;
+        }
+        match &ty {
+            LuaType::Union(union) => pending.extend(union.iter().cloned()),
+            LuaType::MultiLineUnion(union) => pending.push(union.to_union()),
+            LuaType::Ref(id) | LuaType::Def(id) if visited.insert(id.clone()) => {
+                if let Some(def) = named_type_def(semantic_model, &ty)
+                    && def.kind == TypeDefKind::Alias
+                    && let Some(target) = semantic_model.alias_target(&def)
+                {
+                    pending.push(target);
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 fn numeric_key(ty: &LuaType) -> bool {
     match ty {
         LuaType::Number
@@ -454,7 +483,7 @@ fn key_matches(semantic_model: &SemanticModel<'_>, key: &LuaType, table_key: &Lu
     }
     match table_key {
         LuaType::String | LuaType::StringConst(_) | LuaType::DocStringConst(_) => {
-            is_string_key(key)
+            string_key_expanded(semantic_model, key)
         }
         LuaType::Integer
         | LuaType::Number
