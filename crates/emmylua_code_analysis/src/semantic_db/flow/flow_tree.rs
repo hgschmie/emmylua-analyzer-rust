@@ -42,6 +42,8 @@ pub struct FlowTree {
     /// backward edges whose source positions are not monotonic, so the member
     /// assignment-position fast path is conservatively disabled.
     has_complex_control: bool,
+    /// Actual cycles, as opposed to the syntactic presence of a loop label.
+    has_cycles: bool,
 }
 
 impl FlowTree {
@@ -137,7 +139,9 @@ impl FlowTree {
         for (range, flow_id) in &binding_ranges {
             binding_starts.entry(range.start()).or_insert(*flow_id);
         }
+        let has_cycles = contains_cycle(&flow_nodes, &multiple_antecedents);
         Self {
+            has_cycles,
             decl_bind_expr_ref,
             decl_multi_return_ref,
             flow_nodes,
@@ -266,7 +270,12 @@ impl FlowTree {
         self.member_assignments.contains_key(member)
     }
 
-    /// Whether loops / labels / break / continue may create non-monotonic flow edges.
+    /// Whether the graph actually contains a back edge.
+    pub fn has_cycles(&self) -> bool {
+        self.has_cycles
+    }
+
+    /// Whether syntactic loop/label control disables position-based shortcuts.
     pub fn has_complex_control(&self) -> bool {
         self.has_complex_control
     }
@@ -542,6 +551,40 @@ impl FlowTree {
     }
 }
 
+/// Iterative topological elimination keeps cycle detection linear and stack-safe.
+/// Loop summaries can be DAGs; goto/continue back edges must keep uncached tracing.
+fn contains_cycle(nodes: &[FlowNode], multiple: &[Vec<FlowId>]) -> bool {
+    let mut remaining = vec![0usize; nodes.len()];
+    let mut successors = vec![Vec::new(); nodes.len()];
+    for node in nodes {
+        let predecessors: &[FlowId] = match &node.antecedent {
+            None => &[],
+            Some(FlowAntecedent::Single(id)) => std::slice::from_ref(id),
+            Some(FlowAntecedent::Multiple(id)) => &multiple[*id as usize],
+        };
+        remaining[node.id.0 as usize] = predecessors.len();
+        for previous in predecessors {
+            successors[previous.0 as usize].push(node.id.0 as usize);
+        }
+    }
+    let mut ready: Vec<_> = remaining
+        .iter()
+        .enumerate()
+        .filter_map(|(index, count)| (*count == 0).then_some(index))
+        .collect();
+    let mut removed = 0;
+    while let Some(index) = ready.pop() {
+        removed += 1;
+        for &next in &successors[index] {
+            remaining[next] -= 1;
+            if remaining[next] == 0 {
+                ready.push(next);
+            }
+        }
+    }
+    removed != nodes.len()
+}
+
 /// Best-effort AST position for a flow node kind; `None` for label/terminal nodes.
 fn flow_node_position(kind: &FlowNodeKind) -> Option<TextSize> {
     match kind {
@@ -598,4 +641,40 @@ pub struct DeclMultiReturnRefAt {
     pub position: TextSize,
     pub flow_id: FlowId,
     pub reference: Option<DeclMultiReturnRef>,
+}
+
+#[cfg(test)]
+mod cycle_tests {
+    use super::*;
+    #[test]
+    fn distinguishes_shared_predecessors_from_back_edges() {
+        let mut nodes = vec![
+            FlowNode {
+                id: FlowId(0),
+                kind: FlowNodeKind::Start,
+                antecedent: None,
+            },
+            FlowNode {
+                id: FlowId(1),
+                kind: FlowNodeKind::LoopLabel,
+                antecedent: Some(FlowAntecedent::Single(FlowId(0))),
+            },
+            FlowNode {
+                id: FlowId(2),
+                kind: FlowNodeKind::BranchLabel,
+                antecedent: Some(FlowAntecedent::Single(FlowId(0))),
+            },
+            FlowNode {
+                id: FlowId(3),
+                kind: FlowNodeKind::BranchLabel,
+                antecedent: Some(FlowAntecedent::Multiple(0)),
+            },
+        ];
+        let multiple = vec![vec![FlowId(1), FlowId(2)]];
+        assert!(!contains_cycle(&nodes, &multiple));
+        nodes[1].antecedent = Some(FlowAntecedent::Single(FlowId(3)));
+        assert!(contains_cycle(&nodes, &multiple));
+        nodes[1].antecedent = Some(FlowAntecedent::Single(FlowId(1)));
+        assert!(contains_cycle(&nodes, &multiple));
+    }
 }
