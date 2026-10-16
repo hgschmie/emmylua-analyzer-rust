@@ -24,6 +24,8 @@ mod test;
 
 use std::ops::Deref;
 
+use emmylua_parser::{LuaAst, LuaAstNode, LuaExpr};
+
 pub use context::{TypeCheckContext, TypeCheckMode};
 pub use fail_reason::TypeCheckFailReason;
 
@@ -151,6 +153,46 @@ fn check_general_type_compact(
         }
     }
 
+    // An enum contract must cover every possible source value, including when
+    // the target is optional or aliased. Check before nullable-reference shortcuts.
+    if let LuaType::Union(union) = source
+        && contains_enum_target(context.model, compact_type)
+    {
+        for member in union.iter() {
+            check_general_type_compact(context, member, compact_type, check_guard.next_level()?)?;
+        }
+        return Ok(());
+    }
+
+    // Optional/union enum targets accept any matching alternative. Route each
+    // alternative through this checker so literal membership and aliases apply.
+    if let LuaType::Union(union) = compact_type
+        && contains_enum_target(context.model, compact_type)
+    {
+        for member in union.iter() {
+            if check_general_type_compact(context, source, member, check_guard.next_level()?)
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+        return Err(context.mismatch(source, compact_type));
+    }
+
+    // Numeric literals must be actual enum values in every compatibility mode.
+    // Returning/passing an enum member follows the same rule as assigning it.
+    if let LuaType::IntegerConst(value) | LuaType::DocIntegerConst(value) = source
+        && let LuaType::Ref(target_id) | LuaType::Def(target_id) = compact_type
+        && let Some(def) = context.model.type_def_of(target_id)
+        && def.kind == TypeDefKind::Enum
+    {
+        return if enum_integer_values_ctx(context.model, &def).contains(value) {
+            Ok(())
+        } else {
+            Err(context.mismatch(source, compact_type))
+        };
+    }
+
     if fast_eq_check(source, compact_type) {
         return Ok(());
     }
@@ -201,21 +243,13 @@ fn check_general_type_compact(
                 return Err(context.mismatch(source, compact_type));
             }
         }
-        // Assignment mode: an integer enum target accepts broad integers; literals must be member values.
-        if let LuaType::Ref(target_id) | LuaType::Def(target_id) = compact_type
-            && let Some(def) = context.model.resolve_type_def(target_id.get_name())
-            && def.kind == TypeDefKind::Enum
+        // Preserve the existing assignment policy for broad integer values.
+        // Literal membership was checked above and must not use this shortcut.
+        if matches!(source, LuaType::Integer)
+            && let LuaType::Ref(target_id) | LuaType::Def(target_id) = compact_type
+            && context.is_enum(target_id)
         {
-            match source {
-                LuaType::Integer | LuaType::DocIntegerConst(_) => return Ok(()),
-                LuaType::IntegerConst(value) => {
-                    if enum_integer_values_ctx(context.model, &def).contains(value) {
-                        return Ok(());
-                    }
-                    return Err(context.mismatch(source, compact_type));
-                }
-                _ => {}
-            }
+            return Ok(());
         }
         // Source union members can match different target members; check them below.
         if let LuaType::Union(union) = compact_type
@@ -462,9 +496,52 @@ fn def_extends_ctx(
     false
 }
 
+/// Whether a return/assignment contract includes an enum, following aliases.
+/// Keep the checker’s unrelated legacy union policies unchanged.
+pub(crate) fn contains_enum_target(model: &SemanticModel, typ: &LuaType) -> bool {
+    fn visit(model: &SemanticModel, typ: &LuaType, depth: usize) -> bool {
+        if depth >= 32 {
+            return false;
+        }
+        match typ {
+            LuaType::Union(union) => union.iter().any(|ty| visit(model, ty, depth + 1)),
+            LuaType::Ref(id) | LuaType::Def(id) => model.type_def_of(id).is_some_and(|def| {
+                def.kind == TypeDefKind::Enum
+                    || (def.kind == TypeDefKind::Alias
+                        && model
+                            .alias_target(&def)
+                            .is_some_and(|ty| visit(model, &ty, depth + 1)))
+            }),
+            LuaType::Generic(_) => {
+                let expanded = expand_alias_generic(model, typ);
+                expanded != *typ && visit(model, &expanded, depth + 1)
+            }
+            _ => false,
+        }
+    }
+    visit(model, typ, 0)
+}
+
 fn enum_integer_values_ctx(model: &SemanticModel, def: &TypeDef) -> std::collections::HashSet<i64> {
     let mut out = std::collections::HashSet::new();
-    for member_ref in model.members_of_owner(&def.id).iter() {
+    // Enum fields belong to their runtime table initializer, not the type
+    // definition ID. Resolve it in the defining file, also for field-owned enums.
+    let owner = model
+        .syntax_tree_of(def.file_id)
+        .and_then(|tree| def.owner_syntax?.to_node_from_root(&tree.get_red_root()))
+        .and_then(LuaAst::cast)
+        .and_then(|owner| match owner {
+            LuaAst::LuaLocalStat(stat) => stat.get_value_exprs().next(),
+            LuaAst::LuaAssignStat(stat) => stat.get_var_and_expr_list().1.into_iter().next(),
+            LuaAst::LuaTableField(field) => field.get_value_expr(),
+            _ => None,
+        })
+        .and_then(|value| match value {
+            LuaExpr::TableExpr(table) => Some(SemanticId::member(def.file_id, table.get_range())),
+            _ => None,
+        })
+        .unwrap_or_else(|| def.id.clone());
+    for member_ref in model.members_of_owner(&owner).iter() {
         let Some(facts) = model.file_facts_of(member_ref.file_id) else {
             continue;
         };
