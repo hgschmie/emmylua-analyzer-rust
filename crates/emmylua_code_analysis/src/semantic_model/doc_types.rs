@@ -128,7 +128,10 @@ impl<'db> SemanticModel<'db> {
             .map(|(index, param)| {
                 let constraint = param.constraint.map(|syntax| {
                     let ty = self.analysis().doc_type_lua(file_id, syntax, params);
-                    if matches!(ty, LuaType::Unknown | LuaType::Table) {
+                    if matches!(
+                        ty,
+                        LuaType::Unknown | LuaType::Table | LuaType::Conditional(_)
+                    ) {
                         let rich = self.project_doc_type(file_id, syntax, &[]);
                         if !matches!(rich, LuaType::Unknown) {
                             rich
@@ -427,6 +430,12 @@ impl<'db> SemanticModel<'db> {
                     return self.analysis().doc_type_node_lua(file_id, doc_ty, generics);
                 };
                 let LuaDocType::Name(name_ty) = &target else {
+                    if matches!(target, LuaDocType::IndexAccess(_)) {
+                        return LuaType::Call(Rc::new(LuaAliasCallType::new(
+                            LuaAliasCallKind::KeyOf,
+                            vec![self.doc_type_lua_rich_in(file_id, target.get_syntax_id())],
+                        )));
+                    }
                     return self.analysis().doc_type_node_lua(file_id, doc_ty, generics);
                 };
                 let Some(name) = name_ty.get_name_text() else {
