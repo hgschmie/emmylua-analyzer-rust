@@ -1841,10 +1841,10 @@ fn trace_decl(
     visited: &mut HashSet<FlowId>,
     path: &mut PathState,
 ) -> Option<LuaType> {
-    // A trace includes guards and casts collected after this flow node. Keep
-    // those facts in the memo key so separate branches cannot reuse one another's
-    // narrowed result. Canonicalize redundant operations to bound repeated guards.
-    if tree.is_loop_reachable(flow_id) {
+    // Incoming guard/cast facts are part of the cache key. Only actual cycles
+    // require uncached traversal: acyclic loop exits can use the same memo as
+    // ordinary branches, without affecting unrelated functions in the file.
+    if tree.is_cycle_reachable(flow_id) {
         return trace_decl_uncached(model, decl, tree, flow_id, options, mode, visited, path);
     }
     let key = cache::TraceStateKey {
