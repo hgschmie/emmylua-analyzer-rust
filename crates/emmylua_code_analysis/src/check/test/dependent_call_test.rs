@@ -161,3 +161,34 @@ function identity(value) end
     assert_eq!(ws.expr_ty("defaults()"), ws.ty("string[]"));
     assert_eq!(ws.expr_ty("identity--[[@<number>]](1)"), LuaType::Number);
 }
+
+#[test]
+fn dependent_call_constraints_accept_valid_methods() {
+    let mut ws = workspace();
+    for code in [
+        DiagnosticCode::ParamTypeMismatch,
+        DiagnosticCode::GenericConstraintMismatch,
+    ] {
+        assert!(ws.has_no_diagnostic(
+            code,
+            "invoke('other', 'send', 'hello', true)\ninvoke('known', 'send', 'hello', true)"
+        ));
+    }
+    assert_eq!(
+        ws.expr_ty("invoke('known', 'send', 'hello', true)"),
+        LuaType::Integer
+    );
+}
+
+#[test]
+fn dependent_call_constraints_reject_invalid_method_and_arguments() {
+    let mut ws = workspace();
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::GenericConstraintMismatch,
+        "invoke('known', 'missing')"
+    ));
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::ParamTypeMismatch,
+        "invoke('known', 'send', false, 42)"
+    ));
+}
