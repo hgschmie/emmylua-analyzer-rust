@@ -768,6 +768,32 @@ fn check_arg_pairs(
         if skip_arg(&call_arg_ty, &param_ty) {
             continue;
         }
+        // Optional parameters must compare the whole argument domain with the
+        // whole contract. Selecting the non-nil target first rejects valid T?,
+        // while permissive union overlap can accept an invalid alternative.
+        let optional_contract = unify::substitute(&param_ty, bindings);
+        if optional_contract.is_nullable()
+            && !optional_contract.contains_tpl_node()
+            && !matches!(
+                call_arg_ty,
+                LuaType::DocFunction(_) | LuaType::Signature(_) | LuaType::Function
+            )
+        {
+            let argument = super::check_field::expand_alias_type(semantic_model, &call_arg_ty)
+                .unwrap_or_else(|| call_arg_ty.clone());
+            if !type_check::is_assign_compatible(semantic_model, &argument, &optional_contract) {
+                out.push(Mismatch {
+                    range: arg.get_range(),
+                    message: mismatch_message(
+                        semantic_model,
+                        &call_arg_ty,
+                        &optional_contract,
+                        name,
+                    ),
+                });
+            }
+            continue;
+        }
         // Check the whole boolean domain before selecting a single union component.
         if is_compatible(semantic_model, &call_arg_ty, &LuaType::Boolean)
             && !param_ty.contains_tpl_node()
