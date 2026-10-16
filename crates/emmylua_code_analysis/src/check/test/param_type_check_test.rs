@@ -3034,3 +3034,85 @@ mod combined_localised_constructor_tests {
         );
     }
 }
+
+#[test]
+fn test_optional_union_alias_parameter_accepts_nullable_string() {
+    let source = r#"
+    ---@alias Filter string|{name:string}
+    ---@class Train
+    local Train = {
+        ---@param item? Filter
+        ---@return integer
+        get_count = function(item) end
+    }
+    ---@param train Train
+    ---@param item string?
+    local function test(train, item)
+        train.get_count(item)
+    end
+    "#;
+    let diagnostics = super::check_source(source);
+    let mismatches: Vec<_> = diagnostics
+        .into_iter()
+        .filter(|d| d.code == crate::DiagnosticCode::ParamTypeMismatch)
+        .collect();
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
+}
+
+#[test]
+fn test_optional_alias_parameters_keep_valid_and_invalid_alternatives() {
+    for (parameter, argument, expected) in [
+        ("Filter?", "string?", 0),
+        ("Filter?", "nil", 0),
+        ("Filter?", "string|{name:string}|nil", 0),
+        ("Filter?", "boolean?", 1),
+        ("Filter?", "string|integer|nil", 1),
+        ("Filter", "string?", 1),
+        ("Filter", "nil", 1),
+        ("string?", "integer?", 1),
+        ("string?", "string|integer|nil", 1),
+        ("Filter?", "MaybeString", 0),
+    ] {
+        let source = format!(
+            r#"
+        ---@alias Filter string|{{name:string}}
+        ---@alias MaybeString string|nil
+        ---@param item {parameter}
+        local function accept(item) end
+        ---@param item {argument}
+        local function test(item) accept(item) end
+        "#
+        );
+        let mismatches: Vec<_> = super::check_source(&source)
+            .into_iter()
+            .filter(|d| d.code == crate::DiagnosticCode::ParamTypeMismatch)
+            .collect();
+        assert_eq!(
+            mismatches.len(),
+            expected,
+            "{parameter} <- {argument}: {mismatches:#?}"
+        );
+    }
+}
+
+#[test]
+fn test_optional_alias_parameter_preserves_generic_binding() {
+    let source = r#"
+    ---@class Box<T>
+    ---@field value T
+    ---@generic T
+    ---@param box Box<T>?
+    ---@param other T
+    local function accept(box, other) end
+    ---@param box Box<string>?
+    local function test(box)
+        accept--[[@<string>]](box, 'valid')
+        accept--[[@<string>]](box, 42)
+    end
+    "#;
+    let mismatches: Vec<_> = super::check_source(source)
+        .into_iter()
+        .filter(|d| d.code == crate::DiagnosticCode::ParamTypeMismatch)
+        .collect();
+    assert_eq!(mismatches.len(), 1, "{mismatches:#?}");
+}
