@@ -575,7 +575,15 @@ pub(crate) fn type_of_expr_at_node(
                     if !resolved_is_runtime
                         && let Some(runtime_member) = facts
                             .members_of_owner(&resolved.owner)
-                            .find(|m| m.key.name() == Some(resolved.name.as_str()))
+                            .find(|m| {
+                                m.key.name() == Some(resolved.name.as_str())
+                                    // Before a write completes, its value cannot override
+                                    // the declared field (including reads in its own RHS).
+                                    && (owner_decl.file_id != model.file_id()
+                                        || m.value_syntax.is_some_and(|value| {
+                                            runtime_member_assignment_precedes(model, value, offset)
+                                        }))
+                            })
                         // Table fields from a declared initializer are not "runtime overrides": `local b: B = { field = 1 }`
                         // field access is still governed by the class `@field` type, avoiding widening `integer` to `number`.
                         && !model.is_initializer_table_field(&runtime_member.id, runtime_member)
@@ -841,6 +849,26 @@ fn narrow_index_condition(
             }
         }
     }
+}
+
+/// All right-hand expressions are evaluated before any parallel assignment takes effect.
+fn runtime_member_assignment_precedes(
+    model: &SemanticModel,
+    value: emmylua_parser::LuaSyntaxId,
+    offset: TextSize,
+) -> bool {
+    if value.get_range().end() > offset {
+        return false;
+    }
+    let Some(tree) = model.syntax_tree() else {
+        return false;
+    };
+    let Some(node) = value.to_node_from_root(&tree.get_red_root()) else {
+        return false;
+    };
+    node.parent()
+        .and_then(LuaAssignStat::cast)
+        .is_none_or(|assignment| assignment.get_range().end() <= offset)
 }
 
 /// Infer the VM type, then apply the selected inline casts.
