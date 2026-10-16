@@ -1,3 +1,27 @@
+# LocalisedString arrays — UP-069/070 (2026-10-15)
+
+Independent UP-069 fix/array-union-alias-compatibility is signed a916fa61 on
+upstream/main 96545f45, integrated with signed work pick bcb37d34. Array values
+now try union alternatives after alias expansion, retaining element checks and
+recursion guards. Five of eight regressions failed before; all eight pass after,
+including invalid elements, nil, recursive aliases and alias cycles. Standalone
+1,476 standard analysis tests, combined 1,746 standard analysis and 264 standard
+server tests, Clippy/fmt pass. Slow-feature coverage is recorded in the final report.
+UP-041 is complementary (the parameter path); no pending prerequisite or work glue.
+
+UP-070 in the toolkit (fix/localised-string-api-types, 11419a3) changes handwritten
+runtime/data aliases to the API's recursive array types and restores runtime nil.
+Issue #1195's false optional-field diagnostics no longer reproduce on upstream
+or our work build; invalid-field controls remain rejected. The old coordinate
+object allowance is removed to match the documented union. Both fixes are needed
+for the user's array-to-LocalisedString cast/return case.
+
+EmmyLua2 build167 and FDE 0.8.5-dev package the analyzer and toolkit respectively.
+Retain LSP4IJ patched4, normal UP-045 and UP-008 comparison159. Prior outstanding
+UP-067/068 and work/package/FDE commits were pushed before this task. The new
+fixes remain local; no PR or IDE install. Native/package validation details and
+hashes live in workspace upstream/LOCALISED_STRING_FIXES_2026-10-15.md.
+
 # Named variadic values and remote return shapes — UP-067/068 (2026-10-15)
 
 UP-067 is an independent analyzer fix on upstream/main 96545f45:
