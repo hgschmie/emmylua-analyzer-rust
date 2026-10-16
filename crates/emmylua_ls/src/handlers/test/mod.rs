@@ -1,6 +1,7 @@
 mod code_actions_test;
 mod completion_resolve_test;
 mod completion_test;
+mod declared_field_hover_test;
 mod definition_test;
 mod doc_type_completion_test;
 mod hover_function_test;
