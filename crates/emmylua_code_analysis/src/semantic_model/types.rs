@@ -164,6 +164,17 @@ impl<'db> SemanticModel<'db> {
             {
                 return Some(ty);
             }
+            if matches!(decl.kind, DeclKind::Param)
+                && let Some((signature, index)) = facts.signature_and_param_index_of_decl(decl)
+                && signature
+                    .docs
+                    .as_ref()
+                    .is_some_and(|docs| docs.param_types.iter().any(|(name, _)| name == &decl.name))
+                && let Some(ty) =
+                    self.expected_member_param_for_closure(signature.closure_syntax, index)
+            {
+                return Some(ty);
+            }
             // `---@type` annotations (including fun<T> structures) take priority over closure signatures;
             // when shell degrades to bare Table / Unknown, rich projection fills in object/keyof/intersection structures.
             if let Some(doc_syntax) = decl.doc_type_syntax {
