@@ -1834,6 +1834,36 @@ fn test_operator_add() {
     );
 }
 
+#[test]
+fn test_unary_minus_numeric_constants() {
+    for (expression, expected) in [
+        ("-1", LuaType::IntegerConst(-1)),
+        ("-1.5", LuaType::FloatConst(-1.5)),
+        ("-0x10", LuaType::IntegerConst(-16)),
+        ("-(-1)", LuaType::IntegerConst(1)),
+        ("-(1 + 2)", LuaType::IntegerConst(-3)),
+        ("-0x8000000000000000", LuaType::Number),
+    ] {
+        let env = model_of(&format!("local result = {expression}"));
+        let model = env.model();
+        assert_eq!(
+            model.type_of_decl(&decl_of(&model, "result")),
+            Some(expected),
+            "{expression}"
+        );
+    }
+}
+
+#[test]
+fn test_unary_minus_documented_numeric_constant() {
+    let env = model_of("---@type 12\nlocal value\nlocal result = -value");
+    let model = env.model();
+    assert_eq!(
+        model.type_of_decl(&decl_of(&model, "result")),
+        Some(LuaType::IntegerConst(-12))
+    );
+}
+
 /// Unary `-a` (unm overload) -> Vector.
 #[test]
 fn test_operator_unm() {
