@@ -1,3 +1,22 @@
+# UP-008 comparison for build 172 — 2026-10-16
+
+Branch `experiment/up008-build172` starts at normal work `3584adf4`.
+It replaces UP-045 (work pick `298d2c4a`, contribution `447b0c78`) with
+UP-008 from `9554498d` and `2cfe165c`. Request cancellation from UP-054 is
+retained on close. The scheduling implementation matches the previous UP-008
+comparison branch; every other current analyzer fix, including UP-079/080/081,
+is unchanged. Analysis/parser/formatter sources are identical to normal work.
+
+This is an isolated performance comparison, not a change to the normal work
+branch or FDE's development pin. No new contribution branch, push or PR.
+The matching EmmyLua2 package is `0.30.0-172-UP-008`; only its macOS arm64
+server contains this variant. Its prepared copy is separate from the normal
+shared dependency. Keep FDE 0.8.6-dev and LSP4IJ 0.21.1-SNAPSHOT-7 installed.
+
+Validation logs: `build/logs/up008-*`; final package/protocol receipt:
+workspace `upstream/UP008_COMPARISON_BUILD172.md`.
+Earlier entries below describe their original normal-build checkpoints.
+
 # Stop-update fixes and short package versions — 2026-10-16
 
 The work branch continues from validated build171 (`ea1f7fbb`) on upstream

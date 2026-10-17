@@ -1,10 +1,11 @@
-use emmylua_code_analysis::uri_to_file_path;
+use emmylua_code_analysis::{Emmyrc, uri_to_file_path};
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DidSaveTextDocumentParams,
+    DidSaveTextDocumentParams, Uri,
 };
+use std::sync::Arc;
 
-use crate::context::{ServerContextSnapshot, UpdateEvent};
+use crate::context::{ServerContextSnapshot, UpdateEvent, WorkspaceDiagnosticLevel};
 
 pub async fn on_did_open_text_document(
     context: ServerContextSnapshot,
@@ -18,7 +19,6 @@ pub async fn process_did_open_text_document(
     context: ServerContextSnapshot,
     params: DidOpenTextDocumentParams,
 ) -> Option<()> {
-    let version = params.text_document.version;
     let uri = params.text_document.uri;
     let text = params.text_document.text;
 
@@ -61,14 +61,12 @@ pub async fn process_did_open_text_document(
             (file_id, interval)
         })
         .await;
-    if file_id.is_some() {
-        let mut workspace = context.workspace_manager().lock().await;
-        workspace.open_file_versions.insert(uri.clone(), version);
-        workspace.update_workspace_version(crate::context::WorkspaceDiagnosticLevel::Slow, true);
-    }
     let supports_pull = context.lsp_features().supports_pull_diagnostic();
 
     // Schedule diagnostic task without holding any locks
+    if file_id.is_some() {
+        context.schedule_diagnostic_refresh(interval).await;
+    }
     if !supports_pull {
         if let Some(file_id) = file_id {
             context
@@ -83,19 +81,34 @@ pub async fn process_did_open_text_document(
 
 pub async fn on_did_save_text_document(
     context: ServerContextSnapshot,
-    params: DidSaveTextDocumentParams,
-) -> Option<()> {
-    let _ = context.update_tx().send(UpdateEvent::DidSave(params));
-    Some(())
-}
-
-pub async fn process_did_save_text_document(
-    context: ServerContextSnapshot,
     _: DidSaveTextDocumentParams,
 ) -> Option<()> {
-    // The synchronized document already contains the saved text. Do not cancel
-    // the client's pending pull; it will observe this generation and rerun.
-    context.invalidate_workspace_diagnostics().await;
+    let emmyrc = context
+        .analysis()
+        .with_snapshot(|analysis| analysis.get_emmyrc())
+        .unwrap_or_else(|| Arc::new(Emmyrc::default()));
+    if !emmyrc.workspace.enable_reindex {
+        if context.lsp_features().supports_workspace_diagnostic() {
+            context
+                .file_diagnostic()
+                .cancel_workspace_diagnostic()
+                .await;
+            let workspace_manager = context.workspace_manager().lock().await;
+            workspace_manager.update_workspace_version(WorkspaceDiagnosticLevel::Slow, true);
+        }
+
+        return Some(());
+    }
+
+    // let mut duration = emmyrc.workspace.reindex_duration;
+    // // if duration is less than 1000ms, set it to 1000ms
+    // if duration < 1000 {
+    //     duration = 1000;
+    // }
+    // let workspace = context.workspace_manager().lock().await;
+    // workspace
+    //     .reindex_workspace(Duration::from_millis(duration))
+    //     .await;
     Some(())
 }
 
@@ -112,7 +125,6 @@ pub async fn process_did_change_text_document(
     context: ServerContextSnapshot,
     params: DidChangeTextDocumentParams,
 ) -> Option<()> {
-    let version = params.text_document.version;
     let uri = params.text_document.uri;
     let text = params.content_changes.first()?.text.clone();
 
@@ -155,13 +167,11 @@ pub async fn process_did_change_text_document(
         })
         .await;
 
-    if file_id.is_some() {
-        let mut workspace = context.workspace_manager().lock().await;
-        workspace.open_file_versions.insert(uri.clone(), version);
-        workspace.update_workspace_version(crate::context::WorkspaceDiagnosticLevel::Slow, true);
-    }
     let supports_pull = context.lsp_features().supports_pull_diagnostic();
     // Schedule diagnostic task
+    if file_id.is_some() {
+        context.schedule_diagnostic_refresh(interval).await;
+    }
     if !supports_pull {
         if let Some(file_id) = file_id {
             context
@@ -190,29 +200,11 @@ pub async fn process_did_close_document(
     let mut workspace = context.workspace_manager().lock().await;
     workspace.close_open_file(&params.text_document.uri);
     drop(workspace);
-    let lsp_features = context.lsp_features();
-
     // If the closed file no longer exists, remove it.
     if let Some(file_path) = uri_to_file_path(uri)
         && !file_path.exists()
     {
-        let removed = context
-            .analysis()
-            .update(|analysis| {
-                let tracked = analysis.get_file_id(uri).is_some();
-                analysis.remove_file_by_uri(uri);
-                tracked
-            })
-            .await;
-        if removed {
-            context.invalidate_workspace_diagnostics().await;
-        }
-
-        if !lsp_features.supports_pull_diagnostic() {
-            context
-                .file_diagnostic()
-                .clear_push_file_diagnostics(uri.clone());
-        }
+        remove_closed_document(&context, uri).await;
 
         return Some(());
     }
@@ -226,24 +218,34 @@ pub async fn process_did_close_document(
         })
         .unwrap_or(false);
     if !file_exists {
-        let removed = context
-            .analysis()
-            .update(|analysis| {
-                let tracked = analysis.get_file_id(uri).is_some();
-                analysis.remove_file_by_uri(uri);
-                tracked
-            })
-            .await;
-        if removed {
-            context.invalidate_workspace_diagnostics().await;
-        }
-
-        if !lsp_features.supports_pull_diagnostic() {
-            context
-                .file_diagnostic()
-                .clear_push_file_diagnostics(uri.clone());
-        }
+        remove_closed_document(&context, uri).await;
     }
 
     Some(())
+}
+
+/// Closing a deleted document can remove declarations used by other files.
+async fn remove_closed_document(context: &ServerContextSnapshot, uri: &Uri) {
+    let (removed, interval) = context
+        .analysis()
+        .update(|analysis| {
+            let removed = analysis.get_file_id(uri).is_some();
+            analysis.remove_file_by_uri(uri);
+            (
+                removed,
+                analysis
+                    .get_emmyrc()
+                    .diagnostics
+                    .diagnostic_interval
+                    .unwrap_or(500),
+            )
+        })
+        .await;
+    if !context.lsp_features().supports_pull_diagnostic() {
+        context
+            .file_diagnostic()
+            .clear_push_file_diagnostics(uri.clone());
+    } else if removed {
+        context.schedule_diagnostic_refresh(interval).await;
+    }
 }

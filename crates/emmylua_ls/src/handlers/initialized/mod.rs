@@ -171,7 +171,7 @@ pub async fn init_analysis(
         }
     }
 
-    if !lsp_features.supports_pull_diagnostic() {
+    if !lsp_features.supports_workspace_diagnostic() {
         file_diagnostic
             .add_workspace_diagnostic_task(0, false)
             .await;
