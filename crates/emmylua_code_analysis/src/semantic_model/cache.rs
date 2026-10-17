@@ -213,6 +213,9 @@ pub(crate) struct SemanticLocalCache {
     /// Memoized declaration-trace states for loop-free flow graphs. See
     /// [`TraceStateKey`] for why the path may be omitted from the key.
     pub(crate) trace_state: HashMap<TraceStateKey, CacheEntry<Option<LuaType>>>,
+    /// Member traces with an empty incoming guard/cast path on an acyclic graph.
+    /// Other paths and cyclic graphs must not share these results.
+    pub(crate) member_trace_state: HashMap<(SemanticId, FlowId), CacheEntry<Option<LuaType>>>,
     /// Fast negative/positive cache for `---@return_cast` lookup by call syntax.
     /// Most calls do not have `return_cast`, so caching the `None` result avoids
     /// repeatedly resolving callees and scanning signatures for the same call.
