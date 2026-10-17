@@ -34,6 +34,7 @@ mod missing_fields_test;
 mod missing_parameter_test;
 mod need_check_nil_test;
 mod nested_member_contract_test;
+mod nullable_dictionary_arguments_test;
 mod param_count_test;
 mod param_type_check_test;
 mod readonly_test;
