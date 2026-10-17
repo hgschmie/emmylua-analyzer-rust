@@ -1,3 +1,402 @@
+# Diagnostic test helper follow-ups (2026-10-19)
+
+Integrated the test-only updates from UP-023 `1c6c88e0`, UP-036 `97791ba9`,
+UP-037 `7832cb38`, UP-041 `5e800146`, UP-064 `ae7dd257`, UP-065 `409f9294`,
+UP-079 `37b62250` and UP-086 `dc82d7f1`. UP-038's contribution branch carries
+the UP-037 update as `99c4d7f3`; it needs no duplicate work-tree application.
+No-warning cases use `VirtualWorkspace::has_no_diagnostic`. Exact negative
+counts/messages, aggregate diagnostics and incremental/multi-root checks retain
+their existing assertions. All Lua fixtures are unchanged.
+
+All 852 combined diagnostic tests pass, with all-target/all-feature analysis
+Clippy and rustfmt. The eight amended contribution branches also pass their
+diagnostic suites and the same lint/format checks. Source diffs are limited to
+tests and this handoff; production code is unchanged from `4bf6a91e`.
+EmmyLua2 build185, its analyzer pins, FDE and LSP4IJ archives remain current.
+No plugin rebuild or CodeRabbit review is needed for this test-only update.
+Audit: workspace `upstream/memory/ANALYZER_DIAGNOSTIC_HELPERS_2026-10-19.md`.
+
+# UP-097 — collection-union iterator inference (2026-10-19)
+
+Independent `fix/union-iterator-inference`, signed `d2351942`, on freshly
+fetched upstream/main `51f2aa7b`; work provenance pick `2a1e0199`. Union
+iteration combines each collection's key/value types and follows substituted
+inherited generic table bases, including LuaCustomTable. Generic collection
+calls use the same extraction so their returned iterator signature agrees
+with loop variables. Nil/unknown/noncollection alternatives are not dropped;
+alias/inheritance traversal is bounded and failed bindings are rolled back.
+
+Both current upstream and build184 reproduce unknown loop variables for
+`pairs(target.players)` where target is LuaForce|LuaGameScript. On the generated
+API the combined key is uint32|string|integer (the array contributes integer),
+and the value is LuaPlayer. UP-091/UP-092 are complementary, not prerequisites;
+integration retains their optional ipairs key generic and both test groups.
+The new upstream semantic re-entry refactor is not imported into work.
+
+Eight regressions; all 2,548 standalone and 2,944 combined workspace tests pass
+(1,575/1,884 analysis, 226/313 server), with all-target/all-feature Clippy and
+rustfmt. No pending dependency. Package this clean work HEAD as EmmyLua2
+0.30.0-185; retain FDE 0.8.6-dev and LSP4IJ build10 archives. Update FDE's
+development analyzer pin after package validation. No push, PR or IDE install.
+Final raw-LSP/package/native-test evidence: workspace
+`upstream/memory/LTN_UNION_ITERATOR_2026-10-19.md`, analyzer
+`build/investigations/union-iterator-20261019/` and work `build/logs/union-iterator-*`.
+
+# UP-096 — table constructor completion (2026-10-19)
+
+Independent branch `fix/union-table-field-completion`, signed `89b80eb8`,
+is based on freshly fetched upstream/main `51f2aa7b`. Signed provenance pick
+`a5929fe7` integrates it without importing the new upstream re-entry refactor
+into the existing work stack. No pending fix is a prerequisite. Normal
+UP-045/UP-082 and all prior fixes remain.
+
+Table constructors now collect field candidates only from table alternatives
+of a union/alias. String-library methods no longer precede ItemFilter's name,
+quality and comparator fields. Existing keys are excluded; nested tables,
+generic aliases, legitimate function fields and comparator values remain usable.
+Ordinary string member completion is unchanged. No core inference change.
+The minimized upstream regression fails before the patch. All 233 standalone
+and 313 combined server tests pass, including seven new regressions.
+
+Package this committed work HEAD as EmmyLua2 0.30.0-184 (macOS arm64 custom
+analyzer only). Keep FDE 0.8.6-dev and the LSP4IJ build10 archives; update FDE's
+development analyzer pin after validating the new package. No push, new PR or
+regular IDE installation. Delivery evidence and additional validation:
+workspace `upstream/memory/LTN_TABLE_COMPLETION_2026-10-19.md` and analyzer
+`build/investigations/union-table-completion-20261019/`.
+
+# Equality and alias guards — build 183 (2026-10-18)
+
+UP-095 (`fix/equality-narrowing-nullability`, signed 896781e4) is independent on
+upstream/main 3d4d1b73. Equality's true branch and inequality's false branch now
+share the existing non-nullable-declaration safeguard. Optional values can still
+both be nil. The required parameter regression predates our contributions.
+
+UP-078 (`fix/computed-guard-effect-boundaries`) is extended by signed aa3ccd7b.
+Computed guards traverse every incoming branch with a bounded memoized search.
+A stable local alias can establish a fact about its original lookup only after
+checking source stability between initialization and guard, as well as effects
+between guard and use. Keys, roots, entries, reassigned aliases, visible callbacks,
+mutators and closure boundaries retain conservative invalidation. The pending
+UP-081 branch still contains the prior UP-078 prerequisite; refresh that dependency
+when preparing its upstream series. No other fix branch was rewritten.
+
+Signed work picks c5c14421 / 605c5e25 preserve all prior patches. The only cherry-pick
+conflict was appended tests; both test groups were retained. Standalone analysis
+suites pass 1,528 and 1,559 tests respectively, with Clippy/rustfmt. New regressions
+also pass in work. Release raw-LSP replay on the unchanged refactored LTN snapshot
+removes cache.lua290/291 and stop-update.lua392 diagnostics (2+1 -> 0+0), including
+in-memory edits. The explicit-deletion control still warns. Evidence: root analyzer
+build/investigations/equality-alias-20261018/{actual183,minimal183}.json and work
+build/logs/equality-alias-*.log. Full validation and package receipt are recorded in
+workspace upstream/memory/LTN_EQUALITY_ALIAS_FIXES_2026-10-18.md.
+
+Package this work HEAD as EmmyLua2 0.30.0-183; only macOS arm64 receives the patched
+analyzer. Keep FDE 0.8.6-dev and its archive, updating only the development pin and
+validation receipt. Keep LSP4IJ SNAPSHOT-7 unchanged. No remote push, PR or IDE
+installation is requested. UP-008 remains inactive; UP-045 remains in normal work.
+
+# Upstream refresh — build 182 (2026-10-18)
+
+Rebuilt from upstream/main `3d4d1b7363d09fabf8516485a75087e2fa95029e`.
+The active stack retains 68 contributions (65 without PRs, plus UP-023/#1286,
+UP-028/#1292 and UP-046/#1296) and work-only UP-019/020/021 adaptations.
+UP-050 and UP-056 are retired: upstream d823745f and a0dcb60d respectively
+supply their implementations. They are not replayed. Their local branches are
+archived as archive/up-050-superseded-20261018 and archive/up-056-superseded-20261018;
+pre-refresh heads remain under refs/backup/refresh-20261018/.
+UP-008 remains an inactive rollback; normal builds retain UP-045 and UP-054.
+
+UP-074 (`fix/loop-exit-assignment-flow`, 3f71c148) integrates with upstream's
+per-node memoization and now depends on UP-094 (`fix/path-aware-declaration-trace-cache`,
+23f2a17a). UP-094 fixes an upstream memo key that omits incoming guards/casts.
+The initial package replay exposed seven extra false warnings; including those
+facts in the key restores the exact saved LTN baseline. Normalizing dominated
+replacements and repeated filters retains upstream's bounded guard-chain work.
+UP-074 caches acyclic loop summaries and disables caching only at nodes with
+real backward-reachable cycles. Unrelated functions do not disable safe caching.
+Work integration shares cycle metadata with UP-082 and preserves UP-061 loop
+ownership without registering exit summaries as loop bodies.
+
+UP-031 and UP-062 import conflicts are reconciled with upstream. UP-037 needed
+an explicit ref_type import removed by the base-type refactor; UP-038 carries
+that prerequisite correction. Standalone branch suites, range diffs, replay maps,
+backup refs and validation records are under analyzer build/refresh-20261018/.
+The common large linear-assignment stress test runs on affected flow branches
+and the full combined stack; unrelated branches skip only that shared test.
+Work integration commits: 8b15c330 and 7913eaf8. Original fix author dates and
+signed history are preserved. Final test totals and packaging evidence belong
+in upstream/memory/ANALYZER_REFRESH_2026-10-18.md.
+
+Package as EmmyLua2 0.30.0-182 using this clean committed work HEAD. Only macOS
+arm64 receives the custom analyzer. Keep FDE 0.8.6-dev and LSP4IJ SNAPSHOT-7;
+update FDE's development pin after archive validation. The saved LTN replay
+retains six diagnostics and zero request_processor diagnostics; pairs/ipairs
+hover and inference retain integer/ltn.FreeTrain. No new PR, remote push or
+IDE installation is part of this refresh.
+
+# UP-093 — same-version standard-library cache upgrades (2026-10-18)
+
+Independent `fix/std-resource-cache-fingerprint` / signed ef3674de is based on
+upstream/main dd80bd92 and integrated as signed pick 80eedd82. The installed
+build180 binary was correct, but IntelliJ retained old per-module std declarations
+because extraction compared only the unchanged 0.30.0 package version.
+A raw-LSP replay using a copy of the actual LTN cache, with XDG_DATA_HOME matching
+the explicit resource path as FDE does, reproduces the reported unknown key.
+Fresh resource paths did not expose this upgrade defect in build180 validation.
+
+Cache identity now includes bundled resource content. The selected resource
+directory owns its marker. Base extraction precedes translation generation;
+translated caches include base content, locale and translation metadata, and
+failed extraction/generation cannot leave a current marker. Same-content restarts
+reuse files. The translation test now uses a disposable directory instead of
+modifying tracked bundled resources.
+
+On the integrated work branch, all three resource lifecycle regressions and all
+306 language-server tests pass, with analysis/server all-target/all-feature
+Clippy and rustfmt. Logs: build/logs/resource-cache-work-*.log. No inference
+algorithm changed and normal UP-045/UP-082 plus every existing fix are retained.
+UP-093 is independent of UP-092, but enables its new declarations in existing
+same-version installations.
+
+Package as EmmyLua2 **0.30.0-181**, pinning this clean committed work HEAD.
+Keep FDE 0.8.6-dev and LSP4IJ 0.21.1-SNAPSHOT-7, update FDE's development pin
+only after validation. Only macOS arm64 receives the patched binary. Validate
+both upgrading the copied old IntelliJ cache and restarting with the new cache.
+Live IDE caches and original mod files are untouched. No push, PR or IDE install.
+Delivery receipt: upstream/memory/LTN_RESOURCE_CACHE_UPGRADE_2026-10-18.md.
+
+# UP-091 / UP-092 — iterator inference and call-site hover (2026-10-18)
+
+Independent upstream/main dd80bd92 fixes:
+- UP-091 `fix/ipairs-array-inference` / signed `e41571d3` handles the actual
+  std ipairs declaration's single value generic, preserving integer keys.
+- UP-092 `fix/call-site-collection-generics` / signed `df55badc` retains typed
+  union bindings and the selected callable signature in hover. It also corrects
+  iterator/state/control return annotations in English and Chinese stubs.
+
+Signed work picks ba4d368c/fd4e6a0d and final amendment dee9b41e retain all
+existing fixes, normal UP-045/UP-082 and UP-041 ordinary union matching. The
+upstream branches are independent; UP-041/092 overlap in the matcher but have
+no standalone prerequisite. Work integration avoids importing unrelated upstream
+refactors. Custom/shadowed iterator names retain their own contracts.
+
+Standalone UP-091 passes 1,524 analysis tests; UP-092 passes 1,525 analysis
+and 226 server tests. Both pass all-target/all-feature Clippy and rustfmt.
+Combined suites pass all **2,908 tests** (1,862 analysis, 304 server, 742 other),
+all-target/all-feature Clippy and rustfmt. An unrelated formatter speed test
+measured 10.38 ms against its 10 ms threshold in the parallel run; all 304
+server tests passed on the serial rerun. No test was disabled or source changed
+for that timing retry. Logs: build/logs/iterator-delivery-*.log.
+
+Package as EmmyLua2 **0.30.0-180**, pinning this clean committed work HEAD.
+Keep FDE **0.8.6-dev** and LSP4IJ **0.21.1-SNAPSHOT-7**; update only FDE's
+development analyzer pin and validation receipt. Only macOS arm64 receives the
+custom analyzer. No push, PR or installation into the user's IDE is requested.
+
+The fixed actual-source snapshot is under the root analyzer's
+build/investigations/iterator-hover-20261018/actual-mod. Build179 reports six
+current-mod diagnostics, zero in request_processor.lua. Compare against that
+same input after packaging; original mod files remain unchanged. This fixture
+differs from the old frozen 104-diagnostic fixture because the mod has changed.
+Delivery evidence is in upstream/memory/LTN_ITERATOR_HOVER_INVESTIGATION_2026-10-18.md.
+
+# UP-090 — negative numeric literals (2026-10-17)
+
+Standalone `fix/negative-literal-hover` / signed `95d49887`, based on upstream
+main d823745f, is integrated as signed pick `a0931520`. The pick avoids importing
+the unrelated upstream base-type refactor. Unary minus folds integer/documented
+integer/float constants, retaining operator overload precedence and conservative
+integer overflow handling. Hover over either sign or digits selects the whole
+direct negative numeral; subtraction, exponent operands and member-key hovers
+retain their own meanings. Work integration preserves UP-036 built-in length
+inference plus directional and metatable hover hooks.
+
+The actual LTN script/init.lua143 and minimal regressions reproduce on build178
+and current upstream. Standalone: 1,522 analysis and 229 server tests pass;
+combined: all **2,902 workspace tests** pass (1,859 analysis, 301 server), with
+workspace all-target/all-feature Clippy and rustfmt. Five new regression tests
+cover literal values, documented constants, overflow, hover ranges and contexts.
+Logs: build/logs/negative-literal-workspace-{tests,clippy,fmt}.log. Generated
+translation changes were archived and restored. Source mod files are unchanged.
+
+Next package: EmmyLua2 **0.30.0-179**, pin this clean committed work HEAD.
+Keep FDE **0.8.6-dev** and LSP4IJ **0.21.1-SNAPSHOT-7**; update only FDE's analyzer
+pin and validation receipt. Normal UP-045/UP-082 remain. Packaged-LSP and native
+integration results are recorded in the root inventory and delivery receipt.
+No push, PR or IDE installation requested. UP-090 has no pending prerequisite.
+
+# Contextual callbacks and field context — UP-088 / UP-089 (2026-10-17)
+
+UP-088 `fix/contextual-callback-parameters` / `4cedbc3a` and UP-089
+`fix/table-field-hover-context` / `aaae6fcf` are independent fixes on freshly
+fetched upstream/main d823745f. Signed work picks `c56755b4` / `dd91889d`
+avoid importing the unrelated upstream base-type refactor. Existing patches,
+normal UP-045/UP-082, directional callback write contracts and nested constructor
+context are retained.
+
+Dictionary callbacks inherit the declared value signature, including aliases and
+generic aliases. Explicit parameter annotations still win. An annotated direct
+local function initializer has the same contextual behavior. Invalid dictionary
+keys do not supply a callback contract; alias cycles terminate.
+
+Table-field type/module annotations attach only to their own key. Hover's
+constructor context likewise applies only to the constructor key, not members
+inside callback bodies or value expressions. This fixes Settings fields showing
+the outer Handler alias, and preserves the callback's own annotations.
+The literal function keyword continues to show Lua keyword documentation.
+
+Both standalone suites pass: UP-088 1,525 analysis tests; UP-089 1,521 analysis
+and 226 server tests; corresponding Clippy/fmt checks pass. Work adds a strict
+and non-strict dictionary hover test, with and without per-entry annotations.
+The combined workspace passes 2,897 tests (1,857 analysis / 298 server),
+with no failures or skips. Combined Clippy/fmt and packaged results are recorded in workspace
+`upstream/memory/LTN_CONTEXTUAL_CALLBACKS_2026-10-17.md`.
+
+Package as EmmyLua2 0.30.0-178, retaining FDE 0.8.6-dev and LSP4IJ SNAPSHOT7.
+Update FDE's development pin only. Earlier outstanding branches were pushed and
+remote heads verified before this task; new fix/integration/package commits stay
+local. No upstream PR or user IDE installation.
+
+# Optional hover presentation — UP-080 / UP-087 (2026-10-17)
+
+UP-080 amendment `33e7abe3` is now authorized and integrated as signed pick
+`a70ecda2`. UP-087 `fix/optional-class-hover-fields` / `a8c897fe` is independently
+based on fresh upstream/main d823745f; signed pick `82e42ad5` contains its initial
+production change, with the final inheritance-test refinement in this work update.
+The new upstream base-type refactor is not imported into the work stack.
+
+Direct member reads respect casts/guards without re-appending declaration `?`.
+Expanded object/class summaries retain optional declaration fields. Work-only
+integration uses the existing exact receiver/flow query, including already-nullable
+optional generic fields, instead of overwriting it with declaration-member flow.
+Required fields, nullable callback documentation, assignment hover contracts,
+early returns, unrelated receivers and conflicting writes are covered.
+
+UP-087 has no dependency on UP-080. Its standalone suite passes 227 server tests.
+Combined validation passes 2,885 workspace tests, all-target/all-feature Clippy
+with warnings denied, and rustfmt. The hover suite includes both fixes and work
+receiver-boundary regressions.
+Full work/package/native validation and known unrelated inherited-generic summary
+limitations are recorded in workspace `upstream/memory/LTN_OPTIONAL_HOVER_2026-10-17.md`.
+Package as EmmyLua2 0.30.0-177, retain normal UP-045/UP-082 and existing patches.
+Update FDE's development pin only; keep FDE 0.8.6-dev and LSP4IJ SNAPSHOT7.
+No upstream PR, push or user IDE installation is authorized by this task.
+
+# Nullable class arguments — UP-086 (2026-10-17)
+
+Standalone `fix/nullable-required-arguments` / `76e288ed` (initial fix `38d309c6`) is based on freshly
+fetched upstream/main d823745f. Signed work pick `31d29cf8` retains provenance
+without importing the unrelated base-type refactor into the existing work stack.
+The follow-up is applied as signed pick `30e8aa46`. It consults use-site flow
+before rejecting cached nullable types, preserving member/index guards and casts.
+UP-079 remains alongside it; UP-016 supplies dictionary-read nullability in the
+reported connector example. Neither is a standalone prerequisite for UP-086.
+
+Required call parameters now reject a nullable class value before general
+compatibility can treat `T?` as `T`. Aliases, generic classes, callable-union
+overloads, pcall and variadic arguments are covered; optional contracts and
+legitimate inferred nullable generics remain accepted. General cast compatibility
+and primitive/callback union behavior remain unchanged.
+
+Standalone validation includes eleven focused tests; five original regression
+tests failed without the fix. The combined nullable suite passes 27 tests, including a work-only strict-table
+case: asserting the input connector does not validate the separate target connector.
+Guarding/asserting the actual target removes the new warning, including an
+assertion on the dictionary entry itself. A conflicting write restores the warning.
+The release replay confirms line160 warns and the guarded variant is clear; the
+frozen LTN scan is 64→79 diagnostics (15 newly exposed nullable class arguments). Broad combined
+validation, native tests and packaged replay are recorded in the workspace receipt
+`upstream/memory/LTN_NULLABLE_CONNECTOR_ARGUMENT_2026-10-17.md`.
+
+Package as EmmyLua2 build176, macOS arm64 custom analyzer only. Retain normal
+UP-045/UP-082, FDE 0.8.6-dev and LSP4IJ SNAPSHOT-7. Update FDE's development pin
+without rebuilding its ZIP. All preceding active source/work/comparison branches
+were pushed before starting UP-086. No upstream PR or user IDE installation.
+
+# Receiver documentation and explicit method display — UP-084/085 (2026-10-17)
+
+Both fixes are independent branches from upstream/main ef6c06a7:
+
+- UP-084 `fix/flow-receiver-hover` / `a6ec9d6a`; merge `68085b5f`.
+  Recover member presentation identity from the receiver's flow-inferred type
+  when ordinary lookup fails. Preserve generic member projection and reject
+  ambiguous receiver unions. The core member resolver stays unchanged.
+- UP-085 `fix/explicit-method-hover` / `355a672f`; merge `b9b0aaf4`.
+  Display a colon only for an explicit colon declaration or a first parameter
+  named `self` or `_self`. No type compatibility or inferred-self heuristic.
+  The shared renderer applies the rule to hover, overloads and completion details.
+
+UP-080's nullable declared-receiver presentation fallback is retained before
+UP-084's flow fallback. Both branches are independently reviewable; neither
+requires UP-080 or each other. Tests preserve documentation across assignment,
+reassignment, conditional assignment, optional receivers and generic classes,
+retain nil diagnostics, reject ambiguous documentation and cover explicit versus
+implicit-looking receiver arguments. Existing self:string hover/completion
+expectations intentionally become colon methods under the requested rule.
+
+Validation: 2,861 combined workspace/all-feature tests pass, including 282 server
+tests; Clippy/all targets/features and rustfmt pass. Standalone server suites
+pass 228 tests for UP-084 and 229 for UP-085. Each set of new regressions was
+run before its fix to verify that the reported failures were reproduced.
+
+Delivery: EmmyLua2 build175, normal UP-045 and UP-082 retained. Only macOS arm64
+receives the custom analyzer. Keep FDE 0.8.6-dev and LSP4IJ SNAPSHOT-7; update
+only FDE's development analyzer pin. Final test/replay/package results are in
+workspace `upstream/memory/LTN_STOP_EVENTS_HOVER_FIXES_2026-10-17.md`.
+No push, upstream PR or user IDE installation is requested.
+
+# Nested receiver field contracts — UP-083 (2026-10-17)
+
+Standalone `fix/nested-member-field-contracts` / `7daee751` is based directly on
+upstream/main `ef6c06a7`. It removes the name-expression restriction from the
+existing declared-field precedence rule: narrowed receivers such as
+`parent.item.count` and `records[key].count` retain the declared field type when
+member resolution selects an inferred runtime assignment. The old fallback can
+feed the update's broad `number` back into its own RHS instead of `Count`/`uint32`.
+The defect reproduces on current upstream with an explicit receiver cast.
+
+Work merges the standalone branch (no cherry-pick or prerequisite replay).
+Additional work-only tests exercise UP-016 strict.tableIndex off/on together with
+UP-040 arithmetic and the computed-entry guards: integer addition/subtraction
+passes, fractional/string writes fail, and missing entries remain nullable.
+The standalone fix has no pending prerequisite; these patches expose and handle
+other parts of the original LTN loop example. UP-082 is retained unchanged.
+
+Delivery is EmmyLua2 build174 with normal UP-045 scheduling. Only macOS arm64
+receives the custom analyzer. Keep FDE 0.8.6-dev and LSP4IJ SNAPSHOT-7; update
+FDE's development pin but do not rebuild its ZIP. Final validation/package
+receipt: workspace `upstream/memory/LTN_NESTED_FIELD_CONTRACTS_2026-10-17.md`.
+No push, PR or IDE installation is requested.
+
+# Member-flow performance — UP-082 (2026-10-16)
+
+UP-082 `fix/member-flow-trace-memoization`, signed `54aaa7b8`, is independent
+on upstream/main `ef6c06a7`. Work pick `95e1c923` reuses the identical acyclic-flow
+helper already present from UP-072; there is no semantic dependency on UP-072.
+The fix memoizes member traces only with an empty incoming guard/cast path and
+no real graph cycle. Other paths preserve the existing traversal.
+
+The user's stop-update.lua edit reproduced 15-second document diagnostic passes
+with both UP-008 and UP-045, without IntelliJ. Fixed replay takes about 340 ms;
+all five diagnostic sets and hovers are byte-for-byte equivalent. Workspace pulls
+can still add background contention (up to about 2 s in this replay); this is not
+an assertion that all editor operations are instantaneous. Rapid i→integer edits
+return the latest four diagnostics rather than retaining the 19 incomplete-type
+warnings. The original number→int32 mismatch is valid and remains unchanged.
+
+A nested-branch/loop diagnostic probe takes milliseconds before the refactor,
+but about 9 s at 16 branches immediately afterward and before our first merged
+contribution. The defect therefore predates our merged patches. Full evidence:
+workspace upstream/memory/ANALYZER_EDIT_LATENCY_2026-10-16.md and analyzer
+build/investigations/edit-latency-20261016/.
+
+Standalone 1,521 analysis and combined 2,846 workspace tests pass. The expanded
+focused regression also covers acyclic loop summaries and distinct member/cast
+paths. EmmyLua2 build 173 packages the fix; a separate 173-UP-008 comparison uses
+the same analyzer fixes. Keep FDE 0.8.6-dev and LSP4IJ 0.21.1-SNAPSHOT-7. No PR or
+push is requested; all new source changes remain local.
+
 # Stop-update fixes and short package versions — 2026-10-16
 
 The work branch continues from validated build171 (`ea1f7fbb`) on upstream
@@ -29,7 +428,7 @@ stop-update warnings remain. Evidence: analyzer
 Package: EmmyLua2 `0.30.0-172` (suffix removed), custom analyzer on macOS arm64.
 FDE keeps 0.8.6-dev and its existing ZIP; update development pins. LSP4IJ now
 uses `0.21.1-6` with a monotonic local `pluginBuild` counter. See workspace
-`upstream/LTN_STOP_UPDATE_2026-10-16.md` for final package receipts.
+`upstream/memory/LTN_STOP_UPDATE_2026-10-16.md` for final package receipts.
 These changes and branches are local; no PRs were opened and nothing pushed.
 
 # Work-branch rebuild on upstream/main — 2026-10-16
@@ -51,7 +450,7 @@ order remains UP-059 before the combined UP-033/UP-060 work.
 The prior work head `0f6001bb5bdb7c64abd7e918e1dff1d676805df9` is preserved under
 `refs/backup/work-rebuild-20261016/work-intellij-modules`. The contribution mapping,
 full validation logs and package receipt are in the workspace report
-`upstream/ANALYZER_WORK_REBUILD_2026-10-16.md` and analyzer
+`upstream/memory/ANALYZER_WORK_REBUILD_2026-10-16.md` and analyzer
 `build/investigations/work-rebuild-20261016/`. These sources supersede the historical
 heads below. This task does not push branches or change PRs.
 
@@ -96,7 +495,7 @@ script/tools.lua goes from exactly the requested three warnings (284, 522, 577)
 to zero diagnostics. Its capacity hover remains number. Package EmmyLua2 build170
 only; FDE stays0.8.6-dev with its development pin updated. Final archive, native
 integration and frozen full-mod comparison evidence is recorded in workspace
-upstream/LTN_TOOLS_GUARDS_2026-10-16.md and versioned in FDE docs/. Retain normal
+upstream/memory/LTN_TOOLS_GUARDS_2026-10-16.md and versioned in FDE docs/. Retain normal
 UP-045 and LSP4IJ patched4. Only macOS arm64 receives the patched analyzer.
 
 # LTN priority follow-ups — UP-075/076 (2026-10-16)
@@ -126,8 +525,8 @@ our existing integration baseline. Do not submit a duplicate fix; evaluate it
 when refreshing the larger union/variadic upstream changes. That upstream
 refactor was not imported as part of these targeted changes.
 
-Build EmmyLua2 169 only; retain FDE0.8.6-dev and update its development pin/tests.
-See workspace upstream/LTN_PRIORITY_FOLLOWUPS_2026-10-16.md for prioritization,
+Build EmmyLua2 169 only; retain FDE 0.8.6-dev and update its development pin/tests.
+See workspace upstream/memory/LTN_PRIORITY_FOLLOWUPS_2026-10-16.md for prioritization,
 packaged validation and remaining limitations. Keep normal UP-045/LSP4IJ patched4.
 
 # LTN loop, guard and initialization diagnostics — UP-071–074
@@ -147,10 +546,10 @@ UP-074 passes 1,473 tests, including loop-summary trace counts and cycle checks.
 Other standalone branch validation is recorded in the workspace triage report.
 The generated std-zh_CN test outputs were restored; no mod files were edited.
 
-Build EmmyLua2 168, update FDE's development pin and ship FDE0.8.6-dev for its
+Build EmmyLua2 168, update FDE's development pin and ship FDE 0.8.6-dev for its
 separate information/hint summary and filters. Keep normal UP-045 and LSP4IJ
 patched4. Package/protocol evidence and remaining-diagnostic triage are maintained
-in workspace upstream/LTN_FLOW_TRIAGE_2026-10-15.md. New fixes remain local; no PRs.
+in workspace upstream/memory/LTN_FLOW_TRIAGE_2026-10-15.md. New fixes remain local; no PRs.
 Previous UP-069/070 plus all outstanding work/package heads were pushed first.
 
 # LocalisedString arrays — UP-069/070 (2026-10-15)
@@ -175,7 +574,7 @@ EmmyLua2 build167 and FDE 0.8.5-dev package the analyzer and toolkit respectivel
 Retain LSP4IJ patched4, normal UP-045 and UP-008 comparison159. Prior outstanding
 UP-067/068 and work/package/FDE commits were pushed before this task. The new
 fixes remain local; no PR or IDE install. Native/package validation details and
-hashes live in workspace upstream/LOCALISED_STRING_FIXES_2026-10-15.md.
+hashes live in workspace upstream/memory/LOCALISED_STRING_FIXES_2026-10-15.md.
 
 # Named variadic values and remote return shapes — UP-067/068 (2026-10-15)
 
@@ -208,7 +607,7 @@ The CLI-content hash already invalidates generated API caches; no cache migratio
 is needed. Keep LSP4IJ patched4 and the existing UP-008 comparison159. No original
 mod edits, IDE installation, PR, or push. All new commits are signed/DCO and local.
 Final package/native checks and hashes are in workspace
-upstream/VARIADIC_NAMED_TYPES_2026-10-15.md.
+upstream/memory/VARIADIC_NAMED_TYPES_2026-10-15.md.
 
 # init.lua member reads, guards and remote calls — UP-064/065/066 (2026-10-15)
 
@@ -257,7 +656,7 @@ Normal UP-045 packaging advances to EmmyLua2 build165 (macOS arm64 patched).
 Update FDE's development analyzer pin only; retain FDE 0.8.3-dev, LSP4IJ patched4
 and UP-008 comparison159. Original mods and installed IDE plugins remain untouched.
 Final combined/native/package evidence and hashes are recorded in workspace
-upstream/INIT_REMOTE_FIXES_2026-10-15.md and analyzer
+upstream/memory/INIT_REMOTE_FIXES_2026-10-15.md and analyzer
 build/investigations/remote-call-20261015/.
 
 Two additional probes are out of scope: inline-object interface member projection,
@@ -285,7 +684,7 @@ complementary. UP-015's asymmetric read/write hover path remains separate.
 Normal UP-045 packaging advances to EmmyLua2 build164. Update FDE's development
 pin only; retain FDE 0.8.3-dev and LSP4IJ patched4. UP-008 comparison stays159.
 No push, PR, original-mod edit or IDE installation. Final validation and archive
-provenance: workspace `upstream/DECLARED_FIELD_HOVER_2026-10-15.md` and analyzer
+provenance: workspace `upstream/memory/DECLARED_FIELD_HOVER_2026-10-15.md` and analyzer
 `build/investigations/field-contract-hover-20261015/`.
 
 # Numeric enum literal compatibility — UP-062 (2026-10-15)
@@ -312,7 +711,7 @@ Normal UP-045 packaging advances to EmmyLua2 build163. Update only FDE's
 analyzer development pin; retain FDE 0.8.3-dev and LSP4IJ patched4 archives.
 UP-008 comparison remains build159. No push, PR, original-mod edit or IDE
 installation. Final validation and archive details are recorded in workspace
-`upstream/ENUM_LITERAL_COMPATIBILITY_2026-10-15.md` and analyzer
+`upstream/memory/ENUM_LITERAL_COMPATIBILITY_2026-10-15.md` and analyzer
 `build/investigations/dispatcher-enum-20261015/`.
 
 # Guarded collections and loop-carried values — UP-060 / UP-061 (2026-10-15)
@@ -350,7 +749,7 @@ The normal UP-045 package advances to EmmyLua2 build162. Keep the existing FDE
 The one-off UP-008 package stays build159. Prior outstanding UP-058/059 and
 work/package/pin changes were pushed first, at the user's request; these new
 fixes remain local, with no PR or IDE installation. Final validation and archive
-provenance are recorded in workspace `upstream/CONSOLE_GUARDS_LOOP_2026-10-15.md`
+provenance are recorded in workspace `upstream/memory/CONSOLE_GUARDS_LOOP_2026-10-15.md`
 and analyzer `build/investigations/console-guards-loop-20261015/`.
 
 # Enum assertions and inherited dictionaries — UP-058 / UP-059 (2026-10-15)
@@ -384,7 +783,7 @@ The normal UP-045 package advances to EmmyLua2 build161. UP-008 comparison stays
 at build159. Update FDE's development pin only; retain its existing 0.8.3-dev ZIP
 and LSP4IJ patched4. No original mod edits, IDE installation, push or PR.
 Final validation and package evidence: workspace
-`upstream/ENUM_CAST_CUSTOM_INDEX_2026-10-15.md` and analyzer
+`upstream/memory/ENUM_CAST_CUSTOM_INDEX_2026-10-15.md` and analyzer
 `build/investigations/enum-cast-custom-index-20261015/`.
 
 # Class identity in member values — UP-057 (2026-10-15)
@@ -409,7 +808,7 @@ The normal UP-045 package advances to EmmyLua2 build160. The one-off UP-008
 comparison remains at build159. FDE's analyzer development pin follows this work
 branch, but its existing 0.8.3-dev ZIP and LSP4IJ patched4 are unchanged. No push,
 PR or installation for this fix. Final integration/protocol/package evidence:
-workspace `upstream/CLASS_MEMBER_IDENTITY_2026-10-15.md`.
+workspace `upstream/memory/CLASS_MEMBER_IDENTITY_2026-10-15.md`.
 
 # Side-effect module resolution — UP-056 (2026-10-15)
 
@@ -427,7 +826,7 @@ Factorio paths, missing paths and visibility. This also ships in the UP-008
 comparison, which the user currently has installed. Packages are EmmyLua2
 build159 normal/UP-008. FDE separately fixes service startup in 0.8.1-dev;
 LSP4IJ patched4 remains unchanged. Final protocol/package/client evidence:
-workspace `upstream/PROJECT_SERVICES_2026-10-15.md`. Nothing pushed; no PR.
+workspace `upstream/memory/PROJECT_SERVICES_2026-10-15.md`. Nothing pushed; no PR.
 
 # Request/update ordering — UP-054 (2026-10-14)
 
@@ -448,7 +847,7 @@ immediate request after typing and fixes the same ordering risk for completion.
 Five deterministic regressions cover prior edits, cancellation, later edits,
 concurrent pending requests, and close. Three fail on unpatched upstream. The
 standalone server suite passes 229 tests, Clippy and fmt. Package/protocol/platform
-evidence: workspace upstream/REQUEST_ORDERING_2026-10-14.md.
+evidence: workspace upstream/memory/REQUEST_ORDERING_2026-10-14.md.
 
 UP-053's completion repair and all previous analyzer fixes remain included.
 The UP-008 experiment remains at build157 as a historical comparison; it is not
@@ -478,7 +877,7 @@ retains UP-008 instead. This patch repairs missing suggestions only: workspace
 pass contention and edit/request queue ordering remain separate issues. Preserve
 both schedulers for the A/B test. FDE retains 0.7.9-dev and its existing ZIP; only
 its development pin and integration coverage change. Package and protocol
-validation: workspace upstream/DOC_TYPE_COMPLETION_2026-10-14.md.
+validation: workspace upstream/memory/DOC_TYPE_COMPLETION_2026-10-14.md.
 
 # Entities fixes and completion comparison (2026-10-14)
 
@@ -502,7 +901,7 @@ exists with either scheduler; UP-045 workspace passes add lock contention and
 measured latency spikes. Completion code is deliberately identical in both builds
 so the requested A/B test isolates the scheduling change. Package provenance,
 benchmarks and final validation are in workspace
-`upstream/COMPLETION_COMPARISON_2026-10-14.md`. Original mods are read-only.
+`upstream/memory/COMPLETION_COMPARISON_2026-10-14.md`. Original mods are read-only.
 FDE keeps its version/archive; update only its development analyzer pin.
 
 # data-util analyzer fixes (2026-10-14)
@@ -533,7 +932,7 @@ Clippy/fmt. The combined workspace/all-feature suite passes 2,645 tests (1,654
 analysis), Clippy with all targets/features and -D warnings, and rustfmt.
 Test-generated std-zh_CN translations were restored. Build155 package and real
 protocol/platform evidence are recorded in workspace
-`upstream/DATA_UTIL_FIXES_2026-10-14.md` and `upstream/FIX_INVENTORY.md`.
+`upstream/memory/DATA_UTIL_FIXES_2026-10-14.md` and `upstream/FIX_INVENTORY.md`.
 
 Original mod source remains unchanged. Its separate Sprite/SpritePrototype and
 runtime-coordinate/pixel-type annotation problems are outside these fixes.
@@ -551,7 +950,7 @@ Signed cherry-pick `7f8244c0` integrates this independent fix without the upstre
 HashMap refactor. No contribution PR or push. The standalone branch passes 1,472
 analysis tests and Clippy; mixed array/scalar regressions fail before the fix.
 The same failure was reproduced through the real LSP4IJ/FDE default server.
-Final combined tests and packages: workspace upstream/WORKSPACE_OWNERSHIP_2026-10-14.md.
+Final combined tests and packages: workspace upstream/memory/WORKSPACE_OWNERSHIP_2026-10-14.md.
 
 # Multi-root duplicate classes (2026-10-14)
 
@@ -566,7 +965,7 @@ keeps the existing work baseline and other local patches. The false LTN metrics
 warning also exposed an independent UP-044 LSP4IJ routing omission: workspace
 reports must honor DocumentMatchers to exclude the generic server from FDE mod
 files. UP-046 is open PR #1296 (ready for review); its work copy and LSP4IJ follow-up remain local. Final validation and package evidence
-are in workspace `upstream/DUPLICATE_METRICS_2026-10-14.md` and FIX_INVENTORY.md.
+are in workspace `upstream/memory/DUPLICATE_METRICS_2026-10-14.md` and FIX_INVENTORY.md.
 
 # Workspace diagnostic scheduling replaces UP-008 (2026-10-14)
 
@@ -610,7 +1009,7 @@ in this upstream snapshot, so the existing refresh fix remains local-only.
 
 The frozen LTN request_processor.lua snapshot remains the zero-diagnostic
 acceptance baseline with the original configuration. Final validation/publication
-and build151 evidence are in workspace `upstream/ANALYZER_REFRESH_2026-10-14.md`
+and build151 evidence are in workspace `upstream/memory/ANALYZER_REFRESH_2026-10-14.md`
 and analyzer `build/investigations/analyzer-refresh-20261014/`. Standalone branch
 checks exclude the unchanged long linear-file stress case; the full combined
 suite runs it once. No application defaults or mod source are changed.
@@ -651,7 +1050,7 @@ Original mod files are read-only. No interactive IDE installation was performed.
 
 The canonical contribution/test/push matrix and final package details are in
 the workspace documents `upstream/FIX_INVENTORY.md` and
-`upstream/ANALYZER_REFRESH_2026-10-13.md`, with machine-readable evidence under
+`upstream/memory/ANALYZER_REFRESH_2026-10-13.md`, with machine-readable evidence under
 `build/investigations/analyzer-refresh-20261013/` in the primary analyzer checkout.
 EmmyLua2 build 150 is the refreshed package target; FDE remains 0.7.8-dev.
 
