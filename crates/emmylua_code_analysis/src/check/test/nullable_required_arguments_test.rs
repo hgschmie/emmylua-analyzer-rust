@@ -219,3 +219,40 @@ end
         1,
     );
 }
+
+#[test]
+fn nullable_required_arguments_respect_member_guards_and_casts() {
+    check(
+        r#"
+---@param target Connector
+local function required(target) end
+---@param connectors Connector[]
+local function asserted(connectors)
+    assert(connectors[1])
+    required(connectors[1])
+end
+---@param connectors Connector[]
+local function casted(connectors)
+    required(connectors[1] --[[@as Connector]])
+end
+"#,
+        0,
+    );
+}
+
+#[test]
+fn nullable_required_arguments_do_not_reuse_guards_after_writes() {
+    check(
+        r#"
+---@param target Connector
+local function required(target) end
+---@param connectors Connector[]
+local function changed(connectors)
+    assert(connectors[1])
+    connectors[1] = nil
+    required(connectors[1])
+end
+"#,
+        1,
+    );
+}

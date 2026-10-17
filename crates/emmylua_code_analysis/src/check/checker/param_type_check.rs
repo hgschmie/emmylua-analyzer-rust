@@ -668,7 +668,7 @@ fn check_arg_pairs(
                         }
                         slot_ty = unify::substitute(&slot_ty, bindings);
                         slot_ty = type_eval::expand_alias_generic(semantic_model, &slot_ty);
-                        if rejects_nullable_class_argument(semantic_model, &arg_ty, &slot_ty) {
+                        if rejects_nullable_class_argument(semantic_model, arg, &arg_ty, &slot_ty) {
                             out.push(Mismatch {
                                 range: arg.get_range(),
                                 message: mismatch_message(semantic_model, &arg_ty, &slot_ty, name),
@@ -707,7 +707,8 @@ fn check_arg_pairs(
                             continue;
                         }
                         let param_ty = unify::substitute(&param_ty_orig, bindings);
-                        if rejects_nullable_class_argument(semantic_model, &arg_ty, &param_ty) {
+                        if rejects_nullable_class_argument(semantic_model, arg, &arg_ty, &param_ty)
+                        {
                             out.push(Mismatch {
                                 range: arg.get_range(),
                                 message: mismatch_message(semantic_model, &arg_ty, &param_ty, name),
@@ -772,7 +773,7 @@ fn check_arg_pairs(
         if skip_arg(&call_arg_ty, &param_ty) {
             continue;
         }
-        if rejects_nullable_class_argument(semantic_model, &call_arg_ty, &param_ty) {
+        if rejects_nullable_class_argument(semantic_model, arg, &call_arg_ty, &param_ty) {
             out.push(Mismatch {
                 range: arg.get_range(),
                 message: mismatch_message(semantic_model, &arg_ty, &param_ty, name),
@@ -831,7 +832,12 @@ fn check_arg_pairs(
         // rather than the shape selected by effective_param.
         if let Some(parameter_contract) = parameter_contract {
             let parameter_contract = unify::substitute(&parameter_contract, bindings);
-            if rejects_nullable_class_argument(semantic_model, &call_arg_ty, &parameter_contract) {
+            if rejects_nullable_class_argument(
+                semantic_model,
+                arg,
+                &call_arg_ty,
+                &parameter_contract,
+            ) {
                 out.push(Mismatch {
                     range: arg.get_range(),
                     message: mismatch_message(semantic_model, &arg_ty, &parameter_contract, name),
@@ -891,6 +897,7 @@ fn check_arg_pairs(
 /// before the general acceptance paths, after resolving any generic bindings.
 fn rejects_nullable_class_argument(
     semantic_model: &SemanticModel<'_>,
+    argument: &LuaExpr,
     arg_ty: &LuaType,
     param_ty: &LuaType,
 ) -> bool {
@@ -899,8 +906,20 @@ fn rejects_nullable_class_argument(
         return false;
     }
     let param_ty = normalize_arg_for_check(semantic_model, param_ty);
-    !param_ty.contains_tpl_node()
-        && !type_check::is_assign_compatible(semantic_model, &LuaType::Nil, &param_ty)
+    if param_ty.contains_tpl_node()
+        || type_check::is_assign_compatible(semantic_model, &LuaType::Nil, &param_ty)
+    {
+        return false;
+    }
+    // Call-site cached types can retain the declared nullable member type.
+    // Honor the same use-site guards and named casts as other diagnostics before
+    // rejecting nil. Unknown or unresolved flow types are not proof of a guard.
+    let at_argument =
+        semantic_model.type_of_expr_at(argument.get_syntax_id(), argument.get_position());
+    let at_argument = normalize_arg_for_check(semantic_model, &at_argument);
+    let (still_nullable, still_class) =
+        class_argument_domain(semantic_model, &at_argument, &mut Vec::new());
+    still_nullable || !still_class
 }
 
 /// Only explicit nil/class alternatives count. Unknown and unconstrained generic
