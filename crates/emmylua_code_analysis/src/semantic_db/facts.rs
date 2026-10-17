@@ -2488,7 +2488,7 @@ fn field_key_range(field: &LuaTableField) -> TextRange {
 }
 
 /// `LuaDocGenericDeclList` → generic parameters (doc node references).
-fn collect_generics(list: Option<LuaDocGenericDeclList>) -> Vec<DocGenericParam> {
+pub(crate) fn collect_generics(list: Option<LuaDocGenericDeclList>) -> Vec<DocGenericParam> {
     let Some(list) = list else {
         return Vec::new();
     };
