@@ -54,6 +54,14 @@ pub fn build_semantic_info_hover(
     range: TextRange,
 ) -> Option<Hover> {
     let info = model.semantic_info(token.clone().into())?;
+    let member_read_typ = info
+        .decl
+        .as_ref()
+        .filter(|decl| matches!(decl, SemanticId::Member(_)))
+        .and_then(|member| {
+            member_read_type_at_token(model, &token, member)
+                .filter(|ty| ty != &info.typ || member_is_nullable(model, member))
+        });
     let member_call_typ = if matches!(info.decl, Some(SemanticId::Member(_))) {
         let in_call = token
             .parent_ancestors()
@@ -61,14 +69,12 @@ pub fn build_semantic_info_hover(
         let call_typ = in_call
             .then(|| member_type_at_token(model, &token))
             .flatten();
-        call_typ
-            .or_else(|| {
-                // Non-function member of an instantiated generic (`c.aaa` with `local c ---@type MyTable<int>`
-                // and `---@field aaa T`): `info.typ` already carries the prefix projection (`integer`) and must
-                // win over the declaration-site member type (`T`) that `build_member_hover` would otherwise use.
-                member_prefix_is_generic_instance(model, &token).then(|| info.typ.clone())
-            })
-            .or_else(|| member_read_type_at_token(model, &token).filter(|ty| ty != &info.typ))
+        call_typ.or_else(|| member_read_typ.clone()).or_else(|| {
+            // Non-function member of an instantiated generic (`c.aaa` with `local c ---@type MyTable<int>`
+            // and `---@field aaa T`): `info.typ` already carries the prefix projection (`integer`) and must
+            // win over the declaration-site member type (`T`) that `build_member_hover` would otherwise use.
+            member_prefix_is_generic_instance(model, &token).then(|| info.typ.clone())
+        })
     } else {
         None
     };
@@ -138,6 +144,7 @@ pub fn build_semantic_info_hover(
                     member_call_typ.as_ref().unwrap_or(&hover_typ),
                     &origin,
                     member_call_typ.is_some(),
+                    member_read_typ.is_some(),
                     member_context_infos.as_slice(),
                 ),
                 SemanticId::TypeDef(_) => {
@@ -159,6 +166,7 @@ pub fn build_semantic_info_hover(
                     member_call_typ.as_ref().unwrap_or(&info.typ),
                     decl,
                     member_call_typ.is_some(),
+                    member_read_typ.is_some(),
                     member_context_infos.as_slice(),
                 ),
                 SemanticId::TypeDef(_) => build_type_hover(model, &info.typ, decl, &token),
@@ -253,7 +261,11 @@ pub fn build_semantic_info_hover(
 /// A member read should display the type at the cursor, retaining the member's
 /// declaration identity for documentation. Assignment targets still describe
 /// their writable contract, and callable members keep signature rendering.
-fn member_read_type_at_token(model: &SemanticModel, token: &LuaSyntaxToken) -> Option<LuaType> {
+fn member_read_type_at_token(
+    model: &SemanticModel,
+    token: &LuaSyntaxToken,
+    member: &SemanticId,
+) -> Option<LuaType> {
     let index = LuaIndexExpr::cast(token.parent()?)?;
     if index
         .ancestors::<LuaAssignStat>()
@@ -268,12 +280,26 @@ fn member_read_type_at_token(model: &SemanticModel, token: &LuaSyntaxToken) -> O
     {
         return None;
     }
-    let ty = model.type_of_expr_at(index.get_syntax_id(), index.get_position());
-    (!matches!(
+    let mut ty = model.type_of_expr_at(index.get_syntax_id(), index.get_position());
+    if matches!(
         ty,
         LuaType::Unknown | LuaType::Function | LuaType::Signature(_) | LuaType::DocFunction(_)
-    ))
-    .then_some(ty)
+    ) {
+        return None;
+    }
+    if member_is_nullable(model, member) {
+        // Prefix projection supplies generic arguments, but can omit the `?`
+        // in `@field value? T` or restore it after a guard. Keep that projected
+        // value type while taking optionality from the member's flow state.
+        let flow_ty = model.type_of_member_at(member, index.get_position());
+        ty = match flow_ty {
+            LuaType::Nil => LuaType::Nil,
+            LuaType::Unknown | LuaType::Any => return None,
+            _ if flow_ty.is_nullable() => LuaType::from_vec(vec![ty, LuaType::Nil]),
+            _ => strip_nullable(&ty),
+        };
+    }
+    Some(ty)
 }
 
 /// Whether the token is exactly the call callee's bare function name (`f(...)`), not a method-call receiver/argument.
@@ -1537,6 +1563,7 @@ fn build_member_hover(
     typ: &LuaType,
     member: &SemanticId,
     call_site_substituted: bool,
+    use_site_read: bool,
     context_infos: &[MemberContextInfo],
 ) -> (String, Option<HoverDescription>) {
     let Some(members) = model.members() else {
@@ -1929,6 +1956,7 @@ fn build_member_hover(
     }
     let mut rendered_typ = render_member_typ_with_default(model, &effective_typ);
     if runtime_literal_ty.is_none()
+        && !use_site_read
         && member_is_nullable(model, &display_member_id)
         && !rendered_typ.ends_with('?')
     {
