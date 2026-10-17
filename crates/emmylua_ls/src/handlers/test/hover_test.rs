@@ -1412,3 +1412,43 @@ mod member_use_site {
         assert!(result.contains("Count stored items."), "{result}");
     }
 }
+
+#[cfg(test)]
+mod contextual_dictionary_callback_integration {
+    use crate::handlers::hover::hover;
+    use crate::handlers::test_lib::ProviderVirtualWorkspace;
+    use lsp_types::HoverContents;
+
+    #[test]
+    fn strict_dictionary_callback_context_stays_out_of_member_hover() {
+        for strict in [false, true] {
+            for annotation in ["", "---@type Handler"] {
+                let mut ws = ProviderVirtualWorkspace::new();
+                let mut config = ws.analysis.get_emmyrc().as_ref().clone();
+                config.strict.table_index = strict;
+                ws.analysis.update_config(std::sync::Arc::new(config));
+                let source = format!(
+                    r#"
+                    ---@class Settings
+                    ---@field count integer
+                    ---@alias Handler fun(settings: Settings, name: string)
+                    ---@type table<string, Handler>
+                    local handlers = {{
+                        {annotation}
+                        ['example-setting'] = function(settings, name) settings.<??>count = 1 end,
+                    }}
+                "#
+                );
+                let (source, position) =
+                    ProviderVirtualWorkspace::handle_file_content(&source).unwrap();
+                let file = ws.def(&source);
+                let result = hover(&ws.analysis, file, position).unwrap();
+                let HoverContents::Markup(markup) = result.contents else {
+                    panic!("expected markup")
+                };
+                assert!(markup.value.contains("count: integer"), "{}", markup.value);
+                assert!(!markup.value.contains("Handler"), "{}", markup.value);
+            }
+        }
+    }
+}
