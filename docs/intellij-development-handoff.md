@@ -1,6 +1,6 @@
 # Member-flow performance — UP-082 (2026-10-16)
 
-UP-082 `fix/member-flow-trace-memoization`, signed `8aa61375`, is independent
+UP-082 `fix/member-flow-trace-memoization`, signed `54aaa7b8`, is independent
 on upstream/main `ef6c06a7`. Work pick `95e1c923` reuses the identical acyclic-flow
 helper already present from UP-072; there is no semantic dependency on UP-072.
 The fix memoizes member traces only with an empty incoming guard/cast path and

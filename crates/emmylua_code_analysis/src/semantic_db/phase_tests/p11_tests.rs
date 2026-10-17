@@ -48,8 +48,10 @@ fn p11_member_flow_nested_diamonds_do_not_expand_exponentially() {
             .descendants::<LuaIndexExpr>()
             .last()
             .unwrap();
+        let member = model.resolve_member(&expr).unwrap().member_id.unwrap();
         flow_metrics::reset();
-        let ty = model.type_of_expr_at(expr.get_syntax_id(), expr.get_position());
+        // Isolate member tracing: the owner declaration has its own flow cache.
+        let ty = model.type_of_member_at(&member, expr.get_position());
         let steps = flow_metrics::trace_steps();
         assert!(model.type_check(&LuaType::Number, &ty), "{ty:?}");
         assert!(
