@@ -24,6 +24,8 @@ local function connect(input, lamp)
     local target = lamp[1]
     if target then input[1].connect_to(target, false) end
     input[1].connect_to(assert(target), false)
+    assert(lamp[1])
+    input[1].connect_to(lamp[1], false)
 end
 "#,
     );
