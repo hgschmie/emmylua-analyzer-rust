@@ -30,6 +30,17 @@ impl ServerContextSnapshot {
         &self.inner.file_diagnostic
     }
 
+    /// Notify pull clients after a change that can affect other documents.
+    pub async fn schedule_diagnostic_refresh(&self, interval: u64) {
+        if self.lsp_features().supports_pull_diagnostic()
+            && self.lsp_features().supports_refresh_diagnostic()
+        {
+            self.file_diagnostic()
+                .schedule_diagnostic_refresh(interval)
+                .await;
+        }
+    }
+
     pub fn workspace_manager(&self) -> &Mutex<WorkspaceManager> {
         &self.inner.workspace_manager
     }
@@ -46,24 +57,12 @@ impl ServerContextSnapshot {
         &self.inner.request_manager
     }
 
-    pub fn shutdown_token(&self) -> &tokio_util::sync::CancellationToken {
-        &self.inner.shutdown
-    }
-
-    pub async fn invalidate_workspace_diagnostics(&self) {
-        self.workspace_manager()
-            .lock()
-            .await
-            .update_workspace_version(super::WorkspaceDiagnosticLevel::Slow, true);
-    }
-
     pub fn update_tx(&self) -> &tokio::sync::mpsc::UnboundedSender<UpdateEvent> {
         &self.inner.update_tx
     }
 }
 
 pub struct ServerContextInner {
-    pub shutdown: tokio_util::sync::CancellationToken,
     pub analysis: Arc<AnalysisState>,
     pub client: Arc<ClientProxy>,
     pub file_diagnostic: Arc<DiagnosticService>,

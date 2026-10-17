@@ -6,9 +6,10 @@ use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, Ordering};
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
-use super::AnalysisState;
 use super::workspace_state::{OpenFilesSnapshot, WorkspaceState};
+use super::{AnalysisState, DiagnosticService};
 use crate::context::ServerContextSnapshot;
+use crate::context::lsp_features::LspFeatures;
 use crate::handlers::{ClientConfig, init_analysis, register_files_watch};
 use emmylua_code_analysis::{
     Emmyrc, WorkspaceFolder, load_configs, read_file_with_encoding, uri_to_file_path,
@@ -21,29 +22,27 @@ pub struct WorkspaceManager {
     config_reload_token: Arc<PendingTask>,
     reload_lock: Arc<AsyncMutex<()>>,
     reload_generation: Arc<AtomicU64>,
+    file_diagnostic: Arc<DiagnosticService>,
+    lsp_features: Arc<LspFeatures>,
     pub state: WorkspaceState,
     workspace_diagnostic_level: Arc<AtomicU8>,
     workspace_version: Arc<AtomicI64>,
 }
 
 impl WorkspaceManager {
-    pub fn new() -> Self {
+    pub fn new(file_diagnostic: Arc<DiagnosticService>, lsp_features: Arc<LspFeatures>) -> Self {
         Self {
             config_reload_token: Arc::new(PendingTask::default()),
             reload_lock: Arc::new(AsyncMutex::new(())),
             reload_generation: Arc::new(AtomicU64::new(0)),
+            file_diagnostic,
+            lsp_features,
             state: WorkspaceState::new(ClientConfig::default()),
             workspace_diagnostic_level: Arc::new(AtomicU8::new(
                 WorkspaceDiagnosticLevel::Fast.to_u8(),
             )),
             workspace_version: Arc::new(AtomicI64::new(0)),
         }
-    }
-}
-
-impl Default for WorkspaceManager {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -132,7 +131,6 @@ impl WorkspaceManager {
     //     }
 
     //     let analysis = self.analysis.clone();
-    //     let client = self.client.clone();
     //     let file_diagnostic = self.file_diagnostic.clone();
     //     let lsp_features = self.lsp_features.clone();
     //     let reindex_token = self.reindex_token.clone();
@@ -156,7 +154,6 @@ impl WorkspaceManager {
     //         refresh_workspace_diagnostics(
     //             file_diagnostic,
     //             lsp_features,
-    //             client,
     //             workspace_diagnostic_level,
     //         )
     //         .await;
@@ -166,8 +163,11 @@ impl WorkspaceManager {
 
     fn reload_task_handles(&self) -> ReloadTaskHandles {
         ReloadTaskHandles {
+            file_diagnostic: self.file_diagnostic.clone(),
+            lsp_features: self.lsp_features.clone(),
             reload_lock: self.reload_lock.clone(),
             reload_generation: self.reload_generation.clone(),
+            workspace_diagnostic_level: self.workspace_diagnostic_level.clone(),
         }
     }
 }
@@ -293,10 +293,32 @@ impl PendingTask {
     }
 }
 
+async fn refresh_workspace_diagnostics(
+    file_diagnostic: Arc<DiagnosticService>,
+    lsp_features: Arc<LspFeatures>,
+    workspace_diagnostic_level: Arc<AtomicU8>,
+) {
+    file_diagnostic.cancel_workspace_diagnostic().await;
+    workspace_diagnostic_level.store(WorkspaceDiagnosticLevel::Fast.to_u8(), Ordering::Release);
+
+    if lsp_features.supports_workspace_diagnostic() {
+        if lsp_features.supports_refresh_diagnostic() {
+            file_diagnostic.schedule_diagnostic_refresh(0).await;
+        }
+    } else {
+        file_diagnostic
+            .add_workspace_diagnostic_task(500, true)
+            .await;
+    }
+}
+
 #[derive(Clone)]
 struct ReloadTaskHandles {
+    file_diagnostic: Arc<DiagnosticService>,
+    lsp_features: Arc<LspFeatures>,
     reload_lock: Arc<AsyncMutex<()>>,
     reload_generation: Arc<AtomicU64>,
+    workspace_diagnostic_level: Arc<AtomicU8>,
 }
 
 fn spawn_workspace_reload_task(
@@ -307,29 +329,22 @@ fn spawn_workspace_reload_task(
 ) {
     let generation = handles.reload_generation.fetch_add(1, Ordering::AcqRel) + 1;
     tokio::spawn(async move {
-        let shutdown = context.shutdown_token().clone();
-        tokio::select! {
-            biased;
-            _ = shutdown.cancelled() => {},
-            _ = async {
         let _reload_guard = handles.reload_lock.lock().await;
         if generation != handles.reload_generation.load(Ordering::Acquire) {
             return;
         }
 
-        apply_workspace_reload(context.clone(), workspace_folders, emmyrc).await;
+        apply_workspace_reload(context, workspace_folders, emmyrc).await;
         if generation != handles.reload_generation.load(Ordering::Acquire) {
             return;
         }
 
-        context.invalidate_workspace_diagnostics().await;
-        if context.lsp_features().supports_pull_diagnostic()
-            && context.lsp_features().supports_refresh_diagnostic()
-        {
-            context.client().refresh_workspace_diagnostics();
-        }
-            } => {},
-        }
+        refresh_workspace_diagnostics(
+            handles.file_diagnostic,
+            handles.lsp_features,
+            handles.workspace_diagnostic_level,
+        )
+        .await;
     });
 }
 

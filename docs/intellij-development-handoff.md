@@ -1,3 +1,12 @@
+# UP-008 comparison build173 (2026-10-16)
+
+This variant starts from normal work ec216e69 and replays the scheduler-only
+change from experiment/up008-build172 (899bb485). It replaces UP-045 with
+UP-008 while retaining UP-054 request cancellation and every analyzer fix,
+including UP-082 member-flow performance. Normal work and prepared dependency
+remain UP-045. Package as 0.30.0-173-UP-008 with a separate prepared directory.
+See workspace upstream/ANALYZER_EDIT_LATENCY_2026-10-16.md for final validation.
+
 # Member-flow performance — UP-082 (2026-10-16)
 
 UP-082 `fix/member-flow-trace-memoization`, signed `54aaa7b8`, is independent

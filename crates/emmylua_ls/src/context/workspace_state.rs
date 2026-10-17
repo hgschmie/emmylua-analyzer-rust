@@ -23,7 +23,6 @@ pub struct WorkspaceState {
     pub watcher: Option<notify::RecommendedWatcher>,
     pub open_file_texts: HashMap<Uri, String>,
     pub open_file_state_version: u64,
-    pub open_file_versions: HashMap<Uri, i32>,
     pub match_file_pattern: WorkspaceFileMatcher,
     pub client_config: ClientConfig,
 }
@@ -35,7 +34,6 @@ impl WorkspaceState {
             watcher: None,
             open_file_texts: HashMap::new(),
             open_file_state_version: 0,
-            open_file_versions: HashMap::new(),
             match_file_pattern: WorkspaceFileMatcher::default(),
             client_config,
         }
@@ -52,7 +50,6 @@ impl WorkspaceState {
 
     pub fn close_open_file(&mut self, uri: &Uri) {
         self.open_file_texts.remove(uri);
-        self.open_file_versions.remove(uri);
         self.open_file_state_version = self.open_file_state_version.wrapping_add(1);
     }
 

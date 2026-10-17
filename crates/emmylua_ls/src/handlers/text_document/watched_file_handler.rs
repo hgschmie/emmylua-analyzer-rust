@@ -86,21 +86,25 @@ pub async fn process_did_change_watched_files(
             .await;
     }
 
-    let (file_ids, removed) = context
+    let (file_ids, removed_file) = context
         .analysis()
         .update(|analysis| {
-            let mut removed = false;
+            let mut removed_file = false;
             for uri in &removed_uris {
-                removed |= analysis.get_file_id(uri).is_some();
+                removed_file |= analysis.get_file_id(uri).is_some();
                 analysis.remove_file_by_uri(uri);
             }
-            (analysis.update_files_by_uri(watched_lua_files), removed)
+            (
+                analysis.update_files_by_uri(watched_lua_files),
+                removed_file,
+            )
         })
         .await;
-    if removed || !file_ids.is_empty() {
-        context.invalidate_workspace_diagnostics().await;
-    }
-    if !lsp_features.supports_pull_diagnostic() {
+    if lsp_features.supports_pull_diagnostic() {
+        if removed_file || !file_ids.is_empty() {
+            context.schedule_diagnostic_refresh(interval).await;
+        }
+    } else {
         context
             .file_diagnostic()
             .add_files_diagnostic_task(file_ids, interval)
