@@ -17,7 +17,7 @@ use emmylua_parser::{
 use lsp_types::{GotoDefinitionResponse, Location};
 use rowan::TextSize;
 
-use crate::handlers::common::resolve_alias_origin;
+use crate::handlers::common::{resolve_alias_origin, table_context_type_for_token};
 use crate::util::parse_desc;
 
 pub fn goto_def_definition(
@@ -80,25 +80,19 @@ fn goto_member_definition(
             Some(ty) => prefix_types.push(ty),
             None => prefix_types.push(model.type_of_expr(prefix.get_syntax_id())),
         }
-    } else if let Some(table_field) = parent.as_ref().and_then(|p| LuaTableField::cast(p.clone()))
-        && let Some(table) = table_field.get_parent::<LuaTableExpr>()
-    {
-        // `---@type T local t = { ... }`: @field member of declared type T.
-        if let Some(local_name) = table
-            .get_parent::<LuaLocalStat>()
-            .and_then(|stat| stat.get_local_name_list().next())
-            && let Some(name_token) = local_name.get_name_token()
-            && let Some(decl_id) = model.decl_by_offset(name_token.get_position())
-            && let Some(ty) = model.type_of_decl(&decl_id)
-        {
-            prefix_types.push(ty);
-        }
+    } else if let Some(ty) = table_context_type_for_token(model, token) {
+        prefix_types.push(ty);
     }
 
     for prefix_type in &prefix_types {
         let infos =
             model.member_infos_with_key_mode(&prefix_type, &key, MemberCollectMode::AllDefinitions);
-        let infos = filter_overload_infos(model, token, &infos);
+        // A constructor inside a call is not that call's callee.
+        let infos = if is_usage {
+            filter_overload_infos(model, token, &infos)
+        } else {
+            infos
+        };
         for info in infos {
             if let Some(id) = info.id
                 && let Some(range) = id.member_key_range()

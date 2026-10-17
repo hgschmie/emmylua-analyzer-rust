@@ -200,7 +200,7 @@ impl FileFacts {
         None
     }
 
-    /// Finds the member whose key range contains `offset`.
+    /// Finds a declaration key at `offset`, excluding list values and computed key expressions.
     pub fn member_at_offset(&self, offset: TextSize) -> Option<&Member> {
         let idx = self
             .member_by_range_start
@@ -993,6 +993,9 @@ impl FactsBuilder {
             .members
             .iter()
             .enumerate()
+            // List entries retain their full value range as a stable identity,
+            // but expressions within that range are not member declarations.
+            .filter(|(_, member)| !member.is_implicit_key && !member.is_computed_key)
             .filter_map(|(i, member)| member.id.member_key_range().map(|range| (range.start(), i)))
             .collect::<Vec<_>>();
         member_by_range_start.sort_by_key(|(start, _)| *start);
@@ -2191,6 +2194,8 @@ impl FactsBuilder {
     /// Direct fields of `{ foo = 1, ... }` → owner = the local declaring the table (`Decl`).
     fn collect_table_fields(&mut self, table: &LuaTableExpr, owner: SemanticId) {
         for (field, key) in table.get_fields_with_keys() {
+            let is_implicit_key = matches!(key, LuaIndexKey::Idx(_));
+            let is_computed_key = matches!(key, LuaIndexKey::Expr(_));
             let key_expr = match &key {
                 LuaIndexKey::Expr(expr) => Some(expr.get_syntax_id()),
                 _ => None,
@@ -2205,6 +2210,8 @@ impl FactsBuilder {
                 MemberSource::TableField { key_expr },
             );
             member.value_syntax = field.get_value_expr().map(|expr| expr.get_syntax_id());
+            member.is_implicit_key = is_implicit_key;
+            member.is_computed_key = is_computed_key;
             self.mark_member(&mut member);
             self.members.push(member);
         }
@@ -2416,10 +2423,15 @@ impl FactsBuilder {
         };
 
         // `---@type T` above `xx.aaa = value`: the owner is the assignment
-        // statement, so resolve the LHS IndexExpr range explicitly.
+        // statement. Match only its LHS key, or a table field's own key;
+        // the whole field range also contains nested fields and callback bodies.
         let target_ranges = |owner: &LuaSyntaxId| -> Vec<TextRange> {
             match owner.get_kind() {
-                LuaSyntaxKind::TableFieldAssign => vec![owner.get_range()],
+                LuaSyntaxKind::TableFieldAssign => owner
+                    .to_node_from_root(&root)
+                    .and_then(LuaTableField::cast)
+                    .map(|field| vec![field_key_range(&field)])
+                    .unwrap_or_default(),
                 LuaSyntaxKind::AssignStat => {
                     let Some(node) = owner.to_node_from_root(&root) else {
                         return Vec::new();
@@ -2432,7 +2444,7 @@ impl FactsBuilder {
                         .0
                         .iter()
                         .filter_map(|var| match var {
-                            LuaVarExpr::IndexExpr(index_expr) => Some(index_expr.get_range()),
+                            LuaVarExpr::IndexExpr(index_expr) => Some(member_key_range(index_expr)),
                             _ => None,
                         })
                         .collect()
@@ -2460,7 +2472,7 @@ impl FactsBuilder {
                     let Some(key_range) = member.id.member_key_range() else {
                         continue;
                     };
-                    if !owner_range.contains_range(key_range) {
+                    if owner_range != key_range {
                         continue;
                     }
                     if let Some(type_syntax) = type_syntaxes.first().copied() {
@@ -2485,7 +2497,7 @@ impl FactsBuilder {
                     let Some(key_range) = member.id.member_key_range() else {
                         continue;
                     };
-                    if !owner_range.contains_range(key_range) {
+                    if owner_range != key_range {
                         continue;
                     }
                     module_assignments.push((index, module_path.clone()));
