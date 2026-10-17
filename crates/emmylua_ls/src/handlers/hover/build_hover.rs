@@ -5,15 +5,17 @@ use emmylua_code_analysis::{
     MemberInfo, SemanticDatabase, SemanticId, SemanticModel, TypeDef, TypeDefKind, VariadicType,
 };
 use emmylua_parser::{
-    LuaAssignStat, LuaAstNode, LuaCallExpr, LuaDocAttributeUse, LuaDocDescriptionOwner, LuaDocType,
-    LuaExpr, LuaIndexExpr, LuaLocalStat, LuaSyntaxToken, LuaTableExpr, LuaTableField,
+    LuaAstNode, LuaCallExpr, LuaDocAttributeUse, LuaDocDescriptionOwner, LuaDocType, LuaExpr,
+    LuaIndexExpr, LuaSyntaxToken, LuaTableExpr, LuaTableField,
 };
 use hashbrown::HashMap;
 use lsp_types::{Hover, HoverContents, MarkupContent};
 use rowan::TextRange;
 
-use crate::handlers::common::{resolve_alias_origin, semantic_id_file};
-use crate::handlers::completion::providers::callable_candidates;
+use crate::handlers::common::{
+    constructor_field_infos, resolve_alias_origin, semantic_id_file, strip_nullable,
+    table_context_type_for_expr, table_context_type_for_token,
+};
 use crate::handlers::hover::desc::HoverDescription;
 
 use super::desc::{
@@ -53,7 +55,12 @@ pub fn build_semantic_info_hover(
     token: LuaSyntaxToken,
     range: TextRange,
 ) -> Option<Hover> {
-    let info = model.semantic_info(token.clone().into())?;
+    let mut info = model.semantic_info(token.clone().into())?;
+    if let Some(table) = token.parent().and_then(LuaTableExpr::cast)
+        && let Some(context) = table_context_type_for_expr(model, &table)
+    {
+        info.typ = context;
+    }
     let member_call_typ = if matches!(info.decl, Some(SemanticId::Member(_))) {
         let in_call = token
             .parent_ancestors()
@@ -322,15 +329,52 @@ fn member_context_infos(
         let Some(member) = facts.member_by_id(decl) else {
             return Vec::new();
         };
+        // Module metadata supplies the member's own type, independently of its initializer.
+        if member.module_path.is_some()
+            && let Some(typ) = model.type_of_member(decl)
+        {
+            return vec![MemberContextInfo {
+                info: MemberInfo {
+                    key: member.key.clone(),
+                    typ,
+                    id: Some(decl.clone()),
+                    file_id: Some(member_key.file_id),
+                    is_method: member.is_method,
+                },
+                show_unknown: false,
+            }];
+        }
+        // An explicit field annotation overrides the enclosing constructor contract.
+        if member.doc_type_syntax.is_some() {
+            return Vec::new();
+        }
         if let Some(context_ty) = table_context_type_for_token(model, token) {
-            let mut infos = model
-                .member_infos_with_key_all(&context_ty, &member.key)
+            let Some(field) = token.parent_ancestors().find_map(LuaTableField::cast) else {
+                return Vec::new();
+            };
+            let mut infos = constructor_field_infos(model, &context_ty, &field)
                 .into_iter()
                 .map(|info| MemberContextInfo {
                     info,
                     show_unknown: false,
                 })
                 .collect::<Vec<_>>();
+            // An unmatched key has no contract. Keep its initializer's type
+            // instead of borrowing a same-named field from an array element.
+            if infos.is_empty()
+                && let Some(value) = field.get_value_expr()
+            {
+                infos.push(MemberContextInfo {
+                    info: MemberInfo {
+                        key: member.key.clone(),
+                        typ: model.type_of_expr(value.get_syntax_id()),
+                        id: None,
+                        file_id: None,
+                        is_method: false,
+                    },
+                    show_unknown: false,
+                });
+            }
             if context_ty.contain_tpl() {
                 // When the generic context cannot be inferred from the call site, bind generics in the
                 // type-surface member using the field value's own `---@param` signatures
@@ -448,99 +492,6 @@ fn substitute_class_generics_to_unknown(
     let params = vec![LuaType::Unknown; names.len()];
     let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
     model.substitute_generic_params_named_str(&ty, &params, &name_refs)
-}
-
-fn table_context_type_for_token(
-    model: &SemanticModel<'_>,
-    token: &LuaSyntaxToken,
-) -> Option<LuaType> {
-    let field = token.parent_ancestors().find_map(LuaTableField::cast)?;
-    let table_expr = field.ancestors::<LuaTableExpr>().next()?;
-    table_context_type_for_expr(model, &table_expr)
-}
-
-fn table_context_type_for_expr(
-    model: &SemanticModel<'_>,
-    table_expr: &LuaTableExpr,
-) -> Option<LuaType> {
-    let syntax_id = table_expr.get_syntax_id();
-
-    // `---@type T local t = { ... }`: type from the local declaration.
-    if let Some(local) = table_expr.ancestors::<LuaLocalStat>().next() {
-        if local
-            .get_value_exprs()
-            .any(|expr| expr.get_syntax_id() == syntax_id)
-            && let Some(name) = local.get_local_name_list().next()
-            && let Some(decl) = model.decl_by_offset(name.get_position())
-        {
-            if let Some(ty) = model.type_of_decl(&decl)
-                && !matches!(ty, LuaType::Unknown)
-            {
-                return Some(ty);
-            }
-        }
-    }
-
-    // `x = { ... }`: type of the assignment target.
-    if let Some(assign) = table_expr.ancestors::<LuaAssignStat>().next() {
-        let (vars, values) = assign.get_var_and_expr_list();
-        if values.iter().any(|expr| expr.get_syntax_id() == syntax_id)
-            && let Some(var) = vars.first()
-        {
-            let ty = model.type_of_expr(var.to_expr().get_syntax_id());
-            if !matches!(ty, LuaType::Unknown) {
-                return Some(ty);
-            }
-        }
-    }
-
-    // Call argument: `observe({ ... })` -> parameter type.
-    if let Some(call) = table_expr.ancestors::<LuaCallExpr>().next() {
-        let arg_idx = call
-            .get_args_list()?
-            .get_args()
-            .enumerate()
-            .find(|(_, arg)| arg.get_syntax_id() == syntax_id)
-            .map(|(idx, _)| idx)?;
-        // Prefer call-site generic projection when available (`observe("x", { ... })` with `T -> string`).
-        if let Some(fun) = model.inferred_call_doc_function(call.get_syntax_id()) {
-            let mut param_idx = arg_idx;
-            if call.is_colon_call() && !fun.is_colon_define() {
-                param_idx += 1;
-            }
-            if let Some(ty) = fun
-                .get_params()
-                .get(param_idx)
-                .and_then(|(_, ty)| ty.clone())
-                && !matches!(ty, LuaType::Unknown)
-            {
-                return Some(ty);
-            }
-        }
-        let prefix = call.get_prefix_expr()?;
-        let mut types = Vec::new();
-        for func in callable_candidates(model, &prefix) {
-            let mut param_idx = arg_idx;
-            if call.is_colon_call() && !func.is_colon_define() {
-                param_idx += 1;
-            }
-            if let Some(ty) = func
-                .get_params()
-                .get(param_idx)
-                .and_then(|(_, ty)| ty.clone())
-            {
-                if !types.contains(&ty) {
-                    types.push(ty);
-                }
-            }
-        }
-        if let Some(ty) = types.into_iter().next() {
-            return Some(ty);
-        }
-    }
-
-    let ty = model.type_of_expr(syntax_id);
-    (!matches!(ty, LuaType::Unknown)).then_some(ty)
 }
 
 /// Whether the member access (`x.foo` / `x:foo`) containing the current token is applied to an
@@ -1264,19 +1215,6 @@ fn render_member_typ_with_default(model: &SemanticModel<'_>, ty: &LuaType) -> St
     }
 }
 
-/// Remove `nil` from nullable types (`T | nil` / `T?`) for display when the current assignment is non-nil.
-fn strip_nullable(ty: &LuaType) -> LuaType {
-    match ty {
-        LuaType::Union(union) => {
-            let mut types = union.into_vec();
-            types.retain(|t| !matches!(t, LuaType::Nil));
-            LuaType::from_vec(types)
-        }
-        LuaType::MultiLineUnion(union) => strip_nullable(&union.to_union()),
-        _ => ty.clone(),
-    }
-}
-
 /// Type for a parameter declaration: closure-signature `@param` projection.
 fn param_decl_type(
     model: &SemanticModel<'_>,
@@ -1523,6 +1461,12 @@ fn build_member_hover(
     let show_unknown = context_infos.iter().any(|ctx| ctx.show_unknown);
     if !call_site_substituted && !context_infos.is_empty() {
         let first = &context_infos[0];
+        effective_typ_override = Some(LuaType::from_vec(
+            context_infos
+                .iter()
+                .map(|ctx| ctx.info.typ.clone())
+                .collect(),
+        ));
         if let (Some(id), Some(file_id)) = (&first.info.id, first.info.file_id)
             && let Some(facts) = model.file_facts_of(file_id)
             && let Some(context_member) = facts.member_by_id(id)

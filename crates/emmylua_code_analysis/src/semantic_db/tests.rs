@@ -2313,3 +2313,126 @@ fn test_parallel_for_each_file_runs_on_shared_snapshots() {
 
     assert_eq!(visited.load(std::sync::atomic::Ordering::Relaxed), 2);
 }
+
+#[test]
+fn annotated_table_field_does_not_annotate_callback_assignments() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def(
+        r#"
+        ---@class Settings
+        ---@field count integer
+        ---@alias Handler fun(settings: Settings)
+        ---@class Handlers
+        ---@field change Handler
+        ---@type Handlers
+        local handlers = {
+            ---@type Handler
+            change = function(settings) settings.count = 1 end,
+        }
+    "#,
+    );
+    let model = ws.analysis.semantic_model(file);
+    let facts = model.file_facts().unwrap();
+    let assignment = facts
+        .members
+        .iter()
+        .find(|member| {
+            member.key.name() == Some("count")
+                && member.value_syntax.is_some()
+                && !matches!(member.owner, SemanticId::TypeDef(_))
+        })
+        .unwrap();
+    assert!(
+        assignment.doc_type_syntax.is_none(),
+        "field annotation leaked onto callback assignment"
+    );
+}
+
+#[test]
+fn table_field_module_annotation_stays_on_own_field() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def(
+        r#"
+        local container = {
+            ---@module 'example'
+            module = { child = 1 },
+        }
+    "#,
+    );
+    let model = ws.analysis.semantic_model(file);
+    let facts = model.file_facts().unwrap();
+    let module = facts
+        .members
+        .iter()
+        .find(|member| member.key.name() == Some("module"))
+        .unwrap();
+    let child = facts
+        .members
+        .iter()
+        .find(|member| member.key.name() == Some("child"))
+        .unwrap();
+    assert_eq!(module.module_path.as_deref(), Some("example"));
+    assert_eq!(child.module_path, None);
+}
+
+#[test]
+fn implicit_array_member_values_are_not_declaration_keys() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let source = "local values = { function() return obj.name end, 42, [7] = false, named = true, ['quoted'] = 9 }";
+    let file = ws.def(source);
+    let model = ws.analysis.semantic_model(file);
+    let facts = model.file_facts().unwrap();
+    for token in ["function", "obj", "name end", "42"] {
+        let offset = TextSize::from(source.find(token).unwrap() as u32);
+        assert!(facts.member_at_offset(offset).is_none(), "{token}");
+    }
+    for token in ["7", "named", "quoted"] {
+        let offset = TextSize::from(source.find(token).unwrap() as u32);
+        assert!(facts.member_at_offset(offset).is_some(), "{token}");
+    }
+    for key in [1, 2] {
+        let member = facts
+            .members
+            .iter()
+            .find(|member| member.key == crate::LuaMemberKey::Integer(key))
+            .unwrap();
+        let value = member.value_syntax.unwrap();
+        assert_eq!(facts.member_by_value_syntax(value).unwrap().id, member.id);
+        assert!(facts.member_by_id(&member.id).is_some());
+        assert!(model.type_of_member(&member.id).is_some());
+    }
+}
+
+#[test]
+fn constructor_annotations_follow_written_keys_with_trivia() {
+    for annotation in ["---@type boolean", "---@module 'known'"] {
+        for key in [
+            "entry =",
+            "['entry' ] =",
+            "[7 ] =",
+            "[(key) ] =",
+            "[key -- key trivia\n ] =",
+            "",
+        ] {
+            let mut ws = crate::VirtualWorkspace::new();
+            let file = ws.def(&format!(
+                "local values = {{\n{annotation}\n {key} missing\n}}"
+            ));
+            let model = ws.analysis.semantic_model(file);
+            let facts = model.file_facts().unwrap();
+            assert!(!facts.members.is_empty(), "{annotation}: {key}");
+            for member in &facts.members {
+                assert_eq!(
+                    member.doc_type_syntax.is_some(),
+                    !key.is_empty() && annotation.contains("@type"),
+                    "{annotation}: {key}"
+                );
+                assert_eq!(
+                    member.module_path.as_deref(),
+                    (!key.is_empty() && annotation.contains("@module")).then_some("known"),
+                    "{annotation}: {key}"
+                );
+            }
+        }
+    }
+}
