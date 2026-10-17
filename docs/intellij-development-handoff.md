@@ -1,3 +1,31 @@
+# Member-flow performance — UP-082 (2026-10-16)
+
+UP-082 `fix/member-flow-trace-memoization`, signed `8aa61375`, is independent
+on upstream/main `ef6c06a7`. Work pick `95e1c923` reuses the identical acyclic-flow
+helper already present from UP-072; there is no semantic dependency on UP-072.
+The fix memoizes member traces only with an empty incoming guard/cast path and
+no real graph cycle. Other paths preserve the existing traversal.
+
+The user's stop-update.lua edit reproduced 15-second document diagnostic passes
+with both UP-008 and UP-045, without IntelliJ. Fixed replay takes about 340 ms;
+all five diagnostic sets and hovers are byte-for-byte equivalent. Workspace pulls
+can still add background contention (up to about 2 s in this replay); this is not
+an assertion that all editor operations are instantaneous. Rapid i→integer edits
+return the latest four diagnostics rather than retaining the 19 incomplete-type
+warnings. The original number→int32 mismatch is valid and remains unchanged.
+
+A nested-branch/loop diagnostic probe takes milliseconds before the refactor,
+but about 9 s at 16 branches immediately afterward and before our first merged
+contribution. The defect therefore predates our merged patches. Full evidence:
+workspace upstream/ANALYZER_EDIT_LATENCY_2026-10-16.md and analyzer
+build/investigations/edit-latency-20261016/.
+
+Standalone 1,521 analysis and combined 2,846 workspace tests pass. The expanded
+focused regression also covers acyclic loop summaries and distinct member/cast
+paths. EmmyLua2 build 173 packages the fix; a separate 173-UP-008 comparison uses
+the same analyzer fixes. Keep FDE 0.8.6-dev and LSP4IJ 0.21.1-SNAPSHOT-7. No PR or
+push is requested; all new source changes remain local.
+
 # Stop-update fixes and short package versions — 2026-10-16
 
 The work branch continues from validated build171 (`ea1f7fbb`) on upstream
@@ -126,7 +154,7 @@ our existing integration baseline. Do not submit a duplicate fix; evaluate it
 when refreshing the larger union/variadic upstream changes. That upstream
 refactor was not imported as part of these targeted changes.
 
-Build EmmyLua2 169 only; retain FDE0.8.6-dev and update its development pin/tests.
+Build EmmyLua2 169 only; retain FDE 0.8.6-dev and update its development pin/tests.
 See workspace upstream/LTN_PRIORITY_FOLLOWUPS_2026-10-16.md for prioritization,
 packaged validation and remaining limitations. Keep normal UP-045/LSP4IJ patched4.
 
@@ -147,7 +175,7 @@ UP-074 passes 1,473 tests, including loop-summary trace counts and cycle checks.
 Other standalone branch validation is recorded in the workspace triage report.
 The generated std-zh_CN test outputs were restored; no mod files were edited.
 
-Build EmmyLua2 168, update FDE's development pin and ship FDE0.8.6-dev for its
+Build EmmyLua2 168, update FDE's development pin and ship FDE 0.8.6-dev for its
 separate information/hint summary and filters. Keep normal UP-045 and LSP4IJ
 patched4. Package/protocol evidence and remaining-diagnostic triage are maintained
 in workspace upstream/LTN_FLOW_TRIAGE_2026-10-15.md. New fixes remain local; no PRs.
