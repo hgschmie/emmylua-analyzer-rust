@@ -521,10 +521,11 @@ pub(crate) fn type_of_expr_at_node(
                 // don't re-select the first same-name member, avoiding an annotated member falling back to an earlier assignment.
                 // For declared named/generic types (`local bar: foo<{a:string}> = { a = "test" }`),
                 // even when `resolve_member` lands on a table field, use the declared type's member as authoritative.
+                // This also applies to narrowed receivers such as `parent.item.count`:
+                // an inferred runtime write must not shadow the receiver's field contract.
                 if resolved_is_runtime
                     && let Some(key) = member_key_from_index_expr(model, index_expr)
                     && let Some(prefix) = index_expr.get_prefix_expr()
-                    && let LuaExpr::NameExpr(_) = &prefix
                 {
                     let prefix_ty = model.type_of_expr_at(prefix.get_syntax_id(), offset);
                     if matches!(
