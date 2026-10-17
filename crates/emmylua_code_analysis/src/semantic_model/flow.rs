@@ -2084,6 +2084,40 @@ fn trace_member(
     visited: &mut HashSet<FlowId>,
     path: &mut PathState,
 ) -> Option<LuaType> {
+    // Different branches repeatedly reach the same predecessor. Cache only
+    // states whose result cannot depend on the incoming path or visited set.
+    // A loop summary can be acyclic; real back edges must keep the visited walk.
+    if tree.has_cycles() || !path.narrowings.is_empty() || !path.casts.is_empty() {
+        return trace_member_uncached(model, member, tree, flow_id, visited, path);
+    }
+    let key = (member.clone(), flow_id);
+    if let Some(cache::CacheEntry::Ready(result)) =
+        model.cache.borrow().member_trace_state.get(&key)
+    {
+        return result.clone();
+    }
+    model
+        .cache
+        .borrow_mut()
+        .member_trace_state
+        .insert(key.clone(), cache::CacheEntry::InProgress);
+    let result = trace_member_uncached(model, member, tree, flow_id, visited, path);
+    model
+        .cache
+        .borrow_mut()
+        .member_trace_state
+        .insert(key, cache::CacheEntry::Ready(result.clone()));
+    result
+}
+
+fn trace_member_uncached(
+    model: &SemanticModel,
+    member: &SemanticId,
+    tree: &FlowTree,
+    flow_id: FlowId,
+    visited: &mut HashSet<FlowId>,
+    path: &mut PathState,
+) -> Option<LuaType> {
     let mut current = flow_id;
     loop {
         #[cfg(test)]
