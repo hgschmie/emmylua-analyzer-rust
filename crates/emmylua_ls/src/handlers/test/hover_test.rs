@@ -1072,4 +1072,112 @@ mod member_use_site {
             )
         ));
     }
+
+    #[test]
+    fn optional_field_marker_does_not_override_casts() {
+        let definitions = format!(
+            "{}\n---@class Platform\n",
+            DEFINITIONS.replace("@field train Train?", "@field train? Train|Platform")
+        );
+        for separate in [false, true] {
+            for body in [
+                "---@cast stop.train Train\nprint(stop.<??>train)",
+                "---@cast stop.train Train\nlocal callback = function() print(stop.<??>train) end",
+            ] {
+                let source = format!("---@param stop Stop\nlocal function test(stop)\n{body}\nend");
+                let result = text(&definitions, &source, separate);
+                assert!(
+                    result.contains("train: Train\n"),
+                    "{separate} {body}: {result}"
+                );
+                assert!(result.contains("The parked train."), "{result}");
+            }
+        }
+    }
+
+    #[test]
+    fn optional_field_marker_does_not_override_guards() {
+        let definitions = DEFINITIONS.replace("@field train Train?", "@field train? Train");
+        for separate in [false, true] {
+            for body in [
+                "if stop.train then print(stop.<??>train) end",
+                "assert(stop.train)\nprint(stop.<??>train)",
+                "if stop.train ~= nil then print(stop.<??>train) end",
+            ] {
+                let source = format!("---@param stop Stop\nlocal function test(stop)\n{body}\nend");
+                let result = text(&definitions, &source, separate);
+                assert!(
+                    result.contains("train: Train\n"),
+                    "{separate} {body}: {result}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn optional_field_marker_preserves_nullable_reads() {
+        let definitions = DEFINITIONS.replace("@field train Train?", "@field train? Train");
+        for separate in [false, true] {
+            for body in [
+                "print(stop.<??>train)",
+                "---@cast stop.train Train?\nprint(stop.<??>train)",
+                "if stop.train then print(stop.train) end\nprint(stop.<??>train)",
+            ] {
+                let source = format!("---@param stop Stop\nlocal function test(stop)\n{body}\nend");
+                let result = text(&definitions, &source, separate);
+                assert!(
+                    result.contains("train: Train?\n"),
+                    "{separate} {body}: {result}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn optional_field_declaration_retains_marker() {
+        let definitions = DEFINITIONS.replace("@field train Train?", "@field <??>train? Train");
+        let result = text("", &definitions, false);
+        assert!(result.contains("train: Train?\n"), "{result}");
+    }
+
+    #[test]
+    fn optional_generic_field_uses_read_nullability() {
+        let definitions = format!("{DEFINITIONS}\n---@class Box<T>\n---@field value? T\n");
+        for (body, expected) in [
+            ("print(box.<??>value)", "value: Train?\n"),
+            (
+                "if box.value then print(box.<??>value) end",
+                "value: Train\n",
+            ),
+        ] {
+            let source = format!("---@param box Box<Train>\nlocal function test(box)\n{body}\nend");
+            let result = text(&definitions, &source, true);
+            assert!(result.contains(expected), "{result}");
+        }
+    }
+
+    #[test]
+    fn optional_field_cast_to_nil_does_not_append_question_mark() {
+        let definitions = DEFINITIONS.replace("@field train Train?", "@field train? Train");
+        let result = text(
+            &definitions,
+            "---@param stop Stop\nlocal function test(stop)\n---@cast stop.train nil\nprint(stop.<??>train)\nend",
+            true,
+        );
+        assert!(result.contains("train: nil\n"), "{result}");
+    }
+
+    #[test]
+    fn optional_callable_field_keeps_signature_rendering() {
+        let result = text(
+            "---@class Callbacks\n---@field on_count? fun(): integer Count stored items.",
+            "---@param callbacks Callbacks\nlocal function test(callbacks)\nlocal callback = callbacks.<??>on_count\nend",
+            true,
+        );
+        assert!(
+            result.contains("Callbacks.on_count() -> integer"),
+            "{result}"
+        );
+        assert!(result.contains("Count stored items."), "{result}");
+    }
 }
