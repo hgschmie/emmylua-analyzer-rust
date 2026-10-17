@@ -1216,9 +1216,11 @@ fn class_member_lines(model: &SemanticModel<'_>, ty: &LuaType) -> Option<Vec<Str
                 LuaMemberKey::Integer(i) => format!("[{}]", i),
                 _ => return None,
             };
+            let typ = class_member_hover_type(model, &info.typ, info.id.as_ref());
             let rendered = match &info.typ {
+                LuaType::DocFunction(_) if typ.is_nullable() => "function?".to_string(),
                 LuaType::DocFunction(_) => "function".to_string(),
-                ty => render_member_typ_with_default(model, ty),
+                _ => render_member_typ_with_default(model, &typ),
             };
             Some(format!("    {}: {},", name, rendered))
         })
@@ -1228,13 +1230,29 @@ fn class_member_lines(model: &SemanticModel<'_>, ty: &LuaType) -> Option<Vec<Str
             continue;
         }
         let key = humanize(model, &info.key_type);
+        let typ = class_member_hover_type(model, &info.value_type, info.id.as_ref());
         let value = match &info.value_type {
+            LuaType::DocFunction(_) if typ.is_nullable() => "function?".to_string(),
             LuaType::DocFunction(_) => "function".to_string(),
-            ty => render_member_typ_with_default(model, ty),
+            _ => render_member_typ_with_default(model, &typ),
         };
         lines.push(format!("    [{key}]: {value},"));
     }
     Some(lines)
+}
+
+/// Combine projected member types with declaration optionality for class summaries.
+/// Keep generic substitution and cross-file declaration identity intact.
+fn class_member_hover_type(
+    model: &SemanticModel<'_>,
+    typ: &LuaType,
+    id: Option<&SemanticId>,
+) -> LuaType {
+    if !typ.is_nullable() && id.is_some_and(|id| member_is_nullable(model, id)) {
+        LuaType::from_vec(vec![typ.clone(), LuaType::Nil])
+    } else {
+        typ.clone()
+    }
 }
 
 fn member_is_nullable(model: &SemanticModel<'_>, id: &SemanticId) -> bool {
