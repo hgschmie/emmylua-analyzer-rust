@@ -30,23 +30,6 @@ struct MemberContextInfo {
     show_unknown: bool,
 }
 
-// Whether the first parameter should not be treated as `self`
-fn first_param_may_not_self(typ: &LuaType) -> bool {
-    if typ.is_table()
-        || matches!(
-            typ,
-            LuaType::TplRef(_) | LuaType::StrTplRef(_) | LuaType::Any | LuaType::Unknown
-        )
-    {
-        return true;
-    }
-
-    if let LuaType::Union(u) = typ {
-        return u.into_vec().iter().any(first_param_may_not_self);
-    }
-    false
-}
-
 pub fn build_semantic_info_hover(
     model: &SemanticModel<'_>,
     db: &SemanticDatabase,
@@ -876,40 +859,14 @@ fn member_owner_type_and_name(
     }
 }
 
-/// Old humanize semantics: `fun(self: Owner, ...)` is displayed as a method, `fun(self: string, ...)` as a field.
-fn display_as_method(
-    model: &SemanticModel<'_>,
-    func: &LuaFunctionType,
-    owner_ty: Option<&LuaType>,
-) -> bool {
-    if func.is_colon_define() {
-        return true;
-    }
-    let Some((name, ty)) = func.get_params().first() else {
-        return false;
-    };
-    match ty {
-        Some(ty) => {
-            if ty.is_self_infer() {
-                return true;
-            }
-            match owner_ty {
-                Some(owner_ty) => {
-                    if matches!(owner_ty, LuaType::Ref(_) | LuaType::Def(_))
-                        && first_param_may_not_self(ty)
-                    {
-                        return false;
-                    }
-                    if model.type_check(owner_ty, ty) {
-                        return true;
-                    }
-                    name == "self" && model.type_check(ty, owner_ty)
-                }
-                None => name == "self",
-            }
-        }
-        None => name == "self",
-    }
+/// Only explicit receiver syntax/names make a function a method. A parameter
+/// accepting another instance of the owning class is not an implicit receiver.
+fn display_as_method(func: &LuaFunctionType) -> bool {
+    func.is_colon_define()
+        || func
+            .get_params()
+            .first()
+            .is_some_and(|(name, _)| matches!(name.as_str(), "self" | "_self"))
 }
 
 /// Number of other member declarations with the same key (shown as `(+N overloads)` for `---@field` overloads).
@@ -1750,7 +1707,7 @@ fn build_member_hover(
         if let (Some(owner_ty), Some(owner_name)) =
             member_owner_type_and_name(model, &member_info.owner)
         {
-            let is_method = display_as_method(model, fun, Some(&owner_ty));
+            let is_method = display_as_method(fun);
             let has_named_returns = !call_site_substituted
                 && signature_has_named_returns(model, member_info.value_syntax);
             let (params, _) =
@@ -1785,7 +1742,6 @@ fn build_member_hover(
             render_member_overload_blocks(
                 model,
                 &member_info,
-                &owner_ty,
                 &overload_types,
                 &overload_ids,
                 typed_member.is_some(),
@@ -1800,7 +1756,7 @@ fn build_member_hover(
                 Some(description),
             );
         } else if let Some(owner_name) = member_owner_display_name(model, &member_info.owner) {
-            let is_method = fun.is_colon_define() || member_info.is_method;
+            let is_method = display_as_method(fun) || member_info.is_method;
             let has_named_returns = !call_site_substituted
                 && signature_has_named_returns(model, member_info.value_syntax);
             let (params, _) =
@@ -1843,7 +1799,7 @@ fn build_member_hover(
     // so re-render using the member closure signature; after `---@version` filtering, this is already a visible definition.
     if let Some(fun) = member_signature(model, member_info) {
         let (owner_ty, owner_name) = member_owner_type_and_name(model, &member_info.owner);
-        let is_method = member_info.is_method || display_as_method(model, &fun, owner_ty.as_ref());
+        let is_method = member_info.is_method || display_as_method(&fun);
         let has_named_returns =
             !call_site_substituted && signature_has_named_returns(model, member_info.value_syntax);
         let (params, _) =
@@ -1873,7 +1829,6 @@ fn build_member_hover(
             render_member_overload_blocks(
                 model,
                 &member_info,
-                &owner_ty,
                 &overload_types,
                 &overload_ids,
                 typed_member.is_some(),
@@ -1929,7 +1884,6 @@ fn build_member_hover(
 fn render_member_overload_blocks(
     model: &SemanticModel<'_>,
     member_info: &Member,
-    owner_ty: &LuaType,
     overload_types: &[LuaType],
     overload_ids: &[Option<SemanticId>],
     skip_first: bool,
@@ -1946,7 +1900,7 @@ fn render_member_overload_blocks(
         let LuaType::DocFunction(fun) = typ else {
             continue;
         };
-        let overload_is_method = display_as_method(model, fun, Some(owner_ty));
+        let overload_is_method = display_as_method(fun);
         let (params, ret) =
             render_function_params_and_ret_mode(model, fun, overload_is_method, false, false);
         let separator = if overload_is_method { ":" } else { "." };

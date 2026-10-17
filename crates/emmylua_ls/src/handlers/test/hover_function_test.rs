@@ -381,7 +381,7 @@ mod tests {
                 }
             "#,
             VirtualHoverResult {
-                value: "```lua\n(field) T.func(self: string)\n```\n\n---\n\n注释注释".to_string(),
+                value: "```lua\n(method) T:func()\n```\n\n---\n\n注释注释".to_string(),
             },
         ));
         Ok(())
