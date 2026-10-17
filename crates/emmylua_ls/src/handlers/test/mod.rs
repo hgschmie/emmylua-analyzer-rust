@@ -10,3 +10,5 @@ mod references_test;
 mod rename_test;
 mod semantic_token_test;
 mod signature_helper_test;
+
+mod flow_receiver_hover_test;
