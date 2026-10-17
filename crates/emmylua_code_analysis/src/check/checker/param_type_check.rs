@@ -668,6 +668,13 @@ fn check_arg_pairs(
                         }
                         slot_ty = unify::substitute(&slot_ty, bindings);
                         slot_ty = type_eval::expand_alias_generic(semantic_model, &slot_ty);
+                        if rejects_nullable_class_argument(semantic_model, &arg_ty, &slot_ty) {
+                            out.push(Mismatch {
+                                range: arg.get_range(),
+                                message: mismatch_message(semantic_model, &arg_ty, &slot_ty, name),
+                            });
+                            continue;
+                        }
                         if arg_ty == slot_ty
                             || is_compatible(semantic_model, &arg_ty, &slot_ty)
                             || type_check::is_assign_compatible(semantic_model, &arg_ty, &slot_ty)
@@ -700,6 +707,13 @@ fn check_arg_pairs(
                             continue;
                         }
                         let param_ty = unify::substitute(&param_ty_orig, bindings);
+                        if rejects_nullable_class_argument(semantic_model, &arg_ty, &param_ty) {
+                            out.push(Mismatch {
+                                range: arg.get_range(),
+                                message: mismatch_message(semantic_model, &arg_ty, &param_ty, name),
+                            });
+                            continue;
+                        }
                         if arg_ty == param_ty
                             || param_generic_base_match(semantic_model, &arg_ty, &param_ty)
                             || type_check::is_assign_compatible(semantic_model, &arg_ty, &param_ty)
@@ -758,6 +772,13 @@ fn check_arg_pairs(
         if skip_arg(&call_arg_ty, &param_ty) {
             continue;
         }
+        if rejects_nullable_class_argument(semantic_model, &call_arg_ty, &param_ty) {
+            out.push(Mismatch {
+                range: arg.get_range(),
+                message: mismatch_message(semantic_model, &arg_ty, &param_ty, name),
+            });
+            continue;
+        }
         // Check the whole boolean domain before selecting a single union component.
         if value_kind(semantic_model, &call_arg_ty) == ValueKind::Boolean
             && !param_ty.contains_tpl_node()
@@ -801,10 +822,23 @@ fn check_arg_pairs(
                 continue;
             }
         }
+        let parameter_contract = param_ty.contains_tpl_node().then(|| param_ty.clone());
         let param_ty = effective_param(&param_ty, &call_arg_ty);
         // Unify first: T[] <- (A|B|C|D)[] and similar.
         let _ = unify_call_bindings(semantic_model, &param_ty, &call_arg_ty, bindings);
         let param_ty = unify::substitute(&param_ty, bindings);
+        // Recheck after generic inference, retaining nil in the original contract
+        // rather than the shape selected by effective_param.
+        if let Some(parameter_contract) = parameter_contract {
+            let parameter_contract = unify::substitute(&parameter_contract, bindings);
+            if rejects_nullable_class_argument(semantic_model, &call_arg_ty, &parameter_contract) {
+                out.push(Mismatch {
+                    range: arg.get_range(),
+                    message: mismatch_message(semantic_model, &arg_ty, &parameter_contract, name),
+                });
+                continue;
+            }
+        }
         // After substituting generic unions (`T|StrTpl` -> `Table|...`), arguments pass if they match any component.
         if let LuaType::Union(union) = &param_ty {
             if union
@@ -849,6 +883,67 @@ fn check_arg_pairs(
         });
     }
     out
+}
+
+/// General compatibility accepts nullable class references as their nonnullable
+/// class. That shortcut is useful for overlap/cast checks but cannot establish
+/// that a call argument satisfies a required class contract. Check nil separately
+/// before the general acceptance paths, after resolving any generic bindings.
+fn rejects_nullable_class_argument(
+    semantic_model: &SemanticModel<'_>,
+    arg_ty: &LuaType,
+    param_ty: &LuaType,
+) -> bool {
+    let (nullable, has_class) = class_argument_domain(semantic_model, arg_ty, &mut Vec::new());
+    if !nullable || !has_class {
+        return false;
+    }
+    let param_ty = normalize_arg_for_check(semantic_model, param_ty);
+    !param_ty.contains_tpl_node()
+        && !type_check::is_assign_compatible(semantic_model, &LuaType::Nil, &param_ty)
+}
+
+/// Only explicit nil/class alternatives count. Unknown and unconstrained generic
+/// arguments retain their existing permissive behavior; aliases are cycle-safe.
+fn class_argument_domain(
+    semantic_model: &SemanticModel<'_>,
+    ty: &LuaType,
+    visited: &mut Vec<LuaTypeDeclId>,
+) -> (bool, bool) {
+    match ty {
+        LuaType::Nil => (true, false),
+        LuaType::Union(union) => union.iter().fold((false, false), |(nil, class), member| {
+            let (member_nil, member_class) = class_argument_domain(semantic_model, member, visited);
+            (nil || member_nil, class || member_class)
+        }),
+        LuaType::Ref(id) | LuaType::Def(id) if !visited.contains(id) => {
+            let Some(def) = semantic_model.type_def_of(id) else {
+                return (false, false);
+            };
+            if def.kind != TypeDefKind::Alias {
+                return (false, def.kind == TypeDefKind::Class);
+            }
+            visited.push(id.clone());
+            let domain = semantic_model
+                .alias_target(&def)
+                .map_or((false, false), |target| {
+                    class_argument_domain(
+                        semantic_model,
+                        &normalize_arg_for_check(semantic_model, &target),
+                        visited,
+                    )
+                });
+            visited.pop();
+            domain
+        }
+        LuaType::Generic(generic) => (
+            false,
+            semantic_model
+                .type_def_of(&generic.get_base_type_id())
+                .is_some_and(|def| def.kind == TypeDefKind::Class),
+        ),
+        _ => (false, false),
+    }
 }
 
 fn generic_table_required_mismatch(
