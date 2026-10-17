@@ -47,7 +47,7 @@ pub fn build_semantic_info_hover(
         .as_ref()
         .filter(|decl| assignment_context_infos.is_empty() && matches!(decl, SemanticId::Member(_)))
         .and_then(|member| {
-            member_read_type_at_token(model, &token, member)
+            member_read_type_at_token(model, &token)
                 .filter(|ty| ty != &info.typ || member_is_nullable(model, member))
         });
     let member_call_typ = if assignment_context_infos.is_empty()
@@ -254,11 +254,7 @@ pub fn build_semantic_info_hover(
 /// A member read should display the type at the cursor, retaining the member's
 /// declaration identity for documentation. Assignment targets still describe
 /// their writable contract, and callable members keep signature rendering.
-fn member_read_type_at_token(
-    model: &SemanticModel,
-    token: &LuaSyntaxToken,
-    member: &SemanticId,
-) -> Option<LuaType> {
+fn member_read_type_at_token(model: &SemanticModel, token: &LuaSyntaxToken) -> Option<LuaType> {
     let index = LuaIndexExpr::cast(token.parent()?)?;
     if index
         .ancestors::<LuaAssignStat>()
@@ -273,24 +269,15 @@ fn member_read_type_at_token(
     {
         return None;
     }
-    let mut ty = model.type_of_expr_at(index.get_syntax_id(), index.get_position());
+    // The work branch's path-aware flow query already restores optional field
+    // contracts and applies casts/guards for this exact receiver. A second
+    // declaration-member flow query would discard those refinements.
+    let ty = model.type_of_expr_at(index.get_syntax_id(), index.get_position());
     if matches!(
-        ty,
+        strip_nullable(&ty),
         LuaType::Unknown | LuaType::Function | LuaType::Signature(_) | LuaType::DocFunction(_)
     ) {
         return None;
-    }
-    if member_is_nullable(model, member) {
-        // Prefix projection supplies generic arguments, but can omit the `?`
-        // in `@field value? T` or restore it after a guard. Keep that projected
-        // value type while taking optionality from the member's flow state.
-        let flow_ty = model.type_of_member_at(member, index.get_position());
-        ty = match flow_ty {
-            LuaType::Nil => LuaType::Nil,
-            LuaType::Unknown | LuaType::Any => return None,
-            _ if flow_ty.is_nullable() => LuaType::from_vec(vec![ty, LuaType::Nil]),
-            _ => strip_nullable(&ty),
-        };
     }
     Some(ty)
 }

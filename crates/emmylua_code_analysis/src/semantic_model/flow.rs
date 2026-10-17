@@ -540,7 +540,20 @@ pub(crate) fn type_of_expr_at_node(
                 && let Some(id) = read.id.as_ref()
             {
                 let nullable = apply_field_nullable(model, id, read.typ.clone());
-                if nullable != read.typ {
+                // Generic substitution can already have supplied nil for an
+                // optional field. It still needs receiver-specific refinement;
+                // ordinary explicitly nullable contracts keep their flow path.
+                let optional_generic_field = matches!(
+                    model.type_of_expr(prefix.get_syntax_id()),
+                    LuaType::Generic(_)
+                ) && match id {
+                    SemanticId::Member(key) => model
+                        .file_facts_of(key.file_id)
+                        .and_then(|facts| facts.member_by_id(id))
+                        .is_some_and(|member| member.is_nullable),
+                    _ => false,
+                };
+                if nullable != read.typ || optional_generic_field {
                     read.typ = nullable;
                     if let Some(typ) = indexed_read_at(model, index_expr, &read, offset) {
                         return apply_casts(typ, All);
