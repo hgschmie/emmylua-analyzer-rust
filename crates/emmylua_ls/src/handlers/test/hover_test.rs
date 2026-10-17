@@ -1,4 +1,125 @@
 #[cfg(test)]
+mod optional_class_fields {
+    use crate::handlers::{hover::hover, test_lib::ProviderVirtualWorkspace};
+    use lsp_types::HoverContents;
+
+    fn text(definitions: &str, source: &str) -> String {
+        let mut ws = ProviderVirtualWorkspace::new();
+        ws.def(definitions);
+        let (content, position) = ProviderVirtualWorkspace::handle_file_content(source).unwrap();
+        let file = ws.def(&content);
+        let result = hover(&ws.analysis, file, position).unwrap();
+        let HoverContents::Markup(markup) = result.contents else {
+            panic!("markup required")
+        };
+        markup.value
+    }
+
+    const DEFINITIONS: &str = r#"
+        ---@alias uint32 integer
+        ---@class Burner
+        ---@field fuel string
+        ---@class Entity
+        ---@field burner? Burner
+        ---@field start_index? uint32
+        ---@field required Burner
+        ---@field already_nullable? Burner?
+        ---@field children? Burner[]
+        ---@field callback? fun(): integer
+    "#;
+
+    fn check_fields(result: &str) {
+        for expected in [
+            "burner: Burner?,",
+            "start_index: uint32?,",
+            "required: Burner,",
+            "already_nullable: Burner?,",
+            "children: Burner[]?,",
+        ] {
+            assert!(result.contains(expected), "missing {expected}: {result}");
+        }
+        assert!(!result.contains("??"), "{result}");
+    }
+
+    #[test]
+    fn optional_fields_in_local_declaration_and_reference() {
+        for source in [
+            "---@type Entity\nlocal <??>entity = {}",
+            "---@type Entity\nlocal entity = {}\nprint(<??>entity)",
+        ] {
+            let result = text(DEFINITIONS, source);
+            check_fields(&result);
+            assert!(result.contains("callback: function?,"), "{result}");
+        }
+    }
+
+    #[test]
+    fn optional_fields_in_class_hover() {
+        let result = text(DEFINITIONS, "---@type <??>Entity\nlocal entity");
+        check_fields(&result);
+        assert!(result.contains("callback: function?,"), "{result}");
+    }
+
+    #[test]
+    fn optional_inherited_field() {
+        let definitions = format!(
+            "{DEFINITIONS}\n---@class Box\n---@field value? Burner\n---@class BurnerBox: Box"
+        );
+        for source in [
+            "---@type BurnerBox\nlocal <??>box = {}",
+            "---@type <??>BurnerBox\nlocal box",
+        ] {
+            let result = text(&definitions, source);
+            assert!(result.contains("value: Burner?,"), "{result}");
+        }
+    }
+
+    #[test]
+    fn class_summary_keeps_declared_optionality_after_field_cast() {
+        let result = text(
+            DEFINITIONS,
+            "---@type Entity\nlocal entity = {}\n---@cast entity.burner -?\nprint(<??>entity)",
+        );
+        check_fields(&result);
+    }
+    #[test]
+    fn optional_index_signatures_keep_projected_contracts() {
+        for (field, expected) in [
+            ("[string]? Burner", "[string]: Burner?,"),
+            ("[string] Burner?", "[string]: Burner?,"),
+            ("[string] Burner", "[string]: Burner,"),
+            ("[string]? fun(): integer", "[string]: function?,"),
+            ("[string] fun(): integer", "[string]: function,"),
+            (
+                "[string]? (fun(): integer)?",
+                "[string]: (fun() -> integer)?,",
+            ),
+        ] {
+            let definitions = format!(
+                "---@class Burner\n---@field fuel string\n---@class Indexed\n---@field {field}"
+            );
+            for source in [
+                "---@type Indexed\nlocal <??>value = {}",
+                "---@type <??>Indexed\nlocal value",
+            ] {
+                let result = text(&definitions, source);
+                assert!(result.contains(expected), "{field}: {result}");
+                assert!(!result.contains("??"), "{result}");
+            }
+        }
+    }
+
+    #[test]
+    fn optional_generic_fields_keep_projected_arguments() {
+        let definitions = "---@class Burner\n---@field fuel string\n---@class Box<T>\n---@field value? T\n---@field [string]? T";
+        let result = text(definitions, "---@type Box<Burner>\nlocal <??>value = {}");
+        assert!(result.contains("value: Burner?,"), "{result}");
+        assert!(result.contains("[string]: Burner?,"), "{result}");
+        assert!(!result.contains("??"), "{result}");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use crate::handlers::hover::hover;
     use crate::handlers::test_lib::{ProviderVirtualWorkspace, VirtualHoverResult, check};
