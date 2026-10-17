@@ -236,6 +236,17 @@ impl<'db> SemanticModel<'db> {
                     return Some(rich);
                 }
             }
+            if matches!(decl.kind, DeclKind::Param)
+                && let Some((signature, index)) = facts.signature_and_param_index_of_decl(decl)
+                && signature
+                    .docs
+                    .as_ref()
+                    .is_some_and(|docs| docs.param_types.iter().any(|(name, _)| name == &decl.name))
+                && let Some(ty) =
+                    self.expected_member_param_for_closure(signature.closure_syntax, index)
+            {
+                return Some(ty);
+            }
             // `---@module "name"`: project the declaration directly as a module reference.
             if let Some(module_path) = &decl.module_path
                 && let Some(module_file) = self.module_file_of(module_path)

@@ -11,6 +11,7 @@ mod callable_return_infer_test;
 mod closure_generic;
 mod closure_param_infer_test;
 mod closure_return_test;
+mod contextual_callback_test;
 mod decl_test;
 mod diagnostic_disable_test;
 mod flow;
