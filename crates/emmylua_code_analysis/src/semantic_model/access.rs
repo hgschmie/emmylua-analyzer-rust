@@ -321,6 +321,16 @@ impl<'db> SemanticModel<'db> {
             });
         }
 
+        // A local may acquire its receiver type only through later assignments.
+        // Recover presentation identity from that type without making the member
+        // resolver flow-sensitive (which would recurse during flow inference).
+        if kind == LuaSyntaxKind::IndexExpr
+            && let Some(index_expr) = LuaIndexExpr::cast(parent.clone())
+            && let Some(info) = self.flow_receiver_member_info(&index_expr)
+        {
+            return Some(info);
+        }
+
         // 5. Expression -> type and declaration identity for binding uses.
         if let Some(expr) = LuaExpr::cast(parent) {
             let decl = self.resolve_name(offset);
@@ -334,6 +344,36 @@ impl<'db> SemanticModel<'db> {
         }
         None
     }
+    fn flow_receiver_member_info(&self, index: &LuaIndexExpr) -> Option<SemanticInfo> {
+        let prefix = index.get_prefix_expr()?;
+        let prefix_type = self.type_of_expr(prefix.get_syntax_id());
+        let receiver = if let LuaType::Union(union) = &prefix_type {
+            let mut alternatives = union.iter().filter(|ty| !ty.is_nil());
+            let receiver = alternatives.next()?;
+            // Do not attach one class's documentation to an ambiguous receiver.
+            if alternatives.next().is_some() {
+                return None;
+            }
+            receiver
+        } else {
+            &prefix_type
+        };
+        if !matches!(
+            receiver,
+            LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_)
+        ) {
+            return None;
+        }
+        let (_, name) = self
+            .analysis()
+            .member_ref_of_index(self.file_id(), index.get_syntax_id())?;
+        let info = self.member_info(receiver, &LuaMemberKey::Name(name))?;
+        Some(SemanticInfo {
+            typ: info.typ,
+            decl: Some(info.id?),
+        })
+    }
+
     /// Hover type for assignment target `x = value`: when the right-hand type is known and non-nil,
     /// show the actual type after assignment (`x = create()` no longer shows the old `T?`).
     pub(crate) fn assignment_target_value_type(&self, expr: &LuaExpr) -> Option<LuaType> {
