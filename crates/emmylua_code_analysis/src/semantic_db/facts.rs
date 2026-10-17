@@ -2179,10 +2179,15 @@ impl FactsBuilder {
         };
 
         // `---@type T` above `xx.aaa = value`: the owner is the assignment
-        // statement, so resolve the LHS IndexExpr range explicitly.
+        // statement. Match only its LHS key, or a table field's own key;
+        // the whole field range also contains nested fields and callback bodies.
         let target_ranges = |owner: &LuaSyntaxId| -> Vec<TextRange> {
             match owner.get_kind() {
-                LuaSyntaxKind::TableFieldAssign => vec![owner.get_range()],
+                LuaSyntaxKind::TableFieldAssign => owner
+                    .to_node_from_root(&root)
+                    .and_then(LuaTableField::cast)
+                    .map(|field| vec![field_key_range(&field)])
+                    .unwrap_or_default(),
                 LuaSyntaxKind::AssignStat => {
                     let Some(node) = owner.to_node_from_root(&root) else {
                         return Vec::new();
@@ -2195,7 +2200,7 @@ impl FactsBuilder {
                         .0
                         .iter()
                         .filter_map(|var| match var {
-                            LuaVarExpr::IndexExpr(index_expr) => Some(index_expr.get_range()),
+                            LuaVarExpr::IndexExpr(index_expr) => Some(member_key_range(index_expr)),
                             _ => None,
                         })
                         .collect()
@@ -2223,7 +2228,7 @@ impl FactsBuilder {
                     let Some(key_range) = member.id.member_key_range() else {
                         continue;
                     };
-                    if !owner_range.contains_range(key_range) {
+                    if owner_range != key_range {
                         continue;
                     }
                     if let Some(type_syntax) = type_syntaxes.first().copied() {
@@ -2248,7 +2253,7 @@ impl FactsBuilder {
                     let Some(key_range) = member.id.member_key_range() else {
                         continue;
                     };
-                    if !owner_range.contains_range(key_range) {
+                    if owner_range != key_range {
                         continue;
                     }
                     module_assignments.push((index, module_path.clone()));
