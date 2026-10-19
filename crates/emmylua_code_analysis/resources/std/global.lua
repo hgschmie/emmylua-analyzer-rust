@@ -329,6 +329,7 @@ function next(table, index) end
 --- See function `next` for the caveats of modifying the table during its
 --- traversal.
 --- @generic K, V
+--- @overload fun(t: V[]): ((fun(tbl: V[], index: integer?): integer, V), V[], nil)
 --- @param t table<K, V> | V[] | { [K]: V }
 --- @return (fun(tbl: table<K, V>, index?: K): K, V), table<K, V>, nil
 function pairs(t) end

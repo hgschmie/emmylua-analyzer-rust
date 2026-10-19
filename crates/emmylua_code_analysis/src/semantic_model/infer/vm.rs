@@ -4020,6 +4020,37 @@ pub(crate) fn unify_call_bindings(
                     } else {
                         true
                     }
+                } else if pv.iter().any(LuaType::contains_tpl_node)
+                    && pv.iter().any(|ty| {
+                        matches!(
+                            ty,
+                            Table | Array(_) | Tuple(_) | TableGeneric(_) | Object(_)
+                        )
+                    })
+                {
+                    // A broad table alternative must not hide bindings available
+                    // from a typed collection alternative. Prefer the match that binds
+                    // the most parameters, keeping union order for equally informative matches.
+                    let mut best: Option<unify::TplBindings> = None;
+                    for param in &pv {
+                        if matches!(param, Table) && !model.type_check_subtype(arg, param) {
+                            continue;
+                        }
+                        let mut candidate = bindings.clone();
+                        if unify_call_bindings(model, param, arg, &mut candidate)
+                            && best
+                                .as_ref()
+                                .is_none_or(|best| candidate.len() > best.len())
+                        {
+                            best = Some(candidate);
+                        }
+                    }
+                    if let Some(best) = best {
+                        *bindings = best;
+                        true
+                    } else {
+                        false
+                    }
                 } else {
                     pv.iter().any(|p| {
                         let mut trial = bindings.clone();

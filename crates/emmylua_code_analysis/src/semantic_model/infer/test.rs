@@ -1905,3 +1905,110 @@ fn expression_casts_use_the_current_file() {
         }
     }
 }
+
+#[test]
+fn test_collection_union_binding_rollback_and_typed_match() {
+    let model = model_of("");
+    let model = model.model();
+    let generic = LuaType::TplRef(Rc::new(GenericTpl::new(
+        GenericTplId::Type(0),
+        "T".into(),
+        None,
+        None,
+        false,
+        None,
+    )));
+    // A matching scalar alternative leaves T available for a later argument.
+    let scalar = LuaType::from_vec(vec![LuaType::String, generic.clone()]);
+    let mut shared = TplBindings::new();
+    assert!(super::vm::unify_call_bindings(
+        &model,
+        &scalar,
+        &LuaType::String,
+        &mut shared
+    ));
+    assert!(shared.is_empty());
+    assert!(super::vm::unify_call_bindings(
+        &model,
+        &generic,
+        &LuaType::Integer,
+        &mut shared
+    ));
+    assert_eq!(shared.get(&GenericTplId::Type(0)), Some(&LuaType::Integer));
+    let array = LuaType::Array(Rc::new(crate::LuaArrayType::from_base_type(
+        generic.clone(),
+    )));
+    let union = LuaType::from_vec(vec![LuaType::Table, array]);
+    let actual = LuaType::Array(Rc::new(crate::LuaArrayType::from_base_type(
+        LuaType::String,
+    )));
+    let mut bindings = TplBindings::new();
+    assert!(super::vm::unify_call_bindings(
+        &model,
+        &union,
+        &actual,
+        &mut bindings
+    ));
+    assert_eq!(bindings.get(&GenericTplId::Type(0)), Some(&LuaType::String));
+
+    let mut invalid_bindings = TplBindings::new();
+    assert!(!super::vm::unify_call_bindings(
+        &model,
+        &union,
+        &LuaType::Boolean,
+        &mut invalid_bindings,
+    ));
+    assert!(invalid_bindings.is_empty());
+
+    let tuple = |items| {
+        LuaType::Tuple(Rc::new(crate::LuaTupleType::new(
+            items,
+            crate::LuaTupleStatus::InferResolve,
+        )))
+    };
+    // Both alternatives match. Only the second determines both return parameters.
+    let other = LuaType::TplRef(Rc::new(GenericTpl::new(
+        GenericTplId::Type(1),
+        "U".into(),
+        None,
+        None,
+        false,
+        None,
+    )));
+    let union = LuaType::from_vec(vec![
+        tuple(vec![generic.clone(), LuaType::Integer]),
+        tuple(vec![generic.clone(), other]),
+    ]);
+    let actual = tuple(vec![LuaType::String, LuaType::Integer]);
+    let mut both = TplBindings::new();
+    assert!(super::vm::unify_call_bindings(
+        &model, &union, &actual, &mut both
+    ));
+    assert_eq!(both.get(&GenericTplId::Type(1)), Some(&LuaType::Integer));
+
+    // A failed structural alternative may bind T before rejecting another slot.
+    let first = tuple(vec![generic.clone(), LuaType::String]);
+    let second = tuple(vec![LuaType::String, generic]);
+    let union = LuaType::from_vec(vec![first, second]);
+    let actual = tuple(vec![LuaType::String, LuaType::Integer]);
+    let mut bindings = TplBindings::new();
+    assert!(super::vm::unify_call_bindings(
+        &model,
+        &union,
+        &actual,
+        &mut bindings
+    ));
+    assert_eq!(
+        bindings.get(&GenericTplId::Type(0)),
+        Some(&LuaType::Integer)
+    );
+
+    let mut bindings = TplBindings::new();
+    assert!(!super::vm::unify_call_bindings(
+        &model,
+        &union,
+        &LuaType::Boolean,
+        &mut bindings
+    ));
+    assert!(bindings.is_empty());
+}
