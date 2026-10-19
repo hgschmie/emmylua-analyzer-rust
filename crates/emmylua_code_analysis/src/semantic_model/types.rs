@@ -568,7 +568,11 @@ impl<'db> SemanticModel<'db> {
         let docs = signature.docs.as_ref()?;
         let generic_params = &docs.generic_params;
         let (key_id, value_id) = match generic_params.len() {
-            n if n >= 2 => (GenericTplId::Type(0), GenericTplId::Type(1)),
+            // ipairs has a fixed integer key and declares only its value generic.
+            1 if name.as_str() == "ipairs" && self.is_std_file(decl_file) => {
+                (None, GenericTplId::Type(0))
+            }
+            n if n >= 2 => (Some(GenericTplId::Type(0)), GenericTplId::Type(1)),
             _ => return None,
         };
         // alias expansion (`MatchersObject` -> object).
@@ -699,7 +703,9 @@ impl<'db> SemanticModel<'db> {
             _ => return None,
         };
         let mut bindings = infer::unify::TplBindings::new();
-        bindings.insert(key_id, key_ty);
+        if let Some(key_id) = key_id {
+            bindings.insert(key_id, key_ty);
+        }
         bindings.insert(value_id, value_ty);
         // Resolves the inner return slots of `---@return fun(tbl:any):K, V`.
         let return_syntax = docs.returns.first()?;
