@@ -4349,6 +4349,25 @@ fn call_may_narrow_decl(
     })
 }
 
+/// Equality preserves possible nil unless the narrowed declaration excludes it.
+/// Used for `==`'s true branch and `~=`'s false branch.
+fn equality_narrowing(model: &SemanticModel, decl: &SemanticId, other_ty: LuaType) -> Narrowing {
+    // Expose nil hidden by aliases before applying either side's contract.
+    let other_ty = super::type_eval::expand_alias_branches(model, &other_ty).unwrap_or(other_ty);
+    // A missing declaration, Any or Unknown does not establish non-nullability.
+    let ty = if other_ty.is_nullable()
+        && model
+            .type_of_decl(decl)
+            .and_then(|declared| super::type_eval::expand_alias_branches(model, &declared))
+            .is_some_and(|declared| !declared.is_optional())
+    {
+        remove_type(other_ty, &LuaType::Nil)
+    } else {
+        other_ty
+    };
+    Narrowing::Replace(ty)
+}
+
 fn direct_narrow_condition(
     model: &SemanticModel,
     decl: &SemanticId,
@@ -4516,16 +4535,7 @@ fn direct_narrow_condition(
                     };
                     if !matches!(other_ty, LuaType::Unknown) {
                         if op == BinaryOperator::OpEq {
-                            // When the target is a known non-nullable type (e.g. method `self`), equality with another nullable value
-                            // cannot equal nil, so keep only the non-nil components.
-                            let decl_base = model.type_of_decl(decl).unwrap_or(LuaType::Unknown);
-                            if other_ty.is_nullable() && !decl_base.is_nullable() {
-                                return Some(Narrowing::Replace(remove_type(
-                                    other_ty,
-                                    &LuaType::Nil,
-                                )));
-                            }
-                            return Some(Narrowing::Replace(other_ty));
+                            return Some(equality_narrowing(model, decl, other_ty));
                         }
                         // `x ~= y` true only tells us x is not equal to some concrete value; when y is a wide type you cannot
                         // simply remove that wide type from x's type (two different strings can also be unequal).
@@ -4761,7 +4771,8 @@ fn direct_narrow_condition_false(
                     };
                     if !matches!(other_ty, LuaType::Unknown) {
                         if op == BinaryOperator::OpNe {
-                            return Some(Narrowing::Replace(other_ty));
+                            // `x ~= y` being false implies the same equality as `x == y`.
+                            return Some(equality_narrowing(model, decl, other_ty));
                         }
                         // Similarly, `x == y` false cannot remove y's wide type entirely from x.
                         if is_singleton_value_type(&other_ty) {

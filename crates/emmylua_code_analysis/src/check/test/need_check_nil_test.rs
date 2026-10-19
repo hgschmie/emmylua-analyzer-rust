@@ -295,3 +295,162 @@ mod test {
         ));
     }
 }
+
+#[cfg(test)]
+mod equality_nullability_tests {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+
+    fn check(existing_type: &str, guard: &str, expect_no_diagnostic: bool) {
+        check_with_other_type(existing_type, "Distance?", guard, expect_no_diagnostic);
+    }
+
+    fn check_with_other_type(
+        existing_type: &str,
+        other_type: &str,
+        guard: &str,
+        expect_no_diagnostic: bool,
+    ) {
+        let mut ws = VirtualWorkspace::new();
+        let source = format!(
+            r#"
+---@class Distance
+---@field value number?
+---@alias RequiredDistance Distance
+---@alias OptionalDistance Distance?
+---@alias NestedOptionalDistance OptionalDistance|boolean
+---@alias MaybeDistance<T> T?
+---@param existing {existing_type}
+---@param maybe {other_type}
+---@param enabled boolean
+local function probe(existing, maybe, enabled)
+    {guard}
+end
+"#
+        );
+        assert_eq!(
+            ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+            expect_no_diagnostic,
+            "existing: {existing_type}; other: {other_type}; {guard}"
+        );
+    }
+
+    #[test]
+    fn equality_nullability_required_parameter_survives_equivalent_guards() {
+        // Member prefixes must remain non-nullable for both writes and reads.
+        for guard in [
+            "if maybe ~= existing then return end; existing.value = 1",
+            "if existing ~= maybe then return end; return existing.value",
+            "if maybe ~= existing then else return existing.value end",
+            "if not (maybe == existing) then return end; return existing.value",
+            "if maybe == existing then return existing.value end",
+            "if not enabled or maybe ~= existing then return end; return existing.value",
+        ] {
+            check("Distance", guard, true);
+        }
+    }
+
+    #[test]
+    fn equality_nullability_optional_parameters_can_both_be_nil() {
+        for guard in [
+            "if maybe ~= existing then return end; return existing.value",
+            "if maybe ~= existing then return end; existing.value = 1",
+            "if existing == maybe then return existing.value end",
+        ] {
+            check("Distance?", guard, false);
+        }
+    }
+
+    #[test]
+    fn equality_nullability_inequality_does_not_prove_presence() {
+        check(
+            "Distance?",
+            "if maybe ~= existing then return existing.value end",
+            false,
+        );
+        check(
+            "Distance?",
+            "if maybe == existing then return end; return existing.value",
+            false,
+        );
+    }
+
+    #[test]
+    fn equality_nullability_required_parameter_survives_equality_false_branch() {
+        for guard in [
+            "if maybe == existing then return end; return existing.value",
+            "if existing == maybe then return end; existing.value = 1",
+        ] {
+            check("Distance", guard, true);
+        }
+    }
+
+    fn check_optional_equality_with_unconstrained_type(existing_type: &str) {
+        for guard in [
+            "if maybe == existing then return existing.value end",
+            "if existing == maybe then return existing.value end",
+            "if maybe ~= existing then return end; return existing.value",
+            "if existing ~= maybe then return end; return existing.value",
+        ] {
+            check(existing_type, guard, false);
+        }
+    }
+
+    #[test]
+    fn equality_nullability_unknown_declaration_can_equal_nil() {
+        check_optional_equality_with_unconstrained_type("unknown");
+    }
+
+    #[test]
+    fn equality_nullability_any_declaration_can_equal_nil() {
+        check_optional_equality_with_unconstrained_type("any");
+    }
+
+    #[test]
+    fn equality_nullability_required_parameter_survives_other_operand_aliases() {
+        for other_type in [
+            "OptionalDistance",
+            "NestedOptionalDistance",
+            "MaybeDistance<Distance>",
+        ] {
+            for guard in [
+                "if maybe == existing then return existing.value end",
+                "if existing == maybe then return existing.value end",
+                "if maybe ~= existing then return end; return existing.value",
+                "if existing ~= maybe then return end; existing.value = 1",
+            ] {
+                check_with_other_type("Distance", other_type, guard, true);
+            }
+        }
+    }
+
+    #[test]
+    fn equality_nullability_other_operand_aliases_can_still_be_nil() {
+        for other_type in [
+            "OptionalDistance",
+            "NestedOptionalDistance",
+            "MaybeDistance<Distance>",
+        ] {
+            for guard in [
+                "if maybe == existing then return existing.value end",
+                "if existing == maybe then return existing.value end",
+                "if maybe ~= existing then return end; return existing.value",
+                "if existing ~= maybe then return end; existing.value = 1",
+            ] {
+                check_with_other_type("Distance?", other_type, guard, false);
+            }
+        }
+    }
+
+    #[test]
+    fn equality_nullability_respects_aliased_declaration_contracts() {
+        for guard in [
+            "if maybe == existing then return existing.value end",
+            "if maybe ~= existing then return end; return existing.value",
+        ] {
+            check("RequiredDistance", guard, true);
+            check("OptionalDistance", guard, false);
+            check("NestedOptionalDistance", guard, false);
+            check("MaybeDistance<Distance>", guard, false);
+        }
+    }
+}
