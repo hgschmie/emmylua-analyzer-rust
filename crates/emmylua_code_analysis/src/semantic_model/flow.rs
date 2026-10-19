@@ -1902,24 +1902,53 @@ fn local_alias_path(
 }
 
 /// `---@cast` path operation: widen / remove / replace.
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum CastOp {
     Add(LuaType),
     Remove(LuaType),
     Replace(LuaType),
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum PathOp {
     Guard(Narrowing),
     Cast(CastOp),
 }
 
 /// Guards and cast operations collected along the backtracking path.
-#[derive(Default)]
-struct PathState {
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub(crate) struct PathState {
     /// Operations in reverse execution order, as visited while backtracking.
     operations: Vec<PathOp>,
+}
+
+impl PathState {
+    fn cache_key(&self) -> Self {
+        let mut key = self.clone_path();
+        // Operations are newest first: only facts older than the first
+        // replacement are irrelevant. Later guards must remain in the key.
+        if let Some(index) = key.operations.iter().position(|op| {
+            matches!(
+                op,
+                PathOp::Cast(CastOp::Replace(_)) | PathOp::Guard(Narrowing::Replace(_))
+            )
+        }) {
+            key.operations.truncate(index + 1);
+        }
+        key.operations.dedup_by(|a, b| {
+            a == b
+                && matches!(
+                    a,
+                    PathOp::Guard(
+                        Narrowing::Remove(_)
+                            | Narrowing::Truthy
+                            | Narrowing::Falsy
+                            | Narrowing::NotNil
+                    )
+                )
+        });
+        key
+    }
 }
 
 /// Checks from an antecedent toward the declaration whether a narrowing node already exists.
@@ -2105,6 +2134,7 @@ fn decl_trace_key(
     flow: FlowId,
     purpose: &DeclTracePurpose,
     mode: TraceMode,
+    path: &PathState,
 ) -> cache::TraceStateKey {
     cache::TraceStateKey {
         file_id: model.file_id(),
@@ -2114,6 +2144,7 @@ fn decl_trace_key(
             merge_branch: mode == TraceMode::MergeBranch,
         },
         flow_id: flow.0,
+        path: path.cache_key(),
     }
 }
 
@@ -2148,17 +2179,13 @@ fn trace_decl(
     visited: &mut HashSet<FlowId>,
     path: &mut PathState,
 ) -> Option<LuaType> {
-    // On a loop-free graph every route to a flow node crosses the same guards, so
-    // a state's value depends on the node and the purpose alone — never on the
-    // route. That makes the state cacheable, which matters because a nested
-    // conditional chain otherwise re-derives the same states along exponentially
-    // many routes. Only nodes that can reach a loop backwards keep the uncached
-    // path (see the type note on `cache::TraceStateKey`), so a loop in one function
-    // does not disable memoization for the rest of the file.
+    // A trace includes guards and casts collected after this flow node. Keep
+    // those facts in the memo key so separate branches cannot reuse one another's
+    // narrowed result. Canonicalize redundant operations to bound repeated guards.
     if tree.is_loop_reachable(flow_id) {
         return trace_decl_uncached(model, decl, tree, flow_id, purpose, mode, visited, path);
     }
-    let key = decl_trace_key(model, decl, flow_id, purpose, mode);
+    let key = decl_trace_key(model, decl, flow_id, purpose, mode, path);
     {
         let cache = model.cache.borrow();
         if let Some(entry) = cache.trace_state.get(&key) {
@@ -2201,7 +2228,7 @@ fn trace_decl_uncached(
             && current != flow_id
             && !tree.is_loop_reachable(current)
         {
-            let key = decl_trace_key(model, decl, current, purpose, mode);
+            let key = decl_trace_key(model, decl, current, purpose, mode, path);
             {
                 let cache = model.cache.borrow();
                 if let Some(entry) = cache.trace_state.get(&key) {
@@ -2525,6 +2552,7 @@ fn trace_member(
             access: access.map(|access| access.get_syntax_id()),
         },
         flow_id: flow_id.0,
+        path: path.cache_key(),
     };
     {
         let cache = model.cache.borrow();
@@ -2676,7 +2704,7 @@ fn trace_member_uncached(
 }
 
 /// Narrowing kinds.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Narrowing {
     /// Replacement: the value is exactly `ty` on this path (type guard / `== literal`).
     Replace(LuaType),

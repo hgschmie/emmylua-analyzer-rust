@@ -103,3 +103,113 @@ fn flow_loop_in_other_function_keeps_guard_chain_linear() {
         }
     }
 }
+
+#[test]
+fn flow_trace_cache_keeps_guard_paths_separate() {
+    use emmylua_parser::LuaSyntaxKind;
+    let source = r#"
+---@param value string?
+---@param flag boolean
+local function probe(value, flag)
+    if flag then print("left") else print("right") end
+    ---@cast value string?
+    if flag then
+        if value then
+            print(value) -- read string
+        else
+            print(value) -- read nil
+        end
+    end
+    if value then print(value) end -- read string
+    print(value) -- read string?
+    if flag then
+        ---@cast value number
+        print(value) -- read number
+    else
+        ---@cast value boolean
+        print(value) -- read boolean
+    end
+end
+"#;
+    for reverse in [false, true] {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let fid = ws.def_file("paths.lua", source);
+        let model = ws.analysis.semantic_model(fid);
+        let mut names = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaNameExpr>()
+            .filter(|name| {
+                name.get_name_text().as_deref() == Some("value")
+                    && !name
+                        .syntax()
+                        .ancestors()
+                        .any(|node| node.kind() == LuaSyntaxKind::DocTagCast.into())
+            })
+            .filter_map(|name| {
+                let start = usize::from(name.get_position());
+                if !source[..start].ends_with("print(") {
+                    return None;
+                }
+                let line = source[start..].lines().next().unwrap();
+                line.split_once("-- read ").map(|(_, ty)| (name, ty))
+            })
+            .collect::<Vec<_>>();
+        if reverse {
+            names.reverse();
+        }
+        for (name, expected) in names {
+            let ty = model.type_of_expr_at(name.get_syntax_id(), name.get_position());
+            assert_eq!(
+                ws.humanize_type(ty),
+                expected,
+                "reverse={reverse} at {:?}",
+                name.get_position()
+            );
+        }
+    }
+}
+
+#[test]
+fn flow_trace_cache_preserves_defaulted_parameter_and_callback_guards() {
+    use crate::DiagnosticCode;
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::NeedCheckNil,
+        r#"
+---@class Target
+---@field name string
+---@type Target
+local default_target
+---@param target Target?
+---@param callback (fun():string)?
+---@param skip boolean
+local function print_message(target, callback, skip)
+    if skip then return end
+    if not target then target = default_target end
+    print(target.name)
+    print(callback and callback() or "")
+end
+"#
+    ));
+}
+
+#[test]
+fn flow_trace_cache_preserves_conditional_assignment() {
+    use crate::DiagnosticCode;
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::UnnecessaryIf,
+        r#"
+---@param old string?
+---@param new string?
+local function migrate(old, new)
+    ---@type string?, string?
+    local old_version, new_version = nil, nil
+    if old then old_version = string.upper(old) end
+    if new then new_version = string.upper(new) end
+    if old_version and old_version < "1" then print(old_version) end
+end
+"#
+    ));
+}
