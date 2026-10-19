@@ -1,6 +1,11 @@
 mod best_resource_path;
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+    path::{Path, PathBuf},
+    sync::OnceLock,
+};
 
 pub use best_resource_path::get_best_resources_dir;
 use include_dir::{Dir, DirEntry, include_dir};
@@ -77,9 +82,16 @@ fn remove_jit_resource(files: &mut Vec<LuaFileInfo>) {
     });
 }
 
-fn load_resource_from_file_system(resources_dir: &Path) -> Option<Vec<LuaFileInfo>> {
-    if check_need_dump_to_file_system() {
+/// Extract bundled resources when their content changes, including within one release.
+/// Returns whether extraction was needed. The selected directory owns its marker.
+fn prepare_resources_dir(resources_dir: &Path) -> Option<bool> {
+    if check_need_dump_to_file_system(resources_dir) {
         log::info!("Creating resources dir: {:?}", resources_dir);
+        // Incomplete extraction must not leave a marker that appears current.
+        let version_path = resources_dir.join("version");
+        if version_path.exists() {
+            std::fs::remove_file(&version_path).ok()?;
+        }
         let files = load_resource_from_include_dir();
         for file in &files {
             let path = resources_dir.join(&file.path);
@@ -104,7 +116,7 @@ fn load_resource_from_file_system(resources_dir: &Path) -> Option<Vec<LuaFileInf
         }
 
         let version_path = resources_dir.join("version");
-        let content = VERSION.to_string();
+        let content = resource_cache_key();
         match std::fs::write(&version_path, content) {
             Ok(_) => {}
             Err(e) => {
@@ -112,9 +124,14 @@ fn load_resource_from_file_system(resources_dir: &Path) -> Option<Vec<LuaFileInf
                 return None;
             }
         }
+        return Some(true);
     }
+    Some(false)
+}
 
-    let std_dir = get_std_dir(&resources_dir);
+fn load_resource_from_file_system(resources_dir: &Path) -> Option<Vec<LuaFileInfo>> {
+    prepare_resources_dir(resources_dir)?;
+    let std_dir = get_std_dir(resources_dir);
     let match_pattern = vec!["**/*.lua".to_string()];
     let files = match load_workspace_files(&std_dir, &match_pattern, &Vec::new(), &Vec::new(), None)
     {
@@ -128,27 +145,30 @@ fn load_resource_from_file_system(resources_dir: &Path) -> Option<Vec<LuaFileInf
     Some(files)
 }
 
-fn check_need_dump_to_file_system() -> bool {
-    if cfg!(debug_assertions) {
+/// Content identity for all bundled declarations, including translated files.
+fn resource_cache_key() -> &'static str {
+    static KEY: OnceLock<String> = OnceLock::new();
+    KEY.get_or_init(|| resource_fingerprint(load_resource_from_include_dir()))
+}
+
+fn resource_fingerprint(mut files: Vec<LuaFileInfo>) -> String {
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut hash = DefaultHasher::new();
+    VERSION.hash(&mut hash);
+    for file in files {
+        file.path.hash(&mut hash);
+        file.content.hash(&mut hash);
+    }
+    format!("{VERSION}:{:016x}", hash.finish())
+}
+
+fn check_need_dump_to_file_system(resources_dir: &Path) -> bool {
+    if !resources_dir.join("std").is_dir() {
         return true;
     }
-
-    let resoucres_dir = get_best_resources_dir();
-    let version_path = resoucres_dir.join("version");
-
-    if !version_path.exists() {
-        return true;
-    }
-
-    let Ok(content) = std::fs::read_to_string(&version_path) else {
-        return true;
-    };
-    let version = content.trim();
-    if version != VERSION {
-        return true;
-    }
-
-    false
+    std::fs::read_to_string(resources_dir.join("version"))
+        .map(|content| content.trim() != resource_cache_key())
+        .unwrap_or(true)
 }
 
 pub fn load_resource_from_include_dir() -> Vec<LuaFileInfo> {
@@ -186,4 +206,97 @@ fn get_std_dir(resources_dir: &Path) -> PathBuf {
         }
     }
     resources_dir.join("std")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct TestDir(PathBuf);
+    impl TestDir {
+        fn new() -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("build/test-work/resources")
+                .join(format!(
+                    "{}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn resource_identity_tracks_content_and_paths_not_enumeration_order() {
+        let file = |path: &str, content: &str| LuaFileInfo {
+            path: path.into(),
+            content: content.into(),
+        };
+        let key = resource_fingerprint(vec![file("a.lua", "one"), file("b.lua", "two")]);
+        assert_eq!(
+            key,
+            resource_fingerprint(vec![file("b.lua", "two"), file("a.lua", "one")])
+        );
+        assert_ne!(
+            key,
+            resource_fingerprint(vec![file("a.lua", "changed"), file("b.lua", "two")])
+        );
+        assert_ne!(
+            key,
+            resource_fingerprint(vec![file("renamed.lua", "one"), file("b.lua", "two")])
+        );
+    }
+
+    #[test]
+    fn explicit_resource_cache_upgrades_same_version_and_then_reuses_files() {
+        let dir = TestDir::new();
+        let global = dir.0.join("std/global.lua");
+        std::fs::create_dir_all(global.parent().unwrap()).unwrap();
+        for old_version in [VERSION.to_owned(), format!("{VERSION}:old-content")] {
+            std::fs::write(&global, "obsolete declarations").unwrap();
+            std::fs::write(dir.0.join("version"), old_version).unwrap();
+            assert_eq!(prepare_resources_dir(&dir.0), Some(true));
+            assert!(
+                std::fs::read_to_string(&global)
+                    .unwrap()
+                    .contains("function pairs(t)")
+            );
+            assert_eq!(
+                std::fs::read_to_string(dir.0.join("version")).unwrap(),
+                resource_cache_key()
+            );
+        }
+        std::fs::write(&global, "same-build local edit").unwrap();
+        assert_eq!(prepare_resources_dir(&dir.0), Some(false));
+        assert_eq!(
+            std::fs::read_to_string(&global).unwrap(),
+            "same-build local edit"
+        );
+        let other = TestDir::new();
+        assert_eq!(prepare_resources_dir(&other.0), Some(true));
+        assert_eq!(
+            std::fs::read_to_string(&global).unwrap(),
+            "same-build local edit"
+        );
+    }
+
+    #[test]
+    fn failed_resource_extraction_leaves_no_current_marker() {
+        let dir = TestDir::new();
+        let obstruction = dir.0.join("std/global.lua");
+        std::fs::create_dir_all(&obstruction).unwrap();
+        std::fs::write(dir.0.join("version"), VERSION).unwrap();
+        assert_eq!(prepare_resources_dir(&dir.0), None);
+        assert!(!dir.0.join("version").exists());
+        std::fs::remove_dir(&obstruction).unwrap();
+        assert_eq!(prepare_resources_dir(&dir.0), Some(true));
+    }
 }
