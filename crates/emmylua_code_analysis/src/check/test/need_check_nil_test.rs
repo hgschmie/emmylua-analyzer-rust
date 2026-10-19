@@ -295,3 +295,68 @@ mod test {
         ));
     }
 }
+
+#[cfg(test)]
+mod equality_nullability_tests {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+
+    fn check(required: bool, guard: &str, safe: bool) {
+        let mut ws = VirtualWorkspace::new();
+        let existing = if required { "Distance" } else { "Distance?" };
+        let source = format!(
+            r#"
+---@class Distance
+---@field value number?
+---@param existing {existing}
+---@param maybe Distance?
+---@param enabled boolean
+local function probe(existing, maybe, enabled)
+    {guard}
+end
+"#
+        );
+        assert_eq!(
+            ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+            safe,
+            "{guard}"
+        );
+    }
+
+    #[test]
+    fn equality_nullability_required_parameter_survives_equivalent_guards() {
+        for guard in [
+            "if maybe ~= existing then return end; existing.value = 1",
+            "if existing ~= maybe then return end; return existing.value",
+            "if maybe ~= existing then else return existing.value end",
+            "if not (maybe == existing) then return end; return existing.value",
+            "if maybe == existing then return existing.value end",
+            "if not enabled or maybe ~= existing then return end; return existing.value",
+        ] {
+            check(true, guard, true);
+        }
+    }
+
+    #[test]
+    fn equality_nullability_optional_parameters_can_both_be_nil() {
+        for guard in [
+            "if maybe ~= existing then return end; return existing.value",
+            "if existing == maybe then return existing.value end",
+        ] {
+            check(false, guard, false);
+        }
+    }
+
+    #[test]
+    fn equality_nullability_inequality_does_not_prove_presence() {
+        check(
+            false,
+            "if maybe ~= existing then return existing.value end",
+            false,
+        );
+        check(
+            false,
+            "if maybe == existing then return end; return existing.value",
+            false,
+        );
+    }
+}
