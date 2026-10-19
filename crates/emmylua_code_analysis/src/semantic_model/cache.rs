@@ -184,17 +184,14 @@ pub(crate) enum TraceSubject {
     },
 }
 
-/// Memo key for one flow-trace state on a loop-free graph: `(file, subject, flow node)`.
-///
-/// The incoming path is deliberately absent. It is safe to omit only for flow
-/// graphs without loops, where every route to a flow node crosses the same
-/// guards, so the path is a function of the node. [`super::flow`] consults this
-/// memo only in that case and recomputes otherwise.
+/// Memo key for a flow trace, including its incoming guard/cast context.
+/// Equivalent path operations are normalized before constructing this key.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct TraceStateKey {
     pub(crate) file_id: FileId,
     pub(crate) subject: TraceSubject,
     pub(crate) flow_id: u32,
+    pub(crate) path: super::flow::PathState,
 }
 
 #[derive(Default)]
@@ -234,8 +231,7 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) flow_decl: HashMap<(FileId, SemanticId, FlowId), LuaType>,
     /// Whole-function, syntax-only check for the local-table last-element proof.
     pub(crate) array_length_stable: HashMap<(FileId, SemanticId), bool>,
-    /// Memoized declaration/member-trace states for loop-free flow graphs. See
-    /// [`TraceStateKey`] for why the path may be omitted from the key.
+    /// Memoized declaration/member traces; incoming path facts are part of the key.
     pub(crate) trace_state: HashMap<TraceStateKey, CacheEntry<Option<LuaType>>>,
     /// Fast negative/positive cache for `---@return_cast` lookup by call syntax.
     /// Most calls do not have `return_cast`, so caching the `None` result avoids
