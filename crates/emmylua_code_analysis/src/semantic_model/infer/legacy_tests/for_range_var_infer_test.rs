@@ -6,6 +6,29 @@ mod test {
     use crate::{LuaType, LuaUnionType, VirtualWorkspace};
 
     #[test]
+    fn test_ipairs_array_and_integer_dictionary_slots() {
+        for container in ["Foo[]", "table<integer, Foo>"] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            ws.def(&format!(
+                r#"
+                ---@class Foo
+                ---@field name string
+                ---@param items {container}?
+                local function visit(items)
+                    if not items then return end
+                    for key, value in ipairs(items) do
+                        iteration_key = key
+                        iteration_value = value
+                    end
+                end
+            "#
+            ));
+            assert_eq!(ws.expr_ty("iteration_key"), LuaType::Integer, "{container}");
+            assert_eq!(ws.expr_ty("iteration_value"), ws.ty("Foo"), "{container}");
+        }
+    }
+
+    #[test]
     fn test_closure_param_infer() {
         let mut ws = VirtualWorkspace::new();
 
