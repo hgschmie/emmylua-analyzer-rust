@@ -70,12 +70,74 @@ pub(crate) fn closure_return_lua(model: &SemanticModel, closure_syntax: LuaSynta
     vm.closure_return_type_with_env(closure_syntax)
 }
 
+/// Select the same callable candidates as expression inference, retaining
+/// their generic bindings for call-site presentation.
+pub(crate) fn infer_call_signature(
+    model: &SemanticModel,
+    call_syntax: LuaSyntaxId,
+) -> Option<(crate::LuaFunctionType, unify::TplBindings)> {
+    let tree = model.syntax_tree()?;
+    let call = LuaCallExpr::cast(call_syntax.to_node_from_root(&tree.get_red_root())?)?;
+    let callee = call.get_prefix_expr()?;
+    let emmylua_parser::LuaExpr::NameExpr(name) = &callee else {
+        return None;
+    };
+    let owner = model.resolve_name(name.get_position())?;
+    let mut candidates = model.callable_candidates_for_expr(&callee);
+    // Preserve explicit-overload precedence among the signatures still reaching
+    // this call. The shared expression query excludes replaced/removed signatures.
+    if candidates.len() > 1
+        && let Some(overloads) = declared_call_overloads(model, &owner)
+    {
+        // False sorts first; keep the query order within both groups.
+        candidates.sort_by_cached_key(|candidate| {
+            let is_explicit_overload = overloads.contains(candidate);
+            !is_explicit_overload
+        });
+    }
+    let analysis = model.call_site_analysis(&call);
+    let expressions = call.get_args_list()?.get_args().collect::<Vec<_>>();
+    let args = analysis
+        .arg_types
+        .iter()
+        .zip(&expressions)
+        .map(|(ty, expr)| overload::CallArg {
+            ty: ty.clone(),
+            closure_syntax: matches!(expr, emmylua_parser::LuaExpr::ClosureExpr(_))
+                .then(|| expr.get_syntax_id()),
+        })
+        .collect::<Vec<_>>();
+    let receiver = analysis.colon_call.then_some(&analysis.receiver_ty);
+    overload::select_callable(model, &candidates, &args, analysis.colon_call, receiver)
+}
+
+/// Find declared overloads for ordering only; missing declaration metadata keeps
+/// the shared expression query's candidate order unchanged.
+fn declared_call_overloads(
+    model: &SemanticModel,
+    owner: &SemanticId,
+) -> Option<Vec<crate::LuaFunctionType>> {
+    let SemanticId::Decl(key) = owner else {
+        return None;
+    };
+    let facts = model.file_facts_of(key.file_id)?;
+    let decl = facts.decl_by_id(owner)?;
+    let signature = facts.signature_by_closure(decl.value_expr_syntax?)?;
+    let projection = vm::InferVm::new(model, &[]).signature_projection(key.file_id, signature)?;
+    Some(projection.overloads)
+}
+
 /// Call type plus generic bindings (`T -> actual argument type`; consumed by the
 /// generic constraint checker).
 pub fn infer_call_with_bindings(
     model: &SemanticModel,
     call_syntax: LuaSyntaxId,
 ) -> Option<(LuaType, unify::TplBindings)> {
+    if let Some((fun, bindings)) = infer_call_signature(model, call_syntax) {
+        let ret = unify::substitute(fun.get_ret(), &bindings);
+        let ret = eval_conditionals(model, &expand_alias_generic(model, &ret));
+        return Some((ret, bindings));
+    }
     let tree = model.syntax_tree()?;
     let root = tree.get_red_root();
     let node = call_syntax.to_node_from_root(&root)?;

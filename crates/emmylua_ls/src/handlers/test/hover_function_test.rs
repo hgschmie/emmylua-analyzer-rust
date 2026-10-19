@@ -1085,3 +1085,119 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod collection_generics {
+    use crate::handlers::{hover::hover, test_lib::ProviderVirtualWorkspace};
+    use lsp_types::HoverContents;
+
+    fn hover_text(source: &str) -> String {
+        let mut ws = ProviderVirtualWorkspace::new_with_init_std_lib();
+        let (text, position) = ProviderVirtualWorkspace::handle_file_content(source).unwrap();
+        let file = ws.def(&text);
+        let result = hover(&ws.analysis, file, position).expect("hover");
+        let HoverContents::Markup(contents) = result.contents else {
+            panic!("markup hover")
+        };
+        contents.value
+    }
+
+    #[test]
+    fn collection_call_hover_uses_only_reaching_overloads() {
+        for (setup, expected_return) in [
+            ("accept = replacement", "boolean"),
+            ("---@cast accept -fun(value: string): string", "number"),
+        ] {
+            let text = hover_text(&format!(
+                r#"
+                ---@param value number
+                ---@return number
+                ---@overload fun(value: string): string
+                local function accept(value) return value end
+                ---@param value number
+                ---@return boolean
+                local function replacement(value) return true end
+                {setup}
+                local result = <??>accept(1)
+            "#
+            ));
+            let primary = text.split("```").nth(1).unwrap();
+            assert!(primary.contains(&format!("-> {expected_return}")), "{text}");
+        }
+    }
+
+    #[test]
+    fn collection_call_hover_keeps_parameter_callable_without_initializer() {
+        let text = hover_text(
+            r#"
+            ---@param callback fun(values: number[]): boolean
+            local function invoke(callback)
+                local result = <??>callback({1, 2})
+            end
+        "#,
+        );
+        let primary = text.split("```").nth(1).unwrap();
+        assert!(primary.contains("number[]"), "{text}");
+        assert!(primary.contains("-> boolean"), "{text}");
+    }
+
+    #[test]
+    fn collection_call_hover_specializes_iterators() {
+        for (iterator, collection, expected_key) in [
+            ("pairs", "Foo[]", "integer"),
+            ("pairs", "table<string, Foo>", "string"),
+            ("ipairs", "Foo[]", "integer"),
+            ("ipairs", "table<integer, Foo>", "integer"),
+        ] {
+            let text = hover_text(&format!(
+                r#"
+                ---@class Foo
+                ---@field name string
+                ---@type {collection}
+                local items = {{}}
+                for key, value in <??>{iterator}(items) do end
+            "#
+            ));
+            let primary = text.split("```").nth(1).unwrap();
+            assert!(primary.contains(&format!("({expected_key},Foo)")), "{text}");
+            assert!(!primary.contains("unknown"), "{text}");
+            assert!(
+                text.contains("Returns three values") || text.contains("returns three values"),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn collection_call_hover_prefers_generic_union_over_table_fallback() {
+        let text = hover_text(
+            r#"
+            ---@generic T
+            ---@param items T[]|table
+            ---@return T
+            local function first(items) end
+            ---@type string[]
+            local values = {}
+            local result = <??>first(values)
+        "#,
+        );
+        assert!(text.contains("string[]"), "{text}");
+        assert!(text.contains("-> string"), "{text}");
+        assert!(!text.contains("unknown"), "{text}");
+    }
+
+    #[test]
+    fn collection_call_hover_respects_shadowed_iterators() {
+        let text = hover_text(
+            r#"
+            ---@param items number
+            ---@return boolean
+            local function pairs(items) end
+            local result = <??>pairs(10)
+        "#,
+        );
+        assert!(text.contains("items: number"), "{text}");
+        assert!(text.contains("-> boolean"), "{text}");
+        assert!(!text.contains("integer,"), "{text}");
+    }
+}

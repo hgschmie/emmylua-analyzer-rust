@@ -123,7 +123,7 @@ function getmetatable(object) end
 --- the first absent index.
 --- @generic V
 --- @param t V[] | table<int, V> | { [int]: V }
---- @return fun(tbl: any): int, V
+--- @return (fun(tbl: table<int, V>, index: int): int, V), table<int, V>, integer
 function ipairs(t) end
 
 --- @alias std.loadmode
@@ -242,9 +242,10 @@ function next(table, index) end
 ---
 --- See function `next` for the caveats of modifying the table during its
 --- traversal.
---- @generic K, V, I
+--- @generic K, V
+--- @overload fun(t: V[]): ((fun(tbl: V[], index: integer?): integer, V), V[], nil)
 --- @param t table<K, V> | V[] | { [K]: V }
---- @return (fun(tbl: table<I, V>, index: I?): K, V), table<I, V>, I?
+--- @return (fun(tbl: table<K, V>, index: K?): K, V), table<K, V>, nil
 function pairs(t) end
 
 ---
