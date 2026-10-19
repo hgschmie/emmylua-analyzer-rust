@@ -1681,7 +1681,7 @@ fn local_alias_path(
 }
 
 /// `---@cast` path operation: widen / remove / replace.
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum CastOp {
     Add(LuaType),
     Remove(LuaType),
@@ -1689,12 +1689,46 @@ enum CastOp {
 }
 
 /// Guards and cast operations collected along the backtracking path.
-#[derive(Default)]
-struct PathState {
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub(crate) struct PathState {
     /// Most recent guard first.
     narrowings: Vec<Narrowing>,
     /// Most recent cast operation first.
     casts: Vec<CastOp>,
+}
+
+impl PathState {
+    fn cache_key(&self) -> Self {
+        // Operations are stored newest first and applied in reverse. A replacement
+        // discards all older operations in that stream. Casts run after guards, so
+        // a replacing cast also makes every incoming guard irrelevant.
+        let mut key = self.clone_path();
+        if let Some(index) = key
+            .casts
+            .iter()
+            .position(|op| matches!(op, CastOp::Replace(_)))
+        {
+            key.casts.truncate(index + 1);
+            key.narrowings.clear();
+        } else if let Some(index) = key
+            .narrowings
+            .iter()
+            .position(|op| matches!(op, Narrowing::Replace(_)))
+        {
+            key.narrowings.truncate(index + 1);
+        }
+        // These adjacent filters are idempotent. Without this normalization a
+        // repeated guard chain creates a different key for each equivalent route.
+        // Keep distinct filters and their order (in particular truthy/falsy).
+        key.narrowings.dedup_by(|a, b| {
+            a == b
+                && matches!(
+                    a,
+                    Narrowing::Remove(_) | Narrowing::Truthy | Narrowing::Falsy | Narrowing::NotNil
+                )
+        });
+        key
+    }
 }
 
 /// Checks from an antecedent toward the declaration whether a narrowing node already exists.
@@ -1822,13 +1856,9 @@ fn trace_decl(
     visited: &mut HashSet<FlowId>,
     path: &mut PathState,
 ) -> Option<LuaType> {
-    // On a loop-free graph every route to a flow node crosses the same guards, so
-    // a state's value depends on the node and the options alone — never on the
-    // route. That makes the state cacheable, which matters because a nested
-    // conditional chain otherwise re-derives the same states along exponentially
-    // many routes. Only nodes that can reach a loop backwards keep the uncached
-    // path (see the type note on `cache::TraceStateKey`), so a loop in one function
-    // does not disable memoization for the rest of the file.
+    // A trace includes guards and casts collected after this flow node. Keep
+    // those facts in the memo key so separate branches cannot reuse one another's
+    // narrowed result. Canonicalize redundant operations to bound repeated guards.
     if tree.is_loop_reachable(flow_id) {
         return trace_decl_uncached(model, decl, tree, flow_id, options, mode, visited, path);
     }
@@ -1840,6 +1870,7 @@ fn trace_decl(
         casts: options.casts,
         assignments: options.assignments,
         merge_branch: matches!(mode, TraceMode::MergeBranch),
+        path: path.cache_key(),
     };
     {
         let cache = model.cache.borrow();
@@ -2274,7 +2305,7 @@ fn trace_member(
 }
 
 /// Narrowing kinds.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Narrowing {
     /// Replacement: the value is exactly `ty` on this path (type guard / `== literal`).
     Replace(LuaType),
