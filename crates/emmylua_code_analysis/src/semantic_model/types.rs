@@ -1066,6 +1066,17 @@ impl<'db> SemanticModel<'db> {
     }
     /// Callee function type at a call site (generic substitution inferred from arguments; member overloads are selected by arguments first).
     pub fn inferred_call_doc_function(&self, call_syntax: LuaSyntaxId) -> Option<LuaFunctionType> {
+        if let Some((fun, bindings)) = infer::infer_call_signature(self, call_syntax) {
+            let bindings = bindings
+                .into_iter()
+                .map(|(id, ty)| (id, Self::hover_widen_const(&ty)))
+                .collect();
+            if let LuaType::DocFunction(fun) =
+                infer::unify::substitute(&LuaType::DocFunction(Rc::new(fun)), &bindings)
+            {
+                return Some(fun.as_ref().clone());
+            }
+        }
         let tree = self.syntax_tree()?;
         let node = call_syntax.to_node_from_root(&tree.get_red_root())?;
         let call = LuaCallExpr::cast(node)?;

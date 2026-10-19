@@ -110,7 +110,7 @@ function getmetatable(object) end
 --- 将遍历键值对 (1,`t[1]`), (2,`t[2]`), ...，直到第一个不存在的索引。
 --- @generic V
 --- @param t V[] | table<int, V> | { [int]: V }
---- @return fun(tbl: any): int, V
+--- @return (fun(tbl: table<int, V>, index: int): int, V), table<int, V>, integer
 function ipairs(t) end
 
 --- @alias std.loadmode
@@ -206,9 +206,10 @@ function next(table, index) end
 --- 因此结构 `for k,v in pairs(t) do *body* end` 会遍历表 `t` 的所有键值对。
 ---
 --- 关于在遍历过程中修改表的注意事项，请参见函数 `next`。
---- @generic K, V, I
+--- @generic K, V
+--- @overload fun(t: V[]): ((fun(tbl: V[], index: integer?): integer, V), V[], nil)
 --- @param t table<K, V> | V[] | { [K]: V }
---- @return (fun(tbl: table<I, V>, index: I?): K, V), table<I, V>, I?
+--- @return (fun(tbl: table<K, V>, index: K?): K, V), table<K, V>, nil
 function pairs(t) end
 
 --- 以 *保护模式* 调用给定参数的函数 `f`。这意味着 `f` 内部的任何错误
