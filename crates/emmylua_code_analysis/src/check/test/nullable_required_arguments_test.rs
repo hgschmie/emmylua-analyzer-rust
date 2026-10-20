@@ -16,10 +16,17 @@ const TYPES: &str = r#"
 
 fn check(source: &str, expected: usize) {
     let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    ws.def_file("types.lua", TYPES);
+    if expected == 0 {
+        assert!(
+            ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, source),
+            "{source}"
+        );
+        return;
+    }
     ws.analysis
         .diagnostic
         .enable_only(DiagnosticCode::ParamTypeMismatch);
-    ws.def_file("types.lua", TYPES);
     let file = ws.def(source);
     let diagnostics = ws
         .analysis
