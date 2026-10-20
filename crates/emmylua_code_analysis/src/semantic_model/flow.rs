@@ -922,7 +922,9 @@ pub(crate) fn type_of_expr_at_node(
                             let MemberSource::Runtime { access } = member.source else {
                                 return false;
                             };
-                            member.value_syntax.is_some_and(|value| runtime_member_assignment_precedes(model, value, offset)) && facts.member_use(access).is_some_and(|usage| {
+                            member.value_syntax.is_some_and(|value| {
+                                runtime_member_assignment_precedes(model, value, offset)
+                            }) && facts.member_use(access).is_some_and(|usage| {
                                 usage.access_path.as_ref() == Some(access_path)
                             })
                         })
