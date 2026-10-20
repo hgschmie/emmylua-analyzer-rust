@@ -35,6 +35,146 @@ mod tests {
         })
     }
 
+    fn filter_completion_workspace() -> ProviderVirtualWorkspace {
+        let mut ws = ProviderVirtualWorkspace::new_with_init_std_lib();
+        ws.def(
+            r#"
+            ---@class ItemFilterRecord
+            ---@field name? string
+            ---@field quality? string
+            ---@field comparator? "="|">"
+            ---@alias ItemFilter ItemFilterRecord|string
+            ---@class Train
+            ---@field get_item_count fun(filter?: ItemFilter): integer
+            ---@type Train
+            train = {}
+        "#,
+        );
+        ws
+    }
+
+    fn check_table_keys(
+        ws: &mut ProviderVirtualWorkspace,
+        code: &str,
+        expected: &[&str],
+    ) -> Result<()> {
+        let items = get_completion_items(ws, code, CompletionTriggerKind::INVOKED)?;
+        let mut inserts: Vec<_> = items
+            .iter()
+            .filter_map(|item| item.insert_text.as_deref())
+            .collect();
+        inserts.sort_unstable();
+        let mut expected = expected.to_vec();
+        expected.sort_unstable();
+        assert_eq!(inserts, expected, "{code}");
+        Ok(())
+    }
+
+    #[gtest]
+    fn test_union_table_field_completion_empty_argument() -> Result<()> {
+        for code in [
+            "train.get_item_count { <??> }",
+            "train.get_item_count({ <??> })",
+            "train.get_item_count { q<??> }",
+        ] {
+            check_table_keys(
+                &mut filter_completion_workspace(),
+                code,
+                &["name = ", "quality = ", "comparator = "],
+            )?;
+        }
+        Ok(())
+    }
+
+    #[gtest]
+    fn test_union_table_field_completion_existing_key() -> Result<()> {
+        check_table_keys(
+            &mut filter_completion_workspace(),
+            r#"train.get_item_count { name = "iron-plate", <??> }"#,
+            &["quality = ", "comparator = "],
+        )
+    }
+
+    #[gtest]
+    fn test_union_table_field_completion_aliases_and_nested_tables() -> Result<()> {
+        for annotation in [
+            "string|ItemFilterRecord",
+            "ItemFilter?",
+            "Wrapper<ItemFilterRecord>",
+            "RecursiveFilter",
+            "ItemFilterRecord[]|ItemFilterRecord|string",
+        ] {
+            let mut ws = filter_completion_workspace();
+            ws.def(
+                r#"
+                ---@alias Wrapper<T> string|T
+                ---@alias RecursiveFilter string|ItemFilterRecord|RecursiveFilter[]
+            "#,
+            );
+            let keys = &["name = ", "quality = ", "comparator = "];
+            for expression in [
+                format!("---@type {annotation}\nlocal filter = {{ <??> }}"),
+                format!(
+                    "---@class FilterOptions\n---@field item {annotation}\n---@type FilterOptions\nlocal options = {{ item = {{ <??> }} }}"
+                ),
+            ] {
+                check_table_keys(&mut ws, &expression, keys)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[gtest]
+    fn test_union_table_field_completion_inline_object() -> Result<()> {
+        check_table_keys(
+            &mut filter_completion_workspace(),
+            "---@type { quality: string }|string\nlocal filter = { <??> }",
+            &["quality = "],
+        )
+    }
+
+    #[gtest]
+    fn test_union_table_field_completion_keeps_function_fields() -> Result<()> {
+        let mut ws = filter_completion_workspace();
+        check_table_keys(
+            &mut ws,
+            r#"
+            ---@class CallbackFilter
+            ---@field sub fun(): string
+            ---@field quality string
+            ---@type string|CallbackFilter
+            local filter = { <??> }
+        "#,
+            &["sub =", "quality = "],
+        )
+    }
+
+    #[gtest]
+    fn test_union_table_field_completion_keeps_field_values() -> Result<()> {
+        let mut ws = filter_completion_workspace();
+        let items = get_completion_items(
+            &mut ws,
+            r#"train.get_item_count { comparator = "<??>" }"#,
+            CompletionTriggerKind::INVOKED,
+        )?;
+        let mut labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        labels.sort_unstable();
+        assert_eq!(labels, vec!["=", ">"]);
+        Ok(())
+    }
+
+    #[gtest]
+    fn test_union_table_field_completion_preserves_string_members() -> Result<()> {
+        let mut ws = filter_completion_workspace();
+        let items = get_completion_items(
+            &mut ws,
+            "---@type string\nlocal value\nvalue.<??>",
+            CompletionTriggerKind::INVOKED,
+        )?;
+        assert!(items.iter().any(|item| item.label == "sub"), "{items:?}");
+        Ok(())
+    }
+
     #[gtest]
     fn test_require_completion_skips_removed_module() -> Result<()> {
         let mut ws = ProviderVirtualWorkspace::new();
