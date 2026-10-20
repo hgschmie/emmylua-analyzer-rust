@@ -10,7 +10,9 @@ fn assignment_errors(source: &str) -> Vec<super::Diagnostic> {
 
 #[test]
 fn member_self_assignment_uses_declared_integer() {
-    let diagnostics = assignment_errors(
+    let mut ws = crate::VirtualWorkspace::new();
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::AssignTypeMismatch,
         r#"
         ---@class Stop
         ---@field priority integer
@@ -19,13 +21,14 @@ fn member_self_assignment_uses_declared_integer() {
             stop.priority = stop.priority or 0
         end
     "#,
-    );
-    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    ));
 }
 
 #[test]
 fn member_self_assignment_preserves_optional_and_generic_fields() {
-    let diagnostics = assignment_errors(
+    let mut ws = crate::VirtualWorkspace::new();
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::AssignTypeMismatch,
         r#"
         ---@class Stop<T>
         ---@field priority T?
@@ -38,8 +41,7 @@ fn member_self_assignment_preserves_optional_and_generic_fields() {
             container.stop.priority = container.stop.priority or 0
         end
     "#,
-    );
-    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    ));
 }
 
 #[test]
@@ -62,7 +64,9 @@ fn member_self_assignment_rejects_invalid_fallbacks() {
 
 #[test]
 fn member_self_assignment_does_not_use_a_future_write() {
-    let diagnostics = assignment_errors(
+    let mut ws = crate::VirtualWorkspace::new();
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::AssignTypeMismatch,
         r#"
         ---@class Stop
         ---@field priority integer
@@ -74,13 +78,14 @@ fn member_self_assignment_does_not_use_a_future_write() {
             return previous
         end
     "#,
-    );
-    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    ));
 }
 
 #[test]
 fn member_self_assignment_preserves_prior_write_narrowing() {
-    let diagnostics = assignment_errors(
+    let mut ws = crate::VirtualWorkspace::new();
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::AssignTypeMismatch,
         r#"
         ---@class Stop
         ---@field priority integer|string
@@ -93,13 +98,14 @@ fn member_self_assignment_preserves_prior_write_narrowing() {
             return previous
         end
     "#,
-    );
-    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    ));
 }
 
 #[test]
 fn member_self_assignment_rhs_precedes_all_parallel_writes() {
-    let diagnostics = assignment_errors(
+    let mut ws = crate::VirtualWorkspace::new();
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::AssignTypeMismatch,
         r#"
         ---@class Stop
         ---@field priority integer
@@ -111,8 +117,7 @@ fn member_self_assignment_rhs_precedes_all_parallel_writes() {
             return previous
         end
     "#,
-    );
-    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    ));
 }
 
 #[test]
