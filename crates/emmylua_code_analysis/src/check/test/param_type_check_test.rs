@@ -2384,12 +2384,8 @@ fn test_optional_union_alias_parameter_accepts_nullable_string() {
         train.get_count(item)
     end
     "#;
-    let diagnostics = super::check_source(source);
-    let mismatches: Vec<_> = diagnostics
-        .into_iter()
-        .filter(|d| d.code == crate::DiagnosticCode::ParamTypeMismatch)
-        .collect();
-    assert!(mismatches.is_empty(), "{mismatches:#?}");
+    let mut ws = crate::VirtualWorkspace::new();
+    assert!(ws.has_no_diagnostic(crate::DiagnosticCode::ParamTypeMismatch, source));
 }
 
 #[test]
@@ -2416,6 +2412,14 @@ fn test_optional_alias_parameters_keep_valid_and_invalid_alternatives() {
         local function test(item) accept(item) end
         "#
         );
+        if expected == 0 {
+            let mut ws = crate::VirtualWorkspace::new();
+            assert!(
+                ws.has_no_diagnostic(crate::DiagnosticCode::ParamTypeMismatch, &source),
+                "{parameter} <- {argument}"
+            );
+            continue;
+        }
         let mismatches: Vec<_> = super::check_source(&source)
             .into_iter()
             .filter(|d| d.code == crate::DiagnosticCode::ParamTypeMismatch)
