@@ -1,6 +1,8 @@
 //! Table-field completion: `{ name = <??> }` / `{ <??> }` / expected types for table constructor arguments.
 
-use emmylua_code_analysis::{LuaMemberKey, LuaType, MemberInfo, SemanticId};
+use emmylua_code_analysis::{
+    LuaIntersectionType, LuaMemberKey, LuaType, MemberInfo, SemanticId, SemanticModel,
+};
 use emmylua_parser::{
     LuaAst, LuaAstNode, LuaCallExpr, LuaExpr, LuaKind, LuaTableExpr, LuaTableField, LuaTokenKind,
 };
@@ -16,6 +18,11 @@ use super::{
 };
 
 pub struct TableFieldProvider;
+
+// Bound each active alias/compound-type path; sibling alternatives remain independent.
+// 64 is a conservative recursion-stack cap, separate from the shared alias evaluator's
+// work budget. Deeper paths omit keys; this does not bound work across wide unions.
+const MAX_TABLE_TYPE_DEPTH: usize = 64;
 
 impl CompletionProvider for TableFieldProvider {
     fn name(&self) -> &'static str {
@@ -112,7 +119,7 @@ fn add_table_field_key_completion(
 ) -> Option<ProviderDecision> {
     // Members of the table literal itself or its containing local declaration's doc type (`---@type T local t = {...}`).
     let table_type = table_expected_type(builder, &table_expr)?;
-    let members = builder.semantic_model.member_infos(&table_type);
+    let members = table_field_members(&builder.semantic_model, &table_type);
     if members.is_empty() {
         return Some(ProviderDecision::Continue);
     }
@@ -131,6 +138,69 @@ fn add_table_field_key_completion(
         add_field_key_completion(builder, &member);
     }
     Some(ProviderDecision::Continue)
+}
+
+/// A constructor can only use the table alternatives of its expected type.
+/// String-library methods are not constructor keys, and array element types
+/// remain available separately for value completion.
+fn table_field_members(model: &SemanticModel, expected: &LuaType) -> Vec<MemberInfo> {
+    fn project(
+        model: &SemanticModel,
+        typ: &LuaType,
+        visited: &mut Vec<LuaType>,
+    ) -> Option<LuaType> {
+        if visited.contains(typ) || visited.len() >= MAX_TABLE_TYPE_DEPTH {
+            return None;
+        }
+        visited.push(typ.clone());
+        let result = model.expand_alias_head(typ).and_then(|expanded| {
+            match &expanded {
+                LuaType::Union(union) => {
+                    let types = union
+                        .iter()
+                        .filter_map(|component| project(model, component, visited))
+                        .collect::<Vec<_>>();
+                    (!types.is_empty()).then(|| LuaType::from_vec(types))
+                }
+                LuaType::MultiLineUnion(union) => project(model, &union.to_union(), visited),
+                LuaType::Intersection(intersection) => {
+                    let types = intersection
+                        .get_types()
+                        .iter()
+                        .map(|component| project(model, component, visited))
+                        .collect::<Option<Vec<_>>>()?;
+                    // Every conjunct must support a table; an unresolved or
+                    // non-table constraint cannot be dropped like a union arm.
+                    // Preserve member lookup's existing, order-sensitive precedence
+                    // rather than changing general intersection merge semantics here.
+                    (!types.is_empty())
+                        .then(|| LuaType::Intersection(LuaIntersectionType::new(types).into()))
+                }
+                LuaType::Ref(id) | LuaType::Def(id) => model.type_def_of(id).map(|_| expanded),
+                LuaType::Generic(generic) => model
+                    .type_def_of(&generic.get_base_type_id())
+                    .map(|_| expanded),
+                // Arrays impose a table constraint but supply no named constructor keys.
+                LuaType::Table | LuaType::Array(_) => Some(LuaType::Table),
+                // Unconstrained built-ins permit tables but contribute no named keys.
+                LuaType::Any | LuaType::Unknown => Some(LuaType::Table),
+                LuaType::Object(_)
+                | LuaType::TableConst(_)
+                | LuaType::Tuple(_)
+                | LuaType::TableGeneric(_) => Some(expanded),
+                // Strings expose library methods; other unsupported shapes do
+                // not establish a usable table constraint.
+                _ => None,
+            }
+        });
+        visited.pop();
+        result
+    }
+
+    let Some(table_type) = project(model, expected, &mut Vec::new()) else {
+        return Vec::new();
+    };
+    model.member_infos(&table_type)
 }
 
 fn add_field_key_completion(builder: &mut CompletionBuilder, member: &MemberInfo) {
@@ -180,9 +250,7 @@ fn add_table_field_value_completion(
         let table_expr = field.get_parent::<LuaTableExpr>()?;
         let table_type = table_expected_type(builder, &table_expr)?;
         let key_text = key.get_path_part();
-        if let Some(member) = builder
-            .semantic_model
-            .member_infos(&table_type)
+        if let Some(member) = table_field_members(&builder.semantic_model, &table_type)
             .into_iter()
             .find(|member| member.key.to_path() == key_text)
         {
@@ -274,9 +342,7 @@ fn table_expected_type(builder: &CompletionBuilder, table_expr: &LuaTableExpr) -
         && let Some(parent) = field.get_parent::<LuaTableExpr>()
         && let Some(parent_type) = table_expected_type(builder, &parent)
         && let Some(key) = field.get_field_key()
-        && let Some(info) = builder
-            .semantic_model
-            .member_infos(&parent_type)
+        && let Some(info) = table_field_members(&builder.semantic_model, &parent_type)
             .into_iter()
             .find(|info| info.key.to_path() == key.get_path_part())
     {
@@ -419,9 +485,7 @@ fn expected_table_field_value_type(
             // Named field: continue drilling down through the field key to the field value type.
             let ty = if let Some(key) = field.get_field_key() {
                 let key_text = key.get_path_part();
-                builder
-                    .semantic_model
-                    .member_infos(&ty)
+                table_field_members(&builder.semantic_model, &ty)
                     .into_iter()
                     .find(|info| info.key.to_path() == key_text)
                     .map(|info| info.typ)
