@@ -6,6 +6,195 @@ mod test {
     use crate::{LuaType, LuaUnionType, VirtualWorkspace};
 
     #[test]
+    fn test_pairs_union_dictionary_and_array() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def(
+            r#"
+            ---@class Player
+            ---@field valid boolean
+            ---@param players table<string, Player>|Player[]
+            local function visit(players)
+                for key, value in pairs(players) do
+                    iteration_key = key
+                    iteration_value = value
+                end
+            end
+        "#,
+        );
+        assert_eq!(ws.expr_ty("iteration_value"), ws.ty("Player"));
+        assert_eq!(ws.expr_ty("iteration_key"), ws.ty("string|integer"));
+    }
+
+    #[test]
+    fn test_pairs_inherited_generic_dictionary() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def(
+            r#"
+            ---@class Player
+            ---@field valid boolean
+            ---@class CustomTable<K, V>: userdata, table<K, V>
+            ---@param players CustomTable<string|integer, Player>
+            local function visit(players)
+                for key, value in pairs(players) do
+                    iteration_key = key
+                    iteration_value = value
+                end
+            end
+        "#,
+        );
+        assert_eq!(ws.expr_ty("iteration_value"), ws.ty("Player"));
+        assert_eq!(ws.expr_ty("iteration_key"), ws.ty("string|integer"));
+    }
+
+    #[test]
+    fn test_pairs_union_member_collections() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def(
+            r#"
+            ---@class Player
+            ---@field valid boolean
+            ---@class CustomTable<K, V>: userdata, table<K, V>
+            ---@class Game
+            ---@field players CustomTable<string|integer, Player>
+            ---@class Force
+            ---@field players Player[]
+            ---@param target Game|Force
+            local function visit(target)
+                for key, value in pairs(target.players) do
+                    iteration_key = key
+                    iteration_value = value
+                end
+            end
+        "#,
+        );
+        assert_eq!(ws.expr_ty("iteration_value"), ws.ty("Player"));
+        assert_eq!(ws.expr_ty("iteration_key"), ws.ty("string|integer"));
+    }
+
+    #[test]
+    fn test_pairs_union_factory_signature() {
+        for collection in [
+            "table<string, Player>|Player[]",
+            "Player[]|CustomTable<string, Player>",
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            ws.def(&format!(
+                r#"
+                ---@class Player
+                ---@field valid boolean
+                ---@class CustomTable<K, V>: userdata, table<K, V>
+                ---@param players {collection}
+                local function visit(players)
+                    iterator_function = pairs(players)
+                end
+            "#
+            ));
+            let LuaType::DocFunction(fun) = ws.expr_ty("iterator_function") else {
+                panic!("pairs should return an iterator function");
+            };
+            assert_eq!(
+                fun.get_ret().get_result_slot_type(0),
+                Some(ws.ty("string|integer")),
+                "{collection}"
+            );
+            assert_eq!(
+                fun.get_ret().get_result_slot_type(1),
+                Some(ws.ty("Player")),
+                "{collection}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_pairs_union_preserves_distinct_values() {
+        for collection in [
+            "table<string, string>|integer[]",
+            "integer[]|table<string, string>",
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            ws.def(&format!(
+                r#"
+                ---@param values {collection}
+                local function visit(values)
+                    for key, value in pairs(values) do
+                        iteration_key = key
+                        iteration_value = value
+                    end
+                end
+            "#
+            ));
+            assert_eq!(ws.expr_ty("iteration_key"), ws.ty("string|integer"));
+            assert_eq!(ws.expr_ty("iteration_value"), ws.ty("string|integer"));
+        }
+    }
+
+    #[test]
+    fn test_pairs_inherited_generic_alias_and_guard() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def(
+            r#"
+            ---@class CustomTable<K, V>: userdata, table<K, V>
+            ---@class Derived<T>: CustomTable<string, T>
+            ---@alias Collection<T> Derived<T>|T[]
+            ---@param values Collection<boolean>?
+            local function visit(values)
+                if not values then return end
+                for key, value in pairs(values) do
+                    iteration_key = key
+                    iteration_value = value
+                end
+            end
+        "#,
+        );
+        assert_eq!(ws.expr_ty("iteration_key"), ws.ty("string|integer"));
+        assert_eq!(ws.expr_ty("iteration_value"), LuaType::Boolean);
+    }
+
+    #[test]
+    fn test_collection_union_keeps_unresolved_alternatives() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def(
+            r#"
+            ---@class Recursive<T>: Recursive<T>
+        "#,
+        );
+        for ty in [
+            "string[]|nil",
+            "string[]|string",
+            "string[]|unknown",
+            "string[]|Recursive<string>",
+        ] {
+            let ty = ws.ty(ty);
+            assert!(
+                ws.analysis
+                    .semantic_model(file)
+                    .collection_key_value_types(&ty)
+                    .is_none(),
+                "{ty:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_collection_union_generic_call() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@generic K, V
+            ---@param values table<K, V>
+            ---@return K, V
+            local function first(values) end
+            ---@param values table<string, boolean>|string[]
+            local function visit(values)
+                first_key, first_value = first(values)
+            end
+        "#,
+        );
+        assert_eq!(ws.expr_ty("first_key"), ws.ty("string|integer"));
+        assert_eq!(ws.expr_ty("first_value"), ws.ty("boolean|string"));
+    }
+
+    #[test]
     fn test_closure_param_infer() {
         let mut ws = VirtualWorkspace::new();
 
