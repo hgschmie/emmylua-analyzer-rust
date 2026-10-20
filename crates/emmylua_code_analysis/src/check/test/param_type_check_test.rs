@@ -2370,11 +2370,11 @@ mod test {
 
 #[cfg(test)]
 mod class_index_array_compatibility {
-    use crate::DiagnosticCode;
     use crate::check::test::check_source;
+    use crate::{DiagnosticCode, VirtualWorkspace};
 
-    fn mismatch_count(declaration: &str, source: &str, target: &str) -> usize {
-        let code = format!(
+    fn call_source(declaration: &str, source: &str, target: &str) -> String {
+        format!(
             r#"
             {declaration}
             ---@param value {target}[]
@@ -2383,8 +2383,11 @@ mod class_index_array_compatibility {
             local value
             accept(value)
         "#
-        );
-        check_source(&code)
+        )
+    }
+
+    fn mismatch_count(declaration: &str, source: &str, target: &str) -> usize {
+        check_source(&call_source(declaration, source, target))
             .into_iter()
             .filter(|d| d.code == DiagnosticCode::ParamTypeMismatch)
             .count()
@@ -2437,8 +2440,10 @@ mod class_index_array_compatibility {
 
     #[test]
     fn named_numeric_index_signature_is_an_array() {
-        assert_eq!(
-            mismatch_count(
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            &call_source(
                 r#"
             ---@class StringList
             ---@field [integer] string
@@ -2448,8 +2453,7 @@ mod class_index_array_compatibility {
                 "StringList",
                 "string"
             ),
-            0
-        );
+        ));
     }
 
     #[test]
@@ -2505,9 +2509,12 @@ mod class_index_array_compatibility {
                 "number",
             ),
         ] {
-            assert_eq!(
-                mismatch_count(declaration, source, target),
-                0,
+            let mut ws = VirtualWorkspace::new();
+            assert!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::ParamTypeMismatch,
+                    &call_source(declaration, source, target),
+                ),
                 "{source} -> {target}[]"
             );
         }
@@ -2553,7 +2560,11 @@ mod class_index_array_compatibility {
             ---@field [number] boolean
             local list = {}
         "#;
-        assert_eq!(mismatch_count(specific, "Indexed", "string"), 0);
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            &call_source(specific, "Indexed", "string"),
+        ));
         assert_eq!(mismatch_count(specific, "Indexed", "boolean"), 1);
         let inherited = r#"
             ---@class ParentList
@@ -2563,7 +2574,11 @@ mod class_index_array_compatibility {
             ---@field [integer] number
             local child = {}
         "#;
-        assert_eq!(mismatch_count(inherited, "ChildList", "number"), 0);
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            &call_source(inherited, "ChildList", "number"),
+        ));
         assert_eq!(mismatch_count(inherited, "ChildList", "string"), 1);
     }
 }
