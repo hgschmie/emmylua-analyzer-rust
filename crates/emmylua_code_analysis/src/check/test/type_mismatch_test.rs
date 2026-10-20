@@ -213,9 +213,11 @@ fn test_alias_recursive_no_crash() {
 
 #[test]
 fn test_union_alias_parameter_members() {
+    use crate::VirtualWorkspace;
+
     for parameter in ["Event|string", "EventType", "ChainedEvent"] {
         for actual in ["Event", "string", "Event|string"] {
-            let diagnostics = check_source(&format!(
+            let source = format!(
                 r#"
                 ---@enum Event
                 local Event = {{ one = 1 }}
@@ -226,11 +228,11 @@ fn test_union_alias_parameter_members() {
                 ---@param event {actual}
                 local function emit(event) raise_event(event) end
             "#
-            ));
-            assert_eq!(
-                count_by_code(&diagnostics, DiagnosticCode::ParamTypeMismatch),
-                0,
-                "{actual} -> {parameter}: {diagnostics:#?}"
+            );
+            let mut ws = VirtualWorkspace::new();
+            assert!(
+                ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, &source),
+                "{actual} -> {parameter}"
             );
         }
     }
@@ -262,8 +264,7 @@ fn test_union_alias_parameter_rejects_incompatible_values() {
 
 #[test]
 fn test_union_alias_parameter_class_and_nullable() {
-    let diagnostics = check_source(
-        r#"
+    let source = r#"
         ---@class Token
         local Token = {}
         ---@alias TokenType Token|string
@@ -278,13 +279,9 @@ fn test_union_alias_parameter_class_and_nullable() {
             accept(token)
             optional(nullable)
         end
-    "#,
-    );
-    assert_eq!(
-        count_by_code(&diagnostics, DiagnosticCode::ParamTypeMismatch),
-        0,
-        "{diagnostics:#?}"
-    );
+    "#;
+    let mut ws = crate::VirtualWorkspace::new();
+    assert!(ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, source));
 }
 
 #[test]
