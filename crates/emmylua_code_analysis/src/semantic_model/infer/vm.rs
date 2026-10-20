@@ -3825,6 +3825,26 @@ pub(crate) fn unify_call_bindings(
             }
         },
         Generic(param_generic) => {
+            // A union of collections still has a common table shape. Infer both
+            // key and value generics from every alternative, rather than trying
+            // to match the union itself to one nominal generic instance.
+            if param_generic.get_base_type_id().get_name() == "table"
+                && param_generic.get_params().len() == 2
+                && matches!(arg, Union(_))
+                && let Some((key, value)) = model.collection_key_value_types(arg)
+            {
+                let mut candidate = bindings.clone();
+                if param_generic
+                    .get_params()
+                    .iter()
+                    .zip([key, value])
+                    .all(|(param, arg)| unify_call_bindings(model, param, &arg, &mut candidate))
+                {
+                    *bindings = candidate;
+                    return true;
+                }
+                return false;
+            }
             if let Generic(arg_generic) = arg {
                 if param_generic.get_base_type_id() == arg_generic.get_base_type_id()
                     && param_generic.get_params().len() == arg_generic.get_params().len()
@@ -4008,6 +4028,23 @@ pub(crate) fn unify_call_bindings(
             }
         }
         Union(param_union) => {
+            if matches!(arg, Union(_)) {
+                // Collection signatures such as pairs(table<K,V> | V[])
+                // accept differently shaped collections in the same argument.
+                // Try the structural table alternative without leaking bindings
+                // from a failed attempt into the ordinary union matcher.
+                for param in param_union.iter().filter(|param| {
+                    matches!(param, Generic(generic)
+                        if generic.get_base_type_id().get_name() == "table")
+                        && param.contains_tpl_node()
+                }) {
+                    let mut candidate = bindings.clone();
+                    if unify_call_bindings(model, param, arg, &mut candidate) {
+                        *bindings = candidate;
+                        return true;
+                    }
+                }
+            }
             if let Union(arg_union) = arg {
                 let mut pv = param_union.into_vec();
                 let mut av = arg_union.into_vec();
