@@ -2937,8 +2937,7 @@ return t
 
 #[test]
 fn test_length_result_initializes_unannotated_runtime_member() {
-    use crate::DiagnosticCode;
-    use crate::check::test::{check_source, count_by_code};
+    use crate::{DiagnosticCode, VirtualWorkspace};
     for source in [
         "local result = {}; local values = {}; result.count = #values",
         "local result = {}; local values = {}; result.count = ((#values))",
@@ -2962,11 +2961,10 @@ fn test_length_result_initializes_unannotated_runtime_member() {
         result.count = #values
         "#,
     ] {
-        let diagnostics = check_source(source);
-        assert_eq!(
-            count_by_code(&diagnostics, DiagnosticCode::AssignTypeMismatch),
-            0,
-            "{source}: {diagnostics:#?}"
+        let mut ws = VirtualWorkspace::new();
+        assert!(
+            ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, source),
+            "{source}"
         );
     }
 }
