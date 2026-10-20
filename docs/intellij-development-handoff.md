@@ -32,7 +32,7 @@ Original mod files are read-only. No interactive IDE installation was performed.
 
 The canonical contribution/test/push matrix and final package details are in
 the workspace documents `upstream/FIX_INVENTORY.md` and
-`upstream/ANALYZER_REFRESH_2026-10-13.md`, with machine-readable evidence under
+`upstream/memory/ANALYZER_REFRESH_2026-10-13.md`, with machine-readable evidence under
 `build/investigations/analyzer-refresh-20261013/` in the primary analyzer checkout.
 EmmyLua2 build 150 is the refreshed package target; FDE remains 0.7.8-dev.
 
