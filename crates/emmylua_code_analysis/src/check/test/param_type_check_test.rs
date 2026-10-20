@@ -2370,8 +2370,8 @@ mod test {
 
 #[test]
 fn test_builtin_length_argument_type() {
-    use crate::DiagnosticCode;
     use crate::check::test::check_source;
+    use crate::{DiagnosticCode, VirtualWorkspace};
     let check_source = |source: &str| {
         check_source(source)
             .into_iter()
@@ -2400,8 +2400,14 @@ fn test_builtin_length_argument_type() {
         "integer_value(#{})",
         "integer_value(#'train')",
     ] {
-        let diagnostics = check_source(&format!("{prelude}\n{expression}"));
-        assert!(diagnostics.is_empty(), "{expression}: {diagnostics:#?}");
+        let mut ws = VirtualWorkspace::new();
+        assert!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::ParamTypeMismatch,
+                &format!("{prelude}\n{expression}"),
+            ),
+            "{expression}"
+        );
     }
     for expression in [
         "Metrics:set('match_count', selected_trains)",
@@ -2419,8 +2425,8 @@ fn test_builtin_length_argument_type() {
 
 #[test]
 fn test_length_argument_preserves_operator_overload() {
-    use crate::DiagnosticCode;
     use crate::check::test::check_source;
+    use crate::{DiagnosticCode, VirtualWorkspace};
     let check_source = |source: &str| {
         check_source(source)
             .into_iter()
@@ -2438,7 +2444,11 @@ fn test_length_argument_preserves_operator_overload() {
         ---@param value integer
         local function integer_value(value) end
     "#;
-    assert!(check_source(&format!("{prelude}\nstring_value(#values)")).is_empty());
+    let mut ws = VirtualWorkspace::new();
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::ParamTypeMismatch,
+        &format!("{prelude}\nstring_value(#values)"),
+    ));
     let diagnostics = check_source(&format!("{prelude}\ninteger_value(#values)"));
     assert_eq!(
         diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
