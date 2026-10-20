@@ -10,7 +10,7 @@ Production differences from normal remain the UP-008/UP-045 scheduler swap.
 The full comparison language-server suite passes 262 tests, including all five
 ordering regressions. Server Clippy (all targets/features, warnings denied) and
 rustfmt pass. The packaging branch pins this clean checkout for build158-up008.
-Package/protocol evidence: workspace `upstream/UP008_COMPARISON_BUILD158.md`.
+Package/protocol evidence: workspace `upstream/memory/UP008_COMPARISON_BUILD158.md`.
 
 Keep normal work/intellij-modules and the normal prepared plugin on UP-045.
 Do not update FDE's normal analyzer pin, version or existing archive for this
@@ -39,7 +39,7 @@ retains UP-008 instead. This patch repairs missing suggestions only: workspace
 pass contention and edit/request queue ordering remain separate issues. Preserve
 both schedulers for the A/B test. FDE retains 0.7.9-dev and its existing ZIP; only
 its development pin and integration coverage change. Package and protocol
-validation: workspace upstream/DOC_TYPE_COMPLETION_2026-10-14.md.
+validation: workspace upstream/memory/DOC_TYPE_COMPLETION_2026-10-14.md.
 
 # Entities fixes and completion comparison (2026-10-14)
 
@@ -63,7 +63,7 @@ exists with either scheduler; UP-045 workspace passes add lock contention and
 measured latency spikes. Completion code is deliberately identical in both builds
 so the requested A/B test isolates the scheduling change. Package provenance,
 benchmarks and final validation are in workspace
-`upstream/COMPLETION_COMPARISON_2026-10-14.md`. Original mods are read-only.
+`upstream/memory/COMPLETION_COMPARISON_2026-10-14.md`. Original mods are read-only.
 FDE keeps its version/archive; update only its development analyzer pin.
 
 # data-util analyzer fixes (2026-10-14)
@@ -94,7 +94,7 @@ Clippy/fmt. The combined workspace/all-feature suite passes 2,645 tests (1,654
 analysis), Clippy with all targets/features and -D warnings, and rustfmt.
 Test-generated std-zh_CN translations were restored. Build155 package and real
 protocol/platform evidence are recorded in workspace
-`upstream/DATA_UTIL_FIXES_2026-10-14.md` and `upstream/FIX_INVENTORY.md`.
+`upstream/memory/DATA_UTIL_FIXES_2026-10-14.md` and `upstream/FIX_INVENTORY.md`.
 
 Original mod source remains unchanged. Its separate Sprite/SpritePrototype and
 runtime-coordinate/pixel-type annotation problems are outside these fixes.
@@ -112,7 +112,7 @@ Signed cherry-pick `7f8244c0` integrates this independent fix without the upstre
 HashMap refactor. No contribution PR or push. The standalone branch passes 1,472
 analysis tests and Clippy; mixed array/scalar regressions fail before the fix.
 The same failure was reproduced through the real LSP4IJ/FDE default server.
-Final combined tests and packages: workspace upstream/WORKSPACE_OWNERSHIP_2026-10-14.md.
+Final combined tests and packages: workspace upstream/memory/WORKSPACE_OWNERSHIP_2026-10-14.md.
 
 # Multi-root duplicate classes (2026-10-14)
 
@@ -127,7 +127,7 @@ keeps the existing work baseline and other local patches. The false LTN metrics
 warning also exposed an independent UP-044 LSP4IJ routing omission: workspace
 reports must honor DocumentMatchers to exclude the generic server from FDE mod
 files. UP-046 is open PR #1296 (ready for review); its work copy and LSP4IJ follow-up remain local. Final validation and package evidence
-are in workspace `upstream/DUPLICATE_METRICS_2026-10-14.md` and FIX_INVENTORY.md.
+are in workspace `upstream/memory/DUPLICATE_METRICS_2026-10-14.md` and FIX_INVENTORY.md.
 
 # Workspace diagnostic scheduling replaces UP-008 (2026-10-14)
 
@@ -171,7 +171,7 @@ in this upstream snapshot, so the existing refresh fix remains local-only.
 
 The frozen LTN request_processor.lua snapshot remains the zero-diagnostic
 acceptance baseline with the original configuration. Final validation/publication
-and build151 evidence are in workspace `upstream/ANALYZER_REFRESH_2026-10-14.md`
+and build151 evidence are in workspace `upstream/memory/ANALYZER_REFRESH_2026-10-14.md`
 and analyzer `build/investigations/analyzer-refresh-20261014/`. Standalone branch
 checks exclude the unchanged long linear-file stress case; the full combined
 suite runs it once. No application defaults or mod source are changed.
@@ -212,7 +212,7 @@ Original mod files are read-only. No interactive IDE installation was performed.
 
 The canonical contribution/test/push matrix and final package details are in
 the workspace documents `upstream/FIX_INVENTORY.md` and
-`upstream/ANALYZER_REFRESH_2026-10-13.md`, with machine-readable evidence under
+`upstream/memory/ANALYZER_REFRESH_2026-10-13.md`, with machine-readable evidence under
 `build/investigations/analyzer-refresh-20261013/` in the primary analyzer checkout.
 EmmyLua2 build 150 is the refreshed package target; FDE remains 0.7.8-dev.
 
