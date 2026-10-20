@@ -5,7 +5,7 @@ change from experiment/up008-build172 (899bb485). It replaces UP-045 with
 UP-008 while retaining UP-054 request cancellation and every analyzer fix,
 including UP-082 member-flow performance. Normal work and prepared dependency
 remain UP-045. Package as 0.30.0-173-UP-008 with a separate prepared directory.
-See workspace upstream/ANALYZER_EDIT_LATENCY_2026-10-16.md for final validation.
+See workspace upstream/memory/ANALYZER_EDIT_LATENCY_2026-10-16.md for final validation.
 
 # Member-flow performance — UP-082 (2026-10-16)
 
@@ -26,7 +26,7 @@ warnings. The original number→int32 mismatch is valid and remains unchanged.
 A nested-branch/loop diagnostic probe takes milliseconds before the refactor,
 but about 9 s at 16 branches immediately afterward and before our first merged
 contribution. The defect therefore predates our merged patches. Full evidence:
-workspace upstream/ANALYZER_EDIT_LATENCY_2026-10-16.md and analyzer
+workspace upstream/memory/ANALYZER_EDIT_LATENCY_2026-10-16.md and analyzer
 build/investigations/edit-latency-20261016/.
 
 Standalone 1,521 analysis and combined 2,846 workspace tests pass. The expanded
@@ -66,7 +66,7 @@ stop-update warnings remain. Evidence: analyzer
 Package: EmmyLua2 `0.30.0-172` (suffix removed), custom analyzer on macOS arm64.
 FDE keeps 0.8.6-dev and its existing ZIP; update development pins. LSP4IJ now
 uses `0.21.1-6` with a monotonic local `pluginBuild` counter. See workspace
-`upstream/LTN_STOP_UPDATE_2026-10-16.md` for final package receipts.
+`upstream/memory/LTN_STOP_UPDATE_2026-10-16.md` for final package receipts.
 These changes and branches are local; no PRs were opened and nothing pushed.
 
 # Work-branch rebuild on upstream/main — 2026-10-16
@@ -88,7 +88,7 @@ order remains UP-059 before the combined UP-033/UP-060 work.
 The prior work head `0f6001bb5bdb7c64abd7e918e1dff1d676805df9` is preserved under
 `refs/backup/work-rebuild-20261016/work-intellij-modules`. The contribution mapping,
 full validation logs and package receipt are in the workspace report
-`upstream/ANALYZER_WORK_REBUILD_2026-10-16.md` and analyzer
+`upstream/memory/ANALYZER_WORK_REBUILD_2026-10-16.md` and analyzer
 `build/investigations/work-rebuild-20261016/`. These sources supersede the historical
 heads below. This task does not push branches or change PRs.
 
@@ -133,7 +133,7 @@ script/tools.lua goes from exactly the requested three warnings (284, 522, 577)
 to zero diagnostics. Its capacity hover remains number. Package EmmyLua2 build170
 only; FDE stays0.8.6-dev with its development pin updated. Final archive, native
 integration and frozen full-mod comparison evidence is recorded in workspace
-upstream/LTN_TOOLS_GUARDS_2026-10-16.md and versioned in FDE docs/. Retain normal
+upstream/memory/LTN_TOOLS_GUARDS_2026-10-16.md and versioned in FDE docs/. Retain normal
 UP-045 and LSP4IJ patched4. Only macOS arm64 receives the patched analyzer.
 
 # LTN priority follow-ups — UP-075/076 (2026-10-16)
@@ -164,7 +164,7 @@ when refreshing the larger union/variadic upstream changes. That upstream
 refactor was not imported as part of these targeted changes.
 
 Build EmmyLua2 169 only; retain FDE 0.8.6-dev and update its development pin/tests.
-See workspace upstream/LTN_PRIORITY_FOLLOWUPS_2026-10-16.md for prioritization,
+See workspace upstream/memory/LTN_PRIORITY_FOLLOWUPS_2026-10-16.md for prioritization,
 packaged validation and remaining limitations. Keep normal UP-045/LSP4IJ patched4.
 
 # LTN loop, guard and initialization diagnostics — UP-071–074
@@ -187,7 +187,7 @@ The generated std-zh_CN test outputs were restored; no mod files were edited.
 Build EmmyLua2 168, update FDE's development pin and ship FDE 0.8.6-dev for its
 separate information/hint summary and filters. Keep normal UP-045 and LSP4IJ
 patched4. Package/protocol evidence and remaining-diagnostic triage are maintained
-in workspace upstream/LTN_FLOW_TRIAGE_2026-10-15.md. New fixes remain local; no PRs.
+in workspace upstream/memory/LTN_FLOW_TRIAGE_2026-10-15.md. New fixes remain local; no PRs.
 Previous UP-069/070 plus all outstanding work/package heads were pushed first.
 
 # LocalisedString arrays — UP-069/070 (2026-10-15)
@@ -212,7 +212,7 @@ EmmyLua2 build167 and FDE 0.8.5-dev package the analyzer and toolkit respectivel
 Retain LSP4IJ patched4, normal UP-045 and UP-008 comparison159. Prior outstanding
 UP-067/068 and work/package/FDE commits were pushed before this task. The new
 fixes remain local; no PR or IDE install. Native/package validation details and
-hashes live in workspace upstream/LOCALISED_STRING_FIXES_2026-10-15.md.
+hashes live in workspace upstream/memory/LOCALISED_STRING_FIXES_2026-10-15.md.
 
 # Named variadic values and remote return shapes — UP-067/068 (2026-10-15)
 
@@ -245,7 +245,7 @@ The CLI-content hash already invalidates generated API caches; no cache migratio
 is needed. Keep LSP4IJ patched4 and the existing UP-008 comparison159. No original
 mod edits, IDE installation, PR, or push. All new commits are signed/DCO and local.
 Final package/native checks and hashes are in workspace
-upstream/VARIADIC_NAMED_TYPES_2026-10-15.md.
+upstream/memory/VARIADIC_NAMED_TYPES_2026-10-15.md.
 
 # init.lua member reads, guards and remote calls — UP-064/065/066 (2026-10-15)
 
@@ -294,7 +294,7 @@ Normal UP-045 packaging advances to EmmyLua2 build165 (macOS arm64 patched).
 Update FDE's development analyzer pin only; retain FDE 0.8.3-dev, LSP4IJ patched4
 and UP-008 comparison159. Original mods and installed IDE plugins remain untouched.
 Final combined/native/package evidence and hashes are recorded in workspace
-upstream/INIT_REMOTE_FIXES_2026-10-15.md and analyzer
+upstream/memory/INIT_REMOTE_FIXES_2026-10-15.md and analyzer
 build/investigations/remote-call-20261015/.
 
 Two additional probes are out of scope: inline-object interface member projection,
@@ -322,7 +322,7 @@ complementary. UP-015's asymmetric read/write hover path remains separate.
 Normal UP-045 packaging advances to EmmyLua2 build164. Update FDE's development
 pin only; retain FDE 0.8.3-dev and LSP4IJ patched4. UP-008 comparison stays159.
 No push, PR, original-mod edit or IDE installation. Final validation and archive
-provenance: workspace `upstream/DECLARED_FIELD_HOVER_2026-10-15.md` and analyzer
+provenance: workspace `upstream/memory/DECLARED_FIELD_HOVER_2026-10-15.md` and analyzer
 `build/investigations/field-contract-hover-20261015/`.
 
 # Numeric enum literal compatibility — UP-062 (2026-10-15)
@@ -349,7 +349,7 @@ Normal UP-045 packaging advances to EmmyLua2 build163. Update only FDE's
 analyzer development pin; retain FDE 0.8.3-dev and LSP4IJ patched4 archives.
 UP-008 comparison remains build159. No push, PR, original-mod edit or IDE
 installation. Final validation and archive details are recorded in workspace
-`upstream/ENUM_LITERAL_COMPATIBILITY_2026-10-15.md` and analyzer
+`upstream/memory/ENUM_LITERAL_COMPATIBILITY_2026-10-15.md` and analyzer
 `build/investigations/dispatcher-enum-20261015/`.
 
 # Guarded collections and loop-carried values — UP-060 / UP-061 (2026-10-15)
@@ -387,7 +387,7 @@ The normal UP-045 package advances to EmmyLua2 build162. Keep the existing FDE
 The one-off UP-008 package stays build159. Prior outstanding UP-058/059 and
 work/package/pin changes were pushed first, at the user's request; these new
 fixes remain local, with no PR or IDE installation. Final validation and archive
-provenance are recorded in workspace `upstream/CONSOLE_GUARDS_LOOP_2026-10-15.md`
+provenance are recorded in workspace `upstream/memory/CONSOLE_GUARDS_LOOP_2026-10-15.md`
 and analyzer `build/investigations/console-guards-loop-20261015/`.
 
 # Enum assertions and inherited dictionaries — UP-058 / UP-059 (2026-10-15)
@@ -421,7 +421,7 @@ The normal UP-045 package advances to EmmyLua2 build161. UP-008 comparison stays
 at build159. Update FDE's development pin only; retain its existing 0.8.3-dev ZIP
 and LSP4IJ patched4. No original mod edits, IDE installation, push or PR.
 Final validation and package evidence: workspace
-`upstream/ENUM_CAST_CUSTOM_INDEX_2026-10-15.md` and analyzer
+`upstream/memory/ENUM_CAST_CUSTOM_INDEX_2026-10-15.md` and analyzer
 `build/investigations/enum-cast-custom-index-20261015/`.
 
 # Class identity in member values — UP-057 (2026-10-15)
@@ -446,7 +446,7 @@ The normal UP-045 package advances to EmmyLua2 build160. The one-off UP-008
 comparison remains at build159. FDE's analyzer development pin follows this work
 branch, but its existing 0.8.3-dev ZIP and LSP4IJ patched4 are unchanged. No push,
 PR or installation for this fix. Final integration/protocol/package evidence:
-workspace `upstream/CLASS_MEMBER_IDENTITY_2026-10-15.md`.
+workspace `upstream/memory/CLASS_MEMBER_IDENTITY_2026-10-15.md`.
 
 # Side-effect module resolution — UP-056 (2026-10-15)
 
@@ -464,7 +464,7 @@ Factorio paths, missing paths and visibility. This also ships in the UP-008
 comparison, which the user currently has installed. Packages are EmmyLua2
 build159 normal/UP-008. FDE separately fixes service startup in 0.8.1-dev;
 LSP4IJ patched4 remains unchanged. Final protocol/package/client evidence:
-workspace `upstream/PROJECT_SERVICES_2026-10-15.md`. Nothing pushed; no PR.
+workspace `upstream/memory/PROJECT_SERVICES_2026-10-15.md`. Nothing pushed; no PR.
 
 # Request/update ordering — UP-054 (2026-10-14)
 
@@ -485,7 +485,7 @@ immediate request after typing and fixes the same ordering risk for completion.
 Five deterministic regressions cover prior edits, cancellation, later edits,
 concurrent pending requests, and close. Three fail on unpatched upstream. The
 standalone server suite passes 229 tests, Clippy and fmt. Package/protocol/platform
-evidence: workspace upstream/REQUEST_ORDERING_2026-10-14.md.
+evidence: workspace upstream/memory/REQUEST_ORDERING_2026-10-14.md.
 
 UP-053's completion repair and all previous analyzer fixes remain included.
 The UP-008 experiment remains at build157 as a historical comparison; it is not
@@ -515,7 +515,7 @@ retains UP-008 instead. This patch repairs missing suggestions only: workspace
 pass contention and edit/request queue ordering remain separate issues. Preserve
 both schedulers for the A/B test. FDE retains 0.7.9-dev and its existing ZIP; only
 its development pin and integration coverage change. Package and protocol
-validation: workspace upstream/DOC_TYPE_COMPLETION_2026-10-14.md.
+validation: workspace upstream/memory/DOC_TYPE_COMPLETION_2026-10-14.md.
 
 # Entities fixes and completion comparison (2026-10-14)
 
@@ -539,7 +539,7 @@ exists with either scheduler; UP-045 workspace passes add lock contention and
 measured latency spikes. Completion code is deliberately identical in both builds
 so the requested A/B test isolates the scheduling change. Package provenance,
 benchmarks and final validation are in workspace
-`upstream/COMPLETION_COMPARISON_2026-10-14.md`. Original mods are read-only.
+`upstream/memory/COMPLETION_COMPARISON_2026-10-14.md`. Original mods are read-only.
 FDE keeps its version/archive; update only its development analyzer pin.
 
 # data-util analyzer fixes (2026-10-14)
@@ -570,7 +570,7 @@ Clippy/fmt. The combined workspace/all-feature suite passes 2,645 tests (1,654
 analysis), Clippy with all targets/features and -D warnings, and rustfmt.
 Test-generated std-zh_CN translations were restored. Build155 package and real
 protocol/platform evidence are recorded in workspace
-`upstream/DATA_UTIL_FIXES_2026-10-14.md` and `upstream/FIX_INVENTORY.md`.
+`upstream/memory/DATA_UTIL_FIXES_2026-10-14.md` and `upstream/FIX_INVENTORY.md`.
 
 Original mod source remains unchanged. Its separate Sprite/SpritePrototype and
 runtime-coordinate/pixel-type annotation problems are outside these fixes.
@@ -588,7 +588,7 @@ Signed cherry-pick `7f8244c0` integrates this independent fix without the upstre
 HashMap refactor. No contribution PR or push. The standalone branch passes 1,472
 analysis tests and Clippy; mixed array/scalar regressions fail before the fix.
 The same failure was reproduced through the real LSP4IJ/FDE default server.
-Final combined tests and packages: workspace upstream/WORKSPACE_OWNERSHIP_2026-10-14.md.
+Final combined tests and packages: workspace upstream/memory/WORKSPACE_OWNERSHIP_2026-10-14.md.
 
 # Multi-root duplicate classes (2026-10-14)
 
@@ -603,7 +603,7 @@ keeps the existing work baseline and other local patches. The false LTN metrics
 warning also exposed an independent UP-044 LSP4IJ routing omission: workspace
 reports must honor DocumentMatchers to exclude the generic server from FDE mod
 files. UP-046 is open PR #1296 (ready for review); its work copy and LSP4IJ follow-up remain local. Final validation and package evidence
-are in workspace `upstream/DUPLICATE_METRICS_2026-10-14.md` and FIX_INVENTORY.md.
+are in workspace `upstream/memory/DUPLICATE_METRICS_2026-10-14.md` and FIX_INVENTORY.md.
 
 # Workspace diagnostic scheduling replaces UP-008 (2026-10-14)
 
@@ -647,7 +647,7 @@ in this upstream snapshot, so the existing refresh fix remains local-only.
 
 The frozen LTN request_processor.lua snapshot remains the zero-diagnostic
 acceptance baseline with the original configuration. Final validation/publication
-and build151 evidence are in workspace `upstream/ANALYZER_REFRESH_2026-10-14.md`
+and build151 evidence are in workspace `upstream/memory/ANALYZER_REFRESH_2026-10-14.md`
 and analyzer `build/investigations/analyzer-refresh-20261014/`. Standalone branch
 checks exclude the unchanged long linear-file stress case; the full combined
 suite runs it once. No application defaults or mod source are changed.
@@ -688,7 +688,7 @@ Original mod files are read-only. No interactive IDE installation was performed.
 
 The canonical contribution/test/push matrix and final package details are in
 the workspace documents `upstream/FIX_INVENTORY.md` and
-`upstream/ANALYZER_REFRESH_2026-10-13.md`, with machine-readable evidence under
+`upstream/memory/ANALYZER_REFRESH_2026-10-13.md`, with machine-readable evidence under
 `build/investigations/analyzer-refresh-20261013/` in the primary analyzer checkout.
 EmmyLua2 build 150 is the refreshed package target; FDE remains 0.7.8-dev.
 
