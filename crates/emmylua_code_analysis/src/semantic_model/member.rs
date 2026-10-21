@@ -5,7 +5,9 @@ use hashbrown::HashMap;
 
 use crate::semantic_db::def::{DeclKind, MemberRef, SemanticId, TypeDef, TypeDefKind};
 use crate::semantic_model::infer::unify::{self, TplBindings};
-use crate::semantic_model::type_eval::{map_type, substitute_named_refs, with_expanded_alias};
+use crate::semantic_model::type_eval::{
+    expand_alias_generic, map_type, substitute_named_refs, with_expanded_alias,
+};
 use crate::{FileId, GenericTplId, InFiled, LuaMemberKey, LuaType};
 use crate::{Member, semantic_db::facts::FileFacts};
 use smol_str::SmolStr;
