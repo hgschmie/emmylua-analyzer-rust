@@ -793,3 +793,48 @@ pub struct DeclMultiReturnRefAt {
     pub flow_id: FlowId,
     pub reference: Option<DeclMultiReturnRef>,
 }
+
+#[cfg(test)]
+mod cycle_tests {
+    use super::*;
+    #[test]
+    fn distinguishes_shared_predecessors_from_back_edges() {
+        let mut nodes = vec![
+            FlowNode {
+                id: FlowId(0),
+                kind: FlowNodeKind::Start,
+                antecedent: None,
+            },
+            FlowNode {
+                id: FlowId(1),
+                kind: FlowNodeKind::LoopLabel,
+                antecedent: Some(FlowAntecedent::Single(FlowId(0))),
+            },
+            FlowNode {
+                id: FlowId(2),
+                kind: FlowNodeKind::BranchLabel,
+                antecedent: Some(FlowAntecedent::Single(FlowId(0))),
+            },
+            FlowNode {
+                id: FlowId(3),
+                kind: FlowNodeKind::BranchLabel,
+                antecedent: Some(FlowAntecedent::Multiple(0)),
+            },
+        ];
+        let multiple = vec![vec![FlowId(1), FlowId(2)]];
+        assert_eq!(
+            FlowTree::compute_in_cycle(&FlowTree::successors(&nodes, &multiple)),
+            vec![false; 4]
+        );
+        nodes[1].antecedent = Some(FlowAntecedent::Single(FlowId(3)));
+        assert_eq!(
+            FlowTree::compute_in_cycle(&FlowTree::successors(&nodes, &multiple)),
+            vec![false, true, false, true]
+        );
+        nodes[1].antecedent = Some(FlowAntecedent::Single(FlowId(1)));
+        assert_eq!(
+            FlowTree::compute_in_cycle(&FlowTree::successors(&nodes, &multiple)),
+            vec![false, true, false, false]
+        );
+    }
+}
