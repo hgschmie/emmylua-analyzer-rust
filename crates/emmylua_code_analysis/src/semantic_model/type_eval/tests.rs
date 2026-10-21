@@ -990,6 +990,7 @@ fn rawget_broad_domains_remain_precise_across_doc_literal_settings() {
         config.strict.doc_base_const_match_base_type = permissive;
         ws.analysis.update_config(config.into());
         let file = ws.def("---@class Box<K,V>: table<K,V>\n---@class Child: Box<string,boolean>");
+        // Resolve a namespace declared in another file through the caller view.
         ws.def("---@namespace User\n---@class table<T>\n---@field [integer] T");
         for (base, key, expected) in [
             ("table<'only',integer>", "string", None),
@@ -1062,7 +1063,7 @@ fn rawget_broad_queries_do_not_publish_exhausted_partial_values() {
     assert!(!model.cache.borrow().index_infos.contains_key(&(file, typ)));
 }
 #[test]
-fn dynamic_index_review_special_keys_have_explicit_projection_contracts() {
+fn dynamic_index_special_keys_have_explicit_projection_contracts() {
     let mut ws = VirtualWorkspace::new();
     let file = ws.def("");
     let base = ws.ty("{[string]: integer?, [number]: boolean}");
@@ -1090,7 +1091,7 @@ fn dynamic_index_review_special_keys_have_explicit_projection_contracts() {
 }
 
 #[test]
-fn dynamic_index_review_non_rawget_paths_remain_distinct() {
+fn dynamic_index_non_rawget_paths_remain_distinct() {
     let mut ws = VirtualWorkspace::new_with_init_std_lib();
     let file = ws.def("---@class Values\n---@field [string] integer\n---@type Values\nvalues = {}\n---@type {[string]:integer}\nobject = {}\n---@type {count:integer}\nrecord = {}\n---@type string\nkey = ''");
     let base = ws.ty("Values");
@@ -1106,7 +1107,7 @@ fn dynamic_index_review_non_rawget_paths_remain_distinct() {
 }
 
 #[test]
-fn dynamic_index_review_exhaustion_is_shared_only_within_the_outer_query() {
+fn dynamic_index_exhaustion_is_shared_only_within_the_outer_query() {
     use crate::semantic_model::cache::QueryCacheScope;
     let mut ws = VirtualWorkspace::new();
     let file = ws.def("---@class Growing<T>: Growing<T[]>\n---@field [integer] T\n---@class Complete\n---@field [integer] string");
@@ -1135,7 +1136,7 @@ fn dynamic_index_review_exhaustion_is_shared_only_within_the_outer_query() {
 }
 
 #[test]
-fn dynamic_index_review_incomplete_later_domain_discards_earlier_matches() {
+fn dynamic_index_incomplete_later_domain_discards_earlier_matches() {
     use crate::semantic_model::cache::{CacheEntry, QueryCacheScope};
     let mut ws = VirtualWorkspace::new();
     let file = ws.def("");
@@ -1160,4 +1161,49 @@ fn dynamic_index_review_incomplete_later_domain_discards_earlier_matches() {
         eval_index_access(&model, &base, &LuaType::Any),
         Some(expected)
     );
+}
+
+#[test]
+fn dynamic_index_unresolved_templates_and_computations_do_not_project() {
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("");
+    let base = ws.ty("table<string, integer>");
+    let model = ws.analysis.semantic_model(file);
+    let template = LuaType::TplRef(Rc::new(GenericTpl::new(
+        GenericTplId::Type(0),
+        "K".into(),
+        Some(LuaType::String),
+        None,
+        false,
+        None,
+    )));
+    let unresolved = LuaType::Call(Rc::new(LuaAliasCallType::new(
+        LuaAliasCallKind::Index,
+        vec![],
+    )));
+    for key in [template, unresolved] {
+        assert_eq!(eval_index_access(&model, &base, &key), None);
+    }
+    assert_eq!(
+        eval_index_access(&model, &base, &LuaType::String),
+        Some(LuaType::from_vec(vec![LuaType::Integer, LuaType::Nil]))
+    );
+}
+
+#[test]
+fn dynamic_index_mixed_literal_and_broad_union_keys_keep_both_domains() {
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("");
+    let base = ws.ty("{[string]: integer, [integer]: boolean}");
+    let expected = ws.ty("integer|boolean|nil");
+    for key in ["string|1", "1|string"] {
+        let key = ws.ty(key);
+        let model = ws.analysis.semantic_model(file);
+        for _ in 0..2 {
+            assert_eq!(
+                eval_index_access(&model, &base, &key),
+                Some(expected.clone())
+            );
+        }
+    }
 }

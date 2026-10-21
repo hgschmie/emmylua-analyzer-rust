@@ -8,13 +8,19 @@ pub(super) fn dynamic_index_type(
     base: &LuaType,
     key: &LuaType,
 ) -> Option<LuaType> {
-    // Nil is not a table key. Never has no runtime values to project.
+    // Nil is not a table key. Never is uninhabited, so there is nothing to project.
     if matches!(key, LuaType::Nil | LuaType::Never) {
         return None;
     }
     // Keep the outer query alive through projection and subtype proofs so partial
-    // cache entries are discarded together. A fresh outer scope resets its budget.
+    // cache entries are discarded together. Nested scopes share the current outer
+    // budget; only entering a fresh outer query resets it. eval_index_access's
+    // AliasPath also holds an outer scope across all keys, so per-key calls cannot
+    // reset exhaustion. index_infos reuses its cached projection between keys.
     let _query = QueryCacheScope::new(&model.cache);
+    if model.cache.borrow().evaluation_exhausted {
+        return None;
+    }
     // This counts incomplete queries, not cache insertions; opening the scope
     // does not increment it. Snapshot before any dependent query can fail.
     let revision = model.cache.borrow().revision();

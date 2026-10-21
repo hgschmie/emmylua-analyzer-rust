@@ -199,10 +199,13 @@ pub fn eval_index_access(model: &SemanticModel, base: &LuaType, key: &LuaType) -
             LuaType::Call(call) if call.get_call_kind() == LuaAliasCallKind::KeyOf => call
                 .get_operands()
                 .first()
-                .map(|base| keyof_keys(model, base))
+                .map(|operand| keyof_keys(model, operand))
                 .unwrap_or_default(),
             _ => literal_keys(key),
         };
+        // Unresolved computations/templates do not establish a concrete domain.
+        // KeyOf has its literal path above; substituted templates re-enter as
+        // their concrete key type. Union arms were already expanded separately.
         if !matches!(key, LuaType::Call(_) | LuaType::TplRef(_))
             && literal.is_empty()
             && let Some(ty) = index_access::dynamic_index_type(model, base, key)
@@ -211,12 +214,24 @@ pub fn eval_index_access(model: &SemanticModel, base: &LuaType, key: &LuaType) -
         }
         member_keys.extend(literal);
     }
-    for (key, _) in member_keys {
+    for (key, key_type) in member_keys {
         let ty = match (base, &key) {
             (LuaType::Tuple(tuple), LuaMemberKey::Integer(i)) => {
                 tuple.get_types().get(*i as usize).cloned()
             }
-            _ => model.member_type(base, &key),
+            // An explicit member retains its precise type. Otherwise a literal
+            // key can still select an index signature, without proving existence.
+            _ => model.member_type(base, &key).or_else(|| {
+                // Lazy generic bodies can still contain named parameters
+                // such as T before substitution. A missing declaration here
+                // is not a concrete index contract to query.
+                if matches!(base, LuaType::Ref(id) | LuaType::Def(id)
+                        if model.type_def_of(id).is_none())
+                {
+                    return None;
+                }
+                index_access::dynamic_index_type(model, base, &key_type)
+            }),
         };
         if let Some(ty) = ty
             && !types.contains(&ty)
