@@ -236,14 +236,20 @@ fn decl_trace_base(
     {
         return Some(ty);
     }
-    let widened = match ty {
-        LuaType::IntegerConst(_) | LuaType::DocIntegerConst(_) | LuaType::FloatConst(_) => {
-            LuaType::Number
+    fn widen_inferred(ty: LuaType) -> LuaType {
+        match ty {
+            LuaType::IntegerConst(_) | LuaType::DocIntegerConst(_) | LuaType::FloatConst(_) => {
+                LuaType::Number
+            }
+            LuaType::StringConst(_) | LuaType::DocStringConst(_) => LuaType::String,
+            LuaType::BooleanConst(_) | LuaType::DocBooleanConst(_) => LuaType::Boolean,
+            LuaType::Union(union) => {
+                LuaType::from_vec(union.iter().cloned().map(widen_inferred).collect())
+            }
+            other => other,
         }
-        LuaType::StringConst(_) | LuaType::DocStringConst(_) => LuaType::String,
-        LuaType::BooleanConst(_) | LuaType::DocBooleanConst(_) => LuaType::Boolean,
-        _ => return Some(ty),
-    };
+    }
+    let widened = widen_inferred(ty);
     Some(match def.value_expr_syntax {
         Some(expr) => apply_expr_casts(model, expr, widened, AsOnly),
         None => widened,
