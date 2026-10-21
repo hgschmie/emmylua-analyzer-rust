@@ -130,3 +130,66 @@ fn integer_alias_arithmetic_stops_at_alias_cycles() {
     );
     expect_that!(ws.expr_ty("cycle - 1"), eq(&LuaType::Any));
 }
+
+#[test]
+fn numeric_for_preserves_integer_aliases() {
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::ParamTypeMismatch,
+        r#"
+        ---@alias uint32 integer
+        ---@alias Count uint32
+        ---@alias Identity<T> T
+        ---@param value integer
+        local function consume(value) end
+        ---@param count Count
+        ---@param step Identity<uint32>
+        local function visit(count, step)
+            for i = count, 1, -1 do consume(i) end
+            for i = count, 100 do consume(i) end
+            for i = 1, count, step do consume(i) end
+        end
+    "#
+    ));
+}
+
+#[test]
+fn numeric_for_alias_variable_types() {
+    use emmylua_parser::{LuaAstNode, LuaNameExpr};
+    for (start, step, expected) in [
+        ("count", "1", LuaType::Integer),
+        ("1", "count", LuaType::Integer),
+        ("fraction", "1", LuaType::Number),
+        ("1", "fraction", LuaType::Number),
+        ("mixed", "1", LuaType::Number),
+        ("cycle", "1", LuaType::Number),
+    ] {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(&format!(
+            r#"
+            ---@alias Count integer
+            ---@alias Fraction number
+            ---@alias Mixed integer|number
+            ---@alias Cycle Cycle
+            ---@param count Count
+            ---@param fraction Fraction
+            ---@param mixed Mixed
+            ---@param cycle Cycle
+            local function visit(count, fraction, mixed, cycle)
+                for i = {start}, 10, {step} do print(i) end
+            end
+        "#
+        ));
+        let model = ws.analysis.semantic_model(file);
+        let chunk = model.chunk().unwrap();
+        let variable = chunk
+            .descendants::<LuaNameExpr>()
+            .find(|name| name.get_name_text().as_deref() == Some("i"))
+            .unwrap();
+        assert_eq!(
+            model.type_of_expr(variable.get_syntax_id()),
+            expected,
+            "start={start}, step={step}"
+        );
+    }
+}
