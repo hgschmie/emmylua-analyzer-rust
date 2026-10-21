@@ -1,3 +1,31 @@
+# Analyzer refresh — 2026-10-21
+
+Current base: upstream/main `bb7c7d4c0915a07c2de5585084b54c79e98559b7`.
+Retained: 65 contribution branches, including new UP-099 member-prefix
+completion, plus internal UP-019/020/021 and integration coverage. UP-046/#1296
+is supplied by upstream. UP-041/043/067/069/079/086 are superseded; their
+production changes are omitted and their tests remain as integration controls.
+UP-008 remains inactive and unchanged.
+
+All retained branch heads pass independent tests, Clippy and rustfmt and have
+verified signatures. The combined workspace passes 3,018 tests (1,956 analysis,
+315 language-server), Clippy with all targets/features and rustfmt. EmmyLua2's
+30 routing tests pass. No contribution branch was pushed and no PR was opened.
+Original heads are preserved under `refs/backup/refresh-20261020/`.
+
+Raw LSP confirms repeated manual completion of `new_known_train.c` now offers
+`current_network_id` in the frozen actual LTN file. The refreshed checker exposes
+eight diagnostics across request_processor, stop-update and schedule; all their
+hover types were already the same in build185. Do not claim the previous
+zero-warning baseline is preserved. Seven concern existing analyzer narrowing/
+iteration limitations; one is a potentially nil CircuitCondition.first_signal
+argument. The original mod is unchanged. Details, current branches, package
+receipt and before/after evidence are in workspace
+`upstream/memory/ANALYZER_REFRESH_2026-10-21.md` and
+`build/refresh-20261020/`.
+
+Historical delivery notes follow.
+
 # Diagnostic test helper follow-ups (2026-10-19)
 
 Integrated the test-only updates from UP-023 `1c6c88e0`, UP-036 `97791ba9`,
