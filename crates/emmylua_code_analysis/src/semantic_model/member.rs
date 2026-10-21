@@ -108,10 +108,8 @@ fn find_member_in_owner(
         let syntax = member
             .value_syntax?
             .to_node_from_root(&tree.get_red_root())?;
-        let tag = syntax
-            .ancestors()
-            .find_map(emmylua_parser::LuaDocTagField::cast)?;
-        let Some(emmylua_parser::LuaDocFieldKey::Type(typ)) = tag.get_field_key() else {
+        let tag = syntax.ancestors().find_map(LuaDocTagField::cast)?;
+        let Some(LuaDocFieldKey::Type(typ)) = tag.get_field_key() else {
             continue;
         };
         let mut declared = model.doc_type_lua_rich_in(member_ref.file_id, typ.get_syntax_id());
