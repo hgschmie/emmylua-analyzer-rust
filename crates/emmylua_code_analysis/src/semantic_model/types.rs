@@ -1593,7 +1593,14 @@ fn project_base_type(model: &SemanticModel<'_>, def: &TypeDef, doc_type: LuaDocT
             _ => {}
         }
     }
-    model.doc_type_lua_in(def.file_id, doc_type.get_syntax_id(), &def.generic_params)
+    let ty = model.doc_type_lua_in(def.file_id, doc_type.get_syntax_id(), &def.generic_params);
+    if matches!(ty, LuaType::Table | LuaType::Unknown) {
+        let rich = model.doc_type_lua_rich_in(def.file_id, doc_type.get_syntax_id());
+        if !matches!(rich, LuaType::Unknown) {
+            return rich;
+        }
+    }
+    ty
 }
 
 fn widen_assignment_type(ty: LuaType) -> LuaType {
