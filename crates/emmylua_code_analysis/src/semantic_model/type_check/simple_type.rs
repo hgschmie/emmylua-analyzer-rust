@@ -290,7 +290,7 @@ pub(super) fn check_variadic_type_compact(
     let count = target_results
         .get_max_len()
         .unwrap_or_else(|| source_count.max(target_min + 1));
-    let mut checks = super::RequiredChecks::default();
+    let mut checks = RequiredChecks::default();
     for index in 0..count {
         if index >= target_min && source_max.is_some_and(|len| index >= len) {
             break;
