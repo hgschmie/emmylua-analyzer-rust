@@ -358,6 +358,7 @@ pub(crate) fn member_info_impl(
             .collect();
         if !types.is_empty() {
             return Some(MemberInfo {
+                index_key_type: None,
                 key: key.clone(),
                 typ: LuaType::from_vec(types),
                 id: None,
