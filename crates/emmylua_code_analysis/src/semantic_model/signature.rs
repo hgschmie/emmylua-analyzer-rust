@@ -586,6 +586,9 @@ impl<'db> SemanticModel<'db> {
         closure_syntax: LuaSyntaxId,
         param_index: usize,
     ) -> Option<LuaType> {
+        let expected_signatures = self.expected_member_signatures_for_closure(closure_syntax)?;
+        // Explicit docs override an available contextual contract. Without such
+        // a contract, field-level annotations follow table_field_signature_override.
         // Table-field docs are not necessarily attached to the closure's
         // signature. Their explicit @param still takes precedence over context.
         if let Some(signature) = self.file_facts()?.signature_by_closure(closure_syntax)
@@ -617,7 +620,7 @@ impl<'db> SemanticModel<'db> {
             .and_then(|facts| facts.signature_by_closure(closure_syntax))
             .is_some_and(|sig| sig.is_method);
         let mut types = Vec::new();
-        for expected_fun in self.expected_member_signatures_for_closure(closure_syntax)? {
+        for expected_fun in expected_signatures {
             let has_self_in_expected = expected_fun
                 .get_params()
                 .first()
