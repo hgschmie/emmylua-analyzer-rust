@@ -186,7 +186,7 @@ fn check_ref_class(
     }
 }
 
-fn enum_contains_class(
+pub(super) fn enum_contains_class(
     context: &TypeCheckContext,
     enum_id: &LuaTypeDeclId,
     class_id: &LuaTypeDeclId,
