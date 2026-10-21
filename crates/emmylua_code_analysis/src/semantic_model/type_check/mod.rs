@@ -162,6 +162,19 @@ fn check_comparison(
     }
 
     // Resolve outer computations before comparing their data constructors.
+    // Class-valued members retain their nominal identity even when the enum's
+    // initializer can also be expanded into runtime values.
+    if let (
+        LuaType::Ref(source_id) | LuaType::Def(source_id),
+        LuaType::Ref(target_id) | LuaType::Def(target_id),
+    ) = (source, compact_type)
+        && context.is_enum(target_id)
+        && context
+            .require_complete(|| ref_type::enum_contains_class(context, target_id, source_id))?
+    {
+        return Ok(());
+    }
+
     for (is_source, ty) in [(false, compact_type), (true, source)] {
         let expanded = context
             .require_complete(|| expand_alias_head(context.model, ty))?
