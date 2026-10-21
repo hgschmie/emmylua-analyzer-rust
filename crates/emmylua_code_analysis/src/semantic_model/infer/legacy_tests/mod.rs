@@ -18,6 +18,7 @@ mod flow_contract;
 mod for_range_var_infer_test;
 mod generic_infer_test;
 mod generic_test;
+mod index_metamethod_test;
 mod infer_str_tpl_test;
 mod inherit_type;
 mod mathlib_test;
