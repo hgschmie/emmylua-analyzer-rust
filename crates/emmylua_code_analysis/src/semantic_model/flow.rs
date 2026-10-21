@@ -209,14 +209,20 @@ fn decl_assignment_type(model: &SemanticModel, decl: &SemanticId) -> Option<LuaT
     {
         return Some(ty);
     }
-    let widened = match ty {
-        LuaType::IntegerConst(_) | LuaType::DocIntegerConst(_) | LuaType::FloatConst(_) => {
-            LuaType::Number
+    fn widen_inferred(ty: LuaType) -> LuaType {
+        match ty {
+            LuaType::IntegerConst(_) | LuaType::DocIntegerConst(_) | LuaType::FloatConst(_) => {
+                LuaType::Number
+            }
+            LuaType::StringConst(_) | LuaType::DocStringConst(_) => LuaType::String,
+            LuaType::BooleanConst(_) | LuaType::DocBooleanConst(_) => LuaType::Boolean,
+            LuaType::Union(union) => {
+                LuaType::from_vec(union.iter().cloned().map(widen_inferred).collect())
+            }
+            other => other,
         }
-        LuaType::StringConst(_) | LuaType::DocStringConst(_) => LuaType::String,
-        LuaType::BooleanConst(_) | LuaType::DocBooleanConst(_) => LuaType::Boolean,
-        _ => return Some(ty),
-    };
+    }
+    let widened = widen_inferred(ty);
     Some(match def.value_expr_syntax {
         Some(expr) => apply_expr_casts(model, expr, widened, AsOnly),
         None => widened,
@@ -364,7 +370,7 @@ fn unchanged_local_call_return_type(
     }
     let facts = model.file_facts()?;
     let decl = facts.decl_by_id(&owner)?;
-    if !matches!(decl.kind, crate::DeclKind::Local { .. }) {
+    if !matches!(decl.kind, DeclKind::Local { .. }) {
         return None;
     }
     let original = decl.value_expr_syntax?;
