@@ -6207,7 +6207,9 @@ fn directional_read_at(
                         path.narrowings.push(narrowing);
                     }
                 }
-                FlowNodeKind::TagCast(ptr) => collect_member_cast(model, member, Some(index), ptr, &mut path),
+                FlowNodeKind::TagCast(ptr) => {
+                    collect_member_cast(model, member, Some(index), ptr, &mut path)
+                }
                 // Inline assertions apply to their expression, not unrelated member flow.
                 FlowNodeKind::AsCast(_) => {}
                 _ => {}

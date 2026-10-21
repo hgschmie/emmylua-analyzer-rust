@@ -1,3 +1,30 @@
+# Post-refresh LTN warnings — 2026-10-21
+
+Seven of the eight newly exposed warnings are analyzer false positives. The
+remaining optional `CircuitCondition.first_signal` argument is not guaranteed
+by its declared Lua type; original mod sources are unchanged.
+
+Integrated on upstream/main `bb7c7d4c`:
+- UP-040 amendment `3c35ffad`: alias-aware numeric-for start/step inference.
+- UP-101 `f23bcae3`: preserve concrete table literals during call matching.
+- UP-102 `613b8ca6`: standard pairs/ipairs yield non-nil values, including
+  nested unions; custom iterators retain their declared nullable values.
+- UP-103 `77371f64`: apply field casts to the guarded receiver path, without
+  leaking them to another instance or surviving conflicting replacement.
+
+Each fix is independently validated on the current upstream base. The combined
+workspace passes 3,039 tests (1,977 analysis and 315 language-server tests),
+Clippy with all targets/features and rustfmt. The 21 added tests include twelve
+cases that fail before the fixes. UP-103's real parameter-diagnostic case also
+uses the existing UP-023 argument guard handling; its core flow fix stands alone.
+These are local signed contributions; no push or new PR.
+
+Package this clean work head as EmmyLua2 0.30.0-187. Keep FDE 0.9.3-dev and
+LSP4IJ SNAPSHOT-13 archives; update FDE's development analyzer pin after package
+validation. Final real-mod protocol results, artifact hashes and native-test
+receipt are recorded in workspace
+`upstream/memory/LTN_POST_REFRESH_WARNINGS_2026-10-21.md`.
+
 # Analyzer refresh — 2026-10-21
 
 Current base: upstream/main `bb7c7d4c0915a07c2de5585084b54c79e98559b7`.
