@@ -581,7 +581,9 @@ pub(crate) fn type_of_expr_at_node(
                 })
             {
                 let mut member_ty = if let Some(flow_tree) = model.flow_tree()
-                    && (flow_tree.has_condition() || flow_tree.has_complex_control())
+                    && (flow_tree.has_condition()
+                        || flow_tree.has_complex_control()
+                        || flow_tree.has_tag_cast())
                     && let Some(flow_id) = flow_tree.get_flow_id_at(offset)
                 {
                     trace_member(
@@ -2570,7 +2572,7 @@ fn trace_member_uncached(
                 }
             }
             FlowNodeKind::TagCast(cast_ptr) => {
-                collect_member_cast(model, member, cast_ptr, path);
+                collect_member_cast(model, member, access, cast_ptr, path);
             }
             FlowNodeKind::TrueCondition(cond_ptr) => {
                 if let Some(narrowing) =
@@ -2798,6 +2800,7 @@ fn collect_decl_cast(
 fn collect_member_cast(
     model: &SemanticModel,
     member: &SemanticId,
+    access: Option<&emmylua_parser::LuaIndexExpr>,
     cast_ptr: &emmylua_parser::LuaAstPtr<emmylua_parser::LuaDocTagCast>,
     path: &mut PathState,
 ) {
@@ -2810,14 +2813,10 @@ fn collect_member_cast(
     let Some(key_expr) = cast.get_key_expr() else {
         return;
     };
+    // Match the accessed object/path, not just the class member. A nullable
+    // receiver may have no member ID at the cast's documentation syntax.
     let matches = match &key_expr {
-        LuaExpr::IndexExpr(index_expr) => {
-            model
-                .resolve_member(index_expr)
-                .and_then(|resolved| resolved.member_id)
-                .as_ref()
-                == Some(member)
-        }
+        LuaExpr::IndexExpr(index_expr) => member_access_matches(model, member, access, index_expr),
         _ => false,
     };
     if !matches {
@@ -6208,7 +6207,7 @@ fn directional_read_at(
                         path.narrowings.push(narrowing);
                     }
                 }
-                FlowNodeKind::TagCast(ptr) => collect_member_cast(model, member, ptr, &mut path),
+                FlowNodeKind::TagCast(ptr) => collect_member_cast(model, member, Some(index), ptr, &mut path),
                 // Inline assertions apply to their expression, not unrelated member flow.
                 FlowNodeKind::AsCast(_) => {}
                 _ => {}
@@ -6286,7 +6285,7 @@ fn indexed_read_at(
                 }
                 FlowNodeKind::TagCast(ptr) => {
                     if let Some(member) = member {
-                        collect_member_cast(model, member, ptr, &mut path);
+                        collect_member_cast(model, member, Some(index), ptr, &mut path);
                     }
                 }
                 FlowNodeKind::AsCast(_) => {}
