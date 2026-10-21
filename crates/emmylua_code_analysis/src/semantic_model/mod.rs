@@ -11,6 +11,7 @@ mod dictionary;
 mod directional;
 mod doc_types;
 mod index_function;
+pub(crate) mod inherited_index;
 mod prelude;
 mod signature;
 mod types;
