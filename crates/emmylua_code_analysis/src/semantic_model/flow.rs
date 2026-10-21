@@ -458,9 +458,10 @@ pub(crate) fn type_of_expr_at_node(
                     id: None,
                     file_id: None,
                     is_method: false,
+                    index_key_type: None,
                 };
                 if let Some(typ) = indexed_read_at(model, index_expr, &read, offset) {
-                    return apply_expr_casts(model, expr_syntax, typ, All);
+                    return apply_casts(typ, All);
                 }
             }
             if let Some(resolved) = model.resolve_member(index_expr)

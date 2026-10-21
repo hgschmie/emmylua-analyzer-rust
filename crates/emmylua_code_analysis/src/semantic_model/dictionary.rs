@@ -83,9 +83,7 @@ fn lookup_inner(
                 let values: Vec<_> = object
                     .get_index_access()
                     .iter()
-                    .filter(|(declared, _)| {
-                        super::type_check::is_assign_compatible(model, key, declared)
-                    })
+                    .filter(|(declared, _)| super::type_check::is_compatible(model, key, declared))
                     .map(|(_, value)| mode.value(model, value))
                     .collect();
                 Some(if values.is_empty() {
@@ -128,7 +126,7 @@ fn signature(
     key: &LuaType,
     mode: LookupMode,
 ) -> LuaType {
-    if super::type_check::is_assign_compatible(model, key, declared) {
+    if super::type_check::is_compatible(model, key, declared) {
         mode.value(model, value)
     } else {
         LuaType::Nil
