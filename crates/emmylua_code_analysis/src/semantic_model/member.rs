@@ -203,6 +203,7 @@ fn direct_member_info(
         };
         return super::type_check::is_compatible(model, &params[0], &key_type).then(|| {
             MemberInfo {
+                index_key_type: None,
                 key: key.clone(),
                 typ: params[1].clone(),
                 id: None,
