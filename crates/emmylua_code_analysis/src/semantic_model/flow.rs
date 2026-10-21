@@ -468,7 +468,7 @@ pub(crate) fn type_of_expr_at_node(
                 return apply_casts(typ, All);
             }
             if let Some(typ) = iterator_entry::entry_type(model, index_expr, offset) {
-                return apply_expr_casts(model, expr_syntax, typ, All);
+                return apply_casts(typ, All);
             }
             if let Some(typ) = computed_index::assigned_type(model, index_expr, offset) {
                 return apply_casts(typ, All);
