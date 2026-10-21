@@ -877,3 +877,187 @@ fn recursive_alias_member_queries_keep_concrete_alternatives() {
         assert_eq!(members[0].typ, LuaType::String);
     }
 }
+
+#[test]
+fn rawget_broad_keys_resolve_index_contracts() {
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    ws.def(
+        r#"
+        ---@class Metrics: { [string]: integer }
+        ---@class Dictionary<K,V>: table<K,V>
+        ---@class Child: Dictionary<string, integer>
+        ---@class Fields
+        ---@field [string] integer?
+        ---@alias Key string
+        ---@alias Values table<string, integer>
+        ---@type Metrics
+        metrics = {}
+        ---@type Dictionary<string, integer>
+        generic = {}
+        ---@type Child
+        child = {}
+        ---@type Fields
+        fields = {}
+        ---@type Values
+        values = {}
+        ---@type { [string]: integer }
+        object = {}
+        ---@type string
+        key = ''
+        ---@type Key
+        alias_key = ''
+    "#,
+    );
+    for name in ["metrics", "generic", "child", "fields", "values", "object"] {
+        for key in ["key", "alias_key"] {
+            let ty = ws.expr_ty(&format!("rawget({name}, {key}) or 0"));
+            assert_eq!(ty, LuaType::Integer, "{name}[{key}]: {ty:?}");
+        }
+    }
+}
+
+#[test]
+fn rawget_metrics_arithmetic_has_no_type_mismatch() {
+    use crate::DiagnosticCode;
+    let source = r#"
+        ---@class Metrics: { [string]: integer }
+        local Metrics = {}
+        ---@param key string
+        ---@return integer
+        function Metrics:get(key) return rawget(self, key) or 0 end
+        ---@param key string
+        ---@return integer
+        function Metrics:inc(key)
+            local value = (rawget(self, key) or 0) + 1
+            rawset(self, key, value)
+            return value
+        end
+        ---@param key string
+        function Metrics:show(key)
+            ---@type integer?
+            local value = rawget(self, key)
+        end
+    "#;
+    for code in [
+        DiagnosticCode::ReturnTypeMismatch,
+        DiagnosticCode::AssignTypeMismatch,
+    ] {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(ws.has_no_diagnostic(code, source), "{code:?}");
+    }
+}
+
+#[test]
+fn rawget_dynamic_indexes_preserve_missing_values_and_key_domains() {
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def(
+        r#"
+        ---@class Dictionary<K,V>: table<K,V>
+        ---@class StringFields
+        ---@field [string] integer?
+        ---@class Cycle: Cycle
+        ---@alias StringKey string
+    "#,
+    );
+    for (base, key, expected) in [
+        ("table<string, integer>", "string", Some("integer?")),
+        ("integer[]", "integer", Some("integer?")),
+        ("Dictionary<string, boolean>", "StringKey", Some("boolean?")),
+        (
+            "{[string]: integer, [integer]: boolean}",
+            "integer",
+            Some("boolean?"),
+        ),
+        ("StringFields", "string", Some("integer?")),
+        ("table<string, integer>", "integer", None),
+        ("integer[]", "string", None),
+        ("Cycle", "string", None),
+    ] {
+        let base_ty = ws.ty(base);
+        let key_ty = ws.ty(key);
+        let expected = expected.map(|ty| ws.ty(ty));
+        let model = ws.analysis.semantic_model(file);
+        let result = eval_index_access(&model, &base_ty, &key_ty);
+        assert_eq!(result, expected, "{base}[{key}]");
+    }
+}
+
+#[test]
+fn rawget_broad_domains_remain_precise_across_doc_literal_settings() {
+    for permissive in [false, true] {
+        let mut ws = VirtualWorkspace::new();
+        let mut config = crate::Emmyrc::default();
+        config.strict.doc_base_const_match_base_type = permissive;
+        ws.analysis.update_config(config.into());
+        let file = ws.def("---@class Box<K,V>: table<K,V>\n---@class Child: Box<string,boolean>");
+        ws.def("---@namespace User\n---@class table<T>\n---@field [integer] T");
+        for (base, key, expected) in [
+            ("table<'only',integer>", "string", None),
+            ("Child", "string", Some("boolean?")),
+            ("User.table<string>", "integer", Some("string?")),
+            ("User.table<string>", "string", None),
+            (
+                "table<string,boolean>|table<string,integer>",
+                "string",
+                Some("boolean|integer|nil"),
+            ),
+            (
+                "{[string]:boolean}&{[string]:integer}",
+                "string",
+                Some("boolean|integer|nil"),
+            ),
+        ] {
+            let base = ws.ty(base);
+            let key = ws.ty(key);
+            let expected = expected.map(|x| ws.ty(x));
+            let model = ws.analysis.semantic_model(file);
+            for _ in 0..2 {
+                assert_eq!(
+                    eval_index_access(&model, &base, &key),
+                    expected,
+                    "{base:?}, {key:?}, permissive={permissive}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn rawget_broad_queries_retry_incomplete_index_projections() {
+    use crate::semantic_model::cache::{CacheEntry, QueryCacheScope};
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("---@class Record\n---@field [integer] string");
+    let typ = ws.ty("Record");
+    let expected = ws.ty("string?");
+    let model = ws.analysis.semantic_model(file);
+    let infos = model.index_infos(&typ);
+    for entry in [
+        CacheEntry::InProgress,
+        CacheEntry::Provisional(Vec::new()),
+        CacheEntry::Provisional(infos),
+    ] {
+        {
+            let _query = QueryCacheScope::new(&model.cache);
+            model
+                .cache
+                .borrow_mut()
+                .index_infos
+                .insert((file, typ.clone()), entry);
+            assert_eq!(eval_index_access(&model, &typ, &LuaType::Integer), None);
+        }
+        assert_eq!(
+            eval_index_access(&model, &typ, &LuaType::Integer),
+            Some(expected.clone())
+        );
+    }
+}
+
+#[test]
+fn rawget_broad_queries_do_not_publish_exhausted_partial_values() {
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("---@class Growing<T>: Growing<T[]>\n---@field [integer] T");
+    let typ = ws.ty("Growing<string>");
+    let model = ws.analysis.semantic_model(file);
+    assert_eq!(eval_index_access(&model, &typ, &LuaType::Integer), None);
+    assert!(!model.cache.borrow().index_infos.contains_key(&(file, typ)));
+}
