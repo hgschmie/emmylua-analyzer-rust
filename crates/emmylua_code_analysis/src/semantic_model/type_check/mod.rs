@@ -196,6 +196,11 @@ fn check_general_type_compact_inner(
             && let Some(values) =
                 context.require_complete(|| enum_value_type(context.model, &def))?
         {
+            // A broad numeric value cannot prove membership in a finite enum.
+            // Preserve that contract before the general literal compatibility rules.
+            if !is_source && matches!(source, LuaType::Integer | LuaType::Number) {
+                return Err(context.mismatch(source, compact_type));
+            }
             return if is_source {
                 check_general_type_compact(context, &values, compact_type)
             } else {
