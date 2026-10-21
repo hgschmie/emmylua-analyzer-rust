@@ -65,16 +65,7 @@ pub(super) fn guarded_type(
                 && model
                     .type_def_of(&generic.get_base_type_id())
                     .is_some_and(|def| model.is_std_file(def.file_id)) => {}
-        _ if (!crate::semantic_model::inherited_index::dictionaries(model, &owner_type)
-            .is_empty()
-            || model
-                .member_infos(&owner_type)
-                .iter()
-                .any(|member| member.id.is_some()))
-            && !model
-                .member_infos(&owner_type)
-                .iter()
-                .any(|member| member.key == LuaMemberKey::Name("__index".into())) => {}
+        _ if named_collection(model, &owner_type, true) => {}
         _ => return None,
     }
     let inferred = model.type_of_expr(index.get_syntax_id());
@@ -396,17 +387,26 @@ pub(super) fn ordinary_collection(model: &SemanticModel, owner_type: &LuaType) -
         {
             true
         }
-        _ if !crate::semantic_model::inherited_index::dictionaries(model, &owner_type)
-            .is_empty()
-            && !model
-                .member_infos(&owner_type)
-                .iter()
-                .any(|member| member.key == LuaMemberKey::Name("__index".into())) =>
-        {
-            true
-        }
-        _ => false,
+        _ => named_collection(model, owner_type, false),
     }
+}
+
+// Collection classification is a proof, so partial inherited contracts or
+// member enumeration must never enable a guard or assignment fact.
+fn named_collection(model: &SemanticModel, owner: &LuaType, allow_declared_fields: bool) -> bool {
+    let _query = crate::semantic_model::cache::QueryCacheScope::new(&model.cache);
+    let revision = model.cache.borrow().revision();
+    let contracts = crate::semantic_model::inherited_index::dictionaries(model, owner);
+    if !model.cache.borrow().is_complete(revision) {
+        return false;
+    }
+    let members = model.member_infos(owner);
+    let collection = (!contracts.is_empty()
+        || (allow_declared_fields && members.iter().any(|member| member.id.is_some())))
+        && !members
+            .iter()
+            .any(|member| member.key == LuaMemberKey::Name("__index".into()));
+    collection && model.cache.borrow().is_complete(revision)
 }
 
 // Globals use their binding name rather than a particular declaration site.
@@ -750,5 +750,21 @@ end
             "local delivery = rows[key]; if delivery then rows[key] = nil; print(delivery.value) end",
             true,
         );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn computed_collection_classification_rejects_partial_contracts() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let file=ws.def("---@class Growing<T>: table<string,T>, Growing<T[]>\n---@field label string\n---@class Complete: table<string,integer>");
+    let growing = ws.ty("Growing<integer>");
+    let complete = ws.ty("Complete");
+    let model = ws.analysis.semantic_model(file);
+    for _ in 0..2 {
+        assert!(!ordinary_collection(&model, &growing));
+        assert!(!named_collection(&model, &growing, true));
+        assert!(ordinary_collection(&model, &complete));
+        assert!(named_collection(&model, &complete, true));
     }
 }
