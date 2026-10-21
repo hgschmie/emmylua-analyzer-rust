@@ -201,7 +201,7 @@ fn direct_member_info(
             LuaMemberKey::Integer(n) => LuaType::IntegerConst(*n),
             _ => return None,
         };
-        return super::type_check::is_compatible(model, &params[0], &key_type).then(|| {
+        return super::type_check::is_compatible(model, &key_type, &params[0]).then(|| {
             MemberInfo {
                 index_key_type: None,
                 key: key.clone(),
