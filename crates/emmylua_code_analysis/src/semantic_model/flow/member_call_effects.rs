@@ -912,7 +912,9 @@ fn literal_member_key(key: emmylua_parser::LuaIndexKey) -> LuaMemberKey {
         emmylua_parser::LuaIndexKey::String(name) => LuaMemberKey::Name(name.get_value().into()),
         emmylua_parser::LuaIndexKey::Integer(number) => match number.get_number_value() {
             emmylua_parser::NumberResult::Int(value) => LuaMemberKey::Integer(value),
-            emmylua_parser::NumberResult::Uint(value) => LuaMemberKey::Integer(value as i64),
+            emmylua_parser::NumberResult::Uint(value) => i64::try_from(value)
+                .map(LuaMemberKey::Integer)
+                .unwrap_or(LuaMemberKey::None),
             emmylua_parser::NumberResult::Float(value) => {
                 crate::semantic_db::types::exact_integer(value)
                     .map(LuaMemberKey::Integer)
@@ -1435,5 +1437,32 @@ mod rawset_key_tests {
                 "{guarded}; {call_text}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn dictionary_effect_unsigned_keys_do_not_wrap() {
+    for (text, expected) in [
+        ("1ULL", LuaMemberKey::Integer(1)),
+        ("18446744073709551615ULL", LuaMemberKey::None),
+    ] {
+        let mut ws = crate::VirtualWorkspace::new();
+        let mut config = ws.get_emmyrc();
+        config.runtime.version = crate::EmmyrcLuaVersion::LuaJIT;
+        ws.update_emmyrc(config);
+        let file = ws.def(&format!("local observed=items[{text}]"));
+        let model = ws.analysis.semantic_model(file);
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .next()
+            .unwrap();
+        assert_eq!(
+            literal_member_key(index.get_index_key().unwrap()),
+            expected,
+            "{text}"
+        );
     }
 }
