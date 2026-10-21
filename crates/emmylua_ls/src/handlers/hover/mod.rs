@@ -7,13 +7,16 @@ use super::RegisterCapabilities;
 use crate::context::{RequestOutcome, ServerContextSnapshot, analysis_query};
 use build_hover::build_semantic_info_hover;
 use emmylua_code_analysis::{EmmyLuaAnalysis, FileId};
-use emmylua_parser::{LuaAstNode, LuaTokenKind};
+use emmylua_parser::{
+    LuaAstNode, LuaAstToken, LuaExpr, LuaLiteralToken, LuaSyntaxToken, LuaTokenKind, LuaUnaryExpr,
+    UnaryOperator,
+};
 use keyword_hover::{hover_keyword, is_keyword};
 use lsp_types::{
     ClientCapabilities, Hover, HoverContents, HoverParams, HoverProviderCapability, MarkupContent,
     Position, ServerCapabilities,
 };
-use rowan::TokenAtOffset;
+use rowan::{TextRange, TokenAtOffset};
 use tokio_util::sync::CancellationToken;
 // Old DbIndex-version hover (temporary reuse before batch 3 signature_helper / batch 4 completion migration;
 
@@ -81,6 +84,8 @@ pub fn hover(analysis: &EmmyLuaAnalysis, file_id: FileId, position: Position) ->
     ) {
         return Some(hover);
     }
+    let (token, range) =
+        negative_literal_target(&token).unwrap_or_else(|| (token.clone(), token.text_range()));
     match token {
         keywords if is_keyword(keywords.clone()) => Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
@@ -103,8 +108,27 @@ pub fn hover(analysis: &EmmyLuaAnalysis, file_id: FileId, position: Position) ->
                 range: document.to_lsp_range(literal.text_range()),
             })
         }
-        _ => build_semantic_info_hover(&model, &analysis.db, token.clone(), token.text_range()),
+        _ => build_semantic_info_hover(&model, &analysis.db, token, range),
     }
+}
+
+/// A negative numeral is a unary expression, not a signed number token. Hover
+/// either part using the unary operator so inference includes the sign. Only
+/// lift a direct numeric operand: the `1` in `-1 ^ 2` still belongs to the power.
+fn negative_literal_target(token: &LuaSyntaxToken) -> Option<(LuaSyntaxToken, TextRange)> {
+    let unary = match token.kind().into() {
+        LuaTokenKind::TkInt | LuaTokenKind::TkFloat => token.parent()?.parent(),
+        LuaTokenKind::TkMinus => token.parent(),
+        _ => None,
+    }
+    .and_then(LuaUnaryExpr::cast)?;
+    let operator = unary.get_op_token()?;
+    let LuaExpr::LiteralExpr(literal) = unary.get_expr()? else {
+        return None;
+    };
+    (operator.get_op() == UnaryOperator::OpUnm
+        && matches!(literal.get_literal(), Some(LuaLiteralToken::Number(_))))
+    .then(|| (operator.syntax().clone(), unary.get_range()))
 }
 
 pub struct HoverCapabilities;

@@ -121,6 +121,83 @@ mod tests {
     }
 
     #[gtest]
+    fn test_negative_literal_hover_includes_sign_and_range() -> Result<()> {
+        use crate::handlers::hover::hover;
+        use lsp_types::{HoverContents, Position, Range};
+
+        for (expression, expected) in [
+            ("-1", "-1"),
+            ("-1.5", "-1.5"),
+            ("-0x10", "-16"),
+            ("- 12", "-12"),
+        ] {
+            let mut ws = ProviderVirtualWorkspace::new();
+            let source = format!("return {expression}");
+            let file_id = ws.def(&source);
+            for column in [7, source.len() as u32 - 1] {
+                let result = hover(&ws.analysis, file_id, Position::new(0, column)).or_fail()?;
+                let HoverContents::Markup(contents) = result.contents else {
+                    return fail!("expected Markdown hover");
+                };
+                check!(verify_eq!(
+                    contents.value,
+                    format!("```lua\n{expected}\n```")
+                ));
+                check!(verify_eq!(
+                    result.range,
+                    Some(Range::new(
+                        Position::new(0, 7),
+                        Position::new(0, source.len() as u32)
+                    ))
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[gtest]
+    fn test_negative_literal_hover_in_context() -> Result<()> {
+        for (source, expected) in [
+            (
+                "local stop = {}\nstop.error_code = stop.error_code or stop.errorCode or -<??>1",
+                "-1",
+            ),
+            ("return { value = -<??>1 }", "-1"),
+            // Numeric constructor keys keep their member information.
+            ("return { [-<??>1] = true }", "(field) [-1]: boolean = true"),
+        ] {
+            let mut ws = ProviderVirtualWorkspace::new();
+            check!(ws.check_hover(
+                source,
+                VirtualHoverResult {
+                    value: format!("```lua\n{expected}\n```")
+                }
+            ));
+        }
+        Ok(())
+    }
+
+    #[gtest]
+    fn test_negative_literal_hover_keeps_operand_boundaries() -> Result<()> {
+        for source in [
+            "return <??>1",
+            "return 3 - <??>1",
+            "return -<??>1 ^ 2",
+            "return -(<??>1 + 2)",
+            "return ~<??>1",
+        ] {
+            let mut ws = ProviderVirtualWorkspace::new();
+            check!(ws.check_hover(
+                source,
+                VirtualHoverResult {
+                    value: "```lua\n1\n```".to_string()
+                }
+            ));
+        }
+        Ok(())
+    }
+
+    #[gtest]
     fn test_1() -> Result<()> {
         let mut ws = ProviderVirtualWorkspace::new();
         check!(ws.check_hover(
