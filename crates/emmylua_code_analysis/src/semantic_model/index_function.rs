@@ -483,9 +483,38 @@ impl SemanticModel<'_> {
                 }
                 LuaType::Union(union) => {
                     let types = union.into_vec();
-                    let mut origins = types.iter().filter_map(|typ| origin(model, typ, key));
-                    let first = origins.next()?;
-                    origins.all(|id| id == first).then_some(first)
+                    // Module exports retain a symbolic owner alongside the same
+                    // literal table. That owner is an identity alias, not another value.
+                    let symbolic_owner = |typ: &&LuaType| {
+                        let (LuaType::Ref(id) | LuaType::Def(id)) = typ else {
+                            return false;
+                        };
+                        types.iter().any(|other| {
+                            let LuaType::TableConst(table) = other else {
+                                return false;
+                            };
+                            if super::member::table_const_class_type(model, table).as_ref()
+                                == Some(*typ)
+                            {
+                                return true;
+                            }
+                            model.type_def_of(id).is_none()
+                                && model
+                                    .file_facts_of(table.file_id)
+                                    .and_then(|facts| {
+                                        facts.decl_by_value_range(table.value).cloned()
+                                    })
+                                    .is_some_and(|decl| decl.name == id.get_name())
+                        })
+                    };
+                    let mut origins = types
+                        .iter()
+                        .filter(|typ| !symbolic_owner(typ))
+                        .map(|typ| origin(model, typ, key));
+                    let first = origins.next()??;
+                    origins
+                        .all(|result| result.as_ref() == Some(&first))
+                        .then_some(first)
                 }
                 _ => None,
             }
@@ -504,6 +533,9 @@ mod review_annotation_tests {
             "---@overload fun(self:table,key:string):number",
             "---@return_overload true,number",
             "---@return_cast key string",
+            "---@return number",
+            "---@type fun(self:table,key:string):number",
+            "---@generic T",
         ] {
             let mut ws = VirtualWorkspace::new();
             let body = "local n=1; ".repeat(70);
@@ -517,5 +549,64 @@ mod review_annotation_tests {
                 .unwrap();
             assert!(!oversized(&model, member, file), "{annotation}");
         }
+    }
+}
+
+#[cfg(test)]
+mod review_origin_tests {
+    use super::*;
+    use crate::VirtualWorkspace;
+
+    #[test]
+    fn index_function_out_of_contract_key_keeps_runtime_fallback() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(
+            r#"
+local proxy = {}
+setmetatable(proxy, {
+    ---@param _ table
+    ---@param key 'allowed'
+    __index = function(_, key) return 42 end
+})
+local observed = proxy.other
+"#,
+        );
+        let model = ws.analysis.semantic_model(file);
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .find(|index| index.get_text() == "proxy.other")
+            .unwrap();
+        assert!(!model.type_of_expr(index.get_syntax_id()).is_nil());
+    }
+
+    #[test]
+    fn index_function_union_requires_every_origin() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(
+            r#"
+local values = { answer = 42 }
+local proxy = {}
+setmetatable(proxy, { __index = function(_, key) return values[key] end })
+---@class Unresolved
+---@param unknown Unresolved
+---@param choose boolean
+local function check(unknown, choose)
+    local selected = choose and proxy or unknown
+    return selected.answer
+end
+"#,
+        );
+        let model = ws.analysis.semantic_model(file);
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .find(|index| index.get_text() == "selected.answer")
+            .unwrap();
+        let owner = model.type_of_expr(index.get_prefix_expr().unwrap().get_syntax_id());
+        assert!(matches!(owner, LuaType::Union(_)), "{owner:?}");
+        assert!(model.index_metamethod_result(index).is_none());
     }
 }
