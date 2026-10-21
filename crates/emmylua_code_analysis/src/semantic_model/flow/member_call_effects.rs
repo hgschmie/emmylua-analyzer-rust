@@ -161,6 +161,17 @@ pub(super) fn calls_conflict_after(
     scan(model, &expected, node, after, before)
 }
 
+/// Query a computed path conservatively without losing receiver identity.
+/// Unknown key segments overlap any key; separate queries track key dependencies.
+pub(super) fn calls_conflict_with_path(
+    model: &SemanticModel,
+    expected: &Access,
+    node: &LuaSyntaxNode,
+    before: TextSize,
+) -> bool {
+    scan(model, expected, node, TextSize::from(0), before)
+}
+
 fn may_be_callee_value(value: LuaExpr) -> bool {
     guards::unparenthesized(value).is_some_and(|value| {
         matches!(
@@ -933,6 +944,83 @@ fn table_member_value(mut value: LuaExpr, keys: &[LuaMemberKey]) -> Option<LuaEx
     Some(value)
 }
 
+/// Recognize a standard table mutator through visible local aliases. A local
+/// replacement of a library member stops recognition; its body is scanned normally.
+fn whole_table_mutators(model: &SemanticModel, expr: LuaExpr) -> Vec<usize> {
+    let mut pending = vec![expr];
+    let mut seen = HashSet::new();
+    let mut receivers = Vec::new();
+    while let Some(expr) = pending.pop() {
+        let Some(expr) = guards::unparenthesized(expr) else {
+            continue;
+        };
+        if !seen.insert(expr.get_syntax_id()) {
+            continue;
+        }
+        match &expr {
+            LuaExpr::NameExpr(_) => {
+                if model
+                    .resolves_to_builtin(expr.clone(), "setmetatable")
+                    .is_some()
+                {
+                    receivers.push(0);
+                }
+                pending.extend(local_name_values(model, &expr));
+            }
+            LuaExpr::IndexExpr(index) => {
+                let Some(prefix) = index.get_prefix_expr() else {
+                    continue;
+                };
+                if model.resolves_to_builtin(prefix, "table").is_none() {
+                    continue;
+                }
+                let Some(key) = index.get_index_key().map(literal_member_key) else {
+                    continue;
+                };
+                let LuaMemberKey::Name(name) = key else {
+                    continue;
+                };
+                let receiver = match name.as_str() {
+                    "insert" | "remove" | "sort" | "clear" => 0,
+                    "move" => 4,
+                    _ => continue,
+                };
+                let Some(path) = index_access_path(model, &expr) else {
+                    continue;
+                };
+                let replaced = model.chunk().is_some_and(|chunk| {
+                    chunk.descendants::<LuaAssignStat>().any(|assign| {
+                        assign.get_range().start() < expr.get_position()
+                            && assign.get_var_and_expr_list().0.iter().any(|var| {
+                                LuaExpr::cast(var.syntax().clone())
+                                    .and_then(|expr| index_access_path(model, &expr))
+                                    .is_some_and(|written| {
+                                        path_write_affects(&written, &path.0, &path.1)
+                                    })
+                            })
+                    }) || chunk.descendants::<LuaFuncStat>().any(|func| {
+                        func.get_range().start() < expr.get_position()
+                            && func
+                                .get_func_name()
+                                .and_then(|var| LuaExpr::cast(var.syntax().clone()))
+                                .and_then(|expr| index_access_path(model, &expr))
+                                .is_some_and(|written| {
+                                    path_write_affects(&written, &path.0, &path.1)
+                                })
+                    })
+                });
+                if !replaced {
+                    receivers.push(receiver);
+                }
+            }
+            _ => {}
+        }
+    }
+    receivers.sort_unstable();
+    receivers.dedup();
+    receivers
+}
+
 fn mutator_conflicts(
     model: &SemanticModel,
     expected: &Access,
@@ -942,13 +1030,22 @@ fn mutator_conflicts(
     let Some(prefix) = call.get_prefix_expr().and_then(guards::unparenthesized) else {
         return false;
     };
-    if !may_call_rawset(model, prefix) {
-        return false;
-    }
     let Some(args) = call.get_args_list() else {
         return false;
     };
     let args = args.get_args().collect::<Vec<_>>();
+    for position in whole_table_mutators(model, prefix.clone()) {
+        if let Some(receiver) = args.get(position).or_else(|| args.first())
+            && access_paths(model, receiver, bindings, std::slice::from_ref(expected))
+                .iter()
+                .any(|path| path_write_affects(path, &expected.0, &expected.1))
+        {
+            return true;
+        }
+    }
+    if !may_call_rawset(model, prefix) {
+        return false;
+    }
     let Some(receiver) = args.first() else {
         return false;
     };
