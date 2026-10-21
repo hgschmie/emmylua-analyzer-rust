@@ -869,13 +869,24 @@ impl<'db> SemanticModel<'db> {
                 let tree = self.syntax_tree_of(member_file)?;
                 let node = value_syntax.to_node_from_root(&tree.get_red_root())?;
                 let expr = LuaExpr::cast(node)?;
+                let mut inner_expr = expr.clone();
+                while let LuaExpr::ParenExpr(paren) = inner_expr {
+                    inner_expr = paren.get_expr()?;
+                }
                 let eval = if self.is_initializer_table_field(member, &member_def) {
                     flow::type_of_expr_with_cast(
                         self,
                         expr.get_syntax_id(),
                         flow::ExprCastMode::AsOnly,
                     )
-                } else if matches!(expr, LuaExpr::CallExpr(_)) {
+                } else if matches!(expr, LuaExpr::CallExpr(_))
+                    || (member_def.doc_type_syntax.is_none()
+                        && matches!(&inner_expr, LuaExpr::UnaryExpr(unary)
+                            if unary.get_op_token().is_some_and(|op|
+                                op.get_op() == emmylua_parser::UnaryOperator::OpLen)))
+                {
+                    // Keep upstream inline assertions while projecting unannotated
+                    // length assignments through the VM's builtin/operator result.
                     flow::type_of_expr_with_cast(self, value_syntax, flow::ExprCastMode::AsOnly)
                 } else {
                     return None;
