@@ -253,7 +253,12 @@ fn signature(
     key: &LuaType,
     mode: LookupMode,
 ) -> LuaType {
-    if super::type_check::is_compatible(model, key, declared) {
+    let revision = model.cache.borrow().revision();
+    let compatible = super::type_check::is_compatible(model, key, declared);
+    if !model.cache.borrow().is_complete(revision) {
+        // An unfinished alias query does not prove that the key is absent.
+        LuaType::Unknown
+    } else if compatible {
         mode.value(model, value)
     } else {
         LuaType::Nil
