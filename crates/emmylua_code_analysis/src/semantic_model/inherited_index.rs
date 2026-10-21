@@ -174,7 +174,7 @@ fn lookup_key(
                 _ => Vec::new(),
             };
             for (declared, value) in pairs {
-                if type_check::is_compatible(model, declared, key) && !values.contains(value) {
+                if type_check::is_compatible(model, key, declared) && !values.contains(value) {
                     values.push(value.clone());
                 }
             }
