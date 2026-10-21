@@ -161,6 +161,17 @@ pub(super) fn calls_conflict_after(
     scan(model, &expected, node, after, before)
 }
 
+/// Query a computed path conservatively without losing receiver identity.
+/// Unknown key segments overlap any key; separate queries track key dependencies.
+pub(super) fn calls_conflict_with_path(
+    model: &SemanticModel,
+    expected: &Access,
+    node: &LuaSyntaxNode,
+    before: TextSize,
+) -> bool {
+    scan(model, expected, node, TextSize::from(0), before)
+}
+
 fn may_be_callee_value(value: LuaExpr) -> bool {
     guards::unparenthesized(value).is_some_and(|value| {
         matches!(
@@ -901,7 +912,9 @@ fn literal_member_key(key: emmylua_parser::LuaIndexKey) -> LuaMemberKey {
         emmylua_parser::LuaIndexKey::String(name) => LuaMemberKey::Name(name.get_value().into()),
         emmylua_parser::LuaIndexKey::Integer(number) => match number.get_number_value() {
             emmylua_parser::NumberResult::Int(value) => LuaMemberKey::Integer(value),
-            emmylua_parser::NumberResult::Uint(value) => LuaMemberKey::Integer(value as i64),
+            emmylua_parser::NumberResult::Uint(value) => i64::try_from(value)
+                .map(LuaMemberKey::Integer)
+                .unwrap_or(LuaMemberKey::None),
             emmylua_parser::NumberResult::Float(value) => {
                 crate::semantic_db::types::exact_integer(value)
                     .map(LuaMemberKey::Integer)
@@ -933,6 +946,83 @@ fn table_member_value(mut value: LuaExpr, keys: &[LuaMemberKey]) -> Option<LuaEx
     Some(value)
 }
 
+/// Recognize a standard table mutator through visible local aliases. A local
+/// replacement of a library member stops recognition; its body is scanned normally.
+fn whole_table_mutators(model: &SemanticModel, expr: LuaExpr) -> Vec<usize> {
+    let mut pending = vec![expr];
+    let mut seen = HashSet::new();
+    let mut receivers = Vec::new();
+    while let Some(expr) = pending.pop() {
+        let Some(expr) = guards::unparenthesized(expr) else {
+            continue;
+        };
+        if !seen.insert(expr.get_syntax_id()) {
+            continue;
+        }
+        match &expr {
+            LuaExpr::NameExpr(_) => {
+                if model
+                    .resolves_to_builtin(expr.clone(), "setmetatable")
+                    .is_some()
+                {
+                    receivers.push(0);
+                }
+                pending.extend(local_name_values(model, &expr));
+            }
+            LuaExpr::IndexExpr(index) => {
+                let Some(prefix) = index.get_prefix_expr() else {
+                    continue;
+                };
+                if model.resolves_to_builtin(prefix, "table").is_none() {
+                    continue;
+                }
+                let Some(key) = index.get_index_key().map(literal_member_key) else {
+                    continue;
+                };
+                let LuaMemberKey::Name(name) = key else {
+                    continue;
+                };
+                let receiver = match name.as_str() {
+                    "insert" | "remove" | "sort" | "clear" => 0,
+                    "move" => 4,
+                    _ => continue,
+                };
+                let Some(path) = index_access_path(model, &expr) else {
+                    continue;
+                };
+                let replaced = model.chunk().is_some_and(|chunk| {
+                    chunk.descendants::<LuaAssignStat>().any(|assign| {
+                        assign.get_range().start() < expr.get_position()
+                            && assign.get_var_and_expr_list().0.iter().any(|var| {
+                                LuaExpr::cast(var.syntax().clone())
+                                    .and_then(|expr| index_access_path(model, &expr))
+                                    .is_some_and(|written| {
+                                        path_write_affects(&written, &path.0, &path.1)
+                                    })
+                            })
+                    }) || chunk.descendants::<LuaFuncStat>().any(|func| {
+                        func.get_range().start() < expr.get_position()
+                            && func
+                                .get_func_name()
+                                .and_then(|var| LuaExpr::cast(var.syntax().clone()))
+                                .and_then(|expr| index_access_path(model, &expr))
+                                .is_some_and(|written| {
+                                    path_write_affects(&written, &path.0, &path.1)
+                                })
+                    })
+                });
+                if !replaced {
+                    receivers.push(receiver);
+                }
+            }
+            _ => {}
+        }
+    }
+    receivers.sort_unstable();
+    receivers.dedup();
+    receivers
+}
+
 fn mutator_conflicts(
     model: &SemanticModel,
     expected: &Access,
@@ -942,13 +1032,22 @@ fn mutator_conflicts(
     let Some(prefix) = call.get_prefix_expr().and_then(guards::unparenthesized) else {
         return false;
     };
-    if !may_call_rawset(model, prefix) {
-        return false;
-    }
     let Some(args) = call.get_args_list() else {
         return false;
     };
     let args = args.get_args().collect::<Vec<_>>();
+    for position in whole_table_mutators(model, prefix.clone()) {
+        if let Some(receiver) = args.get(position).or_else(|| args.first())
+            && access_paths(model, receiver, bindings, std::slice::from_ref(expected))
+                .iter()
+                .any(|path| path_write_affects(path, &expected.0, &expected.1))
+        {
+            return true;
+        }
+    }
+    if !may_call_rawset(model, prefix) {
+        return false;
+    }
     let Some(receiver) = args.first() else {
         return false;
     };
@@ -1338,5 +1437,32 @@ mod rawset_key_tests {
                 "{guarded}; {call_text}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn dictionary_effect_unsigned_keys_do_not_wrap() {
+    for (text, expected) in [
+        ("1ULL", LuaMemberKey::Integer(1)),
+        ("18446744073709551615ULL", LuaMemberKey::None),
+    ] {
+        let mut ws = crate::VirtualWorkspace::new();
+        let mut config = ws.get_emmyrc();
+        config.runtime.version = crate::EmmyrcLuaVersion::LuaJIT;
+        ws.update_emmyrc(config);
+        let file = ws.def(&format!("local observed=items[{text}]"));
+        let model = ws.analysis.semantic_model(file);
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .next()
+            .unwrap();
+        assert_eq!(
+            literal_member_key(index.get_index_key().unwrap()),
+            expected,
+            "{text}"
+        );
     }
 }
