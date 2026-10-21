@@ -6,8 +6,8 @@ use super::{
 use crate::{DeclKind, InFiled, LuaMemberKey, LuaType, SemanticId};
 use emmylua_parser::{
     BinaryOperator, LuaAssignStat, LuaAstNode, LuaClosureExpr, LuaCommentOwner, LuaDocTag, LuaExpr,
-    LuaFuncStat, LuaIndexExpr, LuaIndexKey, LuaLiteralToken, LuaStat, LuaTableExpr, LuaTableField,
-    LuaVarExpr,
+    LuaFuncStat, LuaIndexExpr, LuaIndexKey, LuaLiteralToken, LuaStat, LuaSyntaxId, LuaTableExpr,
+    LuaTableField, LuaVarExpr,
 };
 use hashbrown::HashSet;
 use std::cell::Cell;
@@ -33,7 +33,7 @@ fn infer_detail(
     info: &MemberInfo,
     key: &LuaMemberKey,
     origin: bool,
-) -> Option<(LuaType, Option<SemanticId>)> {
+) -> Option<IndexResult> {
     let key_type = match key {
         LuaMemberKey::Name(name) => LuaType::StringConst(name.clone().into()),
         LuaMemberKey::Integer(value) => LuaType::IntegerConst(*value),
@@ -89,7 +89,7 @@ fn infer_detail(
         && !matches!(param_type, LuaType::Unknown | LuaType::Any)
         && !super::type_check::is_compatible(&model, &param_type, &key_type)
     {
-        return Some((LuaType::Nil, None));
+        return Some(IndexResult(LuaType::Nil, None, None));
     }
     let block = closure.get_block()?;
     let mut stats = block.get_stats();
@@ -112,13 +112,25 @@ fn infer_detail(
         closed: HashSet::new(),
     };
     let typ = inference.infer(expr.clone())?;
+    let result_closure = if origin {
+        inference.result_closure(expr.clone())
+    } else {
+        None
+    };
     let origin = if origin && !typ.is_nil() {
         inference.find_origin(expr)
     } else {
         None
     };
-    Some((typ, origin))
+    Some(IndexResult(
+        typ,
+        origin,
+        result_closure.map(|id| InFiled::new(file, id)),
+    ))
 }
+
+#[derive(PartialEq)]
+struct IndexResult(LuaType, Option<SemanticId>, Option<InFiled<LuaSyntaxId>>);
 
 struct Inference<'a, 'db> {
     model: &'a SemanticModel<'db>,
@@ -128,6 +140,27 @@ struct Inference<'a, 'db> {
     closed: HashSet<InFiled<rowan::TextRange>>,
 }
 impl Inference<'_, '_> {
+    fn result_closure(&mut self, expr: LuaExpr) -> Option<LuaSyntaxId> {
+        self.remaining = self.remaining.checked_sub(1)?;
+        match expr {
+            LuaExpr::ClosureExpr(closure) => Some(closure.get_syntax_id()),
+            LuaExpr::ParenExpr(paren) => self.result_closure(paren.get_expr()?),
+            LuaExpr::BinaryExpr(binary) => {
+                let (left, right) = binary.get_exprs()?;
+                let typ = self.infer(left.clone())?;
+                let selected = match binary.get_op_token()?.get_op() {
+                    BinaryOperator::OpAnd if typ.is_always_truthy() => right,
+                    BinaryOperator::OpAnd if typ.is_always_falsy() => left,
+                    BinaryOperator::OpOr if typ.is_always_truthy() => left,
+                    BinaryOperator::OpOr if typ.is_always_falsy() => right,
+                    _ => return None,
+                };
+                self.result_closure(selected)
+            }
+            _ => None,
+        }
+    }
+
     // Definition-only provenance: do not make synthetic members part of the
     // normal semantic identity used by rename, references and diagnostics.
     fn find_origin(&mut self, expr: LuaExpr) -> Option<SemanticId> {
@@ -273,9 +306,13 @@ impl Inference<'_, '_> {
                 }
                 Some(typ)
             }
-            LuaExpr::LiteralExpr(_) | LuaExpr::ClosureExpr(_) => {
-                Some(self.model.type_of_expr(expr.get_syntax_id()))
-            }
+            LuaExpr::ClosureExpr(ref closure) => Some(
+                self.model
+                    .type_of_signature(closure.get_syntax_id())
+                    .map(|fun| LuaType::DocFunction(fun.into()))
+                    .unwrap_or(LuaType::Function),
+            ),
+            LuaExpr::LiteralExpr(_) => Some(self.model.type_of_expr(expr.get_syntax_id())),
             LuaExpr::BinaryExpr(binary) => {
                 let op = binary.get_op_token()?.get_op();
                 if !matches!(op, BinaryOperator::OpAnd | BinaryOperator::OpOr) {
@@ -404,6 +441,18 @@ pub(crate) fn oversized(
 impl SemanticModel<'_> {
     /// Navigation-only provenance; never establishes identity for rename/references.
     pub fn get_index_metamethod_origin(&self, index: LuaIndexExpr) -> Option<SemanticId> {
+        self.index_metamethod_result(index)?.1
+    }
+
+    /// Syntax of the selected wrapper, used only to present its own documentation.
+    pub fn get_index_metamethod_wrapper(
+        &self,
+        index: LuaIndexExpr,
+    ) -> Option<InFiled<LuaSyntaxId>> {
+        self.index_metamethod_result(index)?.2
+    }
+
+    fn index_metamethod_result(&self, index: LuaIndexExpr) -> Option<IndexResult> {
         let key = match index.get_index_key()? {
             LuaIndexKey::Name(n) => LuaMemberKey::Name(n.get_name_text().into()),
             LuaIndexKey::String(s) => LuaMemberKey::Name(s.get_value().into()),
@@ -414,7 +463,7 @@ impl SemanticModel<'_> {
             _ => return None,
         };
         let typ = self.type_of_expr(index.get_prefix_expr()?.get_syntax_id());
-        fn origin(model: &SemanticModel, typ: &LuaType, key: &LuaMemberKey) -> Option<SemanticId> {
+        fn origin(model: &SemanticModel, typ: &LuaType, key: &LuaMemberKey) -> Option<IndexResult> {
             if model
                 .member_info(typ, key)
                 .is_some_and(|info| info.id.is_some())
@@ -424,7 +473,7 @@ impl SemanticModel<'_> {
             match typ {
                 LuaType::TableConst(table) => {
                     let info = super::member::table_metatable_index_info(model, table)?;
-                    infer_detail(model, &info, key, true)?.1
+                    infer_detail(model, &info, key, true)
                 }
                 LuaType::Union(union) => {
                     let types = union.into_vec();
