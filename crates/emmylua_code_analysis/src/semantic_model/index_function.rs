@@ -77,7 +77,7 @@ pub(crate) fn infer(
     }
     if let Some(param_type) = model.param_type(closure.get_syntax_id(), 1)
         && !matches!(param_type, LuaType::Unknown | LuaType::Any)
-        && !super::type_check::is_compatible(&model, &param_type, &key_type)
+        && !super::type_check::is_compatible(&model, &key_type, &param_type)
     {
         return Some(LuaType::Nil);
     }
