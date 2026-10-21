@@ -115,12 +115,12 @@ fn check_ref_class(
             }
             Err(context.mismatch(&LuaType::Ref(source_id.clone()), compact_type))
         }
-        LuaType::Array(array) => {
-            let value = context
-                .require_complete(|| context.model.infer_iter_from_type_def(source_id, 1))?
-                .ok_or_else(|| context.mismatch(&LuaType::Ref(source_id.clone()), compact_type))?;
-            check_general_type_compact(context, &value, array.get_base())
-        }
+        LuaType::Array(array) => check_class_array(
+            context,
+            &LuaType::Ref(source_id.clone()),
+            compact_type,
+            array.get_base(),
+        ),
         LuaType::Table => Ok(()),
         LuaType::Generic(generic) => {
             let base_type_id = generic.get_base_type_id();
@@ -252,4 +252,29 @@ fn enum_contains_class(
                 && super::def_extends_ctx(context.model, &class_def, &member_def, &mut Vec::new())
         })
     })
+}
+
+/// A declared numeric index signature supplies the elements of an array even
+/// when the class has additional named fields. Static fields like `[1]` do not
+/// establish a signature for arbitrary integer indices.
+pub(super) fn check_class_array(
+    context: &mut TypeCheckContext,
+    source: &LuaType,
+    target: &LuaType,
+    element: &LuaType,
+) -> TypeCheckResult {
+    // Filter index signatures before selecting inherited overrides: an ordinary
+    // field named `integer` must not hide an inherited `[integer]` signature.
+    let members = context.require_complete(|| {
+        crate::semantic_model::member::member_infos_all(context.model, source)
+    })?;
+    for key in [LuaType::Integer, LuaType::Number] {
+        let value = members
+            .iter()
+            .find(|info| info.index_key_type.as_ref() == Some(&key));
+        if let Some(value) = value {
+            return check_general_type_compact(context, &value.typ, element);
+        }
+    }
+    Err(context.mismatch(source, target))
 }
