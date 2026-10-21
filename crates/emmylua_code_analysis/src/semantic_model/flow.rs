@@ -2176,7 +2176,8 @@ fn trace_member(
     visited: &mut HashSet<FlowId>,
     path: &mut PathState,
 ) -> Option<LuaType> {
-    if tree.is_loop_reachable(flow_id) || !path.operations.is_empty() {
+    // A loop summary can be acyclic; real back edges retain the visited walk.
+    if tree.is_cycle_reachable(flow_id) || !path.operations.is_empty() {
         return trace_member_uncached(model, member, access, tree, flow_id, visited, path);
     }
     let key = cache::TraceStateKey {

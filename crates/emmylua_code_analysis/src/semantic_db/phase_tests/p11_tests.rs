@@ -25,6 +25,91 @@ use crate::semantic_model::flow::flow_metrics;
 use crate::{LuaType, VirtualWorkspace};
 use emmylua_parser::{LuaAstNode, LuaIndexExpr};
 
+#[test]
+fn p11_member_flow_nested_diamonds_do_not_expand_exponentially() {
+    for (count, loop_summary) in [4, 8, 32, 64]
+        .into_iter()
+        .flat_map(|count| [(count, false), (count, true)])
+    {
+        let mut ws = VirtualWorkspace::new();
+        let mut source = String::from("local box = { value = 1 }\n");
+        if loop_summary {
+            source.push_str("for j = 1, 1 do touch() end\n");
+        }
+        for _ in 0..count {
+            source.push_str("if flag then if other then touch() end end\n");
+        }
+        source.push_str("local result = box.value\n");
+        let fid = ws.def_file("members.lua", &source);
+        let model = ws.analysis.semantic_model(fid);
+        let expr = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .last()
+            .unwrap();
+        let member = model.resolve_member(&expr).unwrap().member_id.unwrap();
+        flow_metrics::reset();
+        // Isolate member tracing: the owner declaration has its own flow cache.
+        let ty = model.type_of_member_at(&member, expr.get_position());
+        let steps = flow_metrics::trace_steps();
+        assert!(model.type_check(&ty, &LuaType::Number), "{ty:?}");
+        assert!(
+            steps < 100 + 150 * count,
+            "{count} nested diamonds took {steps} steps"
+        );
+    }
+}
+
+#[test]
+fn p11_member_flow_cache_keeps_branch_casts_and_members_distinct() {
+    let mut ws = VirtualWorkspace::new();
+    let fid = ws.def_file(
+        "casts.lua",
+        r#"
+        local box = { value = 1, other = "unchanged" }
+        if flag then
+            ---@cast box.value string
+            local cast_value = box.value
+        else
+            local original_value = box.value
+        end
+        local other_value = box.other
+    "#,
+    );
+    let model = ws.analysis.semantic_model(fid);
+    let expressions: Vec<_> = model
+        .chunk()
+        .unwrap()
+        .descendants::<LuaIndexExpr>()
+        .collect();
+    let reads: Vec<_> = expressions
+        .iter()
+        .map(|expr| model.type_of_expr_at(expr.get_syntax_id(), expr.get_position()))
+        .collect();
+    assert_eq!(reads.len(), 4, "{reads:?}");
+    // The cast target is read before applying the cast.
+    assert!(model.type_check(&reads[0], &LuaType::Number), "{reads:?}");
+    assert_eq!(reads[1], LuaType::String);
+    assert!(
+        model.type_check(&reads[2], &LuaType::Number),
+        "{:?}",
+        reads[2]
+    );
+    assert!(
+        model.type_check(&reads[3], &LuaType::String),
+        "{:?}",
+        reads[3]
+    );
+    // The same model may serve queries in either order.
+    for (expr, expected) in expressions.iter().zip(&reads).rev() {
+        assert_eq!(
+            &model.type_of_expr_at(expr.get_syntax_id(), expr.get_position()),
+            expected
+        );
+    }
+}
+
 /// `n` guard blocks, each repeating one nested index expression in a condition.
 fn repeated_prefix_guard_chain(n: usize) -> String {
     let mut content = String::from("V_cfad19afc42b = V_cfad19afc42b or {}\n");

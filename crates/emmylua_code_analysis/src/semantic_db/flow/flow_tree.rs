@@ -802,3 +802,46 @@ mod cycle_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod member_cache_cycle_tests {
+    use super::*;
+
+    // Preserve the original global-cycle fixture against the shared per-node classifier.
+    fn contains_cycle(nodes: &[FlowNode], multiple: &[Vec<FlowId>]) -> bool {
+        cycle_reachable_nodes(nodes, multiple)
+            .into_iter()
+            .any(|reachable| reachable)
+    }
+    #[test]
+    fn distinguishes_shared_predecessors_from_back_edges() {
+        let mut nodes = vec![
+            FlowNode {
+                id: FlowId(0),
+                kind: FlowNodeKind::Start,
+                antecedent: None,
+            },
+            FlowNode {
+                id: FlowId(1),
+                kind: FlowNodeKind::LoopLabel,
+                antecedent: Some(FlowAntecedent::Single(FlowId(0))),
+            },
+            FlowNode {
+                id: FlowId(2),
+                kind: FlowNodeKind::BranchLabel,
+                antecedent: Some(FlowAntecedent::Single(FlowId(0))),
+            },
+            FlowNode {
+                id: FlowId(3),
+                kind: FlowNodeKind::BranchLabel,
+                antecedent: Some(FlowAntecedent::Multiple(0)),
+            },
+        ];
+        let multiple = vec![vec![FlowId(1), FlowId(2)]];
+        assert!(!contains_cycle(&nodes, &multiple));
+        nodes[1].antecedent = Some(FlowAntecedent::Single(FlowId(3)));
+        assert!(contains_cycle(&nodes, &multiple));
+        nodes[1].antecedent = Some(FlowAntecedent::Single(FlowId(1)));
+        assert!(contains_cycle(&nodes, &multiple));
+    }
+}
