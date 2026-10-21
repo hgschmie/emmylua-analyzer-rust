@@ -32,7 +32,7 @@ pub(crate) fn add_member_completions(
     members: &[MemberInfo],
 ) -> Option<()> {
     for member in members {
-        add_member_completion(builder, member.clone(), CompletionTriggerStatus::Dot)?;
+        let _ = add_member_completion(builder, member.clone(), CompletionTriggerStatus::Dot);
     }
     Some(())
 }
@@ -159,14 +159,14 @@ fn complete_provider(builder: &mut CompletionBuilder) -> Option<()> {
     if completion_status == CompletionTriggerStatus::Colon {
         for member in members {
             if member.typ.is_function() {
-                add_member_completion(builder, member, completion_status)?;
+                let _ = add_member_completion(builder, member, completion_status);
             }
         }
         return Some(());
     }
 
     for member in members {
-        add_member_completion(builder, member, completion_status)?;
+        let _ = add_member_completion(builder, member, completion_status);
     }
     Some(())
 }
@@ -475,6 +475,7 @@ fn index_alias_name(builder: &CompletionBuilder, member_file: Option<FileId>) ->
     Some(inner[..end].to_string())
 }
 
+// None skips this candidate (for example, a nonmatching prefix), not the remaining members.
 fn add_member_completion(
     builder: &mut CompletionBuilder,
     info: MemberInfo,
