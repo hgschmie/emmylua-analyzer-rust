@@ -110,3 +110,99 @@ fn p11_flow_repeated_nested_index_guard_chain_is_not_exponential() {
         "cost grew faster than linear in the number of guard blocks: {measurements:?}"
     );
 }
+
+#[test]
+fn p11_sequential_loop_summaries_do_not_expand_exponentially() {
+    use emmylua_parser::LuaNameExpr;
+    for unrelated_cycle in [
+        "",
+        "local function retry(t) ::again:: if t then goto again end end\n",
+    ] {
+        for count in [4, 8] {
+            let mut ws = VirtualWorkspace::new();
+            let mut source = unrelated_cycle.to_string();
+            source.push_str(
+                "---@param values boolean[]\nlocal function f(values)\nlocal result = 1\n",
+            );
+            for _ in 0..count {
+                source.push_str(
+                    "for _, value in pairs(values) do if value then result = 2 end end\n",
+                );
+            }
+            source.push_str("return result\nend");
+            let fid = ws.def_file("loops.lua", &source);
+            let model = ws.analysis.semantic_model(fid);
+            let name = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaNameExpr>()
+                .last()
+                .unwrap();
+            let tree = model.flow_tree().unwrap();
+            let flow = tree.get_flow_id_at(name.get_position()).unwrap();
+            assert!(tree.is_loop_reachable(flow));
+            assert!(!tree.is_cycle_reachable(flow));
+            flow_metrics::reset();
+            let ty = model.type_of_expr_at(name.get_syntax_id(), name.get_position());
+            assert!(!ty.is_unknown() && !ty.is_never());
+            let entries = flow_metrics::trace_decl_entries();
+            assert!(
+                entries < 100 * count,
+                "{count} loops took {entries} trace entries"
+            );
+        }
+    }
+}
+
+#[test]
+fn p11_loop_summary_cache_preserves_branch_casts() {
+    use emmylua_parser::LuaNameExpr;
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    let fid = ws.def_file(
+        "casts.lua",
+        r#"
+---@param values string[]
+---@param flag boolean
+local function f(values, flag)
+    local result = nil
+    for _, value in pairs(values) do result = value end
+    if result then
+        print(result)
+    end
+    if flag then
+        ---@cast result string
+        print(result)
+    else
+        ---@cast result nil
+        print(result)
+    end
+    print(result)
+end
+"#,
+    );
+    let model = ws.analysis.semantic_model(fid);
+    let names = model
+        .chunk()
+        .unwrap()
+        .descendants::<LuaNameExpr>()
+        .filter(|name| {
+            name.get_name_text().as_deref() == Some("result")
+                && !name
+                    .syntax()
+                    .ancestors()
+                    .any(|node| node.kind() == emmylua_parser::LuaSyntaxKind::DocTagCast.into())
+        })
+        .collect::<Vec<_>>();
+    let reads = &names[names.len() - 4..];
+    for order in [[0, 1, 2, 3], [3, 2, 1, 0]] {
+        for i in order {
+            let name = &reads[i];
+            let ty = model.type_of_expr_at(name.get_syntax_id(), name.get_position());
+            assert_eq!(
+                ws.humanize_type(ty),
+                ["string", "string", "nil", "string?"][i],
+                "read {i}"
+            );
+        }
+    }
+}
