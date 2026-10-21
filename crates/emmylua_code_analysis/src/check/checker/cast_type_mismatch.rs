@@ -134,7 +134,7 @@ fn cast_enum_compatible(model: &SemanticModel<'_>, origin: &LuaType, target: &Lu
                     && members.iter().all(|member| {
                         model.type_of_member(&member.id).is_some_and(|typ| {
                             !matches!(typ, LuaType::Unknown | LuaType::Any)
-                                && is_compatible(model, origin, &typ)
+                                && is_compatible(model, &typ, origin)
                         })
                     });
             }
