@@ -2446,6 +2446,47 @@ fn trace_member(
     visited: &mut HashSet<FlowId>,
     path: &mut PathState,
 ) -> Option<LuaType> {
+    // Different branches repeatedly reach the same predecessor. Cache only
+    // states whose result cannot depend on the incoming path or visited set.
+    // A loop summary can be acyclic; real back edges must keep the visited walk.
+    if tree.is_cycle_reachable(flow_id) || !path.narrowings.is_empty() || !path.casts.is_empty() {
+        return trace_member_uncached(model, member, access, tree, flow_id, visited, path);
+    }
+    let key = (
+        model.file_id(),
+        member.clone(),
+        access.map(|expr| expr.get_syntax_id()),
+        flow_id,
+    );
+    {
+        let cache = model.cache.borrow();
+        if let Some(entry) = cache.member_trace_state.get(&key) {
+            return entry.get(&cache).cloned().flatten();
+        }
+    }
+    let _query = cache::QueryCacheScope::new(&model.cache);
+    model
+        .cache
+        .borrow_mut()
+        .member_trace_state
+        .insert(key.clone(), cache::CacheEntry::InProgress);
+    let revision = model.cache.borrow().revision();
+    let result = trace_member_uncached(model, member, access, tree, flow_id, visited, path);
+    let mut cache = model.cache.borrow_mut();
+    let entry = cache::CacheEntry::finish(result.clone(), cache.is_complete(revision));
+    cache.member_trace_state.insert(key, entry);
+    result
+}
+
+fn trace_member_uncached(
+    model: &SemanticModel,
+    member: &SemanticId,
+    access: Option<&emmylua_parser::LuaIndexExpr>,
+    tree: &FlowTree,
+    flow_id: FlowId,
+    visited: &mut HashSet<FlowId>,
+    path: &mut PathState,
+) -> Option<LuaType> {
     let mut current = flow_id;
     loop {
         #[cfg(test)]
