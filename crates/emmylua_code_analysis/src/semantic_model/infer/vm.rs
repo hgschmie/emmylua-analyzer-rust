@@ -25,7 +25,9 @@ use crate::semantic_db::def::{
 use crate::semantic_db::types::PrimitiveType;
 use crate::semantic_model::doc_types::DocTypeScope;
 use crate::semantic_model::flow::{ExprCastMode, type_of_expr_with_cast};
-use crate::semantic_model::member::{MemberInfo, table_const_class_type, table_metatable_type};
+use crate::semantic_model::member::{
+    MemberInfo, has_unrestricted_members, table_const_class_type, table_metatable_type,
+};
 use crate::semantic_model::type_eval::{
     class_generic_map, eval_conditionals, expand_alias_generic, expand_alias_head,
     sanitize_unresolved_generics, sanitize_unresolved_generics_with_model, substitute_named_refs,
@@ -809,6 +811,10 @@ impl<'a> InferVm<'a> {
     }
 
     fn index_member_dynamic(&mut self, owner: Value, key: Value) -> Value {
+        // A bare table has no declared key/value restrictions, just like any.
+        if has_unrestricted_members(self.model, &owner.ty) {
+            return Value::plain(LuaType::Any);
+        }
         match &key.ty {
             LuaType::StringConst(s) | LuaType::DocStringConst(s) => {
                 self.index_member(owner, &LuaMemberKey::Name(SmolStr::new(s.as_str())))
@@ -1057,8 +1063,9 @@ impl<'a> InferVm<'a> {
 
     fn index_member_impl(&mut self, mut owner: Value, key: &LuaMemberKey) -> Value {
         let receiver_ty = Some(owner.ty.clone());
-        // On `any` (including alias cycles that converge to any), any field is still any.
-        if owner.ty.is_any() {
+        // A bare table does not acquire a closed shape from runtime writes.
+        // Handle it before owner lookup, which also collects later assignments.
+        if has_unrestricted_members(self.model, &owner.ty) {
             return Value::plain(LuaType::Any);
         }
         // Member access on generic param `T: Base`: use the constraint type as the
@@ -4463,7 +4470,10 @@ pub(crate) fn binary_type(
                             | LuaType::StringConst(_)
                             | LuaType::DocStringConst(_)
                     ) && matches!(left_truthy, LuaType::Ref(_) | LuaType::Def(_));
-                if type_fully_covered_by(model, &right, &left_truthy) || right_is_enum_literal {
+                // The truthy arm cannot cover an explicit nil fallback, even when its type is any.
+                if (!right.is_nullable() && type_fully_covered_by(model, &right, &left_truthy))
+                    || right_is_enum_literal
+                {
                     left_truthy
                 } else {
                     let mut types = truthy_components(left);
