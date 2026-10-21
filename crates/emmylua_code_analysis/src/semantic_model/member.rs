@@ -540,6 +540,7 @@ pub(crate) fn table_metatable_index_info(
         && super::index_function::oversized(model, member, meta.file_id)
     {
         return Some(MemberInfo {
+            index_key_type: None,
             key,
             typ: LuaType::Any,
             id: Some(member.id.clone()),
