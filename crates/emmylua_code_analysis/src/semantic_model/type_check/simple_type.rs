@@ -5,11 +5,11 @@ use emmylua_parser::{LuaAstNode, LuaIndexKey};
 
 use crate::semantic_model::table_constructor::{ConstructorValue, key_type};
 use crate::semantic_model::table_value::TableValue;
-use crate::{LuaMemberKey, LuaObjectType, LuaType, LuaTypeDeclId};
+use crate::{LuaMemberKey, LuaObjectType, LuaType, LuaTypeDeclId, VariadicType};
 
 use super::context::TypeCheckContext;
 use super::sub_type::{base_type_name, get_base_type_id, is_sub_type_of};
-use super::{TypeCheckResult, check_all};
+use super::{RequiredChecks, TypeCheckResult, check_all};
 
 pub fn check_simple_type_compact(
     context: &mut TypeCheckContext,
@@ -59,25 +59,48 @@ pub fn check_simple_type_compact(
                     _ => {}
                 }
             }
-            if let (LuaType::TableConst(table), LuaType::Tuple(tuple)) = (source, compact_type) {
+            if let (LuaType::TableConst(identity), LuaType::Tuple(tuple)) = (source, compact_type) {
                 context.comparisons.borrow_mut().mark_structural();
-                let table_file = table.file_id;
-                let table = TableValue::new(context.model, table, context.source_range.as_ref())?;
-                return check_all(
-                    tuple
-                        .get_types()
-                        .iter()
-                        .enumerate()
-                        .map(|(index, expected)| {
-                            let key = LuaMemberKey::Integer(index as i64 + 1);
-                            check_constructor_value(
-                                context,
-                                table_file,
-                                table.member_value(&key)?,
-                                expected,
-                            )
-                        }),
-                );
+                let table =
+                    TableValue::new(context.model, identity, context.source_range.as_ref())?;
+                let mut checks = RequiredChecks::default();
+                for (index, expected) in tuple.get_types().iter().enumerate() {
+                    if let LuaType::Variadic(variadic) = expected
+                        && matches!(variadic.as_ref(), VariadicType::Base(_))
+                        && index + 1 == tuple.len()
+                    {
+                        // A repeated tuple tail may be empty; validate every present entry.
+                        for entry in table.field_entries() {
+                            let (key, actual) = entry?;
+                            let LuaType::IntegerConst(key) = key else {
+                                continue;
+                            };
+                            let Some(offset) = usize::try_from(key)
+                                .ok()
+                                .and_then(|key| key.checked_sub(index + 1))
+                            else {
+                                continue;
+                            };
+                            if let Some(expected) = variadic.get_type(offset) {
+                                checks.require(check_constructor_value(
+                                    context,
+                                    identity.file_id,
+                                    Some(actual),
+                                    expected,
+                                ))?;
+                            }
+                        }
+                        continue;
+                    }
+                    let key = LuaMemberKey::Integer(index as i64 + 1);
+                    checks.require(check_constructor_value(
+                        context,
+                        identity.file_id,
+                        table.member_value(&key)?,
+                        expected,
+                    ))?;
+                }
+                return checks.finish();
             }
             if matches!(
                 compact_type,
@@ -272,7 +295,7 @@ fn check_table_record(
         {
             return Ok(());
         }
-        let mut checks = super::RequiredChecks::default();
+        let mut checks = RequiredChecks::default();
         for (index, expected) in fields.get_index_access() {
             match super::check_general_type_compact(&mut context, &key, index) {
                 Ok(()) => {
@@ -415,7 +438,7 @@ pub(super) fn check_variadic_type_compact(
     let count = target_results
         .get_max_len()
         .unwrap_or_else(|| source_count.max(target_min + 1));
-    let mut checks = super::RequiredChecks::default();
+    let mut checks = RequiredChecks::default();
     for index in 0..count {
         if index >= target_min && source_max.is_some_and(|len| index >= len) {
             break;
