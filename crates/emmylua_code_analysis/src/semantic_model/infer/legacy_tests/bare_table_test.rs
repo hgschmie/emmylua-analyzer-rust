@@ -165,3 +165,63 @@ fn bare_table_member_guards_preserve_both_branches() {
         }
     }
 }
+
+#[test]
+fn bare_table_union_and_long_alias_reads_remain_open() {
+    for annotation in ["table|Record", "OpenUnion", "Chain47"] {
+        let mut definitions = String::from(
+            "---@class Record\n---@field known string\n---@alias OpenUnion table|Record\n---@alias Chain0 table\n",
+        );
+        for n in 1..48 {
+            definitions.push_str(&format!("---@alias Chain{n} Chain{}\n", n - 1));
+        }
+        for expression in ["value.missing", "value[key]"] {
+            let mut ws = VirtualWorkspace::new();
+            ws.def(&definitions);
+            let file = ws.def(&format!("---@param value {annotation}\n---@param key string\nfunction read(value,key) local result={expression} return result end"));
+            assert_eq!(
+                result_type(&ws, file),
+                LuaType::Any,
+                "{annotation}: {expression}"
+            );
+        }
+    }
+}
+
+#[test]
+fn bare_table_generic_repair_keeps_nested_arguments_and_intersections() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def("---@class Wrapper<A,B>\n---@field first A\n---@field second B\n---@class Owner<T>\n---@field value Wrapper<{foo:T},T>\n---@field nested Wrapper<Wrapper<{foo:T},T>,T>\n---@class Record\n---@field known string");
+    for (annotation, expression, expected) in [
+        ("Owner<integer>", "value.value.first.foo", LuaType::Integer),
+        ("Owner<integer>", "value.value.second", LuaType::Integer),
+        (
+            "Owner<integer>",
+            "value.nested.first.first.foo",
+            LuaType::Integer,
+        ),
+        ("Owner<integer>", "value.nested.second", LuaType::Integer),
+    ] {
+        let file=ws.def(&format!("---@param value {annotation}\nfunction read(value) local result={expression} return result end"));
+        assert_eq!(
+            result_type(&ws, file),
+            expected,
+            "{annotation}: {expression}"
+        );
+    }
+}
+
+#[test]
+fn bare_table_intersection_keeps_its_structured_member_contract() {
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("---@class Record\n---@field known string");
+    let ty = ws.ty("table&Record");
+    let model = ws.analysis.semantic_model(file);
+    assert!(!crate::semantic_model::member::has_unrestricted_members(
+        &model, &ty
+    ));
+    assert_eq!(
+        model.member_type(&ty, &crate::LuaMemberKey::from("known")),
+        Some(LuaType::String)
+    );
+}

@@ -6,7 +6,7 @@ use hashbrown::HashMap;
 use crate::semantic_db::def::{DeclKind, MemberRef, SemanticId, TypeDef, TypeDefKind};
 use crate::semantic_model::infer::unify::{self, TplBindings};
 use crate::semantic_model::type_eval::{
-    expand_alias_generic, map_type, substitute_named_refs, with_expanded_alias,
+    expand_alias_head, map_type, substitute_named_refs, with_expanded_alias,
 };
 use crate::{FileId, GenericTplId, InFiled, LuaMemberKey, LuaType};
 use crate::{Member, semantic_db::facts::FileFacts};
@@ -24,32 +24,26 @@ const MAX_MEMBER_INHERITANCE_DEPTH: usize = 100;
 
 /// Whether arbitrary member reads have no declared key/value contract.
 pub(crate) fn has_unrestricted_members(model: &SemanticModel, ty: &LuaType) -> bool {
-    let mut current = ty.clone();
-    // Follow aliases without turning named classes or table literals into
-    // unrestricted tables. Bound traversal for recursive alias definitions.
-    for _ in 0..32 {
+    let mut pending = vec![ty.clone()];
+    let mut seen = hashbrown::HashSet::new();
+    while let Some(current) = pending.pop() {
+        if !seen.insert(current.clone()) {
+            continue;
+        }
         match &current {
             LuaType::Table | LuaType::Any => return true,
-            LuaType::Ref(id) | LuaType::Def(id) => {
-                let Some(def) = model.type_def_of(id) else {
-                    return false;
-                };
-                if def.kind != TypeDefKind::Alias {
-                    return false;
+            LuaType::Union(union) => pending.extend(union.iter().cloned()),
+            LuaType::MultiLineUnion(union) => pending.push(union.to_union()),
+            LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_) => {
+                if let Some(expanded) = expand_alias_head(model, &current)
+                    && expanded != current
+                {
+                    pending.push(expanded);
                 }
-                let Some(target) = model.alias_target(&def) else {
-                    return false;
-                };
-                current = target;
             }
-            LuaType::Generic(_) => {
-                let expanded = expand_alias_generic(model, &current);
-                if expanded == current {
-                    return false;
-                }
-                current = expanded;
-            }
-            _ => return false,
+            // An intersection may impose a structured contract even when one
+            // component is table. Do not erase the other component's fields.
+            _ => {}
         }
     }
     false
@@ -1033,6 +1027,36 @@ fn member_info_of(
     })
 }
 
+fn has_shell_table_argument(typ: &LuaType) -> bool {
+    match typ {
+        LuaType::Table => true,
+        LuaType::Generic(generic) => generic.get_params().iter().any(has_shell_table_argument),
+        _ => false,
+    }
+}
+
+/// Restore only erased table arguments, retaining the existing generic shape.
+fn repair_shell_table_arguments(shell: &LuaType, rich: &LuaType) -> LuaType {
+    match (shell, rich) {
+        (LuaType::Table, _) => rich.clone(),
+        (LuaType::Generic(shell), LuaType::Generic(rich))
+            if shell.get_base_type_id() == rich.get_base_type_id()
+                && shell.get_params().len() == rich.get_params().len() =>
+        {
+            LuaType::Generic(Rc::new(crate::LuaGenericType::new(
+                shell.get_base_type_id(),
+                shell
+                    .get_params()
+                    .iter()
+                    .zip(rich.get_params())
+                    .map(|(shell, rich)| repair_shell_table_arguments(shell, rich))
+                    .collect(),
+            )))
+        }
+        _ => shell.clone(),
+    }
+}
+
 pub(super) fn projected_member_type(
     model: &SemanticModel,
     member_ref: &MemberRef,
@@ -1044,12 +1068,13 @@ pub(super) fn projected_member_type(
     // A shell `table` argument may stand for an object annotation, not the
     // unrestricted primitive. Preserve its fields before generic substitution
     // so later indexing does not treat `Wrapper<{foo: T}>` as `Wrapper<table>`.
-    if matches!(&typ, LuaType::Generic(generic) if generic.get_params().iter().any(|param| matches!(param, LuaType::Table)))
+    if matches!(&typ, LuaType::Generic(_))
+        && has_shell_table_argument(&typ)
         && matches!(member.owner, SemanticId::TypeDef(_))
         && let Some(syntax) = member.value_syntax
         && let LuaType::Generic(rich) = model.doc_type_lua_rich_in(member_ref.file_id, syntax)
     {
-        typ = LuaType::Generic(rich);
+        typ = repair_shell_table_arguments(&typ, &LuaType::Generic(rich));
     }
 
     // Cross-file projection of runtime function members: `type_of_member` often returns a wide Function,
