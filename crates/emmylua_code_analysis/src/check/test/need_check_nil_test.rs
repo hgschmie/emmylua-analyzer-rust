@@ -462,3 +462,453 @@ end
         );
     }
 }
+
+#[test]
+fn test_computed_guards() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for body in [
+        "if rows[key] then mutate() local value = rows[key][other] end",
+        "if rows[key] then local changed = mutate() local value = rows[key][other] end",
+        "if rows[key] and mutate() then local value = rows[key][other] end",
+        "if rows[key] and rows[key][other] then local value = rows[key][other] end",
+        "if rows[key] ~= nil then local value = rows[key][other] end",
+        "if nil ~= rows[key] then local value = rows[key][other] end",
+        "if not rows[key] then return end local value = rows[key][other]",
+        "if rows[key] == nil then return end local value = rows[key][other]",
+        "if rows[key] then local unrelated = 1 local value = rows[key][other] end",
+        "if rows[key] then local deferred = function() mutate() end local value = rows[key][other] end",
+    ] {
+        for library in [false, true] {
+            let mut ws = if library {
+                VirtualWorkspace::new_with_init_std_lib()
+            } else {
+                VirtualWorkspace::new()
+            };
+            assert!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::NeedCheckNil,
+                    &format!(
+                        r#"
+---@param rows integer[][]
+---@param key integer
+---@param other integer
+local function read(rows, key, other)
+    {body}
+end
+"#
+                    )
+                ),
+                "{body} (stdlib: {library})"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_computed_guards_do_not_cross_mutations() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for body in [
+        "if rows[key] then key = nextkey local value = rows[key][other] end",
+        "if rows[key] then rows = replacement local value = rows[key][other] end",
+        "if rows[key] then rows[key] = nil local value = rows[key][other] end",
+        "if rows[key] then alias[key] = nil local value = rows[key][other] end",
+        "if rows[key] then local key = nextkey local value = rows[key][other] end",
+        "if rows[key] then local deferred = function() local value = rows[key][other] end end",
+        "if rows[key] then end local value = rows[key][other]",
+        "if rows[key] or rows[key][other] then end",
+        "if rows[key] == nil then local value = rows[key][other] end",
+        "if rows[nextkey] then local value = rows[key][other] end",
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        assert!(
+            !ws.has_no_diagnostic(
+                DiagnosticCode::NeedCheckNil,
+                &format!(
+                    r#"
+---@param rows integer[][]
+---@param replacement integer[][]
+---@param key integer
+---@param nextkey integer
+---@param other integer
+local function read(rows, replacement, key, nextkey, other)
+    local alias = rows
+    {body}
+end
+"#
+                )
+            ),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn test_nested_computed_guards() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::NeedCheckNil,
+        r#"
+---@class Dispatcher
+---@field Provided integer[][]
+---@param dispatcher Dispatcher
+---@param key integer
+---@param other integer
+local function read(dispatcher, key, other)
+    if dispatcher.Provided[key] and dispatcher.Provided[key][other] then
+        local count = dispatcher.Provided[key][other]
+    end
+end
+"#
+    ));
+    let mut ws = VirtualWorkspace::new();
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::NeedCheckNil,
+        r#"
+---@param rows integer[][]
+---@param key integer
+local function read(rows, key)
+    if rows[key] then local first = rows[key][1] end
+end
+"#
+    ));
+}
+
+#[test]
+fn test_computed_primitive_guards() {
+    use crate::{DiagnosticCode, LuaType, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    for body in [
+        "if type(rows[key]) == 'table' then local observed = rows[key]; print(observed.name) end",
+        "if type(rows[key]) == 'table' then local label = type(key); local text = tostring(key); local observed = rows[key]; print(observed.name) end",
+        "if type(rows[key]) ~= 'string' then if type(rows[key]) ~= 'nil' then local observed = rows[key]; print(observed.name) end end",
+        "if type(rows[key]) == 'string' then return end; if type(rows[key]) == 'nil' then return end; local observed = rows[key]; print(observed.name)",
+        "if type(rows[key]) ~= 'string' then if rows[key] then local observed = rows[key]; print(observed.name) end end",
+        "if 'table' == type(rows[key]) then local observed = rows[key]; print(observed.name) end",
+        "if type(rows[key]) ~= 'table' then return end; local observed = rows[key]; print(observed.name)",
+        "if not (type(rows[key]) == 'table') then return end; local observed = rows[key]; print(observed.name)",
+    ] {
+        let source = format!(
+            r#"
+        ---@param rows (table|string|nil)[]
+        ---@param key integer
+        local function read(rows, key) {body} end
+        "#
+        );
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(
+            ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+            "{body}"
+        );
+        let file = ws.def(&source);
+        let model = ws.analysis.semantic_model(file);
+        let pos = source.rfind("rows[key]").unwrap();
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .find(|i| u32::from(i.get_position()) as usize == pos)
+            .unwrap();
+        assert_eq!(
+            model.type_of_expr_at(index.get_syntax_id(), index.get_position()),
+            LuaType::Table,
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn test_computed_primitive_guards_keep_effect_boundaries() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for body in [
+        "if type(rows[key]) == 'table' then key = other; print(rows[key].name) end",
+        "if type(rows[key]) == 'table' then rows[key] = nil; print(rows[key].name) end",
+        "if type(rows[key]) == 'table' then rows = {}; print(rows[key].name) end",
+        "if type(rows[key]) == 'table' then mutate(); print(rows[key].name) end",
+        "if type(rows[key]) == 'table' then local changed = mutate(); print(rows[key].name) end",
+        "if type(rows[other]) == 'table' then print(rows[key].name) end",
+        "local type = function(_) return 'table' end; if type(rows[key]) == 'table' then print(rows[key].name) end",
+    ] {
+        let source = format!(
+            r#"
+        ---@param rows (table|string|nil)[]
+        ---@param key integer
+        ---@param other integer
+        local function read(rows, key, other)
+            local function mutate() rows[key] = nil end
+            {body}
+        end
+        "#
+        );
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(
+            !ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+            "{body}"
+        );
+    }
+}
+
+fn check_global_collection_guard(body: &str, safe: bool) {
+    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    ws.def(
+        r#"
+---@class Entry
+---@field label string
+---@class Collection<K,V>: table<K,V>
+---@alias Entries Collection<string, Entry?>
+---@class Registry
+---@field entries Entries
+---@field array Entry[]
+---@type Registry
+registry = {}
+---@type string
+selected = ''
+"#,
+    );
+    let source = format!(
+        r#"
+---@param key string
+---@param other string
+---@param flag boolean
+---@param replacement Registry
+---@param record {{id: string}}
+local function label(key, other, flag, replacement, record)
+    {body}
+end
+"#
+    );
+    assert_eq!(
+        ws.has_no_diagnostic(crate::DiagnosticCode::NeedCheckNil, &source),
+        safe,
+        "{body}"
+    );
+}
+
+#[test]
+fn guarded_global_inherited_index_reads() {
+    for body in [
+        "if registry.entries[key] then refresh(); return registry.entries[key].label end",
+        "if registry.entries[key] then local result = refresh(); return registry.entries[key].label end",
+        "return registry.entries[key] and registry.entries[key].label or ''",
+        "if registry.entries[key] then return registry.entries[key].label end",
+        "if not registry.entries[key] then return end; return registry.entries[key].label",
+        "local same = registry; return same.entries[key] and same.entries[key].label or ''",
+        "return registry.entries[selected] and registry.entries[selected].label or ''",
+        "return registry.entries[record.id] and registry.entries[record.id].label or ''",
+        "return registry.entries['fixed'] and registry.entries['fixed'].label or ''",
+        "if registry.array[1] then return registry.array[1].label end",
+        "for i = 1, 10 do if registry.entries[key] then return registry.entries[key].label end end",
+    ] {
+        check_global_collection_guard(body, true);
+    }
+}
+
+#[test]
+fn guarded_global_index_facts_expire_on_mutations() {
+    for body in [
+        "return registry.entries[key].label",
+        "if registry.entries[record.id] then record.id = other; return registry.entries[record.id].label end",
+        "if registry.entries[key] then local _ENV = replacement; return registry.entries[key].label end",
+        "return registry.entries[key] and registry.entries[other].label or ''",
+        "if registry.entries[key] then key = other; return registry.entries[key].label end",
+        "if registry.entries[selected] then selected = other; return registry.entries[selected].label end",
+        "if registry.entries[key] then registry = replacement; return registry.entries[key].label end",
+        "if registry.entries[key] then registry.entries[key] = nil; return registry.entries[key].label end",
+        "if registry.entries[key] then local alias = registry.entries; alias[key] = nil; return registry.entries[key].label end",
+        "if registry.entries[key] then local key = other; return registry.entries[key].label end",
+        "if registry.entries[key] then local registry = replacement; return registry.entries[key].label end",
+        "if registry.entries[key] then return function() return registry.entries[key].label end end",
+    ] {
+        check_global_collection_guard(body, false);
+    }
+}
+
+#[test]
+fn guarded_inherited_indexes_do_not_assume_pure_metamethods() {
+    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    assert!(!ws.has_no_diagnostic(
+        crate::DiagnosticCode::NeedCheckNil,
+        r#"
+---@class Entry
+---@field label string
+---@class Changing: table<string, Entry?>
+---@field __index fun(self: Changing, key: string): Entry?
+---@param changing Changing
+---@param key string
+local function label(changing, key)
+    return changing[key] and changing[key].label or ''
+end
+"#
+    ));
+}
+
+#[test]
+fn test_computed_primitive_join_paths_keep_incoming_filters() {
+    use crate::{LuaType, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    for (body, expected) in [
+        (
+            "if flag then if type(rows[key]) ~= 'table' then return end else if type(rows[key]) == 'string' then return end; if not rows[key] then return end end; local observed = rows[key]",
+            LuaType::Table,
+        ),
+        (
+            "if flag then if type(rows[key]) ~= 'string' then return end else if type(rows[key]) ~= 'table' then return end end; local observed = rows[key]",
+            LuaType::from_vec(vec![LuaType::Table, LuaType::String]),
+        ),
+        (
+            "if flag then if type(rows[key]) ~= 'table' then return end end; local observed = rows[key]",
+            LuaType::from_vec(vec![LuaType::Table, LuaType::String, LuaType::Nil]),
+        ),
+    ] {
+        let source = format!(
+            "---@param rows (table|string|nil)[]\n---@param key integer\n---@param flag boolean\nlocal function read(rows, key, flag) {body} end"
+        );
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(&source);
+        let model = ws.analysis.semantic_model(file);
+        let offset = source.rfind("rows[key]").unwrap();
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .find(|index| u32::from(index.get_position()) as usize == offset)
+            .unwrap();
+        assert_eq!(
+            model.type_of_expr_at(index.get_syntax_id(), index.get_position()),
+            expected,
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn computed_visible_call_bindings_invalidate_only_conflicting_receivers() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let mut failures = Vec::new();
+    for (setup, call, conflict) in [
+        (
+            "local M={} function M.clear(t,k) t[k]=nil end",
+            "M.clear(rows,key)",
+            true,
+        ),
+        (
+            "local M={} function M.clear(t,k) t[k]=nil end",
+            "M.clear(other,key)",
+            false,
+        ),
+        (
+            "local clear=function() end; clear=function() rows[key]=nil end",
+            "clear()",
+            true,
+        ),
+        (
+            "local clear=function() rows[key]=nil end; clear=function() end",
+            "clear()",
+            false,
+        ),
+        (
+            "local M={} function M:clear(t,k) t[k]=nil end",
+            "M:clear(rows,key)",
+            true,
+        ),
+        (
+            "local M={} function M:clear(t,k) t[k]=nil end",
+            "M:clear(other,key)",
+            false,
+        ),
+        (
+            "local alias=rows; local M={} function M.clear() alias[key]=nil end",
+            "M.clear()",
+            true,
+        ),
+        (
+            "local M={} function M.clear() rows[key]=nil end",
+            "opaque(rows,key)",
+            false,
+        ),
+        (
+            "local function clear(t,k) t[k]=nil end",
+            "clear(other,key)",
+            false,
+        ),
+        ("local rawset=function() end", "rawset(rows,key,nil)", false),
+        ("", "rawset(other,key,nil)", false),
+        ("", "rawset(rows,key,nil)", true),
+        ("", "setmetatable(rows,{})", true),
+        ("", "setmetatable(other,{})", false),
+        (
+            "local setmetatable=function() end",
+            "setmetatable(rows,{})",
+            false,
+        ),
+        ("", "table.remove(rows,key)", true),
+        ("", "table.remove(other,key)", false),
+        ("local remove=table.remove", "remove(rows,key)", true),
+        (
+            "table.remove=function() end",
+            "table.remove(rows,key)",
+            false,
+        ),
+        (
+            "local M={} function M.clear(t) table.remove(t,key) end",
+            "M.clear(rows)",
+            true,
+        ),
+        (
+            "local M={} function M.clear(t) table.remove(t,key) end",
+            "M.clear(other)",
+            false,
+        ),
+    ] {
+        let source = format!(
+            "---@param rows integer[][]\n---@param other integer[][]\n---@param key integer\nlocal function read(rows,other,key) {setup} if rows[key] then {call} local observed=rows[key][1] end end"
+        );
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        if ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source) == conflict {
+            failures.push(format!("{setup}: {call}, expected conflict={conflict}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn computed_visible_calls_track_global_ancestors_and_key_dependencies() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for (statement, conflict) in [
+        ("M.replace(state)", true),
+        ("M.replace(other)", false),
+        ("M.rekey(state)", true),
+        ("M.rekey(other)", false),
+        ("M.clear_global()", true),
+        ("opaque(state)", false),
+    ] {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let src = format!(
+            r#"
+---@type integer[][]
+global_rows = {{}}
+---@class State
+---@field rows integer[][]
+---@field key integer
+local M = {{}}
+function M.replace(target) target.rows = {{}} end
+function M.rekey(target) target.key = 2 end
+function M.clear_global() global_rows[1] = nil end
+---@param state State
+---@param other State
+local function read(state,other)
+    if state.rows[state.key] and global_rows[1] then
+        {statement}
+        local observed = state.rows[state.key][1]
+        local global_observed = global_rows[1][1]
+    end
+end
+"#
+        );
+        assert_eq!(
+            !ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &src),
+            conflict,
+            "{statement}"
+        );
+    }
+}
