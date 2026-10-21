@@ -237,3 +237,43 @@ fn numeric_enum_broad_integer_assignment_policy_is_preserved() {
         }
     }
 }
+
+#[test]
+fn numeric_enum_compatibility_does_not_depend_on_doc_literal_policy() {
+    for allow_doc_literals in [false, true] {
+        let mut ws = VirtualWorkspace::new();
+        let mut config = ws.get_emmyrc();
+        config.strict.doc_base_const_match_base_type = allow_doc_literals;
+        ws.update_emmyrc(config);
+        let file = ws.def(&format!(
+            "{DEFINITION}\n---@enum Empty\nempty = {{}}\n---@enum Text\ntext = {{one = 'one'}}"
+        ));
+        let state = ws.ty("demo.State");
+        let empty = ws.ty("Empty");
+        let text = ws.ty("Text");
+        let literals = ws.ty("0|1");
+        let model = ws.analysis.semantic_model(file);
+        assert!(model.type_check(&LuaType::Integer, &state));
+        assert!(!model.type_check_subtype(&LuaType::Integer, &state));
+        assert!(!model.type_check(&LuaType::Integer, &empty));
+        assert!(!model.type_check(&LuaType::Integer, &text));
+        assert!(!model.type_check(&LuaType::IntegerConst(99), &state));
+        assert!(!model.type_check(&LuaType::Number, &state));
+        assert_eq!(
+            model.type_check(&LuaType::Integer, &literals),
+            allow_doc_literals
+        );
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+---@class Settings
+---@field state demo.State
+---@alias Setter fun(settings: Settings)
+---@return integer
+local function read() return 1 end
+---@type table<string, Setter>
+local setters = { limit = function(settings) settings.state = read() end }
+"#
+        ));
+    }
+}
