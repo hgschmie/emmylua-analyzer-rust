@@ -280,6 +280,7 @@ impl SemanticLocalCache {
         self.alias_heads.retain(|_, entry| entry.is_ready());
     }
 
+    /// Count incomplete semantic queries; successful cache insertion does not advance this value.
     pub(crate) fn revision(&self) -> u64 {
         self.incomplete_revision.get()
     }
@@ -289,6 +290,7 @@ impl SemanticLocalCache {
             .set(self.incomplete_revision.get().wrapping_add(1));
     }
 
+    /// Whether no incomplete dependency has been observed since the supplied snapshot.
     pub(crate) fn is_complete(&self, revision: u64) -> bool {
         self.revision() == revision
     }

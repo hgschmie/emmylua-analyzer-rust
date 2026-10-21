@@ -877,3 +877,404 @@ fn recursive_alias_member_queries_keep_concrete_alternatives() {
         assert_eq!(members[0].typ, LuaType::String);
     }
 }
+
+#[test]
+fn rawget_broad_keys_resolve_index_contracts() {
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    ws.def(
+        r#"
+        ---@class Metrics: { [string]: integer }
+        ---@class Dictionary<K,V>: table<K,V>
+        ---@class Child: Dictionary<string, integer>
+        ---@class Fields
+        ---@field [string] integer?
+        ---@alias Key string
+        ---@alias Values table<string, integer>
+        ---@type Metrics
+        metrics = {}
+        ---@type Dictionary<string, integer>
+        generic = {}
+        ---@type Child
+        child = {}
+        ---@type Fields
+        fields = {}
+        ---@type Values
+        values = {}
+        ---@type { [string]: integer }
+        object = {}
+        ---@type string
+        key = ''
+        ---@type Key
+        alias_key = ''
+    "#,
+    );
+    for name in ["metrics", "generic", "child", "fields", "values", "object"] {
+        for key in ["key", "alias_key"] {
+            let ty = ws.expr_ty(&format!("rawget({name}, {key}) or 0"));
+            assert_eq!(ty, LuaType::Integer, "{name}[{key}]: {ty:?}");
+        }
+    }
+}
+
+#[test]
+fn rawget_metrics_arithmetic_has_no_type_mismatch() {
+    use crate::DiagnosticCode;
+    let source = r#"
+        ---@class Metrics: { [string]: integer }
+        local Metrics = {}
+        ---@param key string
+        ---@return integer
+        function Metrics:get(key) return rawget(self, key) or 0 end
+        ---@param key string
+        ---@return integer
+        function Metrics:inc(key)
+            local value = (rawget(self, key) or 0) + 1
+            rawset(self, key, value)
+            return value
+        end
+        ---@param key string
+        function Metrics:show(key)
+            ---@type integer?
+            local value = rawget(self, key)
+        end
+    "#;
+    for code in [
+        DiagnosticCode::ReturnTypeMismatch,
+        DiagnosticCode::AssignTypeMismatch,
+    ] {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(ws.has_no_diagnostic(code, source), "{code:?}");
+    }
+}
+
+#[test]
+fn rawget_dynamic_indexes_preserve_missing_values_and_key_domains() {
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def(
+        r#"
+        ---@class Dictionary<K,V>: table<K,V>
+        ---@class StringFields
+        ---@field [string] integer?
+        ---@class Cycle: Cycle
+        ---@alias StringKey string
+    "#,
+    );
+    for (base, key, expected) in [
+        ("table<string, integer>", "string", Some("integer?")),
+        ("integer[]", "integer", Some("integer?")),
+        ("Dictionary<string, boolean>", "StringKey", Some("boolean?")),
+        (
+            "{[string]: integer, [integer]: boolean}",
+            "integer",
+            Some("boolean?"),
+        ),
+        ("StringFields", "string", Some("integer?")),
+        ("table<string, integer>", "integer", None),
+        ("integer[]", "string", None),
+        ("Cycle", "string", None),
+        // A named field does not authorize other keys or prove a closed table.
+        ("{count:integer}", "'value'", None),
+        ("{count:integer}", "string", None),
+    ] {
+        let base_ty = ws.ty(base);
+        let key_ty = ws.ty(key);
+        let expected = expected.map(|ty| ws.ty(ty));
+        let model = ws.analysis.semantic_model(file);
+        let result = eval_index_access(&model, &base_ty, &key_ty);
+        assert_eq!(result, expected, "{base}[{key}]");
+    }
+}
+
+#[test]
+fn rawget_broad_domains_remain_precise_across_doc_literal_settings() {
+    for permissive in [false, true] {
+        let mut ws = VirtualWorkspace::new();
+        let mut config = crate::Emmyrc::default();
+        config.strict.doc_base_const_match_base_type = permissive;
+        ws.analysis.update_config(config.into());
+        let file = ws.def("---@class Box<K,V>: table<K,V>\n---@class Child: Box<string,boolean>");
+        // Resolve a namespace declared in another file through the caller view.
+        ws.def("---@namespace User\n---@class table<T>\n---@field [integer] T");
+        for (base, key, expected) in [
+            ("table<'only',integer>", "string", None),
+            ("Child", "string", Some("boolean?")),
+            ("Box<string,integer>", "string", Some("integer?")),
+            ("Box<string,integer>", "integer", None),
+            ("User.table<string>", "integer", Some("string?")),
+            ("User.table<string>", "string", None),
+            (
+                "table<string,boolean>|table<string,integer>",
+                "string",
+                Some("boolean|integer|nil"),
+            ),
+            // index_infos exposes candidates from both intersection components;
+            // broad projection is conservative, not an exact value intersection.
+            (
+                "{[string]:boolean}&{[string]:integer}",
+                "string",
+                Some("boolean|integer|nil"),
+            ),
+        ] {
+            let base = ws.ty(base);
+            let key = ws.ty(key);
+            let expected = expected.map(|x| ws.ty(x));
+            let model = ws.analysis.semantic_model(file);
+            for _ in 0..2 {
+                assert_eq!(
+                    eval_index_access(&model, &base, &key),
+                    expected,
+                    "{base:?}, {key:?}, permissive={permissive}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn rawget_broad_queries_retry_incomplete_index_projections() {
+    use crate::semantic_model::cache::{CacheEntry, QueryCacheScope};
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("---@class Record\n---@field [integer] string");
+    let typ = ws.ty("Record");
+    let expected = ws.ty("string?");
+    let model = ws.analysis.semantic_model(file);
+    let infos = model.index_infos(&typ);
+    for entry in [
+        CacheEntry::InProgress,
+        CacheEntry::Provisional(Vec::new()),
+        CacheEntry::Provisional(infos),
+    ] {
+        {
+            let _query = QueryCacheScope::new(&model.cache);
+            model
+                .cache
+                .borrow_mut()
+                .index_infos
+                .insert((file, typ.clone()), entry);
+            assert_eq!(eval_index_access(&model, &typ, &LuaType::Integer), None);
+        }
+        assert_eq!(
+            eval_index_access(&model, &typ, &LuaType::Integer),
+            Some(expected.clone())
+        );
+    }
+}
+
+#[test]
+fn rawget_broad_queries_do_not_publish_exhausted_partial_values() {
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("---@class Growing<T>: Growing<T[]>\n---@field [integer] T");
+    let typ = ws.ty("Growing<string>");
+    let model = ws.analysis.semantic_model(file);
+    assert_eq!(eval_index_access(&model, &typ, &LuaType::Integer), None);
+    assert!(!model.cache.borrow().index_infos.contains_key(&(file, typ)));
+}
+#[test]
+fn dynamic_index_special_keys_have_explicit_projection_contracts() {
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("");
+    let base = ws.ty("{[string]: integer?, [number]: boolean}");
+    let expected = ws.ty("integer|boolean|nil");
+    let nil_domain = ws.ty("table<nil,integer>");
+    let model = ws.analysis.semantic_model(file);
+    for key in [LuaType::Any, LuaType::Unknown] {
+        for phase in ["cold", "warm"] {
+            assert_eq!(
+                eval_index_access(&model, &base, &key),
+                Some(expected.clone()),
+                "{key:?}: {phase}"
+            );
+        }
+    }
+    for key in [LuaType::Nil, LuaType::Never] {
+        for base in [&base, &nil_domain] {
+            assert_eq!(
+                eval_index_access(&model, base, &key),
+                None,
+                "{base:?}[{key:?}]"
+            );
+        }
+    }
+}
+
+#[test]
+fn dynamic_index_non_rawget_paths_remain_distinct() {
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    let file = ws.def("---@class Values\n---@field [string] integer\n---@type Values\nvalues = {}\n---@type {[string]:integer}\nobject = {}\n---@type {count:integer}\nrecord = {}\n---@type string\nkey = ''");
+    let base = ws.ty("Values");
+    let expected = ws.ty("integer?");
+    let call = LuaAliasCallType::new(LuaAliasCallKind::Index, vec![base, LuaType::String]);
+    let model = ws.analysis.semantic_model(file);
+    assert_eq!(expand_index_call(&model, &call), Some(expected));
+    // Ordinary broad expression indexing currently has a separate precision
+    // limitation. Type-level indexing must not silently change that path.
+    assert_eq!(ws.expr_ty("object[key]"), LuaType::Unknown);
+    assert_eq!(ws.expr_ty("record['count']"), LuaType::Integer);
+    assert_eq!(ws.expr_ty("rawget(values, key) or 0"), LuaType::Integer);
+}
+
+#[test]
+fn dynamic_index_exhaustion_is_shared_only_within_the_outer_query() {
+    use crate::semantic_model::cache::QueryCacheScope;
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("---@class Growing<T>: Growing<T[]>\n---@field [integer] T\n---@class Complete\n---@field [integer] string");
+    let growing = ws.ty("Growing<string>");
+    let complete = ws.ty("Complete");
+    let expected = ws.ty("string?");
+    let model = ws.analysis.semantic_model(file);
+    assert_eq!(
+        eval_index_access(&model, &complete, &LuaType::Integer),
+        Some(expected.clone())
+    );
+    {
+        let _outer = QueryCacheScope::new(&model.cache);
+        assert_eq!(eval_index_access(&model, &growing, &LuaType::Integer), None);
+        assert!(model.cache.borrow().evaluation_exhausted);
+        assert_eq!(
+            eval_index_access(&model, &complete, &LuaType::Integer),
+            None
+        );
+    }
+    assert_eq!(
+        eval_index_access(&model, &complete, &LuaType::Integer),
+        Some(expected)
+    );
+    assert!(!model.cache.borrow().evaluation_exhausted);
+}
+
+#[test]
+fn dynamic_index_incomplete_later_domain_discards_earlier_matches() {
+    use crate::semantic_model::cache::{CacheEntry, QueryCacheScope};
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("");
+    let base = ws.ty("{[string]: integer, [number]: boolean}");
+    let expected = ws.ty("integer|boolean|nil");
+    let model = ws.analysis.semantic_model(file);
+    let infos = model.index_infos(&base);
+    assert_eq!(infos.len(), 2);
+    {
+        let _outer = QueryCacheScope::new(&model.cache);
+        model.cache.borrow_mut().type_check.insert(
+            (file, LuaType::Any, infos[0].key_type.clone(), true),
+            CacheEntry::Ready(true),
+        );
+        model.cache.borrow_mut().type_check.insert(
+            (file, LuaType::Any, infos[1].key_type.clone(), true),
+            CacheEntry::InProgress,
+        );
+        assert_eq!(eval_index_access(&model, &base, &LuaType::Any), None);
+    }
+    assert_eq!(
+        eval_index_access(&model, &base, &LuaType::Any),
+        Some(expected)
+    );
+}
+
+#[test]
+fn dynamic_index_unresolved_templates_and_computations_do_not_project() {
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("");
+    let base = ws.ty("table<string, integer>");
+    let model = ws.analysis.semantic_model(file);
+    let template = LuaType::TplRef(Rc::new(GenericTpl::new(
+        GenericTplId::Type(0),
+        "K".into(),
+        Some(LuaType::String),
+        None,
+        false,
+        None,
+    )));
+    let unresolved = LuaType::Call(Rc::new(LuaAliasCallType::new(
+        LuaAliasCallKind::Index,
+        vec![],
+    )));
+    for key in [template, unresolved] {
+        assert_eq!(eval_index_access(&model, &base, &key), None);
+    }
+    assert_eq!(
+        eval_index_access(&model, &base, &LuaType::String),
+        Some(LuaType::from_vec(vec![LuaType::Integer, LuaType::Nil]))
+    );
+}
+
+#[test]
+fn dynamic_index_mixed_literal_and_broad_union_keys_keep_both_domains() {
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("");
+    let base = ws.ty("{[string]: integer, [integer]: boolean}");
+    let expected = ws.ty("integer|boolean|nil");
+    for key in ["string|1", "1|string"] {
+        let key = ws.ty(key);
+        let model = ws.analysis.semantic_model(file);
+        for _ in 0..2 {
+            assert_eq!(
+                eval_index_access(&model, &base, &key),
+                Some(expected.clone())
+            );
+        }
+    }
+}
+
+#[test]
+fn dynamic_index_literal_signature_and_documentation_access_preserve_absence() {
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("---@alias Selected {[string]:integer}['value']");
+    let base = ws.ty("{[string]:integer}");
+    let key = ws.ty("'value'");
+    let selected = ws.ty("Selected");
+    let expected = ws.ty("integer?");
+    let model = ws.analysis.semantic_model(file);
+    assert_eq!(
+        eval_index_access(&model, &base, &key),
+        Some(expected.clone())
+    );
+    assert_eq!(expand_alias_head(&model, &selected), Some(expected));
+}
+
+#[test]
+fn dynamic_index_unresolved_union_bases_do_not_publish_partial_contracts() {
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("");
+    let literal = ws.ty("'value'");
+    for source in ["Missing|{[string]:integer}", "{[string]:integer}|Missing"] {
+        let base = ws.ty(source);
+        let model = ws.analysis.semantic_model(file);
+        for key in [&literal, &LuaType::String] {
+            assert_eq!(eval_index_access(&model, &base, key), None, "{source}");
+        }
+    }
+}
+
+#[test]
+fn dynamic_index_growing_union_keys_exhaust_in_both_orders_and_retry() {
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("---@alias GrowingKey<T> GrowingKey<T[]>");
+    let base = ws.ty("{[string]:integer}");
+    for source in ["string|GrowingKey<string>", "GrowingKey<string>|string"] {
+        let key = ws.ty(source);
+        let model = ws.analysis.semantic_model(file);
+        assert_eq!(eval_index_access(&model, &base, &key), None, "{source}");
+        assert_eq!(
+            eval_index_access(&model, &base, &LuaType::String),
+            Some(LuaType::from_vec(vec![LuaType::Integer, LuaType::Nil]))
+        );
+    }
+}
+
+#[test]
+fn dynamic_index_resolves_concrete_computed_keys() {
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("");
+    let base = ws.ty("{[string]:integer}");
+    let key_base = ws.ty("{kind:string}");
+    let literal = ws.ty("'kind'");
+    let key = LuaType::Call(Rc::new(LuaAliasCallType::new(
+        LuaAliasCallKind::Index,
+        vec![key_base, literal],
+    )));
+    let model = ws.analysis.semantic_model(file);
+    assert_eq!(
+        eval_index_access(&model, &base, &key),
+        Some(LuaType::from_vec(vec![LuaType::Integer, LuaType::Nil]))
+    );
+}
