@@ -225,3 +225,45 @@ fn bare_table_intersection_keeps_its_structured_member_contract() {
         Some(LuaType::String)
     );
 }
+
+#[test]
+fn bare_table_generic_repair_preserves_union_object_arguments() {
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def(
+        r#"
+---@class Wrapper<A,B>
+---@field first A
+---@field second B
+---@class Owner<T>
+---@field value Wrapper<{foo:T}|string,T>
+"#,
+    );
+    let owner = ws.ty("Owner<integer>");
+    let model = ws.analysis.semantic_model(file);
+    let value = model
+        .member_type(&owner, &crate::LuaMemberKey::from("value"))
+        .unwrap();
+    let first = model
+        .member_type(&value, &crate::LuaMemberKey::from("first"))
+        .unwrap();
+    let LuaType::Union(union) = first else {
+        panic!("expected union: {first:?}");
+    };
+    let branches = union.into_vec();
+    assert!(branches.contains(&LuaType::String));
+    let object = branches
+        .iter()
+        .find_map(|ty| match ty {
+            LuaType::Object(object) => Some(object),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        object.get_field(&crate::LuaMemberKey::from("foo")),
+        Some(&LuaType::Integer)
+    );
+    assert_eq!(
+        model.member_type(&value, &crate::LuaMemberKey::from("second")),
+        Some(LuaType::Integer)
+    );
+}

@@ -1031,6 +1031,8 @@ fn has_shell_table_argument(typ: &LuaType) -> bool {
     match typ {
         LuaType::Table => true,
         LuaType::Generic(generic) => generic.get_params().iter().any(has_shell_table_argument),
+        LuaType::Union(union) => union.into_vec().iter().any(has_shell_table_argument),
+        LuaType::MultiLineUnion(union) => has_shell_table_argument(&union.to_union()),
         _ => false,
     }
 }
@@ -1053,6 +1055,38 @@ fn repair_shell_table_arguments(shell: &LuaType, rich: &LuaType) -> LuaType {
                     .collect(),
             )))
         }
+        (LuaType::Union(shell), LuaType::Union(rich)) => {
+            let rich = rich.into_vec();
+            let mut repaired = Vec::new();
+            for branch in shell.into_vec() {
+                let candidates: Vec<_> = rich
+                    .iter()
+                    .filter(|candidate| match (&branch, candidate) {
+                        (LuaType::Table, LuaType::Table | LuaType::Object(_)) => true,
+                        (LuaType::Generic(shell), LuaType::Generic(rich)) => {
+                            shell.get_base_type_id() == rich.get_base_type_id()
+                                && shell.get_params().len() == rich.get_params().len()
+                        }
+                        _ => false,
+                    })
+                    .collect();
+                if has_shell_table_argument(&branch) && !candidates.is_empty() {
+                    repaired.extend(
+                        candidates
+                            .into_iter()
+                            .map(|rich| repair_shell_table_arguments(&branch, rich)),
+                    );
+                } else {
+                    repaired.push(branch);
+                }
+            }
+            LuaType::from_vec(repaired)
+        }
+        (LuaType::MultiLineUnion(shell), _) => {
+            repair_shell_table_arguments(&shell.to_union(), rich)
+        }
+        (_, LuaType::MultiLineUnion(rich)) => repair_shell_table_arguments(shell, &rich.to_union()),
+        // Named aliases are not erased object literals; retain their identity.
         _ => shell.clone(),
     }
 }
