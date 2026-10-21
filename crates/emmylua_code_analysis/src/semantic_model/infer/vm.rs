@@ -4489,8 +4489,23 @@ fn falsy_components(ty: &LuaType) -> Vec<LuaType> {
             }
         }
         LuaType::Nil => vec![ty.clone()],
-        LuaType::Unknown | LuaType::Any => vec![ty.clone()],
+        // Even an unknown/dynamic value can short-circuit `and` only as nil or false.
+        LuaType::Unknown | LuaType::Any => vec![LuaType::Nil, LuaType::BooleanConst(false)],
         _ => Vec::new(),
+    }
+}
+
+/// Lua `and` returns the falsy left value or the right value. Unknown does not
+/// imply falsy: keep both outcomes, without leaking truthy left-hand values.
+pub(crate) fn logical_and_type(left: &LuaType, right: LuaType) -> LuaType {
+    if left.is_always_falsy() {
+        left.clone()
+    } else if left.is_always_truthy() {
+        right
+    } else {
+        let mut types = falsy_components(left);
+        types.push(right);
+        LuaType::from_vec(types)
     }
 }
 
@@ -4518,19 +4533,7 @@ pub(crate) fn binary_type(
     };
     match op {
         // Short-circuit evaluation: `a and b` = falsy(a) | b; `a or b` = truthy(a) | b.
-        OpAnd => {
-            if matches!(left, LuaType::Unknown) {
-                LuaType::Nil
-            } else if left.is_always_falsy() {
-                left.clone()
-            } else if left.is_always_truthy() {
-                right.clone()
-            } else {
-                let mut types = falsy_components(left);
-                types.push(right.clone());
-                LuaType::from_vec(types)
-            }
-        }
+        OpAnd => logical_and_type(left, right),
         OpOr => {
             if left.is_always_truthy() {
                 left.clone()

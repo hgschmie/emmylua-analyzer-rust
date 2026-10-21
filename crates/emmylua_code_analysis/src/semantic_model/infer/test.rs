@@ -2093,3 +2093,96 @@ fn test_aliased_call_argument_imported_nullable_return() {
         ws.ty("Signal?")
     );
 }
+
+fn logical_initializer_types(expression: &str, annotation: &str) -> [LuaType; 2] {
+    use emmylua_parser::LuaLocalStat;
+
+    let source =
+        format!("{annotation}\nlocal function run(value)\n local result = {expression}\nend");
+    let env = model_of(&source);
+    let model = env.model();
+    let root = model.syntax_tree().unwrap().get_red_root();
+    let expr = root
+        .descendants()
+        .filter_map(LuaLocalStat::cast)
+        .find_map(|stat| stat.get_value_exprs().next())
+        .expect("initializer");
+    [
+        model.type_of_expr(expr.get_syntax_id()),
+        model.type_of_expr_at(expr.get_syntax_id(), expr.get_range().start()),
+    ]
+}
+
+#[test]
+fn test_unknown_logical_and_preserves_possible_rhs() {
+    for annotation in ["", "---@param value unknown", "---@param value any"] {
+        for expression in ["value and true", "value and (value < '01.13.01')"] {
+            for ty in logical_initializer_types(expression, annotation) {
+                assert!(!ty.is_always_falsy(), "{expression}: {ty:?}");
+                assert!(!ty.is_always_truthy(), "{expression}: {ty:?}");
+                assert!(ty.is_nullable(), "{expression}: {ty:?}");
+                let LuaType::Union(parts) = ty else {
+                    panic!("expected alternatives")
+                };
+                assert!(
+                    parts
+                        .iter()
+                        .any(|part| matches!(part, LuaType::Boolean | LuaType::BooleanConst(true))),
+                    "missing right-hand value: {parts:?}"
+                );
+                assert!(
+                    !parts
+                        .iter()
+                        .any(|part| matches!(part, LuaType::Unknown | LuaType::Any)),
+                    "only falsy left-hand values can survive: {parts:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_unknown_logical_and_falsy_rhs_is_always_falsy() {
+    for annotation in ["", "---@param value unknown", "---@param value any"] {
+        for expression in ["value and false", "value and nil"] {
+            for ty in logical_initializer_types(expression, annotation) {
+                assert!(ty.is_always_falsy(), "{expression}: {ty:?}");
+                assert_eq!(
+                    ty,
+                    LuaType::from_vec(vec![LuaType::Nil, LuaType::BooleanConst(false)])
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_unknown_logical_and_tuple_rhs_is_preserved() {
+    for ty in logical_initializer_types("value and { 'value', 42 }", "") {
+        assert!(!ty.is_always_falsy(), "{ty:?}");
+        assert!(!ty.is_always_truthy(), "{ty:?}");
+        assert!(ty.is_nullable(), "{ty:?}");
+        let LuaType::Union(parts) = ty else {
+            panic!("expected alternatives")
+        };
+        assert!(parts.iter().any(LuaType::is_tuple), "{parts:?}");
+        assert!(parts.iter().any(|ty| ty == &LuaType::BooleanConst(false)));
+    }
+}
+
+#[test]
+fn test_unknown_logical_and_fallback_is_always_truthy() {
+    for ty in logical_initializer_types("value and true or 42", "") {
+        assert!(ty.is_always_truthy(), "{ty:?}");
+    }
+}
+
+#[test]
+fn test_unknown_logical_or_and_not_stay_indeterminate() {
+    for expression in ["value or false", "value or nil", "not value"] {
+        for ty in logical_initializer_types(expression, "") {
+            assert!(!ty.is_always_falsy(), "{expression}: {ty:?}");
+            assert!(!ty.is_always_truthy(), "{expression}: {ty:?}");
+        }
+    }
+}

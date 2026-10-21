@@ -42,7 +42,7 @@ use super::cache;
 use super::member::{find_self_return_cast_member, has_unrestricted_members};
 use crate::semantic_model::infer::infer_call_with_bindings;
 use crate::semantic_model::infer::unify::substitute;
-use crate::semantic_model::infer::vm::{binary_type, widen_const};
+use crate::semantic_model::infer::vm::{binary_type, logical_and_type, widen_const};
 use crate::signature::LuaSignatureId;
 
 /// Backtracking options: independently collect condition guards, cast widening, and assignment hits.
@@ -964,19 +964,7 @@ fn logical_binary_type(
     right: LuaType,
 ) -> LuaType {
     match op {
-        BinaryOperator::OpAnd => {
-            if matches!(left, LuaType::Unknown) {
-                LuaType::Nil
-            } else if left.is_always_falsy() {
-                left
-            } else if left.is_always_truthy() {
-                right
-            } else {
-                let mut types = logical_falsy_components(&left);
-                types.push(right);
-                LuaType::from_vec(types)
-            }
-        }
+        BinaryOperator::OpAnd => logical_and_type(&left, right),
         BinaryOperator::OpOr => {
             if left.is_always_truthy() {
                 left
@@ -989,34 +977,6 @@ fn logical_binary_type(
             }
         }
         _ => right,
-    }
-}
-
-fn logical_falsy_components(ty: &LuaType) -> Vec<LuaType> {
-    match ty {
-        LuaType::Union(union) => union
-            .into_vec()
-            .into_iter()
-            .flat_map(|ty| logical_falsy_components(&ty))
-            .collect(),
-        LuaType::Boolean => vec![LuaType::BooleanConst(false)],
-        LuaType::BooleanConst(is_true) => {
-            if *is_true {
-                Vec::new()
-            } else {
-                vec![ty.clone()]
-            }
-        }
-        LuaType::DocBooleanConst(is_true) => {
-            if *is_true {
-                Vec::new()
-            } else {
-                vec![ty.clone()]
-            }
-        }
-        LuaType::Nil => vec![ty.clone()],
-        LuaType::Unknown | LuaType::Any => vec![ty.clone()],
-        _ => Vec::new(),
     }
 }
 
