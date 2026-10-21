@@ -459,7 +459,7 @@ pub(crate) fn type_of_expr_at_node(
                 return apply_casts(ty, All);
             }
             if let Some(typ) = computed_guard::guarded_type(model, index_expr, offset) {
-                return apply_expr_casts(model, expr_syntax, typ, All);
+                return apply_casts(typ, All);
 
             }
             if let Some(resolved) = model.resolve_member(index_expr)
