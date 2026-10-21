@@ -483,7 +483,7 @@ impl<'db> SemanticModel<'db> {
                 .nth(1)
                 .map(|step| self.type_of_expr_at(step.get_syntax_id(), step.get_position()))
                 .unwrap_or(LuaType::Integer);
-            return Some(if initial_ty.is_integer() && step_ty.is_integer() {
+            return Some(if infer::vm::is_integer_operand(self, &initial_ty, &mut Vec::new()) && infer::vm::is_integer_operand(self, &step_ty, &mut Vec::new()) {
                 LuaType::Integer
             } else {
                 LuaType::Number
