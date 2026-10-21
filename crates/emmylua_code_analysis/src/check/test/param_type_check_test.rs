@@ -2596,3 +2596,194 @@ mod nominal_enum_members {
         );
     }
 }
+
+#[cfg(test)]
+mod callback_return_aliases {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    use googletest::prelude::*;
+
+    fn workspace() -> VirtualWorkspace {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def(
+            r#"
+            ---@alias Message [string, Message...]|number|boolean|string
+            ---@alias Callback fun():Message
+            ---@param callback Callback
+            function print_message(callback) end
+        "#,
+        );
+        ws
+    }
+
+    #[gtest]
+    fn accepts_alias_return_alternatives() {
+        for body in [
+            "return 'hello'",
+            "return 1",
+            "return true",
+            "return {'hello'}",
+            "return {'hello', 1, false, 'world', {'nested', 2}}",
+            "return {'hello'} --[[@as Message]]",
+            "local message = {'hello'}; return message",
+            "local message = {'hello', 1}; return message",
+        ] {
+            let mut ws = workspace();
+            expect_that!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::ParamTypeMismatch,
+                    &format!("print_message(function() {body}\nend)")
+                ),
+                eq(true),
+                "{body}"
+            );
+        }
+    }
+
+    #[gtest]
+    fn rejects_invalid_alias_returns() {
+        for body in [
+            "return nil",
+            "return function() end",
+            "return {}",
+            "return {42}",
+            "return {'hello', function() end}",
+            "return {'hello', 1, 2, function() end}",
+            "return {'hello', {'nested', function() end}}",
+        ] {
+            let mut ws = workspace();
+            expect_that!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::ParamTypeMismatch,
+                    &format!("print_message(function() {body}\nend)")
+                ),
+                eq(false),
+                "{body}"
+            );
+        }
+    }
+
+    #[gtest]
+    fn aliases_and_inline_unions_agree() {
+        for annotation in ["Scalar", "ScalarChain", "string|number"] {
+            for (body, valid) in [
+                ("return 'text'", true),
+                ("return 1", true),
+                ("return false", false),
+            ] {
+                let mut ws = VirtualWorkspace::new_with_init_std_lib();
+                ws.def(
+                    r#"
+                    ---@alias Scalar string|number
+                    ---@alias ScalarChain Scalar
+                "#,
+                );
+                let code = format!(
+                    "---@param callback fun():{annotation}\nlocal function use(callback) end\nuse(function() {body} end)"
+                );
+                expect_that!(
+                    ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, &code),
+                    eq(valid),
+                    "{annotation}: {body}"
+                );
+            }
+        }
+    }
+
+    #[gtest]
+    fn callback_parameter_aliases_preserve_contravariance() {
+        for (actual, expected, valid) in [
+            ("Scalar", "string", true),
+            ("string", "Scalar", false),
+            ("Scalar", "string|number", true),
+            ("string|number", "Scalar", true),
+            ("boolean", "Scalar", false),
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            ws.def(r#"---@alias Scalar string|number"#);
+            let crate::LuaType::DocFunction(actual_fn) = ws.ty(&format!("fun(value: {actual})"))
+            else {
+                panic!("function type");
+            };
+            let crate::LuaType::DocFunction(expected_fn) =
+                ws.ty(&format!("fun(value: {expected})"))
+            else {
+                panic!("function type");
+            };
+            let file = ws.def("");
+            let model = ws.analysis.semantic_model(file);
+            let result = crate::semantic_model::infer::function_solver::functions_compatible(
+                &model,
+                &actual_fn,
+                &expected_fn,
+                &Default::default(),
+            );
+            expect_that!(result, eq(valid), "{actual} -> {expected}");
+        }
+    }
+
+    #[gtest]
+    fn callback_return_unions_and_cycles() {
+        for (actual, expected, valid) in [
+            ("Scalar", "string|number", true),
+            ("string|number", "Scalar", true),
+            ("Scalar?", "Scalar", false),
+            ("Scalar", "Scalar?", true),
+            ("string|boolean", "Scalar", false),
+            ("Cycle", "string", false),
+            ("string", "Cycle", false),
+            ("string", "Recursive", true),
+            ("boolean", "Recursive", false),
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            ws.def(
+                r#"
+                ---@alias Scalar string|number
+                ---@alias Cycle Cycle
+                ---@alias Recursive Recursive|string
+            "#,
+            );
+            let crate::LuaType::DocFunction(actual_fn) = ws.ty(&format!("fun():{actual}")) else {
+                panic!("function type");
+            };
+            let crate::LuaType::DocFunction(expected_fn) = ws.ty(&format!("fun():{expected}"))
+            else {
+                panic!("function type");
+            };
+            let file = ws.def("");
+            let model = ws.analysis.semantic_model(file);
+            let result = crate::semantic_model::infer::function_solver::functions_compatible(
+                &model,
+                &actual_fn,
+                &expected_fn,
+                &Default::default(),
+            );
+            expect_that!(result, eq(valid), "{actual} -> {expected}");
+        }
+    }
+
+    #[gtest]
+    fn tuple_tails_check_every_present_element() {
+        for (value, valid) in [
+            ("{'head'}", true),
+            ("{'head', 1, 2, 3}", true),
+            ("{}", false),
+            ("{1}", false),
+            ("{'head', 'bad'}", false),
+            ("{'head', 1, 2, 'bad'}", false),
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            let code = format!(
+                r#"
+                ---@param callback fun():[string, number...]
+                local function use(callback) end
+                use(function() return {value} end)
+            "#
+            );
+            expect_that!(
+                ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, &code),
+                eq(valid),
+                "{value}"
+            );
+        }
+    }
+}
