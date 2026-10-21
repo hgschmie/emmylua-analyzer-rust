@@ -53,7 +53,7 @@ fn p11_member_flow_nested_diamonds_do_not_expand_exponentially() {
         // Isolate member tracing: the owner declaration has its own flow cache.
         let ty = model.type_of_member_at(&member, expr.get_position());
         let steps = flow_metrics::trace_steps();
-        assert!(model.type_check(&LuaType::Number, &ty), "{ty:?}");
+        assert!(model.type_check(&ty, &LuaType::Number), "{ty:?}");
         assert!(
             steps < 100 + 150 * count,
             "{count} nested diamonds took {steps} steps"
@@ -89,15 +89,15 @@ fn p11_member_flow_cache_keeps_branch_casts_and_members_distinct() {
         .collect();
     assert_eq!(reads.len(), 4, "{reads:?}");
     // The cast target is read before applying the cast.
-    assert!(model.type_check(&LuaType::Number, &reads[0]), "{reads:?}");
+    assert!(model.type_check(&reads[0], &LuaType::Number), "{reads:?}");
     assert_eq!(reads[1], LuaType::String);
     assert!(
-        model.type_check(&LuaType::Number, &reads[2]),
+        model.type_check(&reads[2], &LuaType::Number),
         "{:?}",
         reads[2]
     );
     assert!(
-        model.type_check(&LuaType::String, &reads[3]),
+        model.type_check(&reads[3], &LuaType::String),
         "{:?}",
         reads[3]
     );
