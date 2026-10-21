@@ -332,6 +332,7 @@ pub(crate) fn member_info_impl(
             LuaType::Never
         };
         return Some(MemberInfo {
+            index_key_type: None,
             key: key.clone(),
             typ,
             index_key_type: None,
@@ -350,6 +351,7 @@ pub(crate) fn member_info_impl(
         && let Some(typ) = super::inherited_index::lookup(model, prefix_type, &key_type)
     {
         return Some(MemberInfo {
+            index_key_type: None,
             key: key.clone(),
             typ,
             id: None,
@@ -369,6 +371,7 @@ pub(crate) fn member_info_impl(
         }
     {
         return Some(MemberInfo {
+            index_key_type: None,
             key: key.clone(),
             typ: ret,
             index_key_type: None,
