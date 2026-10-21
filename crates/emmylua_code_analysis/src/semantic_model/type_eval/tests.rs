@@ -972,6 +972,9 @@ fn rawget_dynamic_indexes_preserve_missing_values_and_key_domains() {
         ("table<string, integer>", "integer", None),
         ("integer[]", "string", None),
         ("Cycle", "string", None),
+        // A named field does not authorize other keys or prove a closed table.
+        ("{count:integer}", "'value'", None),
+        ("{count:integer}", "string", None),
     ] {
         let base_ty = ws.ty(base);
         let key_ty = ws.ty(key);
