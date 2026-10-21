@@ -142,7 +142,7 @@ pub struct FileFacts {
     decls_by_owner_syntax: HashMap<LuaSyntaxId, Vec<usize>>,
     signature_by_closure: HashMap<LuaSyntaxId, usize>,
     signature_by_position: HashMap<TextSize, usize>,
-    /// `setmetatable(table, meta)` calls in declaration or member initializers:
+    /// `setmetatable(table, meta)` calls throughout this file:
     /// `(first-arg range, first-arg syntax, metatable-value syntax)`.
     setmetatable_calls: Vec<(TextRange, LuaSyntaxId, LuaSyntaxId)>,
     operator_by_owner_name: HashMap<(SemanticId, SmolStr), usize>,
@@ -524,7 +524,7 @@ impl FileFacts {
             })
     }
 
-    /// `setmetatable(table, meta)` calls in declaration or member initializers.
+    /// `setmetatable(table, meta)` calls throughout this file.
     pub fn setmetatable_calls(&self) -> &[(TextRange, LuaSyntaxId, LuaSyntaxId)] {
         &self.setmetatable_calls
     }
@@ -677,7 +677,7 @@ pub struct FactsBuilder {
     module_version_conds: Vec<LuaVersionCondition>,
     /// Doc annotation usage errors (`@field` must be under a `@class`, etc.).
     annotation_errors: Vec<AnnotationError>,
-    /// `setmetatable(table, meta)` calls in declaration or member initializers.
+    /// `setmetatable(table, meta)` calls throughout this file.
     setmetatable_calls: Vec<(TextRange, LuaSyntaxId, LuaSyntaxId)>,
 }
 
