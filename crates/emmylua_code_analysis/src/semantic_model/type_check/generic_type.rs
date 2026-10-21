@@ -57,12 +57,14 @@ pub fn check_generic_type_compact(
                 ),
             )
         }
-        LuaType::Array(array) => ref_type::check_class_array(
-            context,
-            &LuaType::Generic(Rc::new(source_generic.clone())),
-            compact_type,
-            array.get_base(),
-        ),
+        LuaType::Array(array) if source_generic.get_base_type_id().get_name() != "table" => {
+            ref_type::check_class_array(
+                context,
+                &LuaType::Generic(Rc::new(source_generic.clone())),
+                compact_type,
+                array.get_base(),
+            )
+        }
         LuaType::Ref(ref_id) | LuaType::Def(ref_id) => {
             if is_tpl {
                 return Ok(());

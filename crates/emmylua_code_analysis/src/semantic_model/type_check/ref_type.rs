@@ -197,23 +197,15 @@ pub(super) fn check_class_array(
     target: &LuaType,
     element: &LuaType,
 ) -> TypeCheckResult {
-    let members = context.require_complete(|| context.model.member_infos(source))?;
-    // A more specific integer signature takes precedence over a number signature.
-    for key in ["integer", "number"] {
-        let value = members.iter().find(|info| {
-            info.key.name() == Some(key)
-                && info
-                    .id
-                    .as_ref()
-                    .zip(info.file_id)
-                    .is_some_and(|(id, file_id)| {
-                        context
-                            .model
-                            .file_facts_of(file_id)
-                            .and_then(|facts| facts.member_by_id(id))
-                            .is_some_and(|member| member.is_index_signature)
-                    })
-        });
+    // Filter index signatures before selecting inherited overrides: an ordinary
+    // field named `integer` must not hide an inherited `[integer]` signature.
+    let members = context.require_complete(|| {
+        crate::semantic_model::member::member_infos_all(context.model, source)
+    })?;
+    for key in [LuaType::Integer, LuaType::Number] {
+        let value = members
+            .iter()
+            .find(|info| info.index_key_type.as_ref() == Some(&key));
         if let Some(value) = value {
             return check_general_type_compact(context, &value.typ, element);
         }
