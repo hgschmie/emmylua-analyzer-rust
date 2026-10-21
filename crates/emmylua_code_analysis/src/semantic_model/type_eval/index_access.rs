@@ -17,6 +17,7 @@ pub(super) fn dynamic_index_type(
     // budget; only entering a fresh outer query resets it. eval_index_access's
     // AliasPath also holds an outer scope across all keys, so per-key calls cannot
     // reset exhaustion. index_infos reuses its cached projection between keys.
+    // Keep the helper self-contained for direct callers as well.
     let _query = QueryCacheScope::new(&model.cache);
     if model.cache.borrow().evaluation_exhausted {
         return None;

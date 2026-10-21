@@ -158,6 +158,16 @@ pub fn eval_index_access(model: &SemanticModel, base: &LuaType, key: &LuaType) -
             Task::Enter(key) => key,
         };
         match &key {
+            LuaType::Call(call) if call.get_call_kind() != LuaAliasCallKind::KeyOf => {
+                if let Some(expanded) = expand_alias_head(model, &key)
+                    && expanded != key
+                    && path.enter(&key).is_some()
+                {
+                    pending.push(Task::Leave);
+                    pending.push(Task::Enter(expanded));
+                }
+                continue;
+            }
             LuaType::Generic(_) => {
                 let expanded = expand_alias_generic(model, &key);
                 if expanded != key && path.enter(&key).is_some() {
@@ -214,14 +224,14 @@ pub fn eval_index_access(model: &SemanticModel, base: &LuaType, key: &LuaType) -
         }
         member_keys.extend(literal);
     }
-    for (key, key_type) in member_keys {
-        let ty = match (base, &key) {
+    for (member_key, key_type) in member_keys {
+        let ty = match (base, &member_key) {
             (LuaType::Tuple(tuple), LuaMemberKey::Integer(i)) => {
                 tuple.get_types().get(*i as usize).cloned()
             }
             // An explicit member retains its precise type. Otherwise a literal
             // key can still select an index signature, without proving existence.
-            _ => model.member_type(base, &key).or_else(|| {
+            _ => model.member_type(base, &member_key).or_else(|| {
                 // Lazy generic bodies can still contain named parameters
                 // such as T before substitution. A missing declaration here
                 // is not a concrete index contract to query.

@@ -995,6 +995,8 @@ fn rawget_broad_domains_remain_precise_across_doc_literal_settings() {
         for (base, key, expected) in [
             ("table<'only',integer>", "string", None),
             ("Child", "string", Some("boolean?")),
+            ("Box<string,integer>", "string", Some("integer?")),
+            ("Box<string,integer>", "integer", None),
             ("User.table<string>", "integer", Some("string?")),
             ("User.table<string>", "string", None),
             (
@@ -1002,6 +1004,8 @@ fn rawget_broad_domains_remain_precise_across_doc_literal_settings() {
                 "string",
                 Some("boolean|integer|nil"),
             ),
+            // index_infos exposes candidates from both intersection components;
+            // broad projection is conservative, not an exact value intersection.
             (
                 "{[string]:boolean}&{[string]:integer}",
                 "string",
@@ -1206,4 +1210,68 @@ fn dynamic_index_mixed_literal_and_broad_union_keys_keep_both_domains() {
             );
         }
     }
+}
+
+#[test]
+fn dynamic_index_literal_signature_and_documentation_access_preserve_absence() {
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("---@alias Selected {[string]:integer}['value']");
+    let base = ws.ty("{[string]:integer}");
+    let key = ws.ty("'value'");
+    let selected = ws.ty("Selected");
+    let expected = ws.ty("integer?");
+    let model = ws.analysis.semantic_model(file);
+    assert_eq!(
+        eval_index_access(&model, &base, &key),
+        Some(expected.clone())
+    );
+    assert_eq!(expand_alias_head(&model, &selected), Some(expected));
+}
+
+#[test]
+fn dynamic_index_unresolved_union_bases_do_not_publish_partial_contracts() {
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("");
+    let literal = ws.ty("'value'");
+    for source in ["Missing|{[string]:integer}", "{[string]:integer}|Missing"] {
+        let base = ws.ty(source);
+        let model = ws.analysis.semantic_model(file);
+        for key in [&literal, &LuaType::String] {
+            assert_eq!(eval_index_access(&model, &base, key), None, "{source}");
+        }
+    }
+}
+
+#[test]
+fn dynamic_index_growing_union_keys_exhaust_in_both_orders_and_retry() {
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("---@alias GrowingKey<T> GrowingKey<T[]>");
+    let base = ws.ty("{[string]:integer}");
+    for source in ["string|GrowingKey<string>", "GrowingKey<string>|string"] {
+        let key = ws.ty(source);
+        let model = ws.analysis.semantic_model(file);
+        assert_eq!(eval_index_access(&model, &base, &key), None, "{source}");
+        assert_eq!(
+            eval_index_access(&model, &base, &LuaType::String),
+            Some(LuaType::from_vec(vec![LuaType::Integer, LuaType::Nil]))
+        );
+    }
+}
+
+#[test]
+fn dynamic_index_resolves_concrete_computed_keys() {
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("");
+    let base = ws.ty("{[string]:integer}");
+    let key_base = ws.ty("{kind:string}");
+    let literal = ws.ty("'kind'");
+    let key = LuaType::Call(Rc::new(LuaAliasCallType::new(
+        LuaAliasCallKind::Index,
+        vec![key_base, literal],
+    )));
+    let model = ws.analysis.semantic_model(file);
+    assert_eq!(
+        eval_index_access(&model, &base, &key),
+        Some(LuaType::from_vec(vec![LuaType::Integer, LuaType::Nil]))
+    );
 }
