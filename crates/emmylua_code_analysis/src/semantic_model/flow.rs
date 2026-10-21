@@ -1465,13 +1465,22 @@ fn call_stat_returns_never(
     false
 }
 
-/// Whether a condition branch is unreachable: the call returns `never`, or a `false`/`true` constant makes one side unreachable.
+/// Whether a condition branch is unreachable from syntax or a declared call result.
+/// Lua numbers (including zero), strings, tables and functions are always truthy.
 fn condition_branch_unreachable(
     model: &SemanticModel,
     cond: &LuaExpr,
     branch_is_true: bool,
 ) -> bool {
     match cond {
+        LuaExpr::LiteralExpr(literal) => match literal.get_literal() {
+            Some(LuaLiteralToken::Nil(_)) => branch_is_true,
+            Some(LuaLiteralToken::Bool(value)) => value.is_true() != branch_is_true,
+            Some(LuaLiteralToken::Number(_) | LuaLiteralToken::String(_)) => !branch_is_true,
+            _ => false,
+        },
+        LuaExpr::TableExpr(_) | LuaExpr::ClosureExpr(_) => !branch_is_true,
+
         LuaExpr::ParenExpr(paren) => paren
             .get_expr()
             .is_some_and(|inner| condition_branch_unreachable(model, &inner, branch_is_true)),
@@ -4788,6 +4797,10 @@ fn direct_narrow_condition(
     has_prior_narrowing: bool,
 ) -> Option<Narrowing> {
     match cond {
+        LuaExpr::ParenExpr(paren) => {
+            direct_narrow_condition(model, decl, &paren.get_expr()?, has_prior_narrowing)
+        }
+
         // Call guard `typeguard(x)` / `---@return TypeGuard<T>`: the true branch narrows the argument to T.
         LuaExpr::CallExpr(call) => {
             if !call_may_narrow_decl(model, call, decl) {
@@ -5061,6 +5074,10 @@ fn direct_narrow_condition_false(
     has_prior_narrowing: bool,
 ) -> Option<Narrowing> {
     match cond {
+        LuaExpr::ParenExpr(paren) => {
+            direct_narrow_condition_false(model, decl, &paren.get_expr()?, has_prior_narrowing)
+        }
+
         // `x == nil` false → remove nil.
         LuaExpr::BinaryExpr(binary) => {
             let op = binary.get_op_token()?.get_op();
