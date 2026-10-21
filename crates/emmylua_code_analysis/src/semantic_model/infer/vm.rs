@@ -4104,7 +4104,7 @@ pub(crate) fn unify_call_bindings(
                 // a compatible argument merely because its representation is still named.
                 // Assignment compatibility checks every union member and bounds recursive
                 // aliases; generic binding above must keep the original argument identity.
-                crate::semantic_model::type_check::is_assign_compatible(model, arg, param)
+                crate::semantic_model::type_check::is_compatible(model, arg, param)
             } else {
                 unify::unify_bindings(param, arg, bindings)
             }
