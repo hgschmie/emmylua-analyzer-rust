@@ -172,3 +172,17 @@ fn index_metamethod_definition_keeps_ambiguous_and_open_tables_unresolved() {
         assert_that!(locations(&ws, file, 1, 5), is_empty(), "extra: {extra}");
     }
 }
+
+#[gtest]
+fn index_metamethod_definition_follows_parenthesized_wrapper_call() {
+    let mut ws = ProviderVirtualWorkspace::new_with_init_std_lib();
+    ws.def_file(
+        "predicates.lua",
+        &PREDICATES.replace("return M[key](value)", "return ((M[key](value)))"),
+    );
+    let file = ws.def_file(
+        "consumer.lua",
+        "local Is=require('predicates')\nIs.Table({})",
+    );
+    assert_that!(locations(&ws, file, 1, 5), eq(&target(&ws, 2, 11, 16)));
+}

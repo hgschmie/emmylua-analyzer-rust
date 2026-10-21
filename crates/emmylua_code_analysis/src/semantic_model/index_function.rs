@@ -66,18 +66,7 @@ fn infer_detail(
         return None;
     }
     let field = closure.get_parent::<LuaTableField>()?;
-    if field.get_comments().iter().any(|comment| {
-        comment.descendants::<LuaDocTag>().any(|tag| {
-            matches!(
-                tag,
-                LuaDocTag::Return(_)
-                    | LuaDocTag::Type(_)
-                    | LuaDocTag::Overload(_)
-                    | LuaDocTag::ReturnOverload(_)
-                    | LuaDocTag::ReturnCast(_)
-            )
-        })
-    }) {
+    if has_explicit_contract(&field) {
         return None;
     }
     let param = closure.get_params_list()?.get_params().nth(1)?;
@@ -205,7 +194,12 @@ impl Inference<'_, '_> {
                     return None;
                 }
                 let mut exprs = ret.get_expr_list();
-                let LuaExpr::CallExpr(call) = exprs.next()? else {
+                let mut returned = exprs.next()?;
+                while let LuaExpr::ParenExpr(paren) = returned {
+                    self.remaining = self.remaining.checked_sub(1)?;
+                    returned = paren.get_expr()?;
+                }
+                let LuaExpr::CallExpr(call) = returned else {
                     return None;
                 };
                 if exprs.next().is_some() {
@@ -410,6 +404,22 @@ fn is_closed_local_table(model: &SemanticModel, id: &SemanticId) -> Option<bool>
 
 // Ordinary signature inference also visits the body. Bound that fallback before
 // asking it to process an oversized unannotated metamethod.
+fn has_explicit_contract(field: &LuaTableField) -> bool {
+    field.get_comments().iter().any(|comment| {
+        comment.descendants::<LuaDocTag>().any(|tag| {
+            matches!(
+                tag,
+                LuaDocTag::Return(_)
+                    | LuaDocTag::Type(_)
+                    | LuaDocTag::Overload(_)
+                    | LuaDocTag::ReturnOverload(_)
+                    | LuaDocTag::ReturnCast(_)
+                    | LuaDocTag::Generic(_)
+            )
+        })
+    })
+}
+
 pub(crate) fn oversized(
     model: &SemanticModel,
     member: &crate::Member,
@@ -428,11 +438,7 @@ pub(crate) fn oversized(
     let Some(field) = closure.get_parent::<LuaTableField>() else {
         return false;
     };
-    if field.get_comments().iter().any(|comment| {
-        comment
-            .descendants::<LuaDocTag>()
-            .any(|tag| matches!(tag, LuaDocTag::Return(_) | LuaDocTag::Type(_)))
-    }) {
+    if has_explicit_contract(&field) {
         return false;
     }
     closure.descendants::<LuaExpr>().take(65).count() > 64
@@ -485,5 +491,31 @@ impl SemanticModel<'_> {
             }
         }
         origin(self, &typ, &key)
+    }
+}
+
+#[cfg(test)]
+mod review_annotation_tests {
+    use super::*;
+    use crate::VirtualWorkspace;
+    #[test]
+    fn index_function_oversized_respects_all_explicit_contracts() {
+        for annotation in [
+            "---@overload fun(self:table,key:string):number",
+            "---@return_overload true,number",
+            "---@return_cast key string",
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            let body = "local n=1; ".repeat(70);
+            let file=ws.def(&format!("local proxy={{}}\nsetmetatable(proxy, {{\n{annotation}\n__index=function(_,key) {body} return 1 end\n}})"));
+            let model = ws.analysis.semantic_model(file);
+            let facts = model.file_facts().unwrap();
+            let member = facts
+                .members
+                .iter()
+                .find(|m| m.key == LuaMemberKey::from("__index"))
+                .unwrap();
+            assert!(!oversized(&model, member, file), "{annotation}");
+        }
     }
 }
