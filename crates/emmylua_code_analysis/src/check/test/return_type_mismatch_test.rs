@@ -994,3 +994,63 @@ mod tests {
         ));
     }
 }
+
+#[test]
+fn truthy_literal_result_preserves_short_circuit_guard() {
+    for truthy in ["0", "1", "''", "{}", "function() end"] {
+        let mut ws = crate::VirtualWorkspace::new();
+        assert!(
+            ws.has_no_diagnostic(
+                crate::DiagnosticCode::ParamTypeMismatch,
+                &format!(
+                    r#"
+            ---@param x integer
+            local function consume(x) end
+            ---@param value integer?
+            local function read(value)
+                return (not value) and {truthy} or consume(value)
+            end
+        "#
+                )
+            ),
+            "{truthy}"
+        );
+    }
+}
+
+#[test]
+fn zero_short_circuit_result_preserves_integer_arithmetic() {
+    let mut ws = crate::VirtualWorkspace::new();
+    assert!(ws.has_no_diagnostic(
+        crate::DiagnosticCode::ReturnTypeMismatch,
+        r#"
+        ---@param value integer?
+        ---@return integer
+        local function decrement(value)
+            value = (not value or value == 0) and 0 or (value - 1)
+            return value
+        end
+    "#
+    ));
+}
+
+#[test]
+fn short_circuit_false_result_does_not_establish_a_guard() {
+    for falsy in ["false", "nil"] {
+        let mut ws = crate::VirtualWorkspace::new();
+        assert!(
+            !ws.has_no_diagnostic(
+                crate::DiagnosticCode::NeedCheckNil,
+                &format!(
+                    r#"
+            ---@param value {{name: string}}?
+            local function read(value)
+                return (not value) and {falsy} or value.name
+            end
+        "#
+                )
+            ),
+            "{falsy}"
+        );
+    }
+}
