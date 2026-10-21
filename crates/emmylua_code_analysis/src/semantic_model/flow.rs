@@ -13,7 +13,11 @@
 //! - Flow type for member assignment `t.x = v` / `self.x = v` (FlowEffect::AssignMember).
 
 mod array;
+mod computed_effects;
+mod computed_guard;
+mod computed_index;
 mod guards;
+mod iterator_entry;
 mod loop_carried;
 mod member_call_effects;
 use loop_carried::loop_carried_type;
@@ -508,6 +512,15 @@ pub(crate) fn type_of_expr_at_node(
         LuaExpr::IndexExpr(index_expr) => {
             if let Some(ty) = array::last_element_type(model, index_expr, offset) {
                 return apply_casts(ty, All);
+            }
+            if let Some(typ) = computed_guard::guarded_type(model, index_expr, offset) {
+                return apply_casts(typ, All);
+            }
+            if let Some(typ) = iterator_entry::entry_type(model, index_expr, offset) {
+                return apply_casts(typ, All);
+            }
+            if let Some(typ) = computed_index::assigned_type(model, index_expr, offset) {
+                return apply_casts(typ, All);
             }
             if let Some(resolved) = model.resolve_member(index_expr)
                 && let Some(member_id) = resolved.member_id.clone().or_else(|| {
@@ -1552,7 +1565,7 @@ fn path_write_affects(
             .1
             .iter()
             .zip(keys)
-            .all(|(written, key)| written.is_none() || written == key)
+            .all(|(written, key)| written.is_none() || key.is_none() || written == key)
 }
 
 /// Expand initializer aliases without inferring types. Each captured member path
