@@ -1061,3 +1061,103 @@ fn rawget_broad_queries_do_not_publish_exhausted_partial_values() {
     assert_eq!(eval_index_access(&model, &typ, &LuaType::Integer), None);
     assert!(!model.cache.borrow().index_infos.contains_key(&(file, typ)));
 }
+#[test]
+fn dynamic_index_review_special_keys_have_explicit_projection_contracts() {
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("");
+    let base = ws.ty("{[string]: integer?, [number]: boolean}");
+    let expected = ws.ty("integer|boolean|nil");
+    let nil_domain = ws.ty("table<nil,integer>");
+    let model = ws.analysis.semantic_model(file);
+    for key in [LuaType::Any, LuaType::Unknown] {
+        for phase in ["cold", "warm"] {
+            assert_eq!(
+                eval_index_access(&model, &base, &key),
+                Some(expected.clone()),
+                "{key:?}: {phase}"
+            );
+        }
+    }
+    for key in [LuaType::Nil, LuaType::Never] {
+        for base in [&base, &nil_domain] {
+            assert_eq!(
+                eval_index_access(&model, base, &key),
+                None,
+                "{base:?}[{key:?}]"
+            );
+        }
+    }
+}
+
+#[test]
+fn dynamic_index_review_non_rawget_paths_remain_distinct() {
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    let file = ws.def("---@class Values\n---@field [string] integer\n---@type Values\nvalues = {}\n---@type {[string]:integer}\nobject = {}\n---@type {count:integer}\nrecord = {}\n---@type string\nkey = ''");
+    let base = ws.ty("Values");
+    let expected = ws.ty("integer?");
+    let call = LuaAliasCallType::new(LuaAliasCallKind::Index, vec![base, LuaType::String]);
+    let model = ws.analysis.semantic_model(file);
+    assert_eq!(expand_index_call(&model, &call), Some(expected));
+    // Ordinary broad expression indexing currently has a separate precision
+    // limitation. Type-level indexing must not silently change that path.
+    assert_eq!(ws.expr_ty("object[key]"), LuaType::Unknown);
+    assert_eq!(ws.expr_ty("record['count']"), LuaType::Integer);
+    assert_eq!(ws.expr_ty("rawget(values, key) or 0"), LuaType::Integer);
+}
+
+#[test]
+fn dynamic_index_review_exhaustion_is_shared_only_within_the_outer_query() {
+    use crate::semantic_model::cache::QueryCacheScope;
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("---@class Growing<T>: Growing<T[]>\n---@field [integer] T\n---@class Complete\n---@field [integer] string");
+    let growing = ws.ty("Growing<string>");
+    let complete = ws.ty("Complete");
+    let expected = ws.ty("string?");
+    let model = ws.analysis.semantic_model(file);
+    assert_eq!(
+        eval_index_access(&model, &complete, &LuaType::Integer),
+        Some(expected.clone())
+    );
+    {
+        let _outer = QueryCacheScope::new(&model.cache);
+        assert_eq!(eval_index_access(&model, &growing, &LuaType::Integer), None);
+        assert!(model.cache.borrow().evaluation_exhausted);
+        assert_eq!(
+            eval_index_access(&model, &complete, &LuaType::Integer),
+            None
+        );
+    }
+    assert_eq!(
+        eval_index_access(&model, &complete, &LuaType::Integer),
+        Some(expected)
+    );
+    assert!(!model.cache.borrow().evaluation_exhausted);
+}
+
+#[test]
+fn dynamic_index_review_incomplete_later_domain_discards_earlier_matches() {
+    use crate::semantic_model::cache::{CacheEntry, QueryCacheScope};
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("");
+    let base = ws.ty("{[string]: integer, [number]: boolean}");
+    let expected = ws.ty("integer|boolean|nil");
+    let model = ws.analysis.semantic_model(file);
+    let infos = model.index_infos(&base);
+    assert_eq!(infos.len(), 2);
+    {
+        let _outer = QueryCacheScope::new(&model.cache);
+        model.cache.borrow_mut().type_check.insert(
+            (file, LuaType::Any, infos[0].key_type.clone(), true),
+            CacheEntry::Ready(true),
+        );
+        model.cache.borrow_mut().type_check.insert(
+            (file, LuaType::Any, infos[1].key_type.clone(), true),
+            CacheEntry::InProgress,
+        );
+        assert_eq!(eval_index_access(&model, &base, &LuaType::Any), None);
+    }
+    assert_eq!(
+        eval_index_access(&model, &base, &LuaType::Any),
+        Some(expected)
+    );
+}

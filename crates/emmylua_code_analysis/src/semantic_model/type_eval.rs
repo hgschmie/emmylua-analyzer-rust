@@ -193,23 +193,25 @@ pub fn eval_index_access(model: &SemanticModel, base: &LuaType, key: &LuaType) -
     }
     // Key expansion is complete. Base lookup follows an independent alias path.
     let mut types = Vec::new();
+    let mut member_keys = Vec::new();
     for key in &keys {
-        if literal_keys(key).is_empty()
-            && !matches!(key, LuaType::Call(_) | LuaType::TplRef(_))
+        let literal = match key {
+            LuaType::Call(call) if call.get_call_kind() == LuaAliasCallKind::KeyOf => call
+                .get_operands()
+                .first()
+                .map(|base| keyof_keys(model, base))
+                .unwrap_or_default(),
+            _ => literal_keys(key),
+        };
+        if !matches!(key, LuaType::Call(_) | LuaType::TplRef(_))
+            && literal.is_empty()
             && let Some(ty) = index_access::dynamic_index_type(model, base, key)
         {
             types.push(ty);
         }
+        member_keys.extend(literal);
     }
-    let keys = keys.iter().flat_map(|key| match key {
-        LuaType::Call(call) if call.get_call_kind() == LuaAliasCallKind::KeyOf => call
-            .get_operands()
-            .first()
-            .map(|base| keyof_keys(model, base))
-            .unwrap_or_default(),
-        _ => literal_keys(key),
-    });
-    for (key, _) in keys {
+    for (key, _) in member_keys {
         let ty = match (base, &key) {
             (LuaType::Tuple(tuple), LuaMemberKey::Integer(i)) => {
                 tuple.get_types().get(*i as usize).cloned()
