@@ -197,10 +197,11 @@ fn index_function_specialization_is_bounded() {
 
 #[gtest]
 fn index_function_respects_key_parameter_type() {
-    let mut ws = VirtualWorkspace::new_with_init_std_lib();
-    ws.def_file(
-        "typed.lua",
-        r#"
+    for annotation in ["'answer'", "'answer'|integer"] {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def_file(
+            "typed.lua",
+            &r#"
         local values = { answer = 42 }
         local proxy = {}
         setmetatable(proxy, {
@@ -208,13 +209,15 @@ fn index_function_respects_key_parameter_type() {
             __index = function(_, key) return values[key] end,
         })
         return proxy
-    "#,
-    );
-    let file = ws.def_file(
-        "consumer.lua",
-        "local v = require('typed')\nprint(v.answer)\nprint(v.wrong)",
-    );
-    assert_that!(undefined_fields(&ws, file), eq(&vec![2]));
+    "#
+            .replace("@param key 'answer'", &format!("@param key {annotation}")),
+        );
+        let file = ws.def_file(
+            "consumer.lua",
+            "local v = require('typed')\nprint(v.answer)\nprint(v.wrong)",
+        );
+        assert_that!(undefined_fields(&ws, file), eq(&vec![2]));
+    }
 }
 
 #[gtest]
