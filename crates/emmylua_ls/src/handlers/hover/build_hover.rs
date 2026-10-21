@@ -1315,9 +1315,11 @@ fn class_member_lines(model: &SemanticModel<'_>, ty: &LuaType) -> Option<Vec<Str
                     _ => return None,
                 },
             };
+            let typ = class_member_hover_type(model, &info);
             let rendered = match &info.typ {
+                LuaType::DocFunction(_) if typ.is_nullable() => "function?".to_string(),
                 LuaType::DocFunction(_) => "function".to_string(),
-                ty => render_member_typ_with_default(model, ty),
+                _ => render_member_typ_with_default(model, &typ),
             };
             Some(format!("    {}: {},", name, rendered))
         })
@@ -1342,6 +1344,21 @@ fn member_class_key_display(model: &SemanticModel<'_>, info: &MemberInfo) -> Opt
         "[{}]",
         raw.trim_start_matches('[').trim_end_matches(']')
     ))
+}
+
+/// Member projection can keep `@field name? Type` optionality in declaration
+/// metadata rather than in the projected type. Class summaries need both.
+fn class_member_hover_type(model: &SemanticModel<'_>, info: &MemberInfo) -> LuaType {
+    if !info.typ.is_nullable()
+        && info
+            .id
+            .as_ref()
+            .is_some_and(|id| member_is_nullable(model, id))
+    {
+        LuaType::from_vec(vec![info.typ.clone(), LuaType::Nil])
+    } else {
+        info.typ.clone()
+    }
 }
 
 fn member_is_nullable(model: &SemanticModel<'_>, id: &SemanticId) -> bool {
@@ -2330,7 +2347,7 @@ fn build_type_hover(
             Some(format!(
                 "    {}: {},",
                 name,
-                render_member_typ_with_default(model, &info.typ)
+                render_member_typ_with_default(model, &class_member_hover_type(model, &info))
             ))
         })
         .collect::<Vec<_>>();
