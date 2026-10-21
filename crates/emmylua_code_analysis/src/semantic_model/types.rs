@@ -486,7 +486,18 @@ impl<'db> SemanticModel<'db> {
                 }
             }
             // 2. Standard global pairs/ipairs: bind K/V from the parameter structure, then take the return function slot.
-            return self.infer_standard_iter_slot(call.get_prefix_expr()?.clone(), &arg_ty, index);
+            let slot =
+                self.infer_standard_iter_slot(call.get_prefix_expr()?.clone(), &arg_ty, index)?;
+            // Standard table iteration yields existing entries only. A custom
+            // iterator may still yield a nil value alongside a non-nil key.
+            let standard = self.resolve_name(name_expr.get_position()).is_some_and(
+                |id| matches!(id, SemanticId::Decl(key) if self.is_std_file(key.file_id)),
+            );
+            return Some(if standard && index <= 1 {
+                remove_nil_from_type(slot)
+            } else {
+                slot
+            });
         }
 
         // Generic iterator functions: `for k in test()` / `for k in iter_fn`.
@@ -1744,6 +1755,7 @@ fn remove_nil_from_type(ty: LuaType) -> LuaType {
                 .into_vec()
                 .into_iter()
                 .filter(|t| !t.is_nil())
+                .map(remove_nil_from_type)
                 .collect();
             match types.len() {
                 0 => LuaType::Unknown,

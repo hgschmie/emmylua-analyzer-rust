@@ -50,3 +50,5 @@ mod asymmetric_fields;
 mod contextual_callback_test;
 
 mod table_literal_call_matching;
+
+mod iterator_non_nil_values;
