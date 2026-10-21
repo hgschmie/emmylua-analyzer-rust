@@ -5,7 +5,7 @@ use super::cache::{CacheEntry, QueryCacheScope, TypeEvaluationScope};
 use super::{SemanticModel, infer::unify, type_check, type_eval};
 use crate::{GenericTplId, LuaType, TypeDefKind};
 
-fn is_standard_table(model: &SemanticModel, id: &crate::LuaTypeDeclId) -> bool {
+pub(crate) fn is_standard_table(model: &SemanticModel, id: &crate::LuaTypeDeclId) -> bool {
     *id == crate::LuaTypeDeclId::global("table")
         && model
             .type_def_of(id)
@@ -151,7 +151,12 @@ pub(crate) fn lookup(model: &SemanticModel<'_>, owner: &LuaType, key: &LuaType) 
         return None;
     }
     let fields = model.member_infos(owner);
-    let result = lookup_key(model, &contracts, &fields, key, &mut Vec::new());
+    let indexes: Vec<_> = model
+        .index_infos(owner)
+        .into_iter()
+        .filter(|info| info.id.is_some())
+        .collect();
+    let result = lookup_key(model, &contracts, &fields, &indexes, key, &mut Vec::new());
     model
         .cache
         .borrow()
@@ -164,6 +169,7 @@ fn lookup_key(
     model: &SemanticModel<'_>,
     contracts: &[LuaType],
     fields: &[super::member::MemberInfo],
+    indexes: &[crate::IndexInfo],
     key: &LuaType,
     seen: &mut Vec<LuaType>,
 ) -> Option<LuaType> {
@@ -189,11 +195,11 @@ fn lookup_key(
         union
             .into_vec()
             .iter()
-            .map(|key| lookup_key(model, contracts, fields, key, seen))
+            .map(|key| lookup_key(model, contracts, fields, indexes, key, seen))
             .collect::<Option<Vec<_>>>()
             .map(LuaType::from_vec)
     } else if let Some(expanded) = expanded {
-        lookup_key(model, contracts, fields, &expanded, seen)
+        lookup_key(model, contracts, fields, indexes, &expanded, seen)
     } else {
         // A literal declared field overrides the inherited index signature.
         if let Some(literal) = type_eval::member_key_from_literal(key)
@@ -214,6 +220,22 @@ fn lookup_key(
             if type_check::is_compatible(model, &field_key, key) && !values.contains(&field.typ) {
                 values.push(field.typ.clone());
             }
+        }
+        let mut declared_covers_key = false;
+        for info in indexes {
+            let accepts = type_check::is_compatible(model, key, &info.key_type);
+            let overlaps = accepts || type_check::is_compatible(model, &info.key_type, key);
+            if overlaps && !values.contains(&info.value_type) {
+                values.push(info.value_type.clone());
+            }
+            declared_covers_key |= accepts && !matches!(key, LuaType::Any | LuaType::Unknown);
+        }
+        // Explicit index declarations take precedence over inherited native
+        // contracts for a fully covered key domain. A narrower declaration is
+        // still one possible value for a broad key, alongside inherited entries.
+        if declared_covers_key {
+            seen.pop();
+            return (!values.is_empty()).then(|| LuaType::from_vec(values));
         }
         for contract in contracts {
             let pairs: Vec<(&LuaType, &LuaType)> = match contract {
@@ -326,4 +348,26 @@ fn inherited_dictionary_named_table_requires_standard_identity() {
     let model = ws.analysis.semantic_model(file);
     assert!(dictionaries(&model, &owner).is_empty());
     assert_eq!(lookup(&model, &owner, &LuaType::Integer), None);
+}
+
+#[cfg(test)]
+#[test]
+fn inherited_dictionary_keeps_declared_index_signatures() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let file=ws.def("---@class Child: table<string,integer>\n---@field [integer] boolean\n---@class Override: table<string,integer>\n---@field [string] boolean");
+    let child = ws.ty("Child");
+    let overridden = ws.ty("Override");
+    let model = ws.analysis.semantic_model(file);
+    assert_eq!(
+        lookup(&model, &child, &LuaType::Integer),
+        Some(LuaType::Boolean)
+    );
+    assert_eq!(
+        lookup(&model, &child, &LuaType::String),
+        Some(LuaType::Integer)
+    );
+    assert_eq!(
+        lookup(&model, &overridden, &LuaType::String),
+        Some(LuaType::Boolean)
+    );
 }
