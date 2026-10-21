@@ -1065,9 +1065,7 @@ fn nonempty_array_length_index(
         .ancestors::<emmylua_parser::LuaStat>()
         .next()
         .is_some_and(|statement| {
-            statement
-                .descendants::<emmylua_parser::LuaCallExpr>()
-                .any(|call| call.get_range().end() <= offset)
+            array_length_calls_conflict(model, decl, statement.syntax(), offset, 0)
         })
     {
         return false;
@@ -1079,7 +1077,7 @@ fn nonempty_array_length_index(
         return false;
     };
     // This deliberately bounded, single-path check does not carry facts across
-    // merges, loops, writes or calls which could invalidate the length boundary.
+    // merges, loops, writes or calls with visible mutation risks.
     for _ in 0..128 {
         let Some(node) = tree.get_flow_node(current) else {
             return false;
@@ -1110,11 +1108,7 @@ fn nonempty_array_length_index(
                 {
                     return true;
                 }
-                if cond
-                    .descendants::<emmylua_parser::LuaCallExpr>()
-                    .next()
-                    .is_some()
-                {
+                if array_length_calls_conflict(model, decl, cond.syntax(), offset, 0) {
                     return false;
                 }
             }
@@ -1142,13 +1136,22 @@ fn nonempty_array_length_index(
                         else {
                             return false;
                         };
-                        if value.descendants().any(|node| {
-                            node.text_range().end() <= offset
-                                && emmylua_parser::LuaCallExpr::can_cast(node.kind().into())
-                        }) {
+                        if array_length_calls_conflict(model, decl, &value, offset, 0) {
                             return false;
                         }
                     }
+                }
+            }
+            FlowNodeKind::CallExprStat(call) => {
+                let Some(tree) = model.syntax_tree() else {
+                    return false;
+                };
+                let Some(call) = call.get_syntax_id().to_node_from_root(&tree.get_red_root())
+                else {
+                    return false;
+                };
+                if array_length_calls_conflict(model, decl, &call, offset, 0) {
+                    return false;
                 }
             }
             FlowNodeKind::BranchLabel | FlowNodeKind::AsCast(_) | FlowNodeKind::TagCast(_) => {}
@@ -1158,6 +1161,87 @@ fn nonempty_array_length_index(
             return false;
         };
         current = previous;
+    }
+    false
+}
+
+/// Preserve a length guard across opaque calls unless the array escapes to the call.
+/// Known mutators and writes in locally visible callees still invalidate the guard.
+fn array_length_calls_conflict(
+    model: &SemanticModel,
+    decl: &SemanticId,
+    syntax: &emmylua_parser::LuaSyntaxNode,
+    before: TextSize,
+    depth: usize,
+) -> bool {
+    if depth >= 8 {
+        return true;
+    }
+    let mut pending = vec![syntax.clone()];
+    while let Some(node) = pending.pop() {
+        if node.text_range().start() >= before
+            || emmylua_parser::LuaClosureExpr::can_cast(node.kind().into())
+        {
+            continue;
+        }
+        if node.text_range().end() <= before
+            && let Some(call) = emmylua_parser::LuaCallExpr::cast(node.clone())
+        {
+            let Some(prefix) = call.get_prefix_expr() else {
+                return true;
+            };
+            let name = prefix.syntax().text().to_string();
+            if matches!(
+                name.as_str(),
+                "rawset"
+                    | "setmetatable"
+                    | "table.remove"
+                    | "table.insert"
+                    | "table.move"
+                    | "table.sort"
+                    | "table.clear"
+            ) || call
+                .descendants::<emmylua_parser::LuaNameExpr>()
+                .any(|name| model.resolve_name(name.get_position()).as_ref() == Some(decl))
+            {
+                return true;
+            }
+            let mut prefix = prefix;
+            while let LuaExpr::ParenExpr(paren) = prefix {
+                let Some(inner) = paren.get_expr() else {
+                    return true;
+                };
+                prefix = inner;
+            }
+            let closure = match prefix {
+                LuaExpr::ClosureExpr(closure) => Some(closure),
+                LuaExpr::NameExpr(name) => model
+                    .resolve_name(name.get_position())
+                    .and_then(|id| resolve_callable_closure(model, id))
+                    .filter(|(file, _)| *file == model.file_id())
+                    .and_then(|(_, ptr)| {
+                        ptr.to_node_from_root(&model.syntax_tree()?.get_red_root())
+                    })
+                    .and_then(emmylua_parser::LuaClosureExpr::cast),
+                _ => None,
+            };
+            if let Some(body) = closure.and_then(|closure| closure.get_block()) {
+                // A visible write may target an alias of the array. Keep this
+                // conservative without requiring whole-program alias analysis.
+                if body.descendants::<LuaAssignStat>().next().is_some()
+                    || array_length_calls_conflict(
+                        model,
+                        decl,
+                        body.syntax(),
+                        body.get_range().end(),
+                        depth + 1,
+                    )
+                {
+                    return true;
+                }
+            }
+        }
+        pending.extend(node.children());
     }
     false
 }

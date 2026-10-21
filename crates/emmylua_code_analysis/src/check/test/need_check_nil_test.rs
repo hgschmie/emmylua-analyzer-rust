@@ -351,3 +351,69 @@ fn test_nonempty_array_length_index() {
         );
     }
 }
+
+#[test]
+fn nonempty_length_guard_survives_unrelated_predicate_calls() {
+    for condition in [
+        "#a > 0",
+        "a and #a > 0 and count() > 0",
+        "count() > 0 and a and #a > 0",
+    ] {
+        let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+        assert!(
+            ws.has_no_diagnostic(
+                crate::DiagnosticCode::ParamTypeMismatch,
+                &format!(
+                    r#"
+            ---@return integer
+            local function count() return 1 end
+            ---@param key string
+            local function consume(key) end
+            ---@param a string[]
+            local function drain(a)
+                while {condition} do
+                    local key = a[#a]
+                    consume(key)
+                    table.remove(a)
+                end
+            end
+        "#
+                )
+            ),
+            "{condition}"
+        );
+    }
+}
+
+#[test]
+fn nonempty_length_guard_rejects_mutating_predicates() {
+    for mutation in [
+        "table.remove(a)",
+        "rawset(a, 1, nil)",
+        "mutate(a)",
+        "change()",
+        "(function() a[1] = nil end)()",
+    ] {
+        let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+        assert!(
+            !ws.has_no_diagnostic(
+                crate::DiagnosticCode::ParamTypeMismatch,
+                &format!(
+                    r#"
+            ---@param key string
+            local function consume(key) end
+            ---@param a string[]
+            local function drain(a)
+                local function change() a[1] = nil end
+                if #a > 0 then
+                    {mutation}
+                    consume(a[#a])
+                end
+            end
+        "#
+                )
+            ),
+            "{mutation}"
+        );
+    }
+}
