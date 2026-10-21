@@ -537,6 +537,9 @@ pub(crate) fn type_of_expr_at_node(
                         let ty = if prefix_member_ty.is_nullable()
                             && !member_ty.is_nullable()
                             && member_type_more_specific(model, &member_ty, &prefix_member_ty)
+                            && (matches!(prefix, LuaExpr::NameExpr(_))
+                                || guarded_index_type(model, index_expr, offset, &prefix_member_ty)
+                                    .is_some_and(|narrowed| !narrowed.is_nullable()))
                         {
                             remove_type(prefix_member_ty, &LuaType::Nil)
                         } else {

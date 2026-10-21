@@ -57,3 +57,20 @@ fn nested_member_contracts_preserve_optional_receivers() {
         "#
     ));
 }
+
+#[test]
+fn nested_member_contracts_keep_explicit_non_nil_guards() {
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    ws.def("---@class Record\n---@field count integer?");
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::NeedCheckNil,
+        r#"
+        ---@param parent {item:Record}
+        local function read(parent)
+            if parent.item.count then
+                return parent.item.count + 1
+            end
+        end
+    "#
+    ));
+}
