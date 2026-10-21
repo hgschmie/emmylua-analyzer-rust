@@ -438,6 +438,24 @@ impl<'db> SemanticModel<'db> {
         let owner = decl.owner_syntax?;
         let tree = self.syntax_tree()?;
         let node = owner.to_node_from_root(&tree.get_red_root())?;
+        if let Some(stat) = emmylua_parser::LuaForStat::cast(node.clone()) {
+            let all_integer = stat
+                .get_iter_expr()
+                .enumerate()
+                .filter(|(index, _)| *index != 1)
+                .all(|(_, expr)| {
+                    infer::vm::is_integer_operand(
+                        self,
+                        &self.type_of_expr(expr.get_syntax_id()),
+                        &mut Vec::new(),
+                    )
+                });
+            return Some(if all_integer {
+                LuaType::Integer
+            } else {
+                LuaType::Number
+            });
+        }
         let stat = LuaForRangeStat::cast(node)?;
         let vars = stat.get_var_name_list().collect::<Vec<_>>();
         let index = vars
