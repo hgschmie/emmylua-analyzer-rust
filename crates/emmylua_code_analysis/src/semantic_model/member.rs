@@ -119,7 +119,7 @@ fn find_member_in_owner(
         if let Some(names) = name_bindings {
             declared = substitute_named_refs(&declared, names);
         }
-        if super::type_check::is_compatible(model, &declared, &key_type) {
+        if super::type_check::is_compatible(model, &key_type, &declared) {
             return member_info_of(model, member_ref, bindings, name_bindings);
         }
     }
