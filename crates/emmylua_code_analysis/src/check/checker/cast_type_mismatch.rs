@@ -3,6 +3,7 @@
 //! A cast may widen or narrow a type. Use precise subtype checks in both directions
 //! so broad value compatibility cannot accept an unrelated literal alternative.
 
+use crate::semantic_model::type_check::is_compatible;
 use emmylua_parser::{LuaAstNode, LuaDocTagCast};
 
 use crate::DiagnosticCode;
@@ -76,6 +77,7 @@ fn check_cast_tag(
         let target_type = semantic_model.doc_type_lua(target_doc_type.get_syntax_id());
         if semantic_model.type_check_subtype(&check_origin, &target_type)
             || semantic_model.type_check_subtype(&target_type, &check_origin)
+            || cast_enum_compatible(semantic_model, &check_origin, &target_type)
             || cast_broad_compatible(&check_origin, &target_type)
         {
             continue;
@@ -91,6 +93,55 @@ fn check_cast_tag(
             ),
         );
     }
+}
+
+/// A cast can narrow a primitive to an enum of compatible values. Keep this
+/// check local to casts: it must not make arbitrary numbers assignable to enums.
+fn cast_enum_compatible(model: &SemanticModel<'_>, origin: &LuaType, target: &LuaType) -> bool {
+    let mut target = target.clone();
+    let mut visited = Vec::new();
+    while visited.len() < 32 && !visited.contains(&target) {
+        visited.push(target.clone());
+        let (LuaType::Ref(id) | LuaType::Def(id)) = &target else {
+            return false;
+        };
+        let Some(def) = model.type_def_of(id) else {
+            return false;
+        };
+        match def.kind {
+            crate::TypeDefKind::Alias => {
+                let Some(expanded) = model.alias_target(&def) else {
+                    return false;
+                };
+                target = expanded;
+            }
+            crate::TypeDefKind::Enum => {
+                let Some(facts) = model.file_facts_of(def.file_id) else {
+                    return false;
+                };
+                let Some(value) = def
+                    .owner_syntax
+                    .and_then(|syntax| facts.decl_by_owner_syntax(syntax))
+                    .and_then(|decl| decl.value_expr_syntax)
+                else {
+                    return false;
+                };
+                // Enum fields belong to their initializer, including global enums
+                // declared in another file or under a different runtime name.
+                let owner = crate::SemanticId::member(def.file_id, value.get_range());
+                let members = model.members_of_owner(&owner);
+                return !members.is_empty()
+                    && members.iter().all(|member| {
+                        model.type_of_member(&member.id).is_some_and(|typ| {
+                            !matches!(typ, LuaType::Unknown | LuaType::Any)
+                                && is_compatible(model, origin, &typ)
+                        })
+                    });
+            }
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// `table` is a supertype of tuple/array/object: casts between `---@type table?` and `[integer, integer]?`
