@@ -7,7 +7,9 @@ use hashbrown::HashMap;
 
 use crate::semantic_db::def::{DeclKind, MemberRef, SemanticId, TypeDef, TypeDefKind};
 use crate::semantic_model::infer::unify::{self, TplBindings};
-use crate::semantic_model::type_eval::{map_type, substitute_named_refs, with_expanded_alias};
+use crate::semantic_model::type_eval::{
+    expand_alias_generic, map_type, substitute_named_refs, with_expanded_alias,
+};
 use crate::{FileId, GenericTplId, InFiled, LuaMemberKey, LuaType};
 use crate::{Member, semantic_db::facts::FileFacts};
 use smol_str::SmolStr;
@@ -21,6 +23,39 @@ use crate::VariadicType;
 /// Normal class hierarchies are shallow. This cap prevents pathological/recursive parent
 /// chains from making `member_info` / `resolve_member` slow-path expansion unbounded.
 const MAX_MEMBER_INHERITANCE_DEPTH: usize = 16;
+
+/// Whether arbitrary member reads have no declared key/value contract.
+pub(crate) fn has_unrestricted_members(model: &SemanticModel, ty: &LuaType) -> bool {
+    let mut current = ty.clone();
+    // Follow aliases without turning named classes or table literals into
+    // unrestricted tables. Bound traversal for recursive alias definitions.
+    for _ in 0..32 {
+        match &current {
+            LuaType::Table | LuaType::Any => return true,
+            LuaType::Ref(id) | LuaType::Def(id) => {
+                let Some(def) = model.type_def_of(id) else {
+                    return false;
+                };
+                if def.kind != TypeDefKind::Alias {
+                    return false;
+                }
+                let Some(target) = model.alias_target(&def) else {
+                    return false;
+                };
+                current = target;
+            }
+            LuaType::Generic(_) => {
+                let expanded = expand_alias_generic(model, &current);
+                if expanded == current {
+                    return false;
+                }
+                current = expanded;
+            }
+            _ => return false,
+        }
+    }
+    false
+}
 
 /// Member information (an entry from a prefix-type query).
 #[derive(Debug, Clone, PartialEq)]
@@ -1182,6 +1217,17 @@ fn member_info_of(
             LuaType::Unknown
         })
     });
+    // A shell `table` argument may stand for an object annotation, not the
+    // unrestricted primitive. Preserve its fields before generic substitution
+    // so later indexing does not treat `Wrapper<{foo: T}>` as `Wrapper<table>`.
+    if matches!(&typ, LuaType::Generic(generic) if generic.get_params().iter().any(|param| matches!(param, LuaType::Table)))
+        && matches!(member.owner, SemanticId::TypeDef(_))
+        && let Some(syntax) = member.value_syntax
+        && let LuaType::Generic(rich) = model.doc_type_lua_rich_in(member_ref.file_id, syntax)
+    {
+        typ = LuaType::Generic(rich);
+    }
+
     // Cross-file projection of runtime function members: `type_of_member` often returns a wide Function,
     // so look up the real signature in the member's declaring file to let `require(...).module.fn()` keep inferring.
     // Standard library members keep the wide Function behavior to avoid disturbing parameter checks / math library overloads.

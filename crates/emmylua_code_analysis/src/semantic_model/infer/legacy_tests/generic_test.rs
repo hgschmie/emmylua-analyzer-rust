@@ -1679,7 +1679,7 @@ mod test {
 
         let foo_ty = ws.expr_ty("Foo");
         let foo_desc = ws.humanize_type(foo_ty);
-        assert_ne!(foo_desc, "any", "{foo_desc}");
+        assert_eq!(foo_desc, "string", "{foo_desc}");
     }
 
     #[test]
