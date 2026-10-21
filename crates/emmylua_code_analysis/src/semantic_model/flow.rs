@@ -2161,31 +2161,38 @@ fn trace_member(
     // states whose result cannot depend on the incoming path or visited set.
     // A loop summary can be acyclic; real back edges must keep the visited walk.
     if tree.has_cycles() || !path.narrowings.is_empty() || !path.casts.is_empty() {
-        return trace_member_uncached(model, member, tree, flow_id, visited, path);
+        return trace_member_uncached(model, member, access, tree, flow_id, visited, path);
     }
-    let key = (member.clone(), flow_id);
-    if let Some(cache::CacheEntry::Ready(result)) =
-        model.cache.borrow().member_trace_state.get(&key)
+    let key = (
+        model.file_id(),
+        member.clone(),
+        access.map(|expr| expr.get_syntax_id()),
+        flow_id,
+    );
     {
-        return result.clone();
+        let cache = model.cache.borrow();
+        if let Some(entry) = cache.member_trace_state.get(&key) {
+            return entry.get(&cache).cloned().flatten();
+        }
     }
+    let _query = cache::QueryCacheScope::new(&model.cache);
     model
         .cache
         .borrow_mut()
         .member_trace_state
         .insert(key.clone(), cache::CacheEntry::InProgress);
-    let result = trace_member_uncached(model, member, tree, flow_id, visited, path);
-    model
-        .cache
-        .borrow_mut()
-        .member_trace_state
-        .insert(key, cache::CacheEntry::Ready(result.clone()));
+    let revision = model.cache.borrow().revision();
+    let result = trace_member_uncached(model, member, access, tree, flow_id, visited, path);
+    let mut cache = model.cache.borrow_mut();
+    let entry = cache::CacheEntry::finish(result.clone(), cache.is_complete(revision));
+    cache.member_trace_state.insert(key, entry);
     result
 }
 
 fn trace_member_uncached(
     model: &SemanticModel,
     member: &SemanticId,
+    access: Option<&emmylua_parser::LuaIndexExpr>,
     tree: &FlowTree,
     flow_id: FlowId,
     visited: &mut HashSet<FlowId>,

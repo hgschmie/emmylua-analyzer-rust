@@ -214,8 +214,10 @@ pub(crate) struct SemanticLocalCache {
     /// [`TraceStateKey`] for why the path may be omitted from the key.
     pub(crate) trace_state: HashMap<TraceStateKey, CacheEntry<Option<LuaType>>>,
     /// Member traces with an empty incoming guard/cast path on an acyclic graph.
-    /// Other paths and cyclic graphs must not share these results.
-    pub(crate) member_trace_state: HashMap<(SemanticId, FlowId), CacheEntry<Option<LuaType>>>,
+    /// Other paths and cyclic graphs must not share these results. File and
+    /// receiver syntax distinguish accesses to the same declared class member.
+    pub(crate) member_trace_state:
+        HashMap<(FileId, SemanticId, Option<LuaSyntaxId>, FlowId), CacheEntry<Option<LuaType>>>,
     /// Fast negative/positive cache for `---@return_cast` lookup by call syntax.
     /// Most calls do not have `return_cast`, so caching the `None` result avoids
     /// repeatedly resolving callees and scanning signatures for the same call.
@@ -252,6 +254,7 @@ impl SemanticLocalCache {
         self.member_type.retain(|_, entry| entry.is_ready());
         self.expr_type_at.retain(|_, entry| entry.is_ready());
         self.trace_state.retain(|_, entry| entry.is_ready());
+        self.member_trace_state.retain(|_, entry| entry.is_ready());
         self.type_check.retain(|_, entry| entry.is_ready());
         self.alias_targets.retain(|_, entry| entry.is_ready());
         self.alias_heads.retain(|_, entry| entry.is_ready());
