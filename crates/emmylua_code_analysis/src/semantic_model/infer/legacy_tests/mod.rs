@@ -39,3 +39,5 @@ mod syntax_error_test;
 mod tuple_test;
 mod type_check_test;
 mod unpack_test;
+
+mod cast_guarded_member_path;

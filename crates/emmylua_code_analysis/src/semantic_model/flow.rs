@@ -464,7 +464,9 @@ pub(crate) fn type_of_expr_at_node(
                 })
             {
                 let mut member_ty = if let Some(flow_tree) = model.flow_tree()
-                    && (flow_tree.has_condition() || flow_tree.has_complex_control())
+                    && (flow_tree.has_condition()
+                        || flow_tree.has_complex_control()
+                        || flow_tree.has_tag_cast())
                     && let Some(flow_id) = flow_tree.get_flow_id_at(offset)
                 {
                     trace_member(
@@ -2217,7 +2219,7 @@ fn trace_member(
                 }
             }
             FlowNodeKind::TagCast(cast_ptr) => {
-                collect_member_cast(model, member, cast_ptr, path);
+                collect_member_cast(model, member, access, cast_ptr, path);
             }
             FlowNodeKind::TrueCondition(cond_ptr) => {
                 if let Some(narrowing) =
@@ -2445,6 +2447,7 @@ fn collect_decl_cast(
 fn collect_member_cast(
     model: &SemanticModel,
     member: &SemanticId,
+    access: Option<&emmylua_parser::LuaIndexExpr>,
     cast_ptr: &emmylua_parser::LuaAstPtr<emmylua_parser::LuaDocTagCast>,
     path: &mut PathState,
 ) {
@@ -2457,14 +2460,10 @@ fn collect_member_cast(
     let Some(key_expr) = cast.get_key_expr() else {
         return;
     };
+    // Match the accessed object/path, not just the class member. A nullable
+    // receiver may have no member ID at the cast's documentation syntax.
     let matches = match &key_expr {
-        LuaExpr::IndexExpr(index_expr) => {
-            model
-                .resolve_member(index_expr)
-                .and_then(|resolved| resolved.member_id)
-                .as_ref()
-                == Some(member)
-        }
+        LuaExpr::IndexExpr(index_expr) => member_access_matches(model, member, access, index_expr),
         _ => false,
     };
     if !matches {
