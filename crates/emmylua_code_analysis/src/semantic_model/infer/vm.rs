@@ -4754,7 +4754,11 @@ pub(crate) fn binary_type(
 /// Integer aliases have the same built-in arithmetic behavior as `integer`.
 /// Keep nominal classes and nullable/mixed unions out of this classification;
 /// operator overloads have already been dispatched by `binary_type`.
-fn is_integer_operand(model: &SemanticModel, ty: &LuaType, seen: &mut Vec<LuaType>) -> bool {
+pub(crate) fn is_integer_operand(
+    model: &SemanticModel,
+    ty: &LuaType,
+    seen: &mut Vec<LuaType>,
+) -> bool {
     if matches!(
         ty,
         LuaType::Integer | LuaType::IntegerConst(_) | LuaType::DocIntegerConst(_)
