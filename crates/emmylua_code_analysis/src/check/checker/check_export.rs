@@ -95,7 +95,13 @@ fn check_index_expr(
         .member_infos_with_key(&export_ty, &key)
         .into_iter()
         .any(|info| info.file_id.is_none_or(|file_id| file_id == module_file));
-    if is_surface_member {
+    // A function-valued __index supplies readable members without declaring
+    // fields on the exported table. It does not authorize injecting new fields.
+    let is_index_read = code == DiagnosticCode::UndefinedField
+        && semantic_model
+            .member_info(&export_ty, &key)
+            .is_some_and(|info| info.id.is_none() && !info.typ.is_nil());
+    if is_surface_member || is_index_read {
         return;
     }
     let field_name = index_key.get_path_part();

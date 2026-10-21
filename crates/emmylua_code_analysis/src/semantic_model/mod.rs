@@ -10,6 +10,7 @@ pub mod type_eval;
 mod access;
 mod builtin;
 mod doc_types;
+mod index_function;
 mod prelude;
 mod signature;
 mod types;

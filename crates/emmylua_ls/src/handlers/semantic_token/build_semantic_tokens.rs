@@ -602,6 +602,22 @@ fn handle_name_node(
         return Some(());
     }
 
+    if let Some(index) = LuaIndexExpr::cast(node.clone())
+        && model
+            .resolve_member(&index)
+            .is_none_or(|member| member.member_id.is_none())
+    {
+        let typ = model.type_of_expr(index.get_syntax_id());
+        if typ.is_function() {
+            builder.push(name_token, SemanticTokenTypeKind::Method);
+            return Some(());
+        }
+        if !matches!(typ, LuaType::Unknown) {
+            builder.push(name_token, SemanticTokenTypeKind::Property);
+            return Some(());
+        }
+    }
+
     // Member access on a require module: `m.foo`'s `foo` is rendered as a method.
     if let Some(index_expr) = LuaIndexExpr::cast(node.clone()) {
         if let Some(prefix) = index_expr.get_prefix_expr()
