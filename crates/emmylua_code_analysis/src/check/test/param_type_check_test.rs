@@ -2429,7 +2429,7 @@ mod class_index_array_compatibility {
                         }))
                     };
                     assert_eq!(
-                        ws.check_type(&sequence(source_type.clone()), &sequence(target.clone())),
+                        ws.check_type(&sequence(target.clone()), &sequence(source_type.clone())),
                         expected,
                         "{source}: {callback}, repeat={repeat}"
                     );
