@@ -12,6 +12,7 @@
 //! - `---@cast x +string` adds string to x's path type;
 //! - Flow type for member assignment `t.x = v` / `self.x = v` (FlowEffect::AssignMember).
 
+mod computed_guard;
 mod computed_index;
 
 use std::collections::HashSet;
@@ -451,6 +452,9 @@ pub(crate) fn type_of_expr_at_node(
             apply_casts(model.type_of_expr_node(&expr), AsOnly)
         }
         LuaExpr::IndexExpr(index_expr) => {
+            if let Some(typ) = computed_guard::guarded_type(model, index_expr, offset) {
+                return apply_casts(typ, All);
+            }
             if let Some(typ) = computed_index::assigned_type(model, index_expr, offset) {
                 return apply_casts(typ, All);
             }
