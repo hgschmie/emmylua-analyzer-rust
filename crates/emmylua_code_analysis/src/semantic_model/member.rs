@@ -332,6 +332,7 @@ pub(crate) fn member_info_impl(
             LuaType::Never
         };
         return Some(MemberInfo {
+            index_key_type: None,
             key: key.clone(),
             typ,
             index_key_type: None,
@@ -370,6 +371,7 @@ pub(crate) fn member_info_impl(
         }
     {
         return Some(MemberInfo {
+            index_key_type: None,
             key: key.clone(),
             typ: ret,
             index_key_type: None,
