@@ -185,31 +185,16 @@ fn direct_member_info(
     prefix_type: &LuaType,
     key: &LuaMemberKey,
 ) -> Option<MemberInfo> {
-    let dictionary = match prefix_type {
-        LuaType::TableGeneric(params) if params.len() == 2 => Some(params.as_slice()),
-        LuaType::Generic(generic)
-            if generic.get_base_type_id().get_name() == "table"
-                && generic.get_params().len() == 2 =>
-        {
-            Some(generic.get_params().as_slice())
-        }
-        _ => None,
-    };
-    if let Some(params) = dictionary {
-        let key_type = match key {
-            LuaMemberKey::Name(name) => LuaType::StringConst(name.clone().into()),
-            LuaMemberKey::Integer(n) => LuaType::IntegerConst(*n),
-            _ => return None,
-        };
-        return super::type_check::is_compatible(model, &params[0], &key_type).then(|| {
-            MemberInfo {
-                index_key_type: None,
-                key: key.clone(),
-                typ: params[1].clone(),
-                id: None,
-                file_id: None,
-                is_method: false,
-            }
+    if let Some(key_type) = super::dictionary::key_type(key)
+        && let Some(typ) = super::dictionary::lookup(model, prefix_type, &key_type, true)
+    {
+        return Some(MemberInfo {
+            key: key.clone(),
+            typ,
+            id: None,
+            file_id: None,
+            is_method: false,
+            index_key_type: None,
         });
     }
     match prefix_type {
@@ -404,7 +389,7 @@ pub(crate) fn member_info_impl(
                 LuaType::Any => Some(LuaType::Any),
                 LuaType::DocFunction(fun) => Some(fun.get_ret().clone()),
                 LuaType::Function | LuaType::Signature(_) => None,
-                _ => None,
+                _ => member_info(model, &index_info.typ, key).map(|info| info.typ),
             }
         })
     {

@@ -115,5 +115,5 @@ impl RegisterCapabilities for HoverCapabilities {
     }
 }
 
-mod index_metamethod;
 mod directional;
+mod index_metamethod;

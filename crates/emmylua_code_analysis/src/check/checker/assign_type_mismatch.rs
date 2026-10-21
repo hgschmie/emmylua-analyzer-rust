@@ -295,6 +295,15 @@ fn check_assign(
                     check_value_against(context, semantic_model, &write.typ, &expr);
                     continue;
                 }
+                if let Some(target) = semantic_model.dictionary_index_write_type(index_expr) {
+                    if !matches!(
+                        semantic_model.type_of_expr(expr.get_syntax_id()),
+                        LuaType::Nil
+                    ) {
+                        check_value_against(context, semantic_model, &target, &expr);
+                    }
+                    continue;
+                }
                 let Some(resolved) = semantic_model.resolve_member(index_expr) else {
                     check_self_member_assign(context, semantic_model, index_expr, &expr);
                     continue;
