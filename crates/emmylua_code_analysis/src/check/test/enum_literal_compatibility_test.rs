@@ -164,7 +164,8 @@ local empty = {}
     }
     assert!(model.type_check(&LuaType::DocIntegerConst(2), &second));
     assert!(!model.type_check(&LuaType::DocIntegerConst(99), &second));
-    assert!(!model.type_check(&LuaType::Integer, &first));
+    assert!(model.type_check(&LuaType::Integer, &first));
+    assert!(!model.type_check_subtype(&LuaType::Integer, &first));
     assert!(!model.type_check(&LuaType::Number, &first));
 }
 
@@ -187,6 +188,51 @@ local container = {
                 ),
                 valid,
                 "{value} / separate={separate}"
+            );
+        }
+    }
+}
+
+#[test]
+fn numeric_enum_broad_integer_assignment_policy_is_preserved() {
+    let definition = format!(
+        "{DEFINITION}\n---@alias StateAlias demo.State\n---@class Settings\n---@field state StateAlias"
+    );
+    for separate in [false, true] {
+        for (typ, valid) in [
+            ("integer", true),
+            ("1", true),
+            ("99", false),
+            ("number", false),
+            ("string", false),
+        ] {
+            for target in ["demo.State", "StateAlias", "StateAlias?"] {
+                let source = format!(
+                    "---@param value {typ}\nlocal function apply(value)\n---@type {target}\nlocal result = value\nend"
+                );
+                assert_eq!(
+                    check(
+                        &definition,
+                        &source,
+                        DiagnosticCode::AssignTypeMismatch,
+                        separate
+                    ),
+                    valid,
+                    "{source}"
+                );
+            }
+            let source = format!(
+                "---@param settings Settings\n---@param value {typ}\nlocal function apply(settings, value) settings.state = value end"
+            );
+            assert_eq!(
+                check(
+                    &definition,
+                    &source,
+                    DiagnosticCode::AssignTypeMismatch,
+                    separate
+                ),
+                valid,
+                "{source}"
             );
         }
     }
