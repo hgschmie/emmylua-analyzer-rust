@@ -7,6 +7,7 @@ mod and_or_test;
 mod annotation_test;
 mod array_test;
 mod attribute_test;
+mod bare_table_test;
 mod callable_return_infer_test;
 mod closure_generic;
 mod closure_param_infer_test;
