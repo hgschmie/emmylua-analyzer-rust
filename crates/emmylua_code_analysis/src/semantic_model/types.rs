@@ -1290,7 +1290,10 @@ impl<'db> SemanticModel<'db> {
             .file_facts()
             .and_then(|facts| facts.decl_by_id(decl))
             .is_some_and(|decl| {
-                decl.doc_type_syntax.is_none() && !matches!(decl.kind, DeclKind::Param)
+                // Local assignment tracing already widens inferred initializers
+                // before applying explicit casts. Widening again loses those casts.
+                decl.doc_type_syntax.is_none()
+                    && !matches!(decl.kind, DeclKind::Param | DeclKind::Local { .. })
             });
         if inferred {
             widen_assignment_type(target)
