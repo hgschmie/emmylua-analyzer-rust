@@ -4,7 +4,7 @@ use lsp_types::{
 };
 use tokio_util::sync::CancellationToken;
 
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use crate::context::{
     CancelSource, RequestOutcome, ServerContextSnapshot, WorkspaceDiagnosticLevel,
@@ -15,11 +15,13 @@ pub async fn on_pull_workspace_diagnostic(
     _: WorkspaceDiagnosticParams,
     token: CancellationToken,
 ) -> RequestOutcome<WorkspaceDiagnosticReport> {
-    context
-        .request_manager()
-        .begin("workspace_diagnostic", token.clone())
-        .await;
-
+    let requests = context.request_manager();
+    requests.begin("workspace_diagnostic", token.clone()).await;
+    let lock = requests.lock_for("workspace_diagnostic").await;
+    let _guard = tokio::select! {
+        _ = token.cancelled() => return RequestOutcome::Cancelled(CancelSource::Client),
+        guard = lock.lock() => guard,
+    };
     let first = !context.file_diagnostic().has_workspace_diagnostic_done();
     let last_returned_version = context.file_diagnostic().get_last_workspace_version().await;
 
@@ -28,83 +30,90 @@ pub async fn on_pull_workspace_diagnostic(
             return RequestOutcome::Cancelled(CancelSource::Client);
         }
 
-        let (version, status) = {
-            let workspace_manager = context.workspace_manager().lock().await;
+        let (version, status, document_versions) = {
+            let workspace = context.workspace_manager().lock().await;
             (
-                workspace_manager.get_workspace_version(),
-                workspace_manager.get_workspace_diagnostic_level(),
+                workspace.get_workspace_version(),
+                workspace.get_workspace_diagnostic_level(),
+                workspace.open_file_versions.clone(),
             )
         };
 
-        let should_run = first
+        if first
             || last_returned_version != Some(version)
-            || status != WorkspaceDiagnosticLevel::None;
-
-        if should_run {
-            // Use Fast for the first pass to return quickly; use Slow for full diagnostics afterward.
-            let level = if first {
-                WorkspaceDiagnosticLevel::Fast
+            || status != WorkspaceDiagnosticLevel::None
+        {
+            // Fast is a parallel initial pass; subsequent passes yield between
+            // files so interactive document queries and updates retain priority.
+            let result = if first {
+                context
+                    .file_diagnostic()
+                    .pull_workspace_diagnostics_fast(token.clone())
+                    .await
             } else {
-                WorkspaceDiagnosticLevel::Slow
+                context
+                    .file_diagnostic()
+                    .pull_workspace_diagnostics_slow(token.clone())
+                    .await
             };
-            {
-                let workspace_manager = context.workspace_manager().lock().await;
-                workspace_manager.update_workspace_version(WorkspaceDiagnosticLevel::None, false);
+            if token.is_cancelled() {
+                return RequestOutcome::Cancelled(CancelSource::Client);
             }
-
-            let result = match level {
-                WorkspaceDiagnosticLevel::None => Some(Vec::new()),
-                WorkspaceDiagnosticLevel::Fast => {
+            if let Some(mut diagnostics) = result {
+                let workspace = context.workspace_manager().lock().await;
+                if workspace.get_workspace_version() == version {
+                    // Only acknowledge a complete, current pass. An edit during
+                    // diagnosis must keep the workspace dirty for a retry.
                     context
                         .file_diagnostic()
-                        .pull_workspace_diagnostics_fast(token.clone())
-                        .await
-                }
-                WorkspaceDiagnosticLevel::Slow => {
-                    context
-                        .file_diagnostic()
-                        .pull_workspace_diagnostics_slow(token.clone())
-                        .await
-                }
-            };
-
-            match result {
-                Some(file_diagnostics) => {
-                    context.file_diagnostic().mark_workspace_diagnostic_done();
+                        .include_removed_workspace_files(&mut diagnostics)
+                        .await;
                     context
                         .file_diagnostic()
                         .set_last_workspace_version(version)
                         .await;
+                    context.file_diagnostic().mark_workspace_diagnostic_done();
+                    workspace.update_workspace_version(WorkspaceDiagnosticLevel::None, false);
                     return RequestOutcome::Ready(build_workspace_report(
-                        file_diagnostics,
-                        version,
+                        diagnostics,
+                        &document_versions,
                     ));
                 }
-                None => {
-                    if token.is_cancelled() {
-                        return RequestOutcome::Cancelled(CancelSource::Client);
-                    }
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
             }
-        } else {
-            // Workspace is unchanged: keep the request pending and check again after 2 seconds.
-            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+
+        // Coalesce edits and keep an idle pull pending. Cancellation must wake
+        // this wait immediately, including cancellation during server shutdown.
+        let interval = context
+            .analysis()
+            .with_snapshot(|analysis| {
+                analysis
+                    .get_emmyrc()
+                    .diagnostics
+                    .diagnostic_interval
+                    .unwrap_or(500)
+            })
+            .unwrap_or(500)
+            .max(100);
+        tokio::select! {
+            _ = token.cancelled() => return RequestOutcome::Cancelled(CancelSource::Client),
+            _ = tokio::time::sleep(Duration::from_millis(interval)) => {},
         }
     }
 }
 
 fn build_workspace_report(
     file_diagnostics: Vec<(lsp_types::Uri, Vec<lsp_types::Diagnostic>)>,
-    version: i64,
+    document_versions: &HashMap<lsp_types::Uri, i32>,
 ) -> WorkspaceDiagnosticReport {
     WorkspaceDiagnosticReport {
         items: file_diagnostics
             .into_iter()
             .map(|(uri, diagnostics)| {
                 WorkspaceFullDocumentDiagnosticReport {
+                    // The workspace generation is not an LSP document version.
+                    version: document_versions.get(&uri).copied().map(i64::from),
                     uri,
-                    version: Some(version),
                     full_document_diagnostic_report: FullDocumentDiagnosticReport {
                         items: diagnostics,
                         result_id: None,
