@@ -485,7 +485,7 @@ pub(crate) fn type_of_expr_at_node(
                 if nullable != read.typ {
                     read.typ = nullable;
                     if let Some(typ) = indexed_read_at(model, index_expr, &read, offset) {
-                        return apply_expr_casts(model, expr_syntax, typ, All);
+                        return apply_casts(typ, All);
                     }
                 }
             }
