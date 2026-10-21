@@ -63,7 +63,7 @@ fn declared_field_hover_keeps_alias_contract() {
 #[test]
 fn declared_field_hover_does_not_change_untyped_members() {
     let text = hover_text("local object = {}", "object.<??>count = 2", false);
-    assert_eq!(code(&text), "(field) count: number = 2");
+    assert_eq!(code(&text), "(field) count: integer = 2");
 }
 
 #[test]

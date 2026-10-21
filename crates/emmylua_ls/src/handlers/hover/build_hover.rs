@@ -332,7 +332,7 @@ fn member_assignment_context_infos(
         inferred_prefix
     };
     model
-        .member_infos_with_key_all(&prefix_ty, &member.key)
+        .member_infos_with_key_mode(&prefix_ty, &member.key, MemberCollectMode::AllDefinitions)
         .into_iter()
         .filter(|info| {
             let Some(SemanticId::Member(id)) = &info.id else {
