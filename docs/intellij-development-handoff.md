@@ -1,3 +1,28 @@
+# LTN cache, metrics and settings warnings — 2026-10-21
+
+Integrated on upstream/main `bb7c7d4c`, preserving the existing stack and UP-045:
+
+- UP-036 amendment `3bb9ec1a`: retain nonempty-array length guards across
+  unrelated calls while rejecting visible mutations and array escapes.
+- UP-062 amendment `74e9b1c9`: restore ordinary integer-to-enum compatibility
+  lost in the unified-checker rebase; strict subtype queries remain strict.
+- UP-105 `95d8426a`: resolve broad rawget keys through index contracts and retain
+  structural class bases.
+- UP-106 `dc184266`: preserve truthy literal branches and parenthesized guards.
+
+All four independent analysis suites, Clippy and rustfmt pass (1,608 / 1,605 /
+1,601 / 1,601 analysis tests). The new branches are independent on current
+upstream; together UP-105/106 repair the complete metrics case. UP-036 and
+UP-062 amend existing local fixes. Provenance checks identify rawget regression
+at upstream fa8cd357 and the short-circuit diagnostic at upstream 6ae3da98.
+No original mod changes, new PR or push.
+
+Package as EmmyLua2 **0.30.0-188**. Keep FDE 0.9.3-dev and LSP4IJ
+0.21.1-SNAPSHOT-15 archives. The final combined validation, all-37-file LTN replay,
+archive hash and native integration receipt are recorded in workspace
+`upstream/memory/LTN_SEVEN_WARNINGS_2026-10-21.md` and analyzer
+`build/investigations/ltn-seven-warnings-20261021/`.
+
 # Post-refresh LTN warnings — 2026-10-21
 
 Seven of the eight newly exposed warnings are analyzer false positives. The
