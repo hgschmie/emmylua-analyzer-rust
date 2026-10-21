@@ -978,3 +978,65 @@ mod tests {
         ));
     }
 }
+
+#[test]
+fn test_integer_alias_return_widening() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for target in ["number", "number?", "Numeric", "OptionalNumeric"] {
+        for source in ["integer", "uint32", "TrainId"] {
+            let mut ws = VirtualWorkspace::new();
+            assert!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::ReturnTypeMismatch,
+                    &format!(
+                        r#"
+                ---@alias uint32 integer
+                ---@alias TrainId uint32
+                ---@alias Numeric number
+                ---@alias OptionalNumeric number?
+                ---@class Train
+                ---@field id {source}
+                ---@param train Train
+                ---@return {target}
+                local function process(train) return train.id end
+            "#
+                    )
+                ),
+                "{source} -> {target}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_integer_alias_return_rejects_nonnumeric() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for source in ["string", "boolean", "Other"] {
+        let mut ws = VirtualWorkspace::new();
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ReturnTypeMismatch,
+            &format!(
+                r#"
+            ---@class Other
+            ---@alias Value {source}
+            ---@param value Value
+            ---@return number?
+            local function process(value) return value end
+        "#
+            )
+        ));
+    }
+}
+
+#[test]
+fn test_integer_return_keeps_literal_contracts() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let mut ws = VirtualWorkspace::new();
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::ReturnTypeMismatch,
+        r#"
+        ---@return 2
+        local function value() return 1 end
+    "#
+    ));
+}

@@ -153,3 +153,9 @@ fn test_check_config_default_enable_rules() {
     assert!(!config.is_code_enabled(&DiagnosticCode::SyntaxError));
     assert!(config.is_code_enabled(&DiagnosticCode::UnknownDocTag));
 }
+
+mod variadic_named_types_test;
+
+mod array_union_alias_test;
+
+mod nullable_required_arguments_test;
