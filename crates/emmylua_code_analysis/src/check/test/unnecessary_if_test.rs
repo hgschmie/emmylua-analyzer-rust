@@ -274,3 +274,43 @@ end
     assert_eq!(array.get_base(), &ws.ty("Item"));
     assert_eq!(array.get_len(), &crate::LuaArrayLen::Min(1));
 }
+
+#[test]
+fn loop_review_control_flow_and_cold_warm_queries() {
+    use emmylua_parser::{LuaAstNode, LuaCallExpr, LuaNameExpr};
+    for (source, expected) in [
+        (
+            "local value=nil; while again do print(value); value=1; if stop then break end end",
+            "integer?",
+        ),
+        (
+            "local value=0; while again do print(value); value=value+1; if skip then goto next_iteration end; ::next_iteration:: end",
+            "integer",
+        ),
+        (
+            "local value=0; while again do local function nested() value='hidden' end; print(value); value=value+1; if stop then break end end",
+            "integer",
+        ),
+    ] {
+        let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(source);
+        let expected = ws.ty(expected);
+        let model = ws.analysis.semantic_model(file);
+        let reference = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaNameExpr>()
+            .find(|name| {
+                name.get_name_text().as_deref() == Some("value")
+                    && name.ancestors::<LuaCallExpr>().next().is_some()
+            })
+            .unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                model.type_of_expr_at(reference.get_syntax_id(), reference.get_position()),
+                expected,
+                "{source}"
+            );
+        }
+    }
+}

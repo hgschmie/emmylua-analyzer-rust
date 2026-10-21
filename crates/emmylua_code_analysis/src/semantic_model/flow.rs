@@ -15,7 +15,11 @@
 mod array;
 #[cfg(test)]
 mod callable_tests;
+mod computed_effects;
+mod computed_guard;
+mod computed_index;
 mod guards;
+mod iterator_entry;
 mod loop_carried;
 mod member_call_effects;
 use loop_carried::loop_carried_type;
@@ -555,7 +559,7 @@ fn flow_member_value_type(model: &SemanticModel, member: &SemanticId) -> Option<
 fn type_of_member_read(
     model: &SemanticModel,
     member: &SemanticId,
-    access: &emmylua_parser::LuaIndexExpr,
+    access: &LuaIndexExpr,
     offset: TextSize,
 ) -> LuaType {
     if let Some(tree) = model.flow_tree()
@@ -571,9 +575,9 @@ fn type_of_member_read(
             &mut HashSet::new(),
             &mut PathState::default(),
         )
-        .unwrap_or_else(|| type_of_member_at(model, member, offset))
+        .unwrap_or_else(|| member_type_at(model, member, offset, false, Some(access)))
     } else {
-        type_of_member_at(model, member, offset)
+        member_type_at(model, member, offset, false, Some(access))
     }
 }
 
@@ -581,7 +585,7 @@ fn type_of_member_read(
 fn invalidated_member_value_type(
     model: &SemanticModel,
     member: &SemanticId,
-    access: Option<&emmylua_parser::LuaIndexExpr>,
+    access: Option<&LuaIndexExpr>,
 ) -> LuaType {
     access
         .and_then(|access| {
@@ -838,6 +842,15 @@ pub(crate) fn type_of_expr_at_node(
         LuaExpr::IndexExpr(index_expr) => {
             if let Some(ty) = array::last_element_type(model, index_expr, offset) {
                 return apply_casts(ty);
+            }
+            if let Some(typ) = computed_guard::guarded_type(model, index_expr, offset) {
+                return apply_casts(typ);
+            }
+            if let Some(typ) = iterator_entry::entry_type(model, index_expr, offset) {
+                return apply_casts(typ);
+            }
+            if let Some(typ) = computed_index::assigned_type(model, index_expr, offset) {
+                return apply_casts(typ);
             }
             if let Some(resolved) = model.resolve_member(index_expr)
                 && let Some(member_id) = resolved.member_id.clone().or_else(|| {
@@ -1891,7 +1904,7 @@ fn path_write_affects(
             .1
             .iter()
             .zip(keys)
-            .all(|(written, key)| written.is_none() || written == key)
+            .all(|(written, key)| written.is_none() || key.is_none() || written == key)
 }
 
 /// Expand initializer aliases without inferring types. Each captured member path
@@ -2719,7 +2732,8 @@ fn trace_member(
     visited: &mut HashSet<FlowId>,
     path: &mut PathState,
 ) -> Option<LuaType> {
-    if path.member_unstable || tree.is_in_cycle(flow_id)
+    if path.member_unstable
+        || tree.is_in_cycle(flow_id)
         || path
             .narrowings
             .iter()
@@ -2933,7 +2947,7 @@ fn trace_member_uncached(
 /// Calls in the access statement invalidate only observations evaluated before them.
 fn member_calls_after(
     model: &SemanticModel,
-    access: Option<&emmylua_parser::LuaIndexExpr>,
+    access: Option<&LuaIndexExpr>,
     after: TextSize,
     before: TextSize,
 ) -> bool {
@@ -2958,7 +2972,7 @@ fn member_flow_calls_conflict(
     model: &SemanticModel,
     tree: &FlowTree,
     flow: FlowId,
-    access: Option<&emmylua_parser::LuaIndexExpr>,
+    access: Option<&LuaIndexExpr>,
     before: TextSize,
 ) -> bool {
     let Some(access) = access else {
