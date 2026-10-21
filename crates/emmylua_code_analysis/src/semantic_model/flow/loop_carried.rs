@@ -14,6 +14,10 @@ pub(super) fn loop_carried_type(
         return match cached {
             CacheEntry::Ready(ty) => ty,
             CacheEntry::InProgress => model.type_of_decl(decl).map(widen_const_type),
+            CacheEntry::Provisional(ty) => {
+                model.cache.borrow().mark_incomplete();
+                ty
+            }
         };
     }
     model
@@ -21,12 +25,11 @@ pub(super) fn loop_carried_type(
         .borrow_mut()
         .loop_carried
         .insert(key.clone(), CacheEntry::InProgress);
+    let revision = model.cache.borrow().revision();
     let value = compute(model, decl, syntax, entry);
-    model
-        .cache
-        .borrow_mut()
-        .loop_carried
-        .insert(key, CacheEntry::Ready(value.clone()));
+    let mut cache = model.cache.borrow_mut();
+    let result = CacheEntry::finish(value.clone(), cache.is_complete(revision));
+    cache.loop_carried.insert(key, result);
     value
 }
 
