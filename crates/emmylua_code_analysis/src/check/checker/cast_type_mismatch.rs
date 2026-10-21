@@ -3,6 +3,7 @@
 //! A cast may widen or narrow a type. Use precise subtype checks in both directions
 //! so broad value compatibility cannot accept an unrelated literal alternative.
 
+use crate::semantic_model::type_check::is_compatible;
 use emmylua_parser::{LuaAstNode, LuaDocTagCast};
 
 use crate::DiagnosticCode;
