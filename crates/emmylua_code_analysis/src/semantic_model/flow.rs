@@ -40,7 +40,7 @@ use crate::{
 
 use super::SemanticModel;
 use super::cache::{self, DeclTracePurpose};
-use super::member::find_self_return_cast_member;
+use super::member::{find_self_return_cast_member, has_unrestricted_members};
 use crate::semantic_model::infer::infer_call_with_bindings;
 use crate::semantic_model::infer::unify::substitute;
 use crate::semantic_model::infer::vm::{binary_type, widen_const};
@@ -800,6 +800,24 @@ pub(crate) fn type_of_expr_at_node(
                         .find_map(|info| info.id)
                 })
             {
+                // Navigation can resolve a declared field on one branch of an
+                // open alias. At runtime the other branch can supply any value.
+                if let Some(prefix) = index_expr.get_prefix_expr() {
+                    let owner = model.type_of_expr_at(prefix.get_syntax_id(), offset);
+                    if matches!(
+                        owner,
+                        LuaType::Ref(_)
+                            | LuaType::Def(_)
+                            | LuaType::Generic(_)
+                            | LuaType::Union(_)
+                            | LuaType::MultiLineUnion(_)
+                    ) && has_unrestricted_members(model, &owner)
+                    {
+                        let ty = guarded_index_type(model, index_expr, offset, &LuaType::Any)
+                            .unwrap_or(LuaType::Any);
+                        return apply_casts(ty);
+                    }
+                }
                 let mut member_ty = if let Some(flow_tree) = model.flow_tree()
                     && (flow_tree.has_condition() || flow_tree.has_complex_control())
                     && let Some(flow_id) = flow_tree.get_flow_id_at(offset)
@@ -5610,6 +5628,12 @@ fn filter_type_by_member_discriminant(
     };
     let mut kept = Vec::new();
     for component in components {
+        // An unrestricted table's field may have either value/truthiness.
+        // Absence from the declared member set does not mean the field is nil.
+        if has_unrestricted_members(model, &component) {
+            kept.push(component);
+            continue;
+        }
         if let LuaType::Ref(id) | LuaType::Def(id) = &component {
             if let Some(def) = model.type_def_of(id)
                 && def.kind == TypeDefKind::Alias
@@ -5654,6 +5678,12 @@ fn filter_type_by_member_truthiness(
     };
     let mut kept = Vec::new();
     for component in components {
+        // An unrestricted table's field may have either value/truthiness.
+        // Absence from the declared member set does not mean the field is nil.
+        if has_unrestricted_members(model, &component) {
+            kept.push(component);
+            continue;
+        }
         if let LuaType::Ref(id) | LuaType::Def(id) = &component {
             if let Some(def) = model.type_def_of(id)
                 && def.kind == TypeDefKind::Alias

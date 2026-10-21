@@ -19,6 +19,38 @@ use super::table_constructor::expanded_results;
 /// chains from making `member_info` / `resolve_member` slow-path expansion unbounded.
 const MAX_MEMBER_INHERITANCE_DEPTH: usize = 100;
 
+/// Whether any union alternative permits arbitrary keys without a declared value type.
+pub(crate) fn has_unrestricted_members(model: &SemanticModel, ty: &LuaType) -> bool {
+    match ty {
+        LuaType::Any | LuaType::Table => return true,
+        LuaType::Ref(id) | LuaType::Def(id)
+            if !model
+                .type_def_of(id)
+                .is_some_and(|def| def.kind == TypeDefKind::Alias) =>
+        {
+            return false;
+        }
+        LuaType::Union(_)
+        | LuaType::MultiLineUnion(_)
+        | LuaType::Ref(_)
+        | LuaType::Def(_)
+        | LuaType::Generic(_) => {}
+        _ => return false,
+    }
+    // Use the shared alias budget; growing generic aliases may never repeat an identical type.
+    let Some(expanded) = crate::semantic_model::type_eval::expand_alias_branches(model, ty) else {
+        return false;
+    };
+    match expanded {
+        LuaType::Table | LuaType::Any => true,
+        LuaType::Union(union) => union
+            .iter()
+            .any(|ty| matches!(ty, LuaType::Table | LuaType::Any)),
+        // An intersection can impose required fields on an otherwise open table.
+        _ => false,
+    }
+}
+
 /// Member information (an entry from a prefix-type query).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemberInfo {
@@ -450,6 +482,8 @@ pub fn member_type(
     prefix_type: &LuaType,
     key: &LuaMemberKey,
 ) -> Option<LuaType> {
+    // Member lookup is also used by keyof and indexed types to find declared fields.
+    // The expression VM separately supplies the runtime value of an unrestricted read.
     member_info(model, prefix_type, key).map(|info| info.typ)
 }
 
@@ -1103,6 +1137,72 @@ fn member_info_of(
     })
 }
 
+fn has_shell_table_argument(typ: &LuaType) -> bool {
+    match typ {
+        LuaType::Table => true,
+        LuaType::Generic(generic) => generic.get_params().iter().any(has_shell_table_argument),
+        LuaType::Union(union) => union.iter().any(has_shell_table_argument),
+        LuaType::MultiLineUnion(union) => has_shell_table_argument(&union.to_union()),
+        _ => false,
+    }
+}
+
+/// Restore erased table arguments from a second projection of the same annotation.
+/// The shell owns branch membership. Keep unmatched branches, including a bare
+/// table, when the richer projection cannot identify a corresponding shape.
+fn repair_shell_table_arguments(shell: &LuaType, rich: &LuaType) -> LuaType {
+    match (shell, rich) {
+        (LuaType::Table, _) => rich.clone(),
+        (LuaType::Generic(shell), LuaType::Generic(rich))
+            if shell.get_base_type_id() == rich.get_base_type_id()
+                && shell.get_params().len() == rich.get_params().len() =>
+        {
+            LuaType::Generic(Rc::new(crate::LuaGenericType::new(
+                shell.get_base_type_id(),
+                shell
+                    .get_params()
+                    .iter()
+                    .zip(rich.get_params())
+                    .map(|(shell, rich)| repair_shell_table_arguments(shell, rich))
+                    .collect(),
+            )))
+        }
+        (LuaType::Union(shell), LuaType::Union(rich)) => {
+            let rich = rich.into_vec();
+            let mut repaired = Vec::new();
+            for branch in shell.into_vec() {
+                let candidates: Vec<_> = rich
+                    .iter()
+                    .filter(|candidate| match (&branch, candidate) {
+                        (LuaType::Table, LuaType::Table | LuaType::Object(_)) => true,
+                        (LuaType::Generic(shell), LuaType::Generic(rich)) => {
+                            shell.get_base_type_id() == rich.get_base_type_id()
+                                && shell.get_params().len() == rich.get_params().len()
+                        }
+                        _ => false,
+                    })
+                    .collect();
+                if has_shell_table_argument(&branch) && !candidates.is_empty() {
+                    repaired.extend(
+                        candidates
+                            .into_iter()
+                            .map(|rich| repair_shell_table_arguments(&branch, rich)),
+                    );
+                } else {
+                    repaired.push(branch);
+                }
+            }
+            LuaType::from_vec(repaired)
+        }
+        (LuaType::MultiLineUnion(shell), _) => {
+            repair_shell_table_arguments(&shell.to_union(), rich)
+        }
+        (_, LuaType::MultiLineUnion(rich)) => repair_shell_table_arguments(shell, &rich.to_union()),
+        // Named aliases are not erased object literals; retain their identity.
+        _ => shell.clone(),
+    }
+}
+
 pub(super) fn projected_member_type(
     model: &SemanticModel,
     member_ref: &MemberRef,
@@ -1111,6 +1211,18 @@ pub(super) fn projected_member_type(
     name_bindings: Option<&HashMap<String, LuaType>>,
 ) -> Option<LuaType> {
     let mut typ = model.type_of_member(&member_ref.id)?;
+    // A shell `table` argument may stand for an object annotation, not the
+    // unrestricted primitive. Preserve its fields before generic substitution
+    // so later indexing does not treat `Wrapper<{foo: T}>` as `Wrapper<table>`.
+    if matches!(&typ, LuaType::Generic(_))
+        && has_shell_table_argument(&typ)
+        && matches!(member.owner, SemanticId::TypeDef(_))
+        && let Some(syntax) = member.value_syntax
+        && let LuaType::Generic(rich) = model.project_doc_type(member_ref.file_id, syntax, &[])
+    {
+        typ = repair_shell_table_arguments(&typ, &LuaType::Generic(rich));
+    }
+
     // Cross-file projection of runtime function members: `type_of_member` often returns a wide Function,
     // so look up the real signature in the member's declaring file to let `require(...).module.fn()` keep inferring.
     // Standard library members keep the wide Function behavior to avoid disturbing parameter checks / math library overloads.
