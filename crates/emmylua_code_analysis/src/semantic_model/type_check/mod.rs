@@ -204,6 +204,16 @@ fn check_general_type_compact_inner(
             {
                 return Err(context.mismatch(source, compact_type));
             }
+            // Named numeric enums accept computed integers independently of the
+            // stricter policy for literal aliases such as `0|1|2`.
+            if !is_source
+                && !context.strict_subtype
+                && matches!(source, LuaType::Integer)
+                && (values.is_integer()
+                    || matches!(&values, LuaType::Union(union) if union.iter().all(LuaType::is_integer)))
+            {
+                return Ok(());
+            }
             return if is_source {
                 check_general_type_compact(context, &values, compact_type)
             } else {
