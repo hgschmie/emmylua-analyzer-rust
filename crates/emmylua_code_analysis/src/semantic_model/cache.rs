@@ -199,6 +199,7 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) evaluation_errors: HashSet<Option<LuaTypeDeclId>>,
     /// Closure returns depend on the VM environment: track active queries only.
     pub(crate) closure_return_in_progress: HashSet<(FileId, LuaSyntaxId)>,
+    pub(crate) loop_carried: HashMap<(LuaSyntaxId, SemanticId), CacheEntry<Option<LuaType>>>,
     pub(crate) expr_type: HashMap<(FileId, LuaSyntaxId), CacheEntry<LuaType>>,
     pub(crate) decl_type: HashMap<(FileId, SemanticId), CacheEntry<Option<LuaType>>>,
     pub(crate) member_type: HashMap<(FileId, SemanticId), CacheEntry<Option<LuaType>>>,
@@ -250,6 +251,7 @@ impl SemanticLocalCache {
         self.member_type.retain(|_, entry| entry.is_ready());
         self.expr_type_at.retain(|_, entry| entry.is_ready());
         self.trace_state.retain(|_, entry| entry.is_ready());
+        self.loop_carried.retain(|_, entry| entry.is_ready());
         self.type_check.retain(|_, entry| entry.is_ready());
         self.alias_targets.retain(|_, entry| entry.is_ready());
         self.alias_heads.retain(|_, entry| entry.is_ready());

@@ -79,8 +79,10 @@ impl<'a> FlowBinder<'a> {
         self.create_node(FlowNodeKind::BranchLabel)
     }
 
-    pub fn create_loop_label(&mut self) -> FlowId {
-        self.create_node(FlowNodeKind::LoopLabel)
+    pub fn create_loop_label(&mut self, syntax: LuaSyntaxId) -> FlowId {
+        let id = self.create_node(FlowNodeKind::LoopLabel);
+        self.add_effect(id, FlowEffect::LoopEntry(syntax));
+        id
     }
 
     pub fn create_name_label(&mut self, name: &str, closure_id: LuaClosureId) -> FlowId {
