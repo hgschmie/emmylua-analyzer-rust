@@ -2359,3 +2359,64 @@ fn test_parallel_for_each_file_runs_on_shared_snapshots() {
 
     assert_eq!(visited.load(std::sync::atomic::Ordering::Relaxed), 2);
 }
+
+#[test]
+fn annotated_table_field_does_not_annotate_callback_assignments() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def(
+        r#"
+        ---@class Settings
+        ---@field count integer
+        ---@alias Handler fun(settings: Settings)
+        ---@class Handlers
+        ---@field change Handler
+        ---@type Handlers
+        local handlers = {
+            ---@type Handler
+            change = function(settings) settings.count = 1 end,
+        }
+    "#,
+    );
+    let model = ws.analysis.semantic_model(file);
+    let facts = model.file_facts().unwrap();
+    let assignment = facts
+        .members
+        .iter()
+        .find(|member| {
+            member.key.name() == Some("count")
+                && member.value_syntax.is_some()
+                && !matches!(member.owner, SemanticId::TypeDef(_))
+        })
+        .unwrap();
+    assert!(
+        assignment.doc_type_syntax.is_none(),
+        "field annotation leaked onto callback assignment"
+    );
+}
+
+#[test]
+fn table_field_module_annotation_stays_on_own_field() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def(
+        r#"
+        local container = {
+            ---@module 'example'
+            module = { child = 1 },
+        }
+    "#,
+    );
+    let model = ws.analysis.semantic_model(file);
+    let facts = model.file_facts().unwrap();
+    let module = facts
+        .members
+        .iter()
+        .find(|member| member.key.name() == Some("module"))
+        .unwrap();
+    let child = facts
+        .members
+        .iter()
+        .find(|member| member.key.name() == Some("child"))
+        .unwrap();
+    assert_eq!(module.module_path.as_deref(), Some("example"));
+    assert_eq!(child.module_path, None);
+}

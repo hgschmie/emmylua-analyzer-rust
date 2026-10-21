@@ -573,6 +573,12 @@ fn table_context_type_for_token(
     token: &LuaSyntaxToken,
 ) -> Option<LuaType> {
     let field = token.parent_ancestors().find_map(LuaTableField::cast)?;
+    // Context belongs to the constructor key, not arbitrary members inside
+    // its value expression or callback body.
+    let key_range = field.get_field_key()?.get_range()?;
+    if !key_range.contains_range(token.text_range()) {
+        return None;
+    }
     let table_expr = field.ancestors::<LuaTableExpr>().next()?;
     table_context_type_for_expr(model, &table_expr)
 }

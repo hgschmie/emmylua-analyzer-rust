@@ -1001,6 +1001,74 @@ mod tests {
         ));
         Ok(())
     }
+    #[gtest]
+    fn callback_member_hover_does_not_use_enclosing_table_context() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        check!(ws.check_hover(
+            r#"
+                ---@class Settings
+                ---@field count integer
+                ---@alias Handler fun(settings: Settings)
+                ---@class Handlers
+                ---@field count string
+                ---@field change Handler
+                ---@type Handlers
+                local handlers = {
+                    ---@type Handler
+                    change = function(settings) settings.<??>count = 1 end,
+                }
+            "#,
+            VirtualHoverResult {
+                value: "```lua\n(field) count: integer = 1\n```".to_string(),
+            },
+        ));
+        Ok(())
+    }
+    #[gtest]
+    fn callback_member_read_hover_does_not_use_enclosing_table_context() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        check!(ws.check_hover(
+            r#"
+                ---@class Settings
+                ---@field count integer
+                ---@alias Handler fun(settings: Settings)
+                ---@class Handlers
+                ---@field count string
+                ---@field change Handler
+                ---@type Handlers
+                local handlers = {
+                    ---@type Handler
+                    change = function(settings) return settings.<??>count end,
+                }
+            "#,
+            VirtualHoverResult {
+                value: "```lua\n(field) count: integer\n```".to_string(),
+            },
+        ));
+        Ok(())
+    }
+
+    #[gtest]
+    fn value_member_hover_does_not_use_enclosing_table_context() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        check!(ws.check_hover(
+            r#"
+                ---@class Settings
+                ---@field count integer
+                ---@type Settings
+                local settings
+                ---@class Container
+                ---@field count string
+                ---@field value integer
+                ---@type Container
+                local container = { value = settings.<??>count }
+            "#,
+            VirtualHoverResult {
+                value: "```lua\n(field) count: integer\n```".to_string(),
+            },
+        ));
+        Ok(())
+    }
 }
 
 #[cfg(test)]
