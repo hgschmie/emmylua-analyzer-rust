@@ -47,6 +47,16 @@ impl Checker for DuplicateFieldChecker {
                 if dupes.len() <= 1 {
                     continue;
                 }
+                if is_type_def
+                    && dupes.len() == 2
+                    && matches!(
+                        (dupes[0].access, dupes[1].access),
+                        (crate::MemberAccess::Read, crate::MemberAccess::Write)
+                            | (crate::MemberAccess::Write, crate::MemberAccess::Read)
+                    )
+                {
+                    continue;
+                }
                 let all_function = dupes
                     .iter()
                     .all(|member| is_function_like(semantic_model, member));
