@@ -46,3 +46,4 @@ mod type_check_test;
 mod unpack_test;
 
 mod asymmetric_fields;
+mod contextual_callback_test;
