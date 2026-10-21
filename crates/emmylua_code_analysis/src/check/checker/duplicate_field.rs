@@ -95,59 +95,81 @@ fn check_cross_file_member_assign(
     semantic_model: &SemanticModel<'_>,
     root: &LuaSyntaxNode,
 ) {
-    let current_file = semantic_model.file_id();
-    for assign_stat in root.descendants().filter_map(LuaAssignStat::cast) {
-        let (vars, exprs) = assign_stat.get_var_and_expr_list();
-        for (index, var) in vars.iter().enumerate() {
-            let LuaVarExpr::IndexExpr(index_expr) = var else {
-                continue;
-            };
-            let Some(prefix) = index_expr.get_prefix_expr() else {
-                continue;
-            };
-            let Some(resolved) = semantic_model.resolve_member(index_expr) else {
-                continue;
-            };
-            // The target must be a require'd module export (cross-file definition).
-            let module_file = required_module_file(semantic_model, &prefix)
-                .or_else(|| resolved.file_id.filter(|file| *file != current_file));
-            let Some(module_file) = module_file else {
-                continue;
-            };
-            if module_file == current_file {
-                continue;
+    // Inspect complete targets only: a call used as an index or target prefix
+    // reads the imported function and does not redefine it.
+    for assign in root.descendants().filter_map(LuaAssignStat::cast) {
+        let (vars, values) = assign.get_var_and_expr_list();
+        for (var, rhs) in vars.iter().zip(values) {
+            if let LuaVarExpr::IndexExpr(index) = var {
+                check_imported_function_target(context, semantic_model, index, rhs);
             }
-            // The module file already has a same-named runtime function member -> this assignment is a duplicate implementation.
-            let Some(module_facts) = semantic_model.file_facts_of(module_file) else {
-                continue;
-            };
-            if !module_facts
-                .members_named(resolved.name.as_str())
-                .any(|member| member.value_syntax.is_some())
-            {
-                continue;
-            }
-            // Only function/closure right-hand sides count as "reimplementing an existing method"; plain field writes are not reported.
-            let Some(rhs) = exprs.get(index) else {
-                continue;
-            };
-            let rhs_ty = semantic_model.type_of_expr(rhs.get_syntax_id());
-            if !matches!(
-                rhs_ty,
-                LuaType::DocFunction(_) | LuaType::Signature(_) | LuaType::Function
-            ) {
-                continue;
-            }
-            let Some(key_range) = index_expr.get_index_key().and_then(|key| key.get_range()) else {
-                continue;
-            };
-            context.add_diagnostic(
-                DiagnosticCode::DuplicateSetField,
-                key_range,
-                t!("Duplicate field `%{name}`.", name = resolved.name),
+        }
+    }
+    for function in root
+        .descendants()
+        .filter_map(emmylua_parser::LuaFuncStat::cast)
+    {
+        if let Some(LuaVarExpr::IndexExpr(index)) = function.get_func_name()
+            && let Some(closure) = function.get_closure()
+        {
+            check_imported_function_target(
+                context,
+                semantic_model,
+                &index,
+                emmylua_parser::LuaExpr::ClosureExpr(closure),
             );
         }
     }
+}
+
+fn check_imported_function_target(
+    context: &mut CheckContext<'_>,
+    semantic_model: &SemanticModel<'_>,
+    index_expr: &emmylua_parser::LuaIndexExpr,
+    rhs: emmylua_parser::LuaExpr,
+) {
+    let current_file = semantic_model.file_id();
+    let Some(prefix) = index_expr.get_prefix_expr() else {
+        return;
+    };
+    let Some(resolved) = semantic_model.resolve_member(index_expr) else {
+        return;
+    };
+    // The target must be a require'd module export (cross-file definition).
+    let module_file = required_module_file(semantic_model, &prefix)
+        .or_else(|| resolved.file_id.filter(|file| *file != current_file));
+    let Some(module_file) = module_file else {
+        return;
+    };
+    if module_file == current_file {
+        return;
+    }
+    // The module file already has a same-named runtime function member -> this assignment is a duplicate implementation.
+    let Some(module_facts) = semantic_model.file_facts_of(module_file) else {
+        return;
+    };
+    if !module_facts
+        .members_named(resolved.name.as_str())
+        .any(|member| member.value_syntax.is_some())
+    {
+        return;
+    }
+    // Only function/closure right-hand sides count as "reimplementing an existing method"; plain field writes are not reported.
+    let rhs_ty = semantic_model.type_of_expr(rhs.get_syntax_id());
+    if !matches!(
+        rhs_ty,
+        LuaType::DocFunction(_) | LuaType::Signature(_) | LuaType::Function
+    ) {
+        return;
+    }
+    let Some(key_range) = index_expr.get_index_key().and_then(|key| key.get_range()) else {
+        return;
+    };
+    context.add_diagnostic(
+        DiagnosticCode::DuplicateSetField,
+        key_range,
+        t!("Duplicate field `%{name}`.", name = resolved.name),
+    );
 }
 
 /// require local variable -> module file (`local A = require("mod")`).
