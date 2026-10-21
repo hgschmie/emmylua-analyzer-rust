@@ -2888,6 +2888,79 @@ return t
             "{diagnostics:#?}"
         );
     }
+
+    #[test]
+    fn inferred_literal_assignment_contracts_allow_new_values() {
+        for cast in ["", "---@cast flag boolean"] {
+            let source = format!(
+                r#"
+                ---@param count integer
+                ---@param flag boolean
+                local function update(count, flag)
+                    local stacks = 0
+                    local label = 'empty'
+                    local active = false
+                    {cast}
+                    if flag then
+                        stacks = count / 10
+                        label = 'full'
+                        active = true
+                    end
+                    return stacks, label, active
+                end
+            "#
+            );
+            assert!(
+                VirtualWorkspace::new()
+                    .has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn inferred_literal_assignment_contracts_keep_explicit_restrictions() {
+        use emmylua_parser::{LuaAstNode, LuaNameExpr};
+        for (declaration, expected) in [
+            ("---@type 0\nlocal value = 0", "0"),
+            ("local value = 0 --[[@as 0]]", "0"),
+            ("local value = 0\n---@cast value 0", "0"),
+            ("---@alias Zero 0\n---@type Zero\nlocal value = 0", "Zero"),
+        ] {
+            let source = format!("{declaration}\nvalue = 2");
+            let mut ws = VirtualWorkspace::new();
+            let file = ws.def(&source);
+            let model = ws.analysis.semantic_model(file);
+            let name = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaNameExpr>()
+                .find(|name| {
+                    name.get_position() == (source.rfind("value = 2").unwrap() as u32).into()
+                })
+                .unwrap();
+            let decl = model.resolve_name(name.get_position()).unwrap();
+            let target = model.type_of_decl_assign_target_at(&decl, name.get_position());
+            assert_eq!(ws.humanize_type(target), expected, "{source}");
+        }
+        assert!(!VirtualWorkspace::new().has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            "local value = 0\nvalue = 'wrong'"
+        ));
+    }
+
+    #[test]
+    fn inferred_literal_assignment_contracts_keep_read_precision() {
+        assert!(VirtualWorkspace::new().has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+                ---@param value 0
+                local function zero(value) end
+                local value = 0
+                zero(value)
+            "#
+        ));
+    }
 }
 
 #[test]
