@@ -20,6 +20,7 @@ mod duplicate_field_test;
 mod duplicate_index_test;
 mod duplicate_require_test;
 mod duplicate_type_test;
+mod enum_literal_compatibility_test;
 mod enum_value_mismatch_test;
 mod generic_constraint_mismatch_test;
 mod global_in_non_module_test;
