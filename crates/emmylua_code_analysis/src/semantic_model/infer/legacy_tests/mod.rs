@@ -48,3 +48,5 @@ mod unpack_test;
 
 mod asymmetric_fields;
 mod contextual_callback_test;
+
+mod table_literal_call_matching;
