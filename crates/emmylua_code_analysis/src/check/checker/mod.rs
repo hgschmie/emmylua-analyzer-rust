@@ -105,8 +105,7 @@ impl<'a> CheckContext<'a> {
         }
     }
 
-    /// Collect structural failures before applying user-facing diagnostic filters.
-    /// Union alternative selection must not depend on which warnings are enabled.
+    /// Collect structural failures independently of user-facing diagnostic filters.
     pub(super) fn unfiltered(semantic_model: &'a SemanticModel<'a>) -> Self {
         Self {
             semantic_model,

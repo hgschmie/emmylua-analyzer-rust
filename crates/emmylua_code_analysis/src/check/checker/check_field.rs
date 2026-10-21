@@ -14,7 +14,7 @@ use crate::semantic_model::type_eval::expand_alias_branches;
 use crate::{LuaMemberKey, LuaType, LuaTypeDeclId, LuaUnionType};
 
 use super::assign_type_mismatch::{check_value_against, signature_matches_key};
-use super::param_type_check::callable_candidates;
+use super::param_type_check::table_argument_targets;
 use super::{CheckContext, Checker};
 use crate::semantic_model::render::humanize_type;
 
@@ -317,33 +317,8 @@ fn check_call_args(
     semantic_model: &SemanticModel<'_>,
     call_expr: &LuaCallExpr,
 ) {
-    let Some(callee) = call_expr.get_prefix_expr() else {
-        return;
-    };
-    let candidates = callable_candidates(semantic_model, &callee);
-    let Some(args) = call_expr.get_args_list() else {
-        return;
-    };
-    for candidate in &candidates {
-        let params = candidate.get_params();
-        for (index, arg) in args.get_args().enumerate() {
-            let LuaExpr::TableExpr(table) = arg else {
-                continue;
-            };
-            let Some((_, Some(param_ty))) = params.get(index) else {
-                continue;
-            };
-            // Do not re-check the pre-assertion shape of a cast constructor.
-            let asserted = crate::semantic_model::flow::type_of_expr_with_cast(
-                semantic_model,
-                table.get_syntax_id(),
-                crate::semantic_model::flow::ExprCastMode::AsOnly,
-            );
-            if !matches!(asserted, LuaType::TableConst(_)) {
-                continue;
-            }
-            check_against_type(context, semantic_model, param_ty, &table);
-        }
+    for (table, target) in table_argument_targets(semantic_model, call_expr) {
+        check_against_type(context, semantic_model, &target, &table);
     }
 }
 
@@ -367,7 +342,7 @@ fn check_against(
     check_against_type(context, semantic_model, &target, table);
 }
 
-fn check_against_type(
+pub(super) fn check_against_type(
     context: &mut CheckContext<'_>,
     semantic_model: &SemanticModel<'_>,
     target: &LuaType,
