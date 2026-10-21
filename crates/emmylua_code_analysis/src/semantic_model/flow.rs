@@ -452,7 +452,7 @@ pub(crate) fn type_of_expr_at_node(
             if let Some((read, _)) = model.directional_index(index_expr)
                 && let Some(typ) = directional_read_at(model, index_expr, &read, offset)
             {
-                return apply_expr_casts(model, expr_syntax, typ, All);
+                return apply_casts(typ, All);
             }
             if let Some(resolved) = model.resolve_member(index_expr)
                 && let Some(member_id) = resolved.member_id.clone().or_else(|| {
@@ -5762,6 +5762,7 @@ fn directional_read_at(
                         && let Some(narrowing) = narrow_member_condition(
                             model,
                             member,
+                            Some(index),
                             cond,
                             matches!(node.kind, FlowNodeKind::TrueCondition(_)),
                         )

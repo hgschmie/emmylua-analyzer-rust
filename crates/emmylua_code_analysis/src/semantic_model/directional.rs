@@ -63,6 +63,7 @@ impl SemanticModel<'_> {
             typ = self.substitute_generic_params_named(&typ, generic.get_params(), &names);
         }
         let write = MemberInfo {
+            index_key_type: read.index_key_type.clone(),
             key: key.clone(),
             typ,
             id: Some(writer.id.clone()),
