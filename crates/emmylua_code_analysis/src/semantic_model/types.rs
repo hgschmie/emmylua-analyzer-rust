@@ -623,7 +623,95 @@ impl<'db> SemanticModel<'db> {
             };
             iter_arg = target;
         }
-        let (key_ty, value_ty) = match &iter_arg {
+        let (key_ty, value_ty) = self.collection_key_value_types(&iter_arg)?;
+        let mut bindings = infer::unify::TplBindings::new();
+        if let Some(key_id) = key_id {
+            bindings.insert(key_id, key_ty);
+        }
+        bindings.insert(value_id, value_ty);
+        // Resolves the inner return slots of `---@return fun(tbl:any):K, V`.
+        let return_syntax = docs.returns.first()?;
+        let tree = self.syntax_tree_of(decl_file)?;
+        let node = return_syntax.to_node_from_root(&tree.get_red_root())?;
+        let Some(LuaDocType::Func(func_doc)) = LuaDocType::cast(node) else {
+            return None;
+        };
+        let return_list = func_doc.get_return_type_list()?;
+        let mut slots = Vec::new();
+        for ret in return_list.get_return_type_list() {
+            if let (_, Some(ret_type)) = ret.get_name_and_type() {
+                slots.push(self.analysis().doc_type_lua(
+                    decl_file,
+                    ret_type.get_syntax_id(),
+                    &docs.generic_params,
+                ));
+            }
+        }
+        let slot = slots.get(index)?;
+        let substituted = infer::unify::substitute(slot, &bindings);
+        (!matches!(substituted, LuaType::Unknown)).then_some(substituted)
+    }
+    /// Structural key/value types shared by iterator inference and generic collection calls.
+    /// Every union alternative must provide a collection shape; unknown or invalid
+    /// alternatives must not silently leave only the known branch's element type.
+    pub(crate) fn collection_key_value_types(
+        &self,
+        arg_ty: &LuaType,
+    ) -> Option<(LuaType, LuaType)> {
+        self.collection_key_value_types_inner(arg_ty, &[])
+    }
+
+    fn collection_key_value_types_inner(
+        &self,
+        arg_ty: &LuaType,
+        path: &[LuaType],
+    ) -> Option<(LuaType, LuaType)> {
+        if path.contains(arg_ty) || path.len() >= 32 {
+            return None;
+        }
+        let mut path = path.to_vec();
+        path.push(arg_ty.clone());
+        let named = match arg_ty {
+            LuaType::Ref(id) | LuaType::Def(id) => Some((id, None)),
+            LuaType::Generic(generic) if generic.get_base_type_id().get_name() != "table" => {
+                Some((
+                    generic.get_base_type_id_ref(),
+                    Some(generic.get_params().as_slice()),
+                ))
+            }
+            _ => None,
+        };
+        if let Some((id, params)) = named {
+            let instantiate = |ty: LuaType| match params {
+                Some(params) => self.substitute_generic_params(&ty, params),
+                None => ty,
+            };
+            if let Some(def) = self.type_def_of(id)
+                && def.kind == TypeDefKind::Alias
+            {
+                return self.collection_key_value_types_inner(
+                    &instantiate(self.alias_target(&def)?),
+                    &path,
+                );
+            }
+            for base in self.base_types(id) {
+                if let Some(types) =
+                    self.collection_key_value_types_inner(&instantiate(base), &path)
+                {
+                    return Some(types);
+                }
+            }
+        }
+        Some(match arg_ty {
+            LuaType::Union(union) => {
+                let (keys, values): (Vec<_>, Vec<_>) = union
+                    .iter()
+                    .map(|component| self.collection_key_value_types_inner(component, &path))
+                    .collect::<Option<Vec<_>>>()?
+                    .into_iter()
+                    .unzip();
+                (LuaType::from_vec(keys), LuaType::from_vec(values))
+            }
             LuaType::Any => (LuaType::Any, LuaType::Any),
             LuaType::TableConst(table) => {
                 let owner = SemanticId::member(table.file_id, table.value);
@@ -739,6 +827,9 @@ impl<'db> SemanticModel<'db> {
                 (LuaType::String, value)
             }
             LuaType::Array(array) => (LuaType::Integer, array.get_base().clone()),
+            LuaType::TableGeneric(params) if params.len() == 2 => {
+                (params[0].clone(), params[1].clone())
+            }
             LuaType::Generic(generic) if generic.get_base_type_id().get_name() == "table" => {
                 let params = generic.get_params();
                 (
@@ -747,33 +838,7 @@ impl<'db> SemanticModel<'db> {
                 )
             }
             _ => return None,
-        };
-        let mut bindings = infer::unify::TplBindings::new();
-        if let Some(key_id) = key_id {
-            bindings.insert(key_id, key_ty);
-        }
-        bindings.insert(value_id, value_ty);
-        // Resolves the inner return slots of `---@return fun(tbl:any):K, V`.
-        let return_syntax = docs.returns.first()?;
-        let tree = self.syntax_tree_of(decl_file)?;
-        let node = return_syntax.to_node_from_root(&tree.get_red_root())?;
-        let Some(LuaDocType::Func(func_doc)) = LuaDocType::cast(node) else {
-            return None;
-        };
-        let return_list = func_doc.get_return_type_list()?;
-        let mut slots = Vec::new();
-        for ret in return_list.get_return_type_list() {
-            if let (_, Some(ret_type)) = ret.get_name_and_type() {
-                slots.push(self.analysis().doc_type_lua(
-                    decl_file,
-                    ret_type.get_syntax_id(),
-                    &docs.generic_params,
-                ));
-            }
-        }
-        let slot = slots.get(index)?;
-        let substituted = infer::unify::substitute(slot, &bindings);
-        (!matches!(substituted, LuaType::Unknown)).then_some(substituted)
+        })
     }
     /// Infers `ipairs` slots from integer-index members, including inherited generic members.
     pub(crate) fn infer_iter_from_type_def(
