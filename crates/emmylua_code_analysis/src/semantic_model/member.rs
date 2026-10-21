@@ -192,6 +192,7 @@ fn direct_member_info(
             id: None,
             file_id: None,
             is_method: false,
+            index_key_type: None,
         });
     }
     match prefix_type {
