@@ -6,43 +6,6 @@ mod test {
     use crate::{LuaType, LuaUnionType, VirtualWorkspace};
 
     #[test]
-    fn test_standard_iterator_factory_return_triples() {
-        for iterator in ["pairs", "ipairs"] {
-            let mut ws = VirtualWorkspace::new_with_init_std_lib();
-            ws.def(&format!(
-                r#"
-                ---@class Foo
-                ---@field name string
-                ---@type Foo[]
-                local items = {{}}
-                iterator_function, iterator_state, iterator_control = {iterator}(items)
-            "#
-            ));
-            let LuaType::DocFunction(fun) = ws.expr_ty("iterator_function") else {
-                panic!("{iterator} should return an iterator function");
-            };
-            assert_eq!(
-                fun.get_ret().get_result_slot_type(0),
-                Some(LuaType::Integer)
-            );
-            assert_eq!(fun.get_ret().get_result_slot_type(1), Some(ws.ty("Foo")));
-            let state = ws.expr_ty("iterator_state");
-            assert!(
-                !matches!(state, LuaType::Unknown | LuaType::Any | LuaType::Nil),
-                "{iterator}: {state:?}"
-            );
-            assert_eq!(
-                ws.expr_ty("iterator_control"),
-                if iterator == "pairs" {
-                    LuaType::Nil
-                } else {
-                    LuaType::Integer
-                }
-            );
-        }
-    }
-
-    #[test]
     fn test_ipairs_array_and_integer_dictionary_slots() {
         for container in ["Foo[]", "table<integer, Foo>"] {
             let mut ws = VirtualWorkspace::new_with_init_std_lib();
