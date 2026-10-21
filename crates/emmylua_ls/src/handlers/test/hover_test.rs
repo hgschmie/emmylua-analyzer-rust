@@ -913,3 +913,228 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod member_use_site {
+    use crate::handlers::{hover::hover, test_lib::ProviderVirtualWorkspace};
+    use lsp_types::HoverContents;
+
+    fn text(definitions: &str, source: &str, separate: bool) -> String {
+        let mut ws = ProviderVirtualWorkspace::new();
+        let source = if separate {
+            ws.def(definitions);
+            source.to_owned()
+        } else {
+            format!("{definitions}\n{source}")
+        };
+        let (content, position) = ProviderVirtualWorkspace::handle_file_content(&source).unwrap();
+        let file = ws.def(&content);
+        let result = hover(&ws.analysis, file, position).unwrap();
+        let HoverContents::Markup(markup) = result.contents else {
+            panic!("markup required")
+        };
+        markup.value
+    }
+
+    const DEFINITIONS: &str = r#"
+    ---@class Train
+    local Train = {
+        ---Count stored items.
+        ---@param item? string
+        ---@return integer
+        get_count = function(item) end,
+    }
+    ---@class Stop
+    ---@field train Train? The parked train.
+    "#;
+
+    #[test]
+    fn narrowed_member_hover_uses_read_type() {
+        for separate in [false, true] {
+            let result = text(
+                DEFINITIONS,
+                r#"
+            ---@param stop Stop
+            local function test(stop)
+                if stop.train then
+                    print(stop.<??>train)
+                end
+            end
+            "#,
+                separate,
+            );
+            assert!(result.contains("train: Train\n"), "{separate}: {result}");
+            assert!(result.contains("The parked train."), "{result}");
+        }
+    }
+
+    #[test]
+    fn narrowed_member_hover_preserves_method_documentation() {
+        for separate in [false, true] {
+            let result = text(
+                DEFINITIONS,
+                r#"
+            ---@param stop Stop
+            local function test(stop)
+                if stop.train then
+                    stop.train.<??>get_count('iron')
+                end
+            end
+            "#,
+                separate,
+            );
+            assert!(result.contains("get_count"), "{separate}: {result}");
+            assert!(result.contains("Count stored items."), "{result}");
+            assert!(result.contains("item"), "{result}");
+            assert!(result.contains("integer"), "{result}");
+        }
+    }
+    #[test]
+    fn member_hover_keeps_unguarded_and_write_contracts() {
+        for body in [
+            "print(stop.<??>train)",
+            "if stop.train then stop.<??>train = nil end",
+        ] {
+            let source = format!("---@param stop Stop\nlocal function test(stop)\n{body}\nend");
+            let result = text(DEFINITIONS, &source, true);
+            assert!(result.contains("train: Train?"), "{result}");
+        }
+        let result = text(
+            DEFINITIONS,
+            r#"
+        ---@param stop Stop
+        local function test(stop)
+            if not stop.train then print(stop.<??>train) end
+        end
+        "#,
+            true,
+        );
+        assert!(!result.contains("train: Train\n"), "{result}");
+    }
+
+    #[test]
+    fn nullable_receiver_identity_does_not_remove_nil_diagnostic() {
+        use emmylua_code_analysis::{DiagnosticCode, VirtualWorkspace};
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            &format!(
+                r#"
+        {DEFINITIONS}
+        ---@param stop Stop
+        local function test(stop)
+            stop.train.get_count('iron')
+        end
+        "#
+            )
+        ));
+    }
+
+    #[test]
+    fn optional_field_marker_does_not_override_casts() {
+        let definitions = format!(
+            "{}\n---@class Platform\n",
+            DEFINITIONS.replace("@field train Train?", "@field train? Train|Platform")
+        );
+        for separate in [false, true] {
+            for body in [
+                "---@cast stop.train Train\nprint(stop.<??>train)",
+                "---@cast stop.train Train\nlocal callback = function() print(stop.<??>train) end",
+            ] {
+                let source = format!("---@param stop Stop\nlocal function test(stop)\n{body}\nend");
+                let result = text(&definitions, &source, separate);
+                assert!(
+                    result.contains("train: Train\n"),
+                    "{separate} {body}: {result}"
+                );
+                assert!(result.contains("The parked train."), "{result}");
+            }
+        }
+    }
+
+    #[test]
+    fn optional_field_marker_does_not_override_guards() {
+        let definitions = DEFINITIONS.replace("@field train Train?", "@field train? Train");
+        for separate in [false, true] {
+            for body in [
+                "if stop.train then print(stop.<??>train) end",
+                "assert(stop.train)\nprint(stop.<??>train)",
+                "if stop.train ~= nil then print(stop.<??>train) end",
+            ] {
+                let source = format!("---@param stop Stop\nlocal function test(stop)\n{body}\nend");
+                let result = text(&definitions, &source, separate);
+                assert!(
+                    result.contains("train: Train\n"),
+                    "{separate} {body}: {result}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn optional_field_marker_preserves_nullable_reads() {
+        let definitions = DEFINITIONS.replace("@field train Train?", "@field train? Train");
+        for separate in [false, true] {
+            for body in [
+                "print(stop.<??>train)",
+                "---@cast stop.train Train?\nprint(stop.<??>train)",
+                "if stop.train then print(stop.train) end\nprint(stop.<??>train)",
+            ] {
+                let source = format!("---@param stop Stop\nlocal function test(stop)\n{body}\nend");
+                let result = text(&definitions, &source, separate);
+                assert!(
+                    result.contains("train: Train?\n"),
+                    "{separate} {body}: {result}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn optional_field_declaration_retains_marker() {
+        let definitions = DEFINITIONS.replace("@field train Train?", "@field <??>train? Train");
+        let result = text("", &definitions, false);
+        assert!(result.contains("train: Train?\n"), "{result}");
+    }
+
+    #[test]
+    fn optional_generic_field_uses_read_nullability() {
+        let definitions = format!("{DEFINITIONS}\n---@class Box<T>\n---@field value? T\n");
+        for (body, expected) in [
+            ("print(box.<??>value)", "value: Train?\n"),
+            (
+                "if box.value then print(box.<??>value) end",
+                "value: Train\n",
+            ),
+        ] {
+            let source = format!("---@param box Box<Train>\nlocal function test(box)\n{body}\nend");
+            let result = text(&definitions, &source, true);
+            assert!(result.contains(expected), "{result}");
+        }
+    }
+
+    #[test]
+    fn optional_field_cast_to_nil_does_not_append_question_mark() {
+        let definitions = DEFINITIONS.replace("@field train Train?", "@field train? Train");
+        let result = text(
+            &definitions,
+            "---@param stop Stop\nlocal function test(stop)\n---@cast stop.train nil\nprint(stop.<??>train)\nend",
+            true,
+        );
+        assert!(result.contains("train: nil\n"), "{result}");
+    }
+
+    #[test]
+    fn optional_callable_field_keeps_signature_rendering() {
+        let result = text(
+            "---@class Callbacks\n---@field on_count? fun(): integer Count stored items.",
+            "---@param callbacks Callbacks\nlocal function test(callbacks)\nlocal callback = callbacks.<??>on_count\nend",
+            true,
+        );
+        assert!(
+            result.contains("Callbacks.on_count() -> integer"),
+            "{result}"
+        );
+        assert!(result.contains("Count stored items."), "{result}");
+    }
+}
