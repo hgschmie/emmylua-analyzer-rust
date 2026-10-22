@@ -1,30 +1,50 @@
 //! Index contracts inherited from dictionary supertypes, with generic arguments retained.
 use emmylua_parser::{LuaAstNode, LuaDocTagClass};
 
+use super::cache::{CacheEntry, QueryCacheScope, TypeEvaluationScope};
 use super::{SemanticModel, infer::unify, type_check, type_eval};
-use crate::{GenericTplId, LuaType, SemanticId, TypeDefKind};
+use crate::{GenericTplId, LuaType, TypeDefKind};
 
 pub(crate) fn dictionaries(model: &SemanticModel<'_>, owner: &LuaType) -> Vec<LuaType> {
-    if let Some(types) = model.cache.borrow().inherited_dictionaries.get(owner) {
-        return types.clone();
+    let key = (model.file_id(), owner.clone());
+    {
+        let cache = model.cache.borrow();
+        if let Some(entry) = cache.inherited_dictionaries.get(&key) {
+            return entry.get(&cache).cloned().unwrap_or_default();
+        }
     }
-    let mut types = Vec::new();
-    collect(model, owner, &mut Vec::new(), &mut types);
+    let _query = QueryCacheScope::new(&model.cache);
+    let revision = model.cache.borrow().revision();
     model
         .cache
         .borrow_mut()
         .inherited_dictionaries
-        .insert(owner.clone(), types.clone());
+        .insert(key.clone(), CacheEntry::InProgress);
+    let mut types = Vec::new();
+    collect(model, owner, &mut Vec::new(), &mut types);
+    let mut cache = model.cache.borrow_mut();
+    let complete = cache.is_complete(revision);
+    cache
+        .inherited_dictionaries
+        .insert(key, CacheEntry::finish(types.clone(), complete));
     types
 }
 
 fn collect(
     model: &SemanticModel<'_>,
     owner: &LuaType,
-    seen: &mut Vec<SemanticId>,
+    seen: &mut Vec<LuaType>,
     out: &mut Vec<LuaType>,
 ) {
-    if seen.len() >= 32 {
+    if seen.contains(owner) {
+        return;
+    }
+    // Share upstream's evaluation budget and incompleteness propagation.
+    // Distinct generic instances are distinct contracts, even for one class.
+    let Some(evaluation) = TypeEvaluationScope::new(&model.cache) else {
+        return;
+    };
+    if !evaluation.visit(owner) {
         return;
     }
     let (def, params) = match owner {
@@ -54,10 +74,7 @@ fn collect(
         }
         _ => return,
     };
-    if seen.contains(&def.id) {
-        return;
-    }
-    seen.push(def.id.clone());
+    seen.push(owner.clone());
     if def.kind == TypeDefKind::Alias {
         let target = if matches!(owner, LuaType::Generic(_)) {
             Some(type_eval::expand_alias_generic(model, owner))
@@ -116,11 +133,22 @@ pub(crate) fn lookup(model: &SemanticModel<'_>, owner: &LuaType, key: &LuaType) 
     {
         return None;
     }
+    let _query = QueryCacheScope::new(&model.cache);
+    let revision = model.cache.borrow().revision();
     let contracts = dictionaries(model, owner);
+    if !model.cache.borrow().is_complete(revision) {
+        return None;
+    }
     if contracts.is_empty() {
         return None;
     }
-    lookup_key(model, &contracts, key, &mut Vec::new())
+    let result = lookup_key(model, &contracts, key, &mut Vec::new());
+    model
+        .cache
+        .borrow()
+        .is_complete(revision)
+        .then_some(result)
+        .flatten()
 }
 
 fn lookup_key(
@@ -183,4 +211,38 @@ fn lookup_key(
     };
     seen.pop();
     result
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use crate::VirtualWorkspace;
+
+    #[test]
+    fn inherited_dictionary_long_chain_remains_complete() {
+        let mut source = String::from("---@class Level0: table<string,integer>\n");
+        for n in 1..48 {
+            source.push_str(&format!("---@class Level{n}: Level{}\n", n - 1));
+        }
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def(&source);
+        let ty = ws.ty("Level47");
+        let model = ws.analysis.semantic_model(file);
+        for _ in 0..2 {
+            assert_eq!(
+                lookup(&model, &ty, &LuaType::String),
+                Some(LuaType::Integer)
+            );
+        }
+    }
+
+    #[test]
+    fn inherited_dictionary_growing_projection_does_not_cache_partial_values() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def("---@class Growing<T>: Growing<T[]>, table<string,T>");
+        let ty = ws.ty("Growing<integer>");
+        let model = ws.analysis.semantic_model(file);
+        assert_eq!(lookup(&model, &ty, &LuaType::String), None);
+        assert!(model.cache.borrow().inherited_dictionaries.is_empty());
+    }
 }
