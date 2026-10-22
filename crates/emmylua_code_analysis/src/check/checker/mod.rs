@@ -129,6 +129,7 @@ impl<'a> CheckContext<'a> {
     }
 
     /// Collects a diagnostic with extra data (consumed by code actions etc.).
+    /// `unused-self` also respects suppression of its parent category, `unused`.
     pub fn add_diagnostic_with_data(
         &mut self,
         code: DiagnosticCode,
@@ -136,23 +137,12 @@ impl<'a> CheckContext<'a> {
         message: String,
         data: Option<serde_json::Value>,
     ) {
-        if self.filter_diagnostics {
-            if let Some(facts) = self.semantic_model.file_facts() {
-                let force_enable = facts.file_diagnostic_enabled.contains(&code);
-                if !force_enable {
-                    if !self.config.is_code_enabled(&code) {
-                        return;
-                    }
-                    if facts.file_diagnostic_disabled.contains(&code) {
-                        return;
-                    }
-                }
-                if facts.is_range_diagnostic_disabled(&code, &range) {
-                    return;
-                }
-            } else if !self.config.is_code_enabled(&code) {
-                return;
-            }
+        if self.filter_diagnostics
+            && (!self.is_diagnostic_enabled(code, range)
+                || (code == DiagnosticCode::UnusedSelf
+                    && !self.is_diagnostic_enabled(DiagnosticCode::Unused, range)))
+        {
+            return;
         }
         let severity = self.config.severity_of(&code);
         let tags = default_tags(&code);
@@ -164,6 +154,27 @@ impl<'a> CheckContext<'a> {
             tags,
             data,
         });
+    }
+
+    /// Applies configuration and annotation filters to one diagnostic code.
+    fn is_diagnostic_enabled(&self, code: DiagnosticCode, range: TextRange) -> bool {
+        if let Some(facts) = self.semantic_model.file_facts() {
+            let force_enable = facts.file_diagnostic_enabled.contains(&code);
+            if !force_enable {
+                if !self.config.is_code_enabled(&code) {
+                    return false;
+                }
+                if facts.file_diagnostic_disabled.contains(&code) {
+                    return false;
+                }
+            }
+            if facts.is_range_diagnostic_disabled(&code, &range) {
+                return false;
+            }
+        } else if !self.config.is_code_enabled(&code) {
+            return false;
+        }
+        true
     }
 
     /// Whether the name is in the `emmyrc.diagnostics.globals` / `globals_regex` allowlist.
