@@ -14,6 +14,9 @@ New independent branches on ce61189c:
 - UP-119 395340c4, fix/cyclic-generic-inheritance: bound generic-superclass
   traversal by class identity per path, including growing generic arguments;
   continue searching valid sibling parents.
+- UP-120 0263a089, fix/async-native-file-watcher: await a Tokio channel instead
+  of blocking a runtime worker on native filesystem events. The one-worker
+  regression fails on upstream and passes with the fix; all224 server tests pass.
 
 Standalone coverage passes: 251 UP-089 server tests, 1,621 UP-117 analysis tests,
 224 UP-118 server tests and 1,621 UP-119 analysis tests. The empty diagnostic-cache
