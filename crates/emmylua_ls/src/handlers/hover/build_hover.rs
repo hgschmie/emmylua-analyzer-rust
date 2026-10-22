@@ -5,8 +5,8 @@ use emmylua_code_analysis::{
     MemberInfo, SemanticDatabase, SemanticId, SemanticModel, TypeDef, TypeDefKind, VariadicType,
 };
 use emmylua_parser::{
-    LuaAstNode, LuaCallExpr, LuaDocAttributeUse, LuaDocDescriptionOwner, LuaDocType, LuaExpr,
-    LuaIndexExpr, LuaSyntaxToken, LuaTableExpr, LuaTableField,
+    LuaAssignStat, LuaAstNode, LuaCallExpr, LuaDocAttributeUse, LuaDocDescriptionOwner, LuaDocType,
+    LuaExpr, LuaIndexExpr, LuaSyntaxToken, LuaTableExpr, LuaTableField,
 };
 use hashbrown::HashMap;
 use lsp_types::{Hover, HoverContents, MarkupContent};

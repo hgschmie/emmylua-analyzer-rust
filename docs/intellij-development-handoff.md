@@ -1,3 +1,32 @@
+# Constructor navigation, enum indices and lifecycle follow-ups — 2026-10-22
+
+UP-089 is rebased onto upstream ce61189c and amended as 86c939ae. Definition
+lookup now shares nested constructor context with hover, including dictionary,
+array, assignment, call-argument and quoted/computed-key cases. The work merge
+retains directional/index-metamethod navigation and member-read hover behavior.
+
+New independent branches on ce61189c:
+- UP-117 9456209d, fix/enum-index-diagnostics: accept enums whose values are
+  numeric as collection indices; retain errors for string, mixed and boolean enums.
+- UP-118 e7aa0c5b, fix/reload-closed-documents: reload tracked files from disk
+  on didClose, invalidate diagnostics on changes, preserve deleted/untracked rules.
+  Integration uses UP-045's existing workspace invalidation notification.
+- UP-119 395340c4, fix/cyclic-generic-inheritance: bound generic-superclass
+  traversal by class identity per path, including growing generic arguments;
+  continue searching valid sibling parents.
+
+Standalone coverage passes: 251 UP-089 server tests, 1,621 UP-117 analysis tests,
+224 UP-118 server tests and 1,621 UP-119 analysis tests. The empty diagnostic-cache
+follow-up is a corrected FDE test assumption: a valid empty result need not
+allocate a cache entry. Its unchanged behavioral assertions pass.
+
+Combined validation, packaged real-file and native lifecycle replays, build200
+and final delivery are recorded in workspace
+`upstream/memory/NAVIGATION_ENUM_FOLLOWUPS_2026-10-22.md`.
+Only EmmyLua2 is rebuilt. FDE's development pin follows the package; its version
+and archive and LSP4IJ stay unchanged. All task changes are signed and local;
+no push, new PR, original-mod changes or IDE installation.
+
 # Eight pending analyzer/client issues — 2026-10-22
 
 Current upstream base ce61189c includes merged UP-028/#1292 and upstream length

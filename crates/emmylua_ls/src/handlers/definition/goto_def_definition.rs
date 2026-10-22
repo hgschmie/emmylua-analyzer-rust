@@ -9,8 +9,8 @@ use emmylua_code_analysis::{
     Emmyrc, LuaMemberKey, MemberInfo, SemanticDatabase, SemanticId, SemanticModel, WorkspaceId,
 };
 use emmylua_parser::{
-    LuaAstNode, LuaAstToken, LuaComment, LuaDocDescription, LuaExpr, LuaIndexExpr, LuaNameExpr,
-    LuaSyntaxToken, LuaTokenKind,
+    LuaAstNode, LuaComment, LuaDocDescription, LuaExpr, LuaIndexExpr, LuaNameExpr, LuaSyntaxToken,
+    LuaTokenKind,
 };
 use lsp_types::{GotoDefinitionResponse, Location};
 use rowan::TextSize;
