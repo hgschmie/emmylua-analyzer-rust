@@ -1136,6 +1136,17 @@ fn nonempty_array_length_index(
     {
         return false;
     }
+    // An explicitly supplied metatable can override the built-in length even
+    // when an annotation describes the value as an array.
+    if let Some(info) = model.file_facts().and_then(|facts| facts.decl_by_id(decl))
+        && let Some(value) = info.value_expr_syntax
+        && let Some(node) = model.syntax_tree().and_then(|tree| value.to_node_from_root(&tree.get_red_root()))
+        && node.descendants().filter_map(emmylua_parser::LuaCallExpr::cast).any(|call| {
+            matches!(call.get_prefix_expr(), Some(LuaExpr::NameExpr(name)) if name.get_name_text().as_deref() == Some("setmetatable"))
+        })
+    {
+        return false;
+    }
     // CFG bindings may point before the enclosing statement. Account for earlier
     // RHS/argument calls in that statement before trusting an older guard.
     if key_expr

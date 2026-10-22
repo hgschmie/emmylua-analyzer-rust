@@ -278,9 +278,11 @@ fn contextual_callback_unannotated_member_array_stays_untyped() {
         end }
     "#,
     );
-    // The work branch's broader assignment-context fallback already uses Any
-    // for unannotated table members. Do not invent a callback contract.
-    expect_that!(local_type(&ws, file, "observed_value"), eq(&LuaType::Any));
+    // Without a declared constructor contract, parameters remain unknown.
+    expect_that!(
+        local_type(&ws, file, "observed_value"),
+        eq(&LuaType::Unknown)
+    );
 }
 
 fn local_type(ws: &VirtualWorkspace, file: FileId, name: &str) -> LuaType {
