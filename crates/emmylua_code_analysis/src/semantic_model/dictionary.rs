@@ -48,7 +48,19 @@ pub(crate) fn lookup(
     } else {
         LookupMode::Value
     };
-    lookup_inner(model, owner, key, mode, &mut Vec::new())
+    let normalized = match key {
+        LuaType::FloatConst(value) => {
+            crate::semantic_db::types::exact_integer(*value).map(LuaType::IntegerConst)
+        }
+        _ => None,
+    };
+    lookup_inner(
+        model,
+        owner,
+        normalized.as_ref().unwrap_or(key),
+        mode,
+        &mut Vec::new(),
+    )
 }
 fn lookup_inner(
     model: &SemanticModel,
@@ -284,7 +296,8 @@ impl SemanticModel<'_> {
         index: &LuaIndexExpr,
         mode: LookupMode,
     ) -> Option<LuaType> {
-        let prefix = self.type_of_expr(index.get_prefix_expr()?.get_syntax_id());
+        let prefix = index.get_prefix_expr()?;
+        let prefix = self.type_of_expr_at(prefix.get_syntax_id(), prefix.get_position());
         let key = match index.get_index_key()? {
             LuaIndexKey::Name(n) => {
                 LuaType::StringConst(smol_str::SmolStr::new(n.get_name_text()).into())
@@ -294,6 +307,14 @@ impl SemanticModel<'_> {
             }
             LuaIndexKey::Integer(n) => match n.get_number_value() {
                 emmylua_parser::NumberResult::Int(n) => LuaType::IntegerConst(n),
+                emmylua_parser::NumberResult::Uint(n) => i64::try_from(n)
+                    .map(LuaType::IntegerConst)
+                    .unwrap_or(LuaType::Integer),
+                emmylua_parser::NumberResult::Float(n) => {
+                    crate::semantic_db::types::exact_integer(n)
+                        .map(LuaType::IntegerConst)
+                        .unwrap_or(LuaType::FloatConst(n))
+                }
                 _ => return None,
             },
             LuaIndexKey::Expr(expr) => {

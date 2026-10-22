@@ -507,14 +507,16 @@ pub(crate) fn type_of_expr_at_node(
                 return apply_casts(ty, All);
             }
             if let Some(typ) = model.dictionary_index_type(index_expr, true)
-                && let Some(key) = member_key_from_index_expr(model, index_expr)
                 // Explicit anonymous fields already have richer upstream guard
                 // handling, including builtin aliases and optional callbacks.
                 && !index_expr.get_prefix_expr().is_some_and(|prefix| {
                     matches!(model.type_of_expr(prefix.get_syntax_id()), LuaType::Object(object)
-                        if object.get_fields().contains_key(&key))
+                        if dictionary_flow_key(model, index_expr).is_some_and(|key| object.get_fields().contains_key(&key)))
                 })
             {
+                let Some(key) = dictionary_flow_key(model, index_expr) else {
+                    return apply_casts(typ, All);
+                };
                 let read = super::member::MemberInfo {
                     key,
                     typ,
@@ -5982,6 +5984,29 @@ fn type_is_broader(broad: &LuaType, narrow: &LuaType) -> bool {
     )
 }
 
+/// Literal dictionary flow keys do not change ordinary array-member guards.
+fn dictionary_flow_key(
+    model: &SemanticModel,
+    index: &emmylua_parser::LuaIndexExpr,
+) -> Option<LuaMemberKey> {
+    if let Some(key) = member_key_from_index_expr(model, index) {
+        return Some(key);
+    }
+    match index.get_index_key()? {
+        emmylua_parser::LuaIndexKey::Integer(number) => match number.get_number_value() {
+            emmylua_parser::NumberResult::Int(value) => Some(LuaMemberKey::Integer(value)),
+            emmylua_parser::NumberResult::Uint(value) => {
+                i64::try_from(value).ok().map(LuaMemberKey::Integer)
+            }
+            emmylua_parser::NumberResult::Float(value) => {
+                crate::semantic_db::types::exact_integer(value).map(LuaMemberKey::Integer)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Track dictionary assignments and guards with bounded traversal.
 fn indexed_read_at(
     model: &SemanticModel,
@@ -5990,7 +6015,6 @@ fn indexed_read_at(
     offset: TextSize,
 ) -> Option<LuaType> {
     let member = read.id.as_ref();
-    let owner = index_owner(model, index)?;
     let tree = model.flow_tree()?;
     let root = model.chunk()?;
     let start = tree.get_flow_id_at(offset)?;
@@ -6015,12 +6039,26 @@ fn indexed_read_at(
                             let emmylua_parser::LuaVarExpr::IndexExpr(target) = var else {
                                 return false;
                             };
-                            member_key_from_index_expr(model, target).as_ref() == Some(&read.key)
-                                && index_owner(model, target).as_ref() == Some(&owner)
+                            same_member_access(
+                                model,
+                                &LuaExpr::IndexExpr(index.clone()),
+                                &LuaExpr::IndexExpr(target.clone()),
+                            )
                         }) {
                             let value = values.get(position)?;
                             let typ =
                                 model.type_of_expr_at(value.get_syntax_id(), value.get_position());
+                            let typ = if !primitive_stable
+                                || member_calls_after(
+                                    model,
+                                    Some(index),
+                                    assignment.get_range().end(),
+                                    offset,
+                                ) {
+                                read.typ.clone()
+                            } else {
+                                typ
+                            };
                             results.push(finalize_index_read(model, typ, &path));
                             break;
                         }
@@ -6035,6 +6073,33 @@ fn indexed_read_at(
                                 }
                             }
                         }
+                    }
+                }
+                FlowNodeKind::ImplFunc(ptr) => {
+                    let function = ptr.to_node(&root)?;
+                    if function.get_range().end() <= offset
+                        && let Some(emmylua_parser::LuaVarExpr::IndexExpr(target)) =
+                            function.get_func_name()
+                        && same_member_access(
+                            model,
+                            &LuaExpr::IndexExpr(index.clone()),
+                            &LuaExpr::IndexExpr(target),
+                        )
+                    {
+                        let closure = function.get_closure()?;
+                        let typ = if !primitive_stable
+                            || member_calls_after(
+                                model,
+                                Some(index),
+                                function.get_range().end(),
+                                offset,
+                            ) {
+                            read.typ.clone()
+                        } else {
+                            model.type_of_expr(closure.get_syntax_id())
+                        };
+                        results.push(finalize_index_read(model, typ, &path));
+                        break;
                     }
                 }
                 FlowNodeKind::TrueCondition(cond) | FlowNodeKind::FalseCondition(cond) => {
@@ -6088,15 +6153,6 @@ fn indexed_read_at(
     ))
 }
 
-fn index_owner(model: &SemanticModel, index: &emmylua_parser::LuaIndexExpr) -> Option<SemanticId> {
-    if let Some(resolved) = model.resolve_member(index) {
-        return Some(resolved.owner);
-    }
-    let LuaExpr::NameExpr(name) = index.get_prefix_expr()? else {
-        return None;
-    };
-    model.resolve_name(name.get_position())
-}
 fn indexed_guard(
     model: &SemanticModel,
     index: &emmylua_parser::LuaIndexExpr,

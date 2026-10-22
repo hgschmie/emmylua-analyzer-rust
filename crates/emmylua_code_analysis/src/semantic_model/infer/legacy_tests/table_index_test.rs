@@ -608,3 +608,72 @@ fn dictionary_guards_preserve_unknown_and_unrelated_calls() {
         );
     }
 }
+
+#[test]
+fn dictionary_function_definitions_prove_an_entry_exists() {
+    for (setup, target) in [
+        (
+            "---@type table<string,fun():integer>\nlocal methods={}",
+            "methods.answer",
+        ),
+        (
+            "---@type {methods:table<string,fun():integer>}\nlocal owner={methods={}}",
+            "owner.methods.answer",
+        ),
+    ] {
+        let mut ws = workspace(true);
+        let source = format!("{setup}\nfunction {target}() return 1 end\nlocal result={target}()");
+        assert!(
+            ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+            "{target}"
+        );
+    }
+}
+
+#[test]
+fn dictionary_numeric_literal_forms_keep_strict_reads() {
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    for literal in ["1", "1.0", "1ULL", "18446744073709551615ULL"] {
+        let mut ws = workspace(true);
+        let mut config = ws.get_emmyrc();
+        config.runtime.version = crate::EmmyrcLuaVersion::LuaJIT;
+        ws.update_emmyrc(config);
+        let file=ws.def(&format!("---@param values table<integer,string>\nlocal function read(values) local observed=values[{literal}] end"));
+        let model = ws.analysis.semantic_model(file);
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .next()
+            .unwrap();
+        assert_eq!(
+            model.type_of_expr_at(index.get_syntax_id(), index.get_position()),
+            ws.ty("string?"),
+            "{literal}"
+        );
+    }
+}
+
+#[test]
+fn dictionary_function_and_assignment_facts_stop_at_visible_calls() {
+    for definition in [
+        "function methods.answer() return 1 end",
+        "methods.answer=function() return 1 end",
+    ] {
+        for (call, safe) in [
+            ("clear(methods)", false),
+            ("clear(other)", true),
+            ("opaque(methods)", true),
+        ] {
+            let mut ws = workspace(true);
+            let source = format!(
+                "local function clear(target) target.answer=nil end\n---@param methods table<string,fun():integer>\n---@param other table<string,fun():integer>\nlocal function read(methods,other) {definition} {call} local observed=methods.answer() end"
+            );
+            assert_eq!(
+                ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+                safe,
+                "{definition}: {call}"
+            );
+        }
+    }
+}
