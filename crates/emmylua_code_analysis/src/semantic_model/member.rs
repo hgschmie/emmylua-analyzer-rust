@@ -132,34 +132,6 @@ fn find_member_in_owner(
             }
         }
     }
-    // Named class index signatures are declarations, not sparse dictionaries:
-    // preserve their explicit value type even when strict.tableIndex is enabled.
-    let key_type = key.to_index_type()?;
-    for member_ref in model.members_of_owner(owner).iter() {
-        let facts = model.file_facts_of(member_ref.file_id)?;
-        let member = facts.member_by_id(&member_ref.id)?;
-        if !member.is_index_signature {
-            continue;
-        }
-        let tree = model.syntax_tree_of(member_ref.file_id)?;
-        let syntax = member
-            .value_syntax?
-            .to_node_from_root(&tree.get_red_root())?;
-        let tag = syntax.ancestors().find_map(LuaDocTagField::cast)?;
-        let Some(LuaDocFieldKey::Type(typ)) = tag.get_field_key() else {
-            continue;
-        };
-        let mut declared = model.doc_type_lua_rich_in(member_ref.file_id, typ.get_syntax_id());
-        if let Some(bindings) = bindings {
-            declared = unify::substitute(&declared, bindings);
-        }
-        if let Some(names) = name_bindings {
-            declared = substitute_named_refs(&declared, names);
-        }
-        if super::type_check::is_compatible(model, &key_type, &declared) {
-            return member_info_of(model, member_ref, bindings, name_bindings);
-        }
-    }
     None
 }
 
@@ -419,6 +391,22 @@ pub(crate) fn member_info_impl(
     if let Some(info) = member_infos_with_key(model, prefix_type, key)
         .into_iter()
         .find(|info| &info.key == key)
+    {
+        return Some(info);
+    }
+    // An index signature is a fallback: explicit inherited and runtime members
+    // must take precedence over a broad key domain such as `[string]`.
+    if matches!(
+        prefix_type,
+        LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_)
+    ) && let Some(key_type) = key.to_index_type()
+        && let Some(info) = member_infos_all(model, prefix_type)
+            .into_iter()
+            .find(|info| {
+                info.index_key_type.as_ref().is_some_and(|domain| {
+                    super::type_check::is_compatible(model, &key_type, domain)
+                })
+            })
     {
         return Some(info);
     }
