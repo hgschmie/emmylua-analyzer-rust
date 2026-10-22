@@ -34,6 +34,8 @@ pub struct FlowTree {
     decl_positions: Vec<(TextSize, FlowId)>,
     /// Sorted `(condition position, flow id)` for true/false condition nodes.
     condition_nodes: Vec<(TextSize, FlowId)>,
+    /// Closure boundaries block definition-time constant propagation.
+    closure_entries: Vec<(TextSize, FlowId)>,
     /// Sorted `(cast position, flow id)` for `---@cast` / `--[[@as]]` nodes.
     cast_nodes: Vec<(TextSize, FlowId)>,
     /// Sorted `(position, flow id)` for nodes with a merge (`Multiple`) antecedent.
@@ -66,6 +68,7 @@ impl FlowTree {
         let mut assignments = Vec::new();
         let mut decl_positions: Vec<(TextSize, FlowId)> = Vec::new();
         let mut condition_nodes: Vec<(TextSize, FlowId)> = Vec::new();
+        let mut closure_entries = Vec::new();
         let mut cast_nodes: Vec<(TextSize, FlowId)> = Vec::new();
         let mut branch_nodes: Vec<(TextSize, FlowId)> = Vec::new();
         let mut unpositioned_branch = false;
@@ -120,6 +123,9 @@ impl FlowTree {
                     }
                 }
                 FlowNodeKind::DeclPosition(pos) => decl_positions.push((*pos, flow_id)),
+                FlowNodeKind::ClosureEntry(closure) => {
+                    closure_entries.push((closure.get_position(), flow_id));
+                }
                 FlowNodeKind::TrueCondition(cond) | FlowNodeKind::FalseCondition(cond) => {
                     condition_nodes.push((cond.get_syntax_id().get_range().start(), flow_id));
                 }
@@ -141,6 +147,7 @@ impl FlowTree {
         assignments.sort_by_key(|(range, _)| range.start());
         decl_positions.sort_by_key(|(pos, _)| *pos);
         condition_nodes.sort_by_key(|(pos, _)| *pos);
+        closure_entries.sort_by_key(|(pos, _)| *pos);
         cast_nodes.sort_by_key(|(pos, _)| *pos);
         branch_nodes.sort_by_key(|(pos, _)| *pos);
         let has_tag_cast = !cast_nodes.is_empty();
@@ -168,6 +175,7 @@ impl FlowTree {
             assignments,
             decl_positions,
             condition_nodes,
+            closure_entries,
             cast_nodes,
             branch_nodes,
             unpositioned_branch,
@@ -348,6 +356,7 @@ impl FlowTree {
             return true;
         }
         has_node_between(&self.condition_nodes, start, end, include_start)
+            || has_node_between(&self.closure_entries, start, end, include_start)
             || has_node_between(&self.cast_nodes, start, end, include_start)
             || has_node_between(&self.branch_nodes, start, end, include_start)
     }
@@ -355,6 +364,14 @@ impl FlowTree {
     /// Whether any assignment to `decl` occurs in the flow tree.
     pub fn has_decl_assignment(&self, decl: &SemanticId) -> bool {
         self.decl_assignments.contains_key(decl)
+    }
+
+    /// All assignments to a declaration, including writes in sibling closures.
+    pub fn decl_assignments(&self, decl: &SemanticId) -> &[(TextSize, FlowId)] {
+        self.decl_assignments
+            .get(decl)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     /// Whether any assignment to `member` occurs in the flow tree.
@@ -660,6 +677,7 @@ fn flow_node_position(kind: &FlowNodeKind) -> Option<TextSize> {
         | FlowNodeKind::Continue
         | FlowNodeKind::Return => None,
         FlowNodeKind::DeclPosition(pos) => Some(*pos),
+        FlowNodeKind::ClosureEntry(closure) => Some(closure.get_position()),
         FlowNodeKind::Assignment(ptr) => Some(ptr.get_syntax_id().get_range().start()),
         FlowNodeKind::CallExprStat(ptr) => Some(ptr.get_syntax_id().get_range().start()),
         FlowNodeKind::TrueCondition(ptr) | FlowNodeKind::FalseCondition(ptr) => {
