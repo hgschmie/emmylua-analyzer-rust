@@ -1,3 +1,31 @@
+# UP-089 constructor context and UP-109 member contracts — 2026-10-21
+
+UP-089 amendment `1febed04` recursively projects dictionary/array value contracts
+into nested constructors and resolves computed keys as expressions. Explicit
+field annotations keep precedence, invalid keys retain initializer types, and
+alias cycles terminate. Literal/bracket key expression navigation retains the
+actual referenced declaration. Integrated as `2f31f556`.
+
+New independent UP-109 `ae0516d0` (`fix/annotated-runtime-member-types`) honors
+runtime member @type annotations in both database and rich semantic inference.
+This restores dictionary/array/class chains and function contracts without
+hiding initializer mismatches or optional reads. Its index-signature metadata
+check preserves valid typed-member writes. Integrated as `7461d7a7`.
+
+Both reproduce on upstream/main `bb7c7d4c`; neither requires the other as a
+standalone fix. The real train-tracker constructor benefits from both, plus the
+existing UP-016/062 strict-dictionary/enum behavior. Work preserves class identity,
+flow-aware hover and directional contracts. The UP-090 negative computed-key
+hover expectation now correctly follows the expression (-1).
+
+Standalone validation: 2,600 distinct UP-089 workspace tests (full run followed
+by the final 252-test server suite), 2,579 UP-109 workspace tests, Clippy and
+rustfmt pass. Combined and packaged build195 evidence is recorded in workspace
+`upstream/memory/TRAIN_TRACKER_SETTINGS_HOVER_2026-10-21.md`.
+
+Only EmmyLua2 is rebuilt; FDE's development pin follows the validated package.
+No FDE/LSP4IJ archive rebuild, push, PR, mod-source changes or IDE installation.
+
 # UP-016 constructor literal keys — 2026-10-21
 
 Amendment `7ec0b234` on `fix/nullable-table-index` preserves concrete constructor
