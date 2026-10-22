@@ -4,8 +4,9 @@
 //! read lock; writes take the write lock exclusively. We do not clone the whole
 //! analysis to run queries.
 
-use std::sync::{Arc, RwLock, RwLockReadGuard};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
 
 use emmylua_code_analysis::EmmyLuaAnalysis;
 
@@ -13,14 +14,18 @@ use crate::context::RequestOutcome;
 
 pub struct AnalysisState {
     inner: Arc<RwLock<EmmyLuaAnalysis>>,
+    diagnostic_cancellation: Mutex<CancellationToken>,
     blocking_permits: Arc<Semaphore>,
     gate: Arc<tokio::sync::RwLock<()>>,
 }
 
 impl AnalysisState {
     pub fn new() -> Self {
+        let analysis = EmmyLuaAnalysis::new();
+        let diagnostic_cancellation = Mutex::new(analysis.diagnostic_cancellation_token());
         Self {
-            inner: Arc::new(RwLock::new(EmmyLuaAnalysis::new())),
+            inner: Arc::new(RwLock::new(analysis)),
+            diagnostic_cancellation,
             gate: Arc::new(tokio::sync::RwLock::new(())),
             blocking_permits: Arc::new(Semaphore::new(
                 std::thread::available_parallelism()
@@ -88,10 +93,19 @@ impl AnalysisState {
     pub async fn update<R>(&self, f: impl FnOnce(&mut EmmyLuaAnalysis) -> R) -> R {
         let inner = self.inner.clone();
         let gate = self.gate.clone().write_owned().await;
+        // Cancel readers before waiting for their analysis read locks.
+        self.diagnostic_cancellation
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .cancel();
         let run = move || {
             let mut analysis = inner
                 .write()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *self
+                .diagnostic_cancellation
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = analysis.renew_diagnostic_cancellation();
             drop(gate);
             f(&mut analysis)
         };
@@ -143,6 +157,35 @@ mod tests {
         });
         assert_eq!(result, Some((1, "x".to_string())));
     }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn update_cancels_diagnostics_before_waiting_for_the_read_lock() {
+        let state = Arc::new(AnalysisState::new());
+        let reader = state.clone();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            reader
+                .run_blocking(move |analysis| {
+                    let token = analysis.diagnostic_cancellation_token();
+                    started.send(()).unwrap();
+                    while !token.is_cancelled() {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                    Some(())
+                })
+                .await
+        });
+        ready.await.unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            state.update(|analysis| {
+                assert!(!analysis.diagnostic_cancellation_token().is_cancelled());
+            }),
+        )
+        .await
+        .expect("writer must preempt diagnostic readers");
+        assert_eq!(task.await.unwrap(), Some(()));
+    }
+
     #[tokio::test]
     async fn blocking_query_and_update_complete() {
         let state = Arc::new(AnalysisState::new());

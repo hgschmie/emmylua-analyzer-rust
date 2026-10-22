@@ -1175,6 +1175,9 @@ fn member_info_of(
     bindings: Option<&TplBindings>,
     name_bindings: Option<&HashMap<String, LuaType>>,
 ) -> Option<MemberInfo> {
+    if model.is_cancelled() {
+        return None;
+    }
     let facts = model.file_facts_of(member_ref.file_id)?;
     let member = facts.member_by_id(&member_ref.id)?;
     if member.access == crate::MemberAccess::Write

@@ -36,7 +36,11 @@ impl Checker for ParamTypeChecker {
             return;
         };
         let root = tree.get_red_root();
-        for node in root.descendants().filter_map(LuaAst::cast) {
+        for node in root
+            .descendants()
+            .take_while(|_| !semantic_model.is_cancelled())
+            .filter_map(LuaAst::cast)
+        {
             let LuaAst::LuaCallExpr(call_expr) = node else {
                 continue;
             };
