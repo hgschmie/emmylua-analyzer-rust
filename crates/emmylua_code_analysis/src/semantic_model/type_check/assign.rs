@@ -13,6 +13,9 @@ pub(crate) fn check_special(
     source: &LuaType,
     target: &LuaType,
 ) -> Result<Option<()>, TypeCheckFailReason> {
+    if check_inherited_dictionary(context, source, target)?.is_some() {
+        return Ok(Some(()));
+    }
     if check_object_index_against_class(context, source, target)?.is_some() {
         return Ok(Some(()));
     }
@@ -20,6 +23,45 @@ pub(crate) fn check_special(
         return Ok(Some(()));
     }
     Ok(None)
+}
+
+/// Project inherited dictionary contracts before checking their key and value types.
+fn check_inherited_dictionary(
+    context: &mut TypeCheckContext,
+    source: &LuaType,
+    target: &LuaType,
+) -> Result<Option<()>, TypeCheckFailReason> {
+    if !matches!(
+        source,
+        LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_)
+    ) || matches!(source, LuaType::Generic(generic) if crate::semantic_model::inherited_index::is_standard_table(context.model, &generic.get_base_type_id()))
+        || !(matches!(target, LuaType::TableGeneric(_))
+            || matches!(target, LuaType::Generic(generic) if crate::semantic_model::inherited_index::is_standard_table(context.model, &generic.get_base_type_id())))
+    {
+        return Ok(None);
+    }
+    let contracts = context.require_complete(|| {
+        crate::semantic_model::inherited_index::dictionaries(context.model, source)
+    })?;
+    if contracts.is_empty() {
+        return Ok(None);
+    }
+    let params = match target {
+        LuaType::TableGeneric(params) => params.as_slice(),
+        LuaType::Generic(generic) => generic.get_params(),
+        _ => return Ok(None),
+    };
+    let [key, value] = params else {
+        return Ok(None);
+    };
+    // Overlapping contracts contribute all their possible values. A contract
+    // for a disjoint key domain must not reject an otherwise valid projection.
+    let projected = context
+        .require_complete(|| {
+            crate::semantic_model::inherited_index::lookup(context.model, source, key)
+        })?
+        .ok_or_else(|| context.mismatch(source, target))?;
+    check_general_type_compact(context, &projected, value).map(|()| Some(()))
 }
 
 /// Check integer index signatures item-by-item for `Object -> Ref/Def`.
