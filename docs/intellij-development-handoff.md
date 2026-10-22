@@ -1,3 +1,23 @@
+# UP-088 array callback context — 2026-10-21
+
+Amendment `b457f521` on `fix/contextual-callback-parameters` extends expected
+callback parameters from dictionaries to array elements, including annotated
+member assignments such as train-tracker's `Constants.filter_dropdown_values`.
+Current upstream/main `bb7c7d4c` and the previous UP-088 both reproduce the gap.
+No new contribution ID or dependency is introduced.
+
+The merge retains the work branch's broader assignment-context fallback and
+UP-014 directional write contracts. Unannotated member arrays retain work's
+existing `Any` fallback (standalone uses `Unknown`); this difference was reproduced
+using pre-change work production code before adapting the negative test.
+Explicit parameter docs, invalid array keys, generic aliases, nullable parameters
+and callback implementations omitting trailing parameters are covered.
+
+Standalone: 2,582 workspace tests, Clippy/rustfmt pass. Combined validation and
+packaged build192 receipts are recorded in workspace
+`upstream/memory/TRAIN_TRACKER_ARRAY_CALLBACKS_2026-10-21.md`.
+Only EmmyLua2 is rebuilt; preserve FDE and LSP4IJ archives. No push or new PR.
+
 # LTN cache, metrics and settings warnings — 2026-10-21
 
 Integrated on upstream/main `bb7c7d4c`, preserving the existing stack and UP-045:

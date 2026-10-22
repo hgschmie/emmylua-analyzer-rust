@@ -1143,6 +1143,36 @@ game = {
         );
         Ok(())
     }
+    #[gtest]
+    fn test_array_callback_parameter_hover() -> Result<()> {
+        for (name, expected) in [
+            ("train_info", "TrainInfo"),
+            ("entity_type", "string?"),
+            ("player", "Player?"),
+        ] {
+            let mut ws = ProviderVirtualWorkspace::new();
+            let params =
+                "train_info, entity_type, player".replacen(name, &format!("<??>{name}"), 1);
+            check!(ws.check_hover(
+                &format!(r#"
+                    ---@class TrainInfo
+                    ---@field train_name string
+                    ---@class Player
+                    ---@field index integer
+                    ---@alias DropDownFunction fun(train_info: TrainInfo, entity_type: string?, player: Player?): string?
+                    local Constants = {{}}
+                    ---@type DropDownFunction[]
+                    Constants.filter_dropdown_values = {{ function({params})
+                        return nil
+                    end }}
+                "#),
+                VirtualHoverResult {
+                    value: format!("```lua\n(parameter) {name}: {expected}\n```"),
+                },
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
