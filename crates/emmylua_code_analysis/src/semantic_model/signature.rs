@@ -183,6 +183,9 @@ impl<'db> SemanticModel<'db> {
         expr_syntax: LuaSyntaxId,
         infer: impl FnOnce() -> LuaType,
     ) -> LuaType {
+        if self.is_cancelled() {
+            return LuaType::Unknown;
+        }
         let key = (self.view.file_id(), expr_syntax);
         {
             let cache = self.cache.borrow();

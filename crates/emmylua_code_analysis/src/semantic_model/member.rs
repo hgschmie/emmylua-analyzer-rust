@@ -982,6 +982,9 @@ fn member_info_of(
     bindings: Option<&TplBindings>,
     name_bindings: Option<&HashMap<String, LuaType>>,
 ) -> Option<MemberInfo> {
+    if model.is_cancelled() {
+        return None;
+    }
     let facts = model.file_facts_of(member_ref.file_id)?;
     let member = facts.member_by_id(&member_ref.id)?;
     if member.index_key_syntax.is_some() || !member_version_visible(model, facts, &member) {
@@ -1005,6 +1008,9 @@ pub(super) fn projected_member_type(
     bindings: Option<&TplBindings>,
     name_bindings: Option<&HashMap<String, LuaType>>,
 ) -> Option<LuaType> {
+    if model.is_cancelled() {
+        return None;
+    }
     let mut typ = model.type_of_member(&member_ref.id)?;
     // Cross-file projection of runtime function members: `type_of_member` often returns a wide Function,
     // so look up the real signature in the member's declaring file to let `require(...).module.fn()` keep inferring.

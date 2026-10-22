@@ -76,6 +76,9 @@ pub trait Checker {
 /// If all codes for this check are disabled in config, skip the whole check.
 /// A file-level `---@diagnostic enable: code` can force it on (mirrors legacy `is_checker_enable_by_code`).
 fn run_check<T: Checker>(context: &mut CheckContext<'_>, semantic_model: &SemanticModel<'_>) {
+    if semantic_model.is_cancelled() {
+        return;
+    }
     let file_enabled = semantic_model
         .file_facts()
         .map(|facts| &facts.file_diagnostic_enabled);

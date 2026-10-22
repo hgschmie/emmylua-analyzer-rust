@@ -115,6 +115,9 @@ impl<'db> SemanticModel<'db> {
     /// Type of a declaration: `---@type` annotation takes priority; closure -> `DocFunction` signature; otherwise VM infers the initializer
     /// (table identity / constants / setmetatable / require special cases); falls back to semantic shell projection when VM fails.
     pub fn type_of_decl(&self, decl: &SemanticId) -> Option<LuaType> {
+        if self.is_cancelled() {
+            return None;
+        }
         let cache_file = match decl {
             SemanticId::Decl(key) => key.file_id,
             SemanticId::Member(key) => key.file_id,

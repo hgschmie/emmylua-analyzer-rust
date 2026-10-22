@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use emmylua_code_analysis::FileId;
+use emmylua_code_analysis::{EmmyLuaAnalysis, FileDiagnosticResult, FileId};
 use log::{debug, info};
 use lsp_types::{Diagnostic, PublishDiagnosticsParams, Uri};
 use tokio::sync::Mutex;
@@ -224,15 +224,13 @@ impl DiagnosticService {
                 return None;
             }
             let token = cancel_token.clone();
-            let (uri, diagnostics) = self
+            if let WorkspaceFileDiagnostics::Complete(uri, diagnostics) = self
                 .analysis
-                .run_blocking(move |analysis| {
-                    let uri = analysis.get_uri(file_id)?;
-                    let diagnostics = analysis.diagnose_file(file_id, token)?;
-                    Some((uri, diagnostics))
-                })
-                .await?;
-            result.push((uri, diagnostics));
+                .run_blocking(move |analysis| diagnose_workspace_file(analysis, file_id, token))
+                .await?
+            {
+                result.push((uri, diagnostics));
+            }
         }
 
         Some(result)
@@ -273,6 +271,27 @@ impl DiagnosticService {
     }
 }
 
+enum WorkspaceFileDiagnostics {
+    Complete(Uri, Vec<Diagnostic>),
+    Skipped,
+}
+
+// None means interrupted work; a skipped file still completes its batch slot.
+fn diagnose_workspace_file(
+    analysis: &EmmyLuaAnalysis,
+    file_id: FileId,
+    token: CancellationToken,
+) -> Option<WorkspaceFileDiagnostics> {
+    Some(match analysis.diagnose_file_result(file_id, token) {
+        FileDiagnosticResult::Complete(diagnostics) => match analysis.get_uri(file_id) {
+            Some(uri) => WorkspaceFileDiagnostics::Complete(uri, diagnostics),
+            None => WorkspaceFileDiagnostics::Skipped,
+        },
+        FileDiagnosticResult::Skipped => WorkspaceFileDiagnostics::Skipped,
+        FileDiagnosticResult::Cancelled => return None,
+    })
+}
+
 async fn run_workspace_batch(
     analysis: Arc<AnalysisState>,
     client: Arc<ClientProxy>,
@@ -289,7 +308,7 @@ async fn run_workspace_batch(
             .await;
     }
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Option<(Uri, Vec<Diagnostic>)>>(100);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Option<WorkspaceFileDiagnostics>>(100);
     let mut result = Vec::new();
 
     let queue = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(
@@ -319,29 +338,26 @@ async fn run_workspace_batch(
                 let file_token = token.clone();
                 let result = analysis
                     .run_blocking(move |analysis| {
-                        let diagnostics = analysis.diagnose_file(file_id, file_token)?;
-                        let uri = analysis.get_uri(file_id)?;
-                        Some((uri, diagnostics))
+                        diagnose_workspace_file(analysis, file_id, file_token)
                     })
                     .await;
-                let Some((uri, diagnostics)) = result else {
-                    let _ = tx.send(None).await;
-                    continue;
-                };
-                if publish {
+                if publish
+                    && let Some(WorkspaceFileDiagnostics::Complete(uri, diagnostics)) = &result
+                {
                     client.publish_diagnostics(PublishDiagnosticsParams {
                         uri: uri.clone(),
                         diagnostics: diagnostics.clone(),
                         version: None,
                     });
                 }
-                let _ = tx.send(Some((uri, diagnostics))).await;
+                let _ = tx.send(result).await;
             }
         });
     }
     drop(tx);
 
     let mut count = 0;
+    let mut incomplete = false;
     if valid_file_count != 0 {
         if progress {
             let mut last_percentage = 0;
@@ -349,8 +365,12 @@ async fn run_workspace_batch(
                 if cancel_token.is_cancelled() {
                     break;
                 }
-                if let Some((uri, diagnostics)) = item {
-                    result.push((uri, diagnostics));
+                match item {
+                    Some(WorkspaceFileDiagnostics::Complete(uri, diagnostics)) => {
+                        result.push((uri, diagnostics));
+                    }
+                    Some(WorkspaceFileDiagnostics::Skipped) => {}
+                    None => incomplete = true,
                 }
                 count += 1;
                 let percentage_done = ((count as f32 / valid_file_count as f32) * 100.0) as u32;
@@ -367,7 +387,10 @@ async fn run_workspace_batch(
                 }
             }
         } else {
-            while rx.recv().await.is_some() {
+            // This mode is used by the background publisher: workers publish
+            // each complete report, and its caller ignores the result vector.
+            while let Some(item) = rx.recv().await {
+                incomplete |= item.is_none();
                 count += 1;
                 if count == valid_file_count {
                     break;
@@ -383,5 +406,120 @@ async fn run_workspace_batch(
         );
     }
 
-    (result, count == valid_file_count)
+    (result, count == valid_file_count && !incomplete)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    async fn batch_case(
+        disabled: bool,
+        removed: bool,
+        cancelled: bool,
+        progress: bool,
+    ) -> (Vec<(Uri, Vec<Diagnostic>)>, bool) {
+        let (server, _client) = lsp_server::Connection::memory();
+        let client = Arc::new(ClientProxy::new(Arc::new(server)));
+        let status_bar = Arc::new(StatusBar::new(client.clone(), false));
+        let analysis = Arc::new(AnalysisState::new());
+        let uri = Uri::from_str("file:///C:/ws/batch.lua").unwrap();
+        let file_id = analysis
+            .update(move |analysis| {
+                let mut config = emmylua_code_analysis::Emmyrc::default();
+                config.diagnostics.enable = !disabled;
+                analysis.update_config(Arc::new(config));
+                analysis
+                    .diagnostic
+                    .enable_only(emmylua_code_analysis::DiagnosticCode::UndefinedGlobal);
+                let file_id = analysis
+                    .update_file_by_uri(&uri, Some("local x = missing".into()))
+                    .unwrap();
+                if removed {
+                    analysis.update_file_by_uri(&uri, None);
+                }
+                file_id
+            })
+            .await;
+        if cancelled {
+            analysis.with_snapshot(|analysis| analysis.diagnostic_cancellation_token().cancel());
+        }
+        run_workspace_batch(
+            analysis,
+            client,
+            status_bar,
+            vec![file_id],
+            CancellationToken::new(),
+            !progress,
+            progress,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn workspace_batch_skips_disabled_and_removed_files_without_retry() {
+        for progress in [false, true] {
+            for (disabled, removed) in [(true, false), (false, true)] {
+                for cancelled in [false, true] {
+                    let (items, completed) =
+                        batch_case(disabled, removed, cancelled, progress).await;
+                    assert!(
+                        completed,
+                        "disabled={disabled}, removed={removed}, cancelled={cancelled}, progress={progress}"
+                    );
+                    assert!(items.is_empty());
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_batch_retries_cancelled_diagnostics_and_collects_complete_results() {
+        for progress in [false, true] {
+            let (_, completed) = batch_case(false, false, true, progress).await;
+            assert!(!completed);
+        }
+        let (items, completed) = batch_case(false, false, false, true).await;
+        assert!(completed);
+        assert_eq!(items.len(), 1);
+        assert!(!items[0].1.is_empty());
+    }
+
+    #[tokio::test]
+    async fn slow_workspace_diagnostics_skip_disabled_files_and_retry_cancelled_work() {
+        for disabled in [false, true] {
+            let (server, _client) = lsp_server::Connection::memory();
+            let client = Arc::new(ClientProxy::new(Arc::new(server)));
+            let status_bar = Arc::new(StatusBar::new(client.clone(), false));
+            let analysis = Arc::new(AnalysisState::new());
+            analysis
+                .update(move |analysis| {
+                    let mut config = emmylua_code_analysis::Emmyrc::default();
+                    config.diagnostics.enable = !disabled;
+                    analysis.update_config(Arc::new(config));
+                    analysis.update_file_by_uri(
+                        &Uri::from_str("file:///C:/ws/slow.lua").unwrap(),
+                        Some("local x = missing".into()),
+                    );
+                })
+                .await;
+            analysis.with_snapshot(|analysis| analysis.diagnostic_cancellation_token().cancel());
+            let service = DiagnosticService::new(analysis.clone(), status_bar, client);
+            let interrupted = service
+                .pull_workspace_diagnostics_slow(CancellationToken::new())
+                .await;
+            if disabled {
+                assert!(interrupted.is_some_and(|items| items.is_empty()));
+            } else {
+                assert!(interrupted.is_none());
+            }
+            analysis.update(|_| ()).await;
+            let recovered = service
+                .pull_workspace_diagnostics_slow(CancellationToken::new())
+                .await
+                .unwrap();
+            assert_eq!(recovered.len(), usize::from(!disabled));
+        }
+    }
 }
