@@ -354,3 +354,109 @@ mod test {
         assert_eq!(ws.expr_ty("table.__sentinel()"), ws.ty("integer"));
     }
 }
+
+#[test]
+fn inherited_dictionary_class_assignability() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for (definition, actual, expected) in [
+        (
+            "---@alias Context table<string, any?>\n---@class Child: Context\n---@field pacer integer",
+            "Child",
+            "Context?",
+        ),
+        (
+            "---@class Parent: table<string, integer>\n---@class Child: Parent",
+            "Child",
+            "table<string, integer>",
+        ),
+        (
+            "---@class Parent<T>: table<string, T>\n---@class Child<T>: Parent<T>",
+            "Child<integer>",
+            "table<string, integer>",
+        ),
+        (
+            "---@alias Map<T> table<string, T>\n---@class Child<T>: Map<T>",
+            "Child<string>",
+            "table<string, string>",
+        ),
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(definition);
+        for code in [
+            DiagnosticCode::ParamTypeMismatch,
+            DiagnosticCode::AssignTypeMismatch,
+        ] {
+            assert!(
+                ws.has_no_diagnostic(
+                    code,
+                    &format!(
+                        r#"
+                ---@param value {expected}
+                local function accept(value) end
+                ---@param value {actual}
+                local function use(value)
+                    accept(value)
+                    ---@type {expected}
+                    local assigned = value
+                end
+            "#
+                    )
+                ),
+                "{definition}: {code:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn inherited_dictionary_class_rejects_wrong_contracts() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for (definition, actual, expected) in [
+        (
+            "---@class Child: table<string, integer>",
+            "Child",
+            "table<string, boolean>",
+        ),
+        (
+            "---@class Child: table<integer, integer>",
+            "Child",
+            "table<string, integer>",
+        ),
+        (
+            "---@class Child<T>: table<string, T>",
+            "Child<boolean>",
+            "table<string, integer>",
+        ),
+        (
+            "---@class Child\n---@field value integer",
+            "Child",
+            "table<string, integer>",
+        ),
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(definition);
+        assert!(
+            !ws.has_no_diagnostic(
+                DiagnosticCode::ParamTypeMismatch,
+                &format!(
+                    r#"
+            ---@param value {expected}
+            local function accept(value) end
+            ---@param value {actual}
+            local function use(value) accept(value) end
+        "#
+                )
+            ),
+            "{definition}"
+        );
+    }
+}
+
+#[test]
+fn inherited_dictionary_projection_handles_cycles() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def("---@class Child: Parent\n---@class Parent: Child");
+    let source = ws.ty("Child");
+    let model = ws.analysis.semantic_model(file);
+    assert!(crate::semantic_model::inherited_index::dictionaries(&model, &source).is_empty());
+}
