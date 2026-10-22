@@ -1,3 +1,33 @@
+# Eight pending analyzer/client issues — 2026-10-22
+
+Current upstream base ce61189c includes merged UP-028/#1292 and upstream length
+inference (#1311). The normal work branch retains UP-045, all other active fixes,
+and internal integration changes; UP-008 remains inactive.
+
+Amended contributions:
+- UP-017 d8e4689f: explicit inherited/runtime members precede dictionary fallback.
+- UP-035 6ea7cb25: reuse complete union-constructor checks within one semantic model.
+- UP-061 686d11ec: avoid feeding an unfinished loop RHS back into its own input type.
+- UP-088 8bf63986: contextual callback types through nested/computed constructors,
+  including nullable computed keys; retain explicit overrides and reject invalid domains.
+
+New contributions based on ce61189c:
+- UP-113 6884edec: optional constructor fields include nullable field types/aliases.
+- UP-114 8c4becca: inherited dictionary assignability, reusing UP-059 projection.
+- UP-116 45a9d9ef: diagnostic cancellation checkpoints, update preemption and LSP retry.
+
+EmmyLua2 UP-115 7535946 is separate: asynchronous versioned gutter requests, no
+blocking future waits during highlighting, with cancellation and per-module routing.
+The analyzer integration keeps directional assignment contracts, existing cache
+lifetimes, UP-045 workspace completion tracking and UP-036 forward-only length guards.
+
+Before implementation, all outstanding origin updates were published. New task
+commits remain local. No new PR, original-mod edits or IDE installation. Only
+EmmyLua2 is rebuilt; FDE's development pin follows the verified package, with its
+version/archive and LSP4IJ unchanged. Detailed validation, timings, provenance,
+remaining limitations and delivery are recorded in workspace
+`upstream/memory/EIGHT_ISSUE_FIXES_2026-10-22.md`.
+
 # UP-112 mutable captured variables — 2026-10-21
 
 Independent fix `fc482372` on `fix/mutable-captured-variable-flow` adds explicit
