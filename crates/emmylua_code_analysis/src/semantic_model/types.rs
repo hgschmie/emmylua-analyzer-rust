@@ -937,6 +937,14 @@ impl<'db> SemanticModel<'db> {
         if let Some(enum_const) = self.enum_member_const(member_file, member) {
             return Some(enum_const);
         }
+        // An explicit member annotation takes precedence over its initializer.
+        // Rich projection retains anonymous object/index-signature contracts.
+        if let Some(facts) = self.file_facts_of(member_file)
+            && let Some(member_def) = facts.member_by_id(member)
+            && let Some(syntax) = member_def.doc_type_syntax
+        {
+            return Some(self.doc_type_lua_rich_in(member_file, syntax));
+        }
         // A class annotated directly on a table field identifies that value,
         // rather than inheriting the containing table's class identity.
         if let Some(facts) = self.file_facts_of(member_file)

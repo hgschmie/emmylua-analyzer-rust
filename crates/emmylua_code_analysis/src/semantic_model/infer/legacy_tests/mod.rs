@@ -4,6 +4,7 @@
 //! not on the old `DbIndex` internals, so they can run directly in the new semantic system.
 
 mod and_or_test;
+mod annotated_runtime_member_test;
 mod annotation_test;
 mod array_test;
 mod attribute_test;

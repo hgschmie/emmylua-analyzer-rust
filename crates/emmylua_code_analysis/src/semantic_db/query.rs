@@ -2411,6 +2411,12 @@ pub(crate) fn member_type(
         return TypeShell::from_module_ref(module_file);
     }
 
+    // Runtime member annotations are contracts, just like annotations on locals.
+    // Keep the initializer syntax separate so diagnostics can still check it.
+    if let Some(syntax) = member.doc_type_syntax {
+        return lower_doc_type(db, file, syntax, &[]);
+    }
+
     // Value: owner is `TypeDef` (@field) -> doc type node; otherwise -> expression.
     if let Some(value_syntax) = member.value_syntax {
         match &member.owner {
