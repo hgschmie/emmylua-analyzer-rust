@@ -210,6 +210,8 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) flow_decl: HashMap<(FileId, SemanticId, FlowId), LuaType>,
     /// Values a mutable captured local can hold when any of its closures runs.
     pub(crate) captured_decl: HashMap<(FileId, SemanticId), CacheEntry<LuaType>>,
+    /// Whole-function, syntax-only check for the local-table last-element proof.
+    pub(crate) array_length_stable: HashMap<(FileId, SemanticId), bool>,
     /// Memoized declaration traces; incoming path facts are part of the key.
     pub(crate) trace_state: HashMap<TraceStateKey, CacheEntry<Option<LuaType>>>,
     /// Member traces with an empty incoming guard/cast path on an acyclic graph.
