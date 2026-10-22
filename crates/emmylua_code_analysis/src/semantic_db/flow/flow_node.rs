@@ -60,6 +60,8 @@ pub struct FlowNode {
 pub enum FlowNodeKind {
     /// Entry point of the flow
     Start,
+    /// Entry to a closure whose captured locals may have changed since definition.
+    ClosureEntry(LuaClosureId),
     /// Unreachable code
     Unreachable,
     /// Label for branching (if/else, switch cases)

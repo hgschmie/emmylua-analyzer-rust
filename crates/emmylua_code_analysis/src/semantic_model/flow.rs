@@ -21,6 +21,8 @@ use std::collections::HashSet;
 use std::ops::ControlFlow;
 use std::rc::Rc;
 
+mod captured;
+
 use emmylua_parser::{
     BinaryOperator, LuaAssignStat, LuaAstNode, LuaCallExprStat, LuaComment, LuaExpr, LuaIndexExpr,
     LuaLiteralToken, UnaryOperator,
@@ -2466,6 +2468,13 @@ fn trace_decl_uncached(
                         frames.clear();
                     }
                     break 'trace Some(LuaType::Never);
+                }
+            }
+            FlowNodeKind::ClosureEntry(closure) => {
+                if matches!(purpose, DeclTracePurpose::ReadValue)
+                    && let Some(base) = captured::entry_type(model, decl, tree, *closure)
+                {
+                    break 'trace Some(finalize(model, base, path));
                 }
             }
             FlowNodeKind::DeclPosition(pos) => {
