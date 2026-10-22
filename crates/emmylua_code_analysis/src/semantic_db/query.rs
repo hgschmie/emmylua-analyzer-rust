@@ -405,6 +405,27 @@ pub(crate) fn resolve_member_id(
     facts: &FileFacts,
     member_use: &MemberUse,
 ) -> Option<SemanticId> {
+    let original_receiver = member_use.receiver.as_ref()?;
+    // Only a direct self access needs its enclosing method and shadowing declarations.
+    let lexical_use = member_use.root_syntax.and_then(|root| {
+        if !original_receiver.keys.is_empty()
+            || facts.name_use_at_offset(root.get_range().start())?.name != "self"
+        {
+            return None;
+        }
+        let tree = db.syntax_tree_of(facts.file_id)?;
+        let index = LuaIndexExpr::cast(member_use.syntax.to_node_from_root(&tree.get_red_root())?)?;
+        let owner = implicit_self_reference_owner(facts, &index)?;
+        Some(MemberUse {
+            receiver: Some(AccessPath {
+                root: owner.clone(),
+                keys: Default::default(),
+            }),
+            owner: Some(owner),
+            ..member_use.clone()
+        })
+    });
+    let member_use = lexical_use.as_ref().unwrap_or(member_use);
     let receiver = member_use.receiver.as_ref()?;
     if let Some(member) = facts.member_for_use(member_use)
         && (member.doc_type_syntax.is_some()
@@ -519,6 +540,36 @@ pub(crate) fn members_of_receiver_key(
             .collect();
         Arc::from(members)
     })
+}
+
+/// Resolve the lexical receiver for direct `self.member` references without
+/// changing type inference's separate, flow-sensitive receiver resolution.
+fn implicit_self_reference_owner(
+    facts: &FileFacts,
+    index_expr: &LuaIndexExpr,
+) -> Option<SemanticId> {
+    let LuaExpr::NameExpr(prefix) = index_expr.get_prefix_expr()? else {
+        return None;
+    };
+    if prefix.get_name_text()? != "self" {
+        return None;
+    }
+    let decl = facts
+        .find_visible_decl_before_offset("self", prefix.get_position())
+        .filter(|decl| !matches!(decl.kind, DeclKind::Global));
+    // Nested closures capture the closest colon method's implicit self. A local
+    // or parameter declared inside that method shadows it.
+    for closure in prefix.ancestors::<LuaClosureExpr>() {
+        if let Some(member) = facts.member_by_value_syntax(closure.get_syntax_id())
+            && member.is_method
+        {
+            if decl.is_some_and(|decl| decl.name_range.start() >= closure.get_position()) {
+                return None;
+            }
+            return Some(member.owner.clone());
+        }
+    }
+    None
 }
 
 /// Canonical module owner for a raw file-local owner identity.
