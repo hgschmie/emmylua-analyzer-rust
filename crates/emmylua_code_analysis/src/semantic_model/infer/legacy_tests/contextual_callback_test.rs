@@ -356,3 +356,80 @@ fn contextual_callback_nested_invalid_key_stays_unknown() {
         eq(&LuaType::Unknown)
     );
 }
+
+#[gtest]
+fn contextual_callback_computed_enum_member_key() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def(DEFINITIONS);
+    ws.def("---@class Entry\n---@field callback SettingFunction?");
+    let file = ws.def(
+        r#"
+        ---@class Sorting
+        ---@field keys string[]
+        ---@field sorting table<string, SortColumn?>
+        ---@field entries table<SortColumn, Entry>
+        local Sorting = {
+            ---@enum SortColumn
+            keys = { 'name', 'id' },
+            sorting = {},
+        }
+        for _, key in pairs(Sorting.keys) do
+            Sorting.sorting[key] = key --[[@as SortColumn]]
+        end
+        Sorting.entries = {
+            [Sorting.sorting.name] = { callback = function(settings, name)
+                local observed_settings = settings
+                local observed_name = name
+            end }
+        }
+    "#,
+    );
+    expect_that!(
+        local_type(&ws, file, "observed_settings"),
+        eq(&ws.ty("Settings"))
+    );
+    expect_that!(local_type(&ws, file, "observed_name"), eq(&LuaType::String));
+}
+
+#[gtest]
+fn contextual_callback_nil_key_has_no_value_context() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def(DEFINITIONS);
+    ws.def("---@class Entry\n---@field callback SettingFunction?");
+    let file = ws.def(
+        r#"
+        ---@type nil
+        local key
+        ---@type table<string, Entry>
+        local entries = { [key] = { callback = function(settings)
+            local observed_settings = settings
+        end } }
+    "#,
+    );
+    expect_that!(
+        local_type(&ws, file, "observed_settings"),
+        eq(&LuaType::Unknown)
+    );
+}
+
+#[gtest]
+fn contextual_callback_nullable_key_retains_value_contract() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def(DEFINITIONS);
+    ws.def("---@class Entry\n---@field callback SettingFunction?");
+    let file = ws.def(
+        r#"
+        ---@param key string?
+        local function make(key)
+            ---@type table<string, Entry>
+            local entries = { [key] = { callback = function(settings)
+                local observed_settings = settings
+            end } }
+        end
+    "#,
+    );
+    expect_that!(
+        local_type(&ws, file, "observed_settings"),
+        eq(&ws.ty("Settings"))
+    );
+}

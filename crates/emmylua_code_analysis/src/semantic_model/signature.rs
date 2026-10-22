@@ -932,11 +932,28 @@ impl<'db> SemanticModel<'db> {
         owner: &LuaType,
         key: &LuaType,
     ) -> Option<LuaType> {
+        // A nullable computed key still identifies the value contract on the
+        // non-nil path. Key validity is checked separately from callback context.
+        let key = match self.contextual_alias_target(key) {
+            LuaType::Nil => return None,
+            LuaType::Union(union) => {
+                let alternatives = union
+                    .iter()
+                    .filter(|ty| !ty.is_nil())
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if alternatives.is_empty() {
+                    return None;
+                }
+                LuaType::from_vec(alternatives)
+            }
+            key => key,
+        };
         let owner = self.contextual_alias_target(owner);
         let params = match &owner {
             LuaType::Array(array) => {
                 return self
-                    .type_check(key, &LuaType::Integer)
+                    .type_check(&key, &LuaType::Integer)
                     .then(|| array.get_base().clone());
             }
             LuaType::TableGeneric(params) => params.as_ref(),
@@ -948,7 +965,7 @@ impl<'db> SemanticModel<'db> {
         let [expected_key, value] = params.as_slice() else {
             return None;
         };
-        self.type_check(key, expected_key).then(|| value.clone())
+        self.type_check(&key, expected_key).then(|| value.clone())
     }
 
     /// `---@param` / `---@return` annotations on table-literal fields override the closure's bare signature.
