@@ -1,3 +1,24 @@
+# UP-110 declared module export fields — 2026-10-21
+
+Independent fix `f89a2037` on `fix/typed-module-export-fields` adds the exported
+declaration's class fields to check_export's runtime table surface. It accepts
+declared and inherited fields, including contracts defined in another file,
+without admitting mutations contributed by importing files. Runtime exports
+remain available even with broad annotations.
+
+The train-tracker lib/init.lua:12 warning reproduces on packaged195 and current
+upstream/main `bb7c7d4c`. Hover already sees FrameworkRoot.settings:
+FrameworkSettings; the export-only diagnostic path had ignored that declaration.
+This is separate from UP-089/109. No historical attribution claim is made.
+
+All 1,600 standalone analysis tests and 3,104 combined workspace tests pass.
+Clippy/rustfmt pass. The integration
+preserves UP-010's function-valued __index read exemption without authorizing
+writes. Combined and packaged build196 evidence is recorded in workspace
+`upstream/memory/TRAIN_TRACKER_MODULE_EXPORT_2026-10-21.md`.
+Only EmmyLua2 is rebuilt; FDE's development pin follows the validated package.
+No original-mod edits, IDE installation, push or new PR.
+
 # UP-089 constructor context and UP-109 member contracts — 2026-10-21
 
 UP-089 amendment `1febed04` recursively projects dictionary/array value contracts

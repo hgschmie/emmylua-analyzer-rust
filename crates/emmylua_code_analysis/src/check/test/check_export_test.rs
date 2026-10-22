@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use lsp_types::Uri;
 
-use crate::DiagnosticCode;
+use crate::{DiagnosticCode, VirtualWorkspace};
 use crate::{Emmyrc, SemanticDatabase, SemanticModel};
 
 use super::{Diagnostic, check_source, count_by_code};
@@ -118,4 +118,120 @@ fn test_local_table_not_limited() {
     );
     assert_eq!(count_by_code(&diags, DiagnosticCode::InjectField), 0);
     assert_eq!(count_by_code(&diags, DiagnosticCode::UndefinedField), 0);
+}
+
+#[test]
+fn test_export_declared_class_fields() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def_file(
+        "framework.lua",
+        r#"
+        ---@class ExportSettings
+        local Settings = {}
+        function Settings:add_defaults(definitions) end
+
+        ---@class ExportRoot
+        ---@field settings ExportSettings
+        local Root = {}
+        function Root:init() end
+        return Root
+        "#,
+    );
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::UndefinedField,
+        r#"
+        local framework = require("framework")
+        framework:init()
+        framework.settings:add_defaults({})
+        local settings = require("framework").settings
+        "#,
+    ));
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::InjectField,
+        r#"
+        local framework = require("framework")
+        framework.settings = framework.settings
+        "#,
+    ));
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::UndefinedField,
+        r#"local missing = require("framework").missing"#,
+    ));
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::InjectField,
+        r#"require("framework").newField = 1"#,
+    ));
+    for code in [DiagnosticCode::InjectField, DiagnosticCode::UndefinedField] {
+        assert!(!ws.has_no_diagnostic(
+            code,
+            r#"
+            local framework = require("framework")
+            ---@type integer
+            framework.consumerField = 1
+            local value = framework.consumerField
+            "#,
+        ));
+    }
+}
+
+#[test]
+fn test_export_annotated_inherited_fields() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def_file(
+        "types.lua",
+        r#"
+        ---@class ExportBase
+        ---@field inherited integer
+        ---@class ExportChild: ExportBase
+        ---@field declared string
+        "#,
+    );
+    ws.def_file(
+        "annotated.lua",
+        r#"
+        ---@type ExportChild
+        local M = {}
+        return M
+        "#,
+    );
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::UndefinedField,
+        r#"
+        local m = require("annotated")
+        local a, b = m.inherited, m.declared
+        "#,
+    ));
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::InjectField,
+        r#"
+        local m = require("annotated")
+        m.inherited = 1
+        m.declared = "ok"
+        "#,
+    ));
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::UndefinedField,
+        r#"local missing = require("annotated").missing"#,
+    ));
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::InjectField,
+        r#"require("annotated").newField = 1"#,
+    ));
+}
+
+#[test]
+fn test_export_annotation_preserves_runtime_surface() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def_file(
+        "loose.lua",
+        r#"
+        ---@type any
+        local M = { existing = 1 }
+        return M
+        "#,
+    );
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::UndefinedField,
+        r#"local value = require("loose").existing"#,
+    ));
 }
