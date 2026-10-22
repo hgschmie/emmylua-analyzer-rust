@@ -3095,3 +3095,64 @@ fn test_length_runtime_member_preserves_declared_contract() {
         );
     }
 }
+
+#[test]
+fn loop_generic_integer_assignment_preserves_integer() {
+    let mut ws = crate::VirtualWorkspace::new();
+    assert!(ws.has_no_diagnostic(
+        crate::DiagnosticCode::AssignTypeMismatch,
+        r#"
+        ---@generic T: number
+        ---@param x T
+        ---@param y integer
+        ---@return T
+        local function one_mod(x, y) return ((x - 1) % y) + 1 end
+        ---@param initial integer
+        ---@param size integer
+        local function update(initial, size)
+            local index = initial
+            for i = 1, size do
+                ---@cast i integer
+                index = one_mod(index + i, size)
+            end
+        end
+    "#
+    ));
+}
+
+#[test]
+fn loop_generic_integer_seed_does_not_hide_noninteger_writes() {
+    for rhs in ["identity(index + 0.5)", "identity(index)"] {
+        let mut ws = crate::VirtualWorkspace::new();
+        let other_write = if rhs == "identity(index)" {
+            "index = 0.5"
+        } else {
+            ""
+        };
+        assert!(
+            !ws.has_no_diagnostic(
+                crate::DiagnosticCode::AssignTypeMismatch,
+                &format!(
+                    r#"
+            ---@generic T
+            ---@param value T
+            ---@return T
+            local function identity(value) return value end
+            ---@param initial integer
+            ---@param items integer[]
+            local function update(initial, items)
+                local index = initial
+                for _, item in ipairs(items) do
+                    index = {rhs}
+                    {other_write}
+                end
+                ---@type integer
+                local result = index
+            end
+        "#
+                )
+            ),
+            "{rhs}"
+        );
+    }
+}

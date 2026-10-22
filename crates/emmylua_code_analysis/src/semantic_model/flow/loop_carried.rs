@@ -94,6 +94,22 @@ fn compute(
     let initial = super::type_of_decl_at_flow_id(model, decl, entry);
     let mut types = vec![widen_const_type(initial)];
     for rhs in assigned {
+        if let Some((syntax, _)) = rhs
+            && matches!(
+                model
+                    .cache
+                    .borrow()
+                    .expr_type
+                    .get(&(model.file_id(), syntax)),
+                Some(CacheEntry::InProgress)
+            )
+        {
+            // The current RHS asks for its own loop-entry input. Seed that
+            // cycle from the entry and other writes, not an unknown RHS value.
+            // Recompute after the outer expression completes.
+            model.cache.borrow().mark_incomplete();
+            continue;
+        }
         let typ = rhs
             .map(|(syntax, slot)| {
                 let ty = super::type_of_expr_with_cast(model, syntax, super::ExprCastMode::AsOnly);
