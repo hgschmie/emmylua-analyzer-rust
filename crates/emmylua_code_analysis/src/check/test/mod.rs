@@ -148,3 +148,40 @@ fn test_check_config_default_enable_rules() {
     assert!(!config.is_code_enabled(&DiagnosticCode::SyntaxError));
     assert!(config.is_code_enabled(&DiagnosticCode::UnknownDocTag));
 }
+
+#[test]
+fn cancelled_diagnostic_requests_and_lifetimes_recover_independently() {
+    use tokio_util::sync::CancellationToken;
+    let mut ws = crate::VirtualWorkspace::new();
+    ws.analysis
+        .diagnostic
+        .enable_only(DiagnosticCode::UndefinedGlobal);
+    let file = ws.def("local value = missing_value");
+    let expected = ws
+        .analysis
+        .diagnose_file(file, CancellationToken::new())
+        .unwrap();
+    assert!(expected.iter().any(|d| d.message.contains("missing_value")));
+
+    let token = CancellationToken::new();
+    token.cancel();
+    assert!(ws.analysis.diagnose_file(file, token).is_none());
+    assert_eq!(
+        ws.analysis.diagnose_file(file, CancellationToken::new()),
+        Some(expected.clone())
+    );
+
+    let lifetime = ws.analysis.diagnostic_cancellation_token();
+    lifetime.cancel();
+    assert!(
+        ws.analysis
+            .diagnose_file(file, CancellationToken::new())
+            .is_none()
+    );
+    assert!(!ws.analysis.renew_diagnostic_cancellation().is_cancelled());
+    assert!(lifetime.is_cancelled());
+    assert_eq!(
+        ws.analysis.diagnose_file(file, CancellationToken::new()),
+        Some(expected)
+    );
+}

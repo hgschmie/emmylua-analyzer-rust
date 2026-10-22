@@ -31,7 +31,8 @@ pub use crate::semantic_db::exports::{
 };
 pub use crate::semantic_db::facts::FileFacts;
 pub use check::{
-    CheckConfig, CheckProfile, DiagnosticCode, get_default_severity, is_code_default_enable,
+    CheckConfig, CheckProfile, DiagnosticCode, FileDiagnosticResult, get_default_severity,
+    is_code_default_enable,
 };
 pub use config::*;
 pub use locale::get_locale_code;
@@ -54,6 +55,7 @@ pub use semantic_model::render::{
 pub use semantic_model::{ResolvedMember, SemanticInfo};
 use std::{path::PathBuf, sync::Arc};
 pub use test_lib::VirtualWorkspace;
+use tokio_util::sync::CancellationToken;
 
 pub use vfs::*;
 
@@ -71,6 +73,7 @@ pub struct EmmyLuaAnalysis {
     pub db: SemanticDatabase,
     pub diagnostic: LuaDiagnostic,
     pub emmyrc: Arc<Emmyrc>,
+    diagnostic_cancellation: CancellationToken,
 }
 
 impl EmmyLuaAnalysis {
@@ -81,6 +84,7 @@ impl EmmyLuaAnalysis {
         Self {
             db,
             diagnostic: LuaDiagnostic::new(),
+            diagnostic_cancellation: CancellationToken::new(),
             emmyrc,
         }
     }
@@ -214,54 +218,97 @@ impl EmmyLuaAnalysis {
         SemanticModel::new(&self.db, file_id)
     }
 
+    /// Returns the token a host can cancel before waiting for exclusive analysis access.
+    pub fn diagnostic_cancellation_token(&self) -> CancellationToken {
+        self.diagnostic_cancellation.clone()
+    }
+
+    /// Starts a new diagnostic lifetime while the host holds exclusive analysis access.
+    pub fn renew_diagnostic_cancellation(&mut self) -> CancellationToken {
+        self.diagnostic_cancellation = CancellationToken::new();
+        self.diagnostic_cancellation.clone()
+    }
+
     pub fn diagnose_file_with_config(
         &self,
         file_id: FileId,
         config: Arc<CheckConfig>,
     ) -> Option<Vec<lsp_types::Diagnostic>> {
-        let model = self.semantic_model(file_id);
+        self.diagnose_file_cancellable(file_id, config, CancellationToken::new())
+    }
+
+    pub(crate) fn diagnose_file_cancellable(
+        &self,
+        file_id: FileId,
+        config: Arc<CheckConfig>,
+        token: CancellationToken,
+    ) -> Option<Vec<lsp_types::Diagnostic>> {
+        let model = SemanticModel::new_with_cancellation(
+            &self.db,
+            file_id,
+            vec![token, self.diagnostic_cancellation.clone()],
+        );
+        if model.is_cancelled() {
+            return None;
+        }
         let diagnostics = check::check_file(&model, config);
+        // Never publish partial diagnostics, including an empty clearing report.
+        if model.is_cancelled() {
+            return None;
+        }
         let line_index = self.db.line_index(file_id)?;
         let text = self.db.get_file_text(file_id)?;
-        Some(
-            diagnostics
-                .into_iter()
-                .filter_map(|d| {
-                    let start = line_index.get_line_col(d.range.start(), text)?;
-                    let end = line_index.get_line_col(d.range.end(), text)?;
-                    Some(lsp_types::Diagnostic {
-                        range: lsp_types::Range {
-                            start: lsp_types::Position {
-                                line: start.0 as u32,
-                                character: start.1 as u32,
-                            },
-                            end: lsp_types::Position {
-                                line: end.0 as u32,
-                                character: end.1 as u32,
-                            },
+        let diagnostics = diagnostics
+            .into_iter()
+            .filter_map(|d| {
+                let start = line_index.get_line_col(d.range.start(), text)?;
+                let end = line_index.get_line_col(d.range.end(), text)?;
+                Some(lsp_types::Diagnostic {
+                    range: lsp_types::Range {
+                        start: lsp_types::Position {
+                            line: start.0 as u32,
+                            character: start.1 as u32,
                         },
-                        severity: Some(d.severity),
-                        code: Some(lsp_types::NumberOrString::String(
-                            d.code.get_name().to_string(),
-                        )),
-                        code_description: None,
-                        source: Some("EmmyLua".to_string()),
-                        message: d.message,
-                        related_information: None,
-                        tags: d.tags,
-                        data: d.data,
-                    })
+                        end: lsp_types::Position {
+                            line: end.0 as u32,
+                            character: end.1 as u32,
+                        },
+                    },
+                    severity: Some(d.severity),
+                    code: Some(lsp_types::NumberOrString::String(
+                        d.code.get_name().to_string(),
+                    )),
+                    code_description: None,
+                    source: Some("EmmyLua".to_string()),
+                    message: d.message,
+                    related_information: None,
+                    tags: d.tags,
+                    data: d.data,
                 })
-                .collect(),
-        )
+            })
+            .collect();
+        if model.is_cancelled() {
+            return None;
+        }
+        Some(diagnostics)
     }
 
     pub fn diagnose_file(
         &self,
         file_id: FileId,
-        cancel_token: tokio_util::sync::CancellationToken,
+        cancel_token: CancellationToken,
     ) -> Option<Vec<lsp_types::Diagnostic>> {
         self.diagnostic.diagnose_file(self, file_id, cancel_token)
+    }
+
+    /// Distinguishes complete reports, skipped files and cancellation for host retry decisions.
+    pub fn diagnose_file_result(
+        &self,
+        file_id: FileId,
+        cancel_token: CancellationToken,
+    ) -> FileDiagnosticResult {
+        self.diagnostic
+            .diagnose_file_result(self, file_id, cancel_token)
     }
 
     /// Remove files that no longer exist on disk.

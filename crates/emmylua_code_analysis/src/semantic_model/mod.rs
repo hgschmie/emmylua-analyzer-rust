@@ -35,9 +35,16 @@ use crate::{FileId, LuaFunctionType, LuaType};
 #[derive(Default)]
 struct LazyCache {
     inner: RefCell<Option<Box<cache::SemanticLocalCache>>>,
+    cancellation: Vec<tokio_util::sync::CancellationToken>,
 }
 
 impl LazyCache {
+    fn is_cancelled(&self) -> bool {
+        self.cancellation
+            .iter()
+            .any(tokio_util::sync::CancellationToken::is_cancelled)
+    }
+
     fn ensure(&self) {
         if self.inner.borrow().is_none() {
             *self.inner.borrow_mut() = Some(Box::new(cache::SemanticLocalCache::default()));
@@ -132,9 +139,20 @@ pub(crate) struct CallSiteAnalysis {
 
 impl<'db> SemanticModel<'db> {
     pub fn new(db: &'db SemanticDatabase, file_id: FileId) -> Self {
+        Self::new_with_cancellation(db, file_id, Vec::new())
+    }
+
+    pub(crate) fn new_with_cancellation(
+        db: &'db SemanticDatabase,
+        file_id: FileId,
+        cancellation: Vec<tokio_util::sync::CancellationToken>,
+    ) -> Self {
         Self {
             view: AnalysisView::new(db).file(file_id),
-            cache: Rc::new(LazyCache::default()),
+            cache: Rc::new(LazyCache {
+                cancellation,
+                ..Default::default()
+            }),
         }
     }
 
