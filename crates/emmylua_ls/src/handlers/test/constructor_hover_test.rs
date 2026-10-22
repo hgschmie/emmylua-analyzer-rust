@@ -186,3 +186,70 @@ fn constructor_hover_named_array_key_stays_inferred() -> Result<()> {
         "(field) key: boolean = true",
     )
 }
+
+#[gtest]
+fn constructor_definition_follows_nested_contracts() -> Result<()> {
+    for source in [
+        "---@type table<string, Entry>\nlocal entries = { first = { <??>value = 1 } }",
+        "---@type Entry[]\nlocal entries = { { <??>value = 1 } }",
+        "---@type table<string, Entry>\nlocal entries\nentries = { first = { <??>value = 1 } }",
+        "---@class Owner\n---@field entries table<string, Entry>\nlocal owner = {}\nowner.entries = { ['first'] = { <??>value = 1 } }",
+        "---@param entries table<string, Entry>\nlocal function accept(entries) end\naccept({ first = { <??>value = 1 } })",
+        "---@alias Map<T> table<string,T>\n---@type Map<Entry>\nlocal entries = { first = { ['<??>value'] = 1 } }",
+        "local key = 'first'\n---@type table<string, Entry>\nlocal entries = { [key] = { <??>value = 1 } }",
+        "---@type string, Entry[]\nlocal other, entries = '', {{ <??>value = 1 }}",
+    ] {
+        let mut ws = ProviderVirtualWorkspace::new();
+        let source = format!("---@class Entry\n---@field value integer\n\n{source}");
+        let field_line = source
+            .lines()
+            .position(|line| line.contains("<??>"))
+            .unwrap();
+        check!(ws.check_definition(
+            &source,
+            vec![
+                VirtualLocation {
+                    file: "".into(),
+                    line: 1
+                },
+                VirtualLocation {
+                    file: "".into(),
+                    line: field_line as u32
+                },
+            ]
+        ));
+    }
+    Ok(())
+}
+
+#[gtest]
+fn constructor_definition_preserves_value_and_anonymous_key_targets() -> Result<()> {
+    for (source, target) in [
+        (
+            "local original = 1\n---@type table<string, integer>\nlocal values = { key = <??>original }",
+            0,
+        ),
+        (
+            "---@type table<string, integer>\nlocal values = { <??>key = 1 }",
+            1,
+        ),
+        (
+            "local original = 'key'\n---@type table<string, integer>\nlocal values = { [<??>original] = 1 }",
+            0,
+        ),
+        (
+            "---@class Entry\n---@field value integer\n---@type table<string, Entry>\nlocal values = { entry = { callback = function() local <??>value = 1 end } }",
+            3,
+        ),
+    ] {
+        let mut ws = ProviderVirtualWorkspace::new();
+        check!(ws.check_definition(
+            source,
+            vec![VirtualLocation {
+                file: "".into(),
+                line: target
+            }]
+        ));
+    }
+    Ok(())
+}

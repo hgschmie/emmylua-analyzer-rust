@@ -81,6 +81,15 @@ pub fn definition(
         return goto_def_definition::goto_def_definition(&model, &analysis.db, &origin, &token);
     }
 
+    // Quoted constructor keys have the same declaration context as named keys.
+    if crate::handlers::common::table_context_type_for_token(&model, &token).is_some()
+        && let Some(decl) = model.find_decl(token.clone().into())
+        && let Some(response) =
+            goto_def_definition::goto_def_definition(&model, &analysis.db, &decl, &token)
+    {
+        return Some(response);
+    }
+
     // 2. String token: require module file / string template reference.
     if let Some(string_token) = LuaStringToken::cast(token.clone()) {
         if let Some(response) =
