@@ -62,6 +62,13 @@ pub(crate) fn lookup(
         &mut Vec::new(),
     )
 }
+fn is_standard_table(model: &SemanticModel, id: &crate::LuaTypeDeclId) -> bool {
+    *id == crate::LuaTypeDeclId::global("table")
+        && model
+            .type_def_of(id)
+            .is_none_or(|def| model.is_std_file(def.file_id))
+}
+
 fn lookup_inner(
     model: &SemanticModel,
     owner: &LuaType,
@@ -76,7 +83,7 @@ fn lookup_inner(
     // Only ordinary dictionaries distribute key unions. Nominal classes and
     // explicit __index functions retain their own lookup contracts.
     let dictionary = matches!(owner, LuaType::TableGeneric(_) | LuaType::Object(_))
-        || matches!(owner, LuaType::Generic(g) if g.get_base_type_id().get_name() == "table");
+        || matches!(owner, LuaType::Generic(g) if is_standard_table(model, &g.get_base_type_id()));
     if dictionary {
         let value = lookup_keys(model, owner, key, mode, seen, &mut Vec::new());
         seen.pop();
@@ -102,7 +109,7 @@ fn lookup_keys(
     let homogeneous = match owner {
         LuaType::TableGeneric(params) if params.len() == 2 => Some((&params[0], &params[1])),
         LuaType::Generic(g)
-            if g.get_base_type_id().get_name() == "table" && g.get_params().len() == 2 =>
+            if is_standard_table(model, &g.get_base_type_id()) && g.get_params().len() == 2 =>
         {
             Some((&g.get_params()[0], &g.get_params()[1]))
         }
@@ -207,7 +214,7 @@ fn lookup_atomic(
             Some(signature(model, &params[0], &params[1], key, mode))
         }
         LuaType::Generic(generic)
-            if generic.get_base_type_id().get_name() == "table"
+            if is_standard_table(model, &generic.get_base_type_id())
                 && generic.get_params().len() == 2 =>
         {
             let params = generic.get_params();
@@ -324,4 +331,14 @@ impl SemanticModel<'_> {
         };
         lookup_inner(self, &prefix, &key, mode, &mut Vec::new())
     }
+}
+
+#[cfg(test)]
+#[test]
+fn dictionary_named_table_requires_standard_identity() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def("---@class table<K,V>\n---@field fixed string");
+    let owner = ws.ty("table<integer,boolean>");
+    let model = ws.analysis.semantic_model(file);
+    assert_eq!(lookup(&model, &owner, &LuaType::Integer, false), None);
 }

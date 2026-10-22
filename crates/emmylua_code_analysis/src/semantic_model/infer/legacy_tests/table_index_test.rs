@@ -677,3 +677,35 @@ fn dictionary_function_and_assignment_facts_stop_at_visible_calls() {
         }
     }
 }
+
+#[test]
+fn dictionary_deletion_preserves_required_object_fields() {
+    for (contract, good) in [
+        ("{required:integer}", false),
+        ("{required:integer?}", true),
+        ("table<string,integer>", true),
+    ] {
+        let mut ws = workspace(true);
+        let code = format!(
+            "---@alias Target {contract}\n---@param target Target\nlocal function clear(target) target.required=nil end"
+        );
+        assert_eq!(
+            ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &code),
+            good,
+            "{contract}"
+        );
+    }
+}
+
+#[test]
+fn dictionary_metatable_index_cycles_are_bounded() {
+    for source in [
+        "local t={} setmetatable(t,{__index=t}) local observed=t.foo",
+        "local a={} local b={} setmetatable(a,{__index=b}) setmetatable(b,{__index=a}) local observed=a.foo",
+        "local a={} local b={foo=1} setmetatable(a,{__index=b}) local observed=a.foo",
+    ] {
+        let mut ws = workspace(true);
+        ws.def(source);
+        let _ = ws.expr_ty("observed");
+    }
+}
