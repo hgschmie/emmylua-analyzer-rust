@@ -4,6 +4,26 @@ use crate::check::checker::param_count::callable_functions;
 use crate::check::checker::param_type_check::callable_candidates_uncached;
 
 impl<'db> SemanticModel<'db> {
+    /// Reuse complete, unfiltered constructor checks within one semantic snapshot.
+    pub(crate) fn constructor_diagnostics(
+        &self,
+        table: LuaSyntaxId,
+        target: LuaType,
+        check: impl FnOnce() -> Vec<crate::check::checker::Diagnostic>,
+    ) -> Vec<crate::check::checker::Diagnostic> {
+        let key = (self.file_id(), table, target);
+        if let Some(result) = self.cache.borrow().constructor_diagnostics.get(&key) {
+            return result.clone();
+        }
+        let _query = cache::QueryCacheScope::new(&self.cache);
+        let revision = self.cache.borrow().revision();
+        let result = check();
+        self.cache.publish_if_complete(revision, |cache| {
+            cache.constructor_diagnostics.insert(key, result.clone());
+        });
+        result
+    }
+
     /// Currently configured runtime version (used for `---@version` visibility checks).
     pub fn lua_version(&self) -> Option<LuaVersionNumber> {
         self.db().lua_version()
@@ -1299,5 +1319,57 @@ impl<'db> SemanticModel<'db> {
             }
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod constructor_cache_tests {
+    use crate::{LuaType, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaTableExpr};
+    use std::cell::Cell;
+
+    #[test]
+    fn constructor_cache_is_scoped_to_file_target_and_complete_queries() {
+        let mut ws = VirtualWorkspace::new();
+        let first = ws.def("local value = {}");
+        let second = ws.def("local value = {}");
+        let table = ws.get_node::<LuaTableExpr>(first).get_syntax_id();
+        let model = ws.analysis.semantic_model(first);
+        let calls = Cell::new(0);
+        let check = || {
+            calls.set(calls.get() + 1);
+            Vec::new()
+        };
+        model.constructor_diagnostics(table, LuaType::String, check);
+        model.constructor_diagnostics(table, LuaType::String, check);
+        assert_eq!(calls.get(), 1);
+        model.constructor_diagnostics(table, LuaType::Integer, check);
+        model
+            .model_for(second)
+            .constructor_diagnostics(table, LuaType::String, check);
+        assert_eq!(calls.get(), 3);
+        // A model for a newer semantic snapshot must recompute the result.
+        ws.analysis
+            .semantic_model(first)
+            .constructor_diagnostics(table, LuaType::String, check);
+        assert_eq!(calls.get(), 4);
+    }
+
+    #[test]
+    fn incomplete_constructor_checks_are_not_reused() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def("local value = {}");
+        let table = ws.get_node::<LuaTableExpr>(file).get_syntax_id();
+        let model = ws.analysis.semantic_model(file);
+        model.constructor_diagnostics(table, LuaType::String, || {
+            model.cache.borrow().mark_incomplete();
+            Vec::new()
+        });
+        let retried = Cell::new(false);
+        model.constructor_diagnostics(table, LuaType::String, || {
+            retried.set(true);
+            Vec::new()
+        });
+        assert!(retried.get());
     }
 }

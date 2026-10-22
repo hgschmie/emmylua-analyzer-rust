@@ -518,6 +518,18 @@ pub(super) fn table_union_diagnostics(
     union: &LuaUnionType,
     table: &LuaTableExpr,
 ) -> Vec<super::Diagnostic> {
+    semantic_model.constructor_diagnostics(
+        table.get_syntax_id(),
+        LuaType::Union(Rc::new(union.clone())),
+        || table_union_diagnostics_uncached(semantic_model, union, table),
+    )
+}
+
+fn table_union_diagnostics_uncached(
+    semantic_model: &SemanticModel<'_>,
+    union: &LuaUnionType,
+    table: &LuaTableExpr,
+) -> Vec<super::Diagnostic> {
     fn collect_alternatives(
         model: &SemanticModel<'_>,
         ty: &LuaType,

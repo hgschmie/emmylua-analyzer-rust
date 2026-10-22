@@ -184,6 +184,9 @@ pub(crate) struct TypeDefCache {
 
 #[derive(Default)]
 pub(crate) struct SemanticLocalCache {
+    /// Unfiltered constructor failures shared by all diagnostic passes in this model.
+    pub(crate) constructor_diagnostics:
+        HashMap<(FileId, LuaSyntaxId, LuaType), Vec<crate::check::checker::Diagnostic>>,
     /// Changes whenever a query reads an unfinished dependency. Most queries
     /// use this to decide whether a result can be cached. Type comparisons
     /// track completeness in their result, including discarded alternatives.
