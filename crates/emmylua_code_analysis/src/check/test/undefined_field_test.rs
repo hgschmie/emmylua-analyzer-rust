@@ -1382,3 +1382,64 @@ fn enum_runtime_cross_file_dynamic_and_conditional_keys() {
         eq(false)
     );
 }
+
+#[cfg(test)]
+mod numeric_enum_indices {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    #[test]
+    fn numeric_enum_index_accepts_array_dictionary_and_class_keys() {
+        for owner in ["integer[]", "table<integer, integer>", "NumericIndex"] {
+            let mut ws = VirtualWorkspace::new();
+            assert!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::UndefinedField,
+                    &format!(
+                        r#"
+                ---@enum Limit
+                local Limit = {{ all = 1, ten = 2, twentyfive = 3 }}
+                ---@alias LimitAlias Limit
+
+                ---@class State
+                ---@field limit LimitAlias
+
+                ---@class NumericIndex
+                ---@field [integer] integer
+
+                ---@param values {owner}
+                ---@param state State?
+                local function read(values, state)
+                    ---@cast state -?
+                    return values[state.limit]
+                end
+            "#
+                    )
+                ),
+                "owner: {owner}"
+            );
+        }
+    }
+
+    #[test]
+    fn numeric_enum_index_rejects_nonnumeric_values() {
+        for values in ["name = 'name'", "one = 1, name = 'name'", "flag = true"] {
+            let mut ws = VirtualWorkspace::new();
+            assert!(
+                !ws.has_no_diagnostic(
+                    DiagnosticCode::UndefinedField,
+                    &format!(
+                        r#"
+                ---@enum InvalidIndex
+                local InvalidIndex = {{ {values} }}
+                ---@param values integer[]
+                ---@param key InvalidIndex
+                local function read(values, key)
+                    return values[key]
+                end
+            "#
+                    )
+                ),
+                "enum: {values}"
+            );
+        }
+    }
+}
