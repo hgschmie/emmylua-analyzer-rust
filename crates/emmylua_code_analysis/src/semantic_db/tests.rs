@@ -2312,3 +2312,31 @@ fn table_field_module_annotation_stays_on_own_field() {
     assert_eq!(module.module_path.as_deref(), Some("example"));
     assert_eq!(child.module_path, None);
 }
+
+#[test]
+fn implicit_array_member_values_are_not_declaration_keys() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let source = "local values = { function() return obj.name end, 42, [7] = false, named = true, ['quoted'] = 9 }";
+    let file = ws.def(source);
+    let model = ws.analysis.semantic_model(file);
+    let facts = model.file_facts().unwrap();
+    for token in ["function", "obj", "name end", "42"] {
+        let offset = TextSize::from(source.find(token).unwrap() as u32);
+        assert!(facts.member_at_offset(offset).is_none(), "{token}");
+    }
+    for token in ["7", "named", "quoted"] {
+        let offset = TextSize::from(source.find(token).unwrap() as u32);
+        assert!(facts.member_at_offset(offset).is_some(), "{token}");
+    }
+    for key in [1, 2] {
+        let member = facts
+            .members
+            .iter()
+            .find(|member| member.key == crate::LuaMemberKey::Integer(key))
+            .unwrap();
+        let value = member.value_syntax.unwrap();
+        assert_eq!(facts.member_by_value_syntax(value).unwrap().id, member.id);
+        assert!(facts.member_by_id(&member.id).is_some());
+        assert!(model.type_of_member(&member.id).is_some());
+    }
+}

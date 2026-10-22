@@ -1,3 +1,4 @@
+mod array_member_navigation_test;
 mod code_actions_test;
 mod completion_resolve_test;
 mod completion_test;
