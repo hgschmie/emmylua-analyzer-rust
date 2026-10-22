@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use hashbrown::{HashMap, HashSet};
 
-use emmylua_parser::{LuaAstPtr, LuaCallExpr, LuaExpr, LuaSyntaxId};
+use emmylua_parser::{LuaAstPtr, LuaCallExpr, LuaChunk, LuaExpr, LuaSyntaxId};
 use rowan::{TextRange, TextSize};
 
 use super::{FlowAntecedent, FlowEffect, FlowId, FlowNode, FlowNodeKind};
@@ -34,6 +34,8 @@ pub struct FlowTree {
     decl_positions: Vec<(TextSize, FlowId)>,
     /// Sorted `(condition position, flow id)` for true/false condition nodes.
     condition_nodes: Vec<(TextSize, FlowId)>,
+    /// Closure boundaries block definition-time constant propagation.
+    closure_entries: Vec<(TextSize, FlowId)>,
     /// Sorted `(cast position, flow id)` for `---@cast` / `--[[@as]]` nodes.
     cast_nodes: Vec<(TextSize, FlowId)>,
     /// Sorted `(position, flow id)` for nodes with a merge (`Multiple`) antecedent.
@@ -66,6 +68,7 @@ impl FlowTree {
         let mut assignments = Vec::new();
         let mut decl_positions: Vec<(TextSize, FlowId)> = Vec::new();
         let mut condition_nodes: Vec<(TextSize, FlowId)> = Vec::new();
+        let mut closure_entries = Vec::new();
         let mut cast_nodes: Vec<(TextSize, FlowId)> = Vec::new();
         let mut branch_nodes: Vec<(TextSize, FlowId)> = Vec::new();
         let mut unpositioned_branch = false;
@@ -118,6 +121,9 @@ impl FlowTree {
                     assignments.push((range, flow_id));
                 }
                 FlowNodeKind::DeclPosition(pos) => decl_positions.push((*pos, flow_id)),
+                FlowNodeKind::ClosureEntry(closure) => {
+                    closure_entries.push((closure.get_position(), flow_id));
+                }
                 FlowNodeKind::TrueCondition(cond) | FlowNodeKind::FalseCondition(cond) => {
                     condition_nodes.push((cond.get_syntax_id().get_range().start(), flow_id));
                 }
@@ -139,6 +145,7 @@ impl FlowTree {
         assignments.sort_by_key(|(range, _)| range.start());
         decl_positions.sort_by_key(|(pos, _)| *pos);
         condition_nodes.sort_by_key(|(pos, _)| *pos);
+        closure_entries.sort_by_key(|(pos, _)| *pos);
         cast_nodes.sort_by_key(|(pos, _)| *pos);
         branch_nodes.sort_by_key(|(pos, _)| *pos);
         let has_tag_cast = !cast_nodes.is_empty();
@@ -166,6 +173,7 @@ impl FlowTree {
             assignments,
             decl_positions,
             condition_nodes,
+            closure_entries,
             cast_nodes,
             branch_nodes,
             unpositioned_branch,
@@ -257,6 +265,58 @@ impl FlowTree {
         self.flow_nodes.get(flow_id.0 as usize)
     }
 
+    /// Marks nodes connected to a chunk entry, pruning only impossible literal guards.
+    /// Unknown conditions retain both edges; closure entries require a reachable definition.
+    pub(crate) fn statically_reachable_nodes(&self, chunk: &LuaChunk) -> Vec<bool> {
+        let mut reachable = vec![false; self.flow_nodes.len()];
+        let mut successors = vec![Vec::new(); self.flow_nodes.len()];
+        let mut queue = VecDeque::new();
+        for node in &self.flow_nodes {
+            let blocked = match &node.kind {
+                FlowNodeKind::Unreachable => true,
+                FlowNodeKind::TrueCondition(cond) => {
+                    cond.to_node(chunk)
+                        .and_then(|expr| super::stats::static_literal_truthiness(&expr))
+                        == Some(false)
+                }
+                FlowNodeKind::FalseCondition(cond) => {
+                    cond.to_node(chunk)
+                        .and_then(|expr| super::stats::static_literal_truthiness(&expr))
+                        == Some(true)
+                }
+                _ => false,
+            };
+            if blocked {
+                continue;
+            }
+            let antecedents: &[FlowId] = match &node.antecedent {
+                Some(FlowAntecedent::Single(previous)) => std::slice::from_ref(previous),
+                Some(FlowAntecedent::Multiple(index)) => {
+                    self.get_multi_antecedents(*index).unwrap_or_default()
+                }
+                None => &[],
+            };
+            for previous in antecedents {
+                if let Some(next) = successors.get_mut(previous.0 as usize) {
+                    next.push(node.id);
+                }
+            }
+            if matches!(node.kind, FlowNodeKind::Start) {
+                reachable[node.id.0 as usize] = true;
+                queue.push_back(node.id);
+            }
+        }
+        while let Some(flow) = queue.pop_front() {
+            for &next in &successors[flow.0 as usize] {
+                if !reachable[next.0 as usize] {
+                    reachable[next.0 as usize] = true;
+                    queue.push_back(next);
+                }
+            }
+        }
+        reachable
+    }
+
     /// Effect summaries on flow nodes (declaration assignment / guard / tag cast).
     pub fn get_flow_effects(&self, flow_id: FlowId) -> &[FlowEffect] {
         self.node_effects
@@ -331,7 +391,7 @@ impl FlowTree {
     }
 
     /// Whether any flow event that can change the queried value lies in the
-    /// position range: conditions, casts, or a branch merge.
+    /// position range: conditions, closure entries, casts, or a branch merge.
     ///
     /// `include_start` selects `start` inclusion; `end` is always inclusive.
     /// When a merge node has no indexable position, every range conservatively
@@ -346,6 +406,7 @@ impl FlowTree {
             return true;
         }
         has_node_between(&self.condition_nodes, start, end, include_start)
+            || has_node_between(&self.closure_entries, start, end, include_start)
             || has_node_between(&self.cast_nodes, start, end, include_start)
             || has_node_between(&self.branch_nodes, start, end, include_start)
     }
@@ -364,6 +425,14 @@ impl FlowTree {
             .into_iter()
             .flatten()
             .map(|(_, flow_id)| *flow_id)
+    }
+
+    /// All assignments to a declaration, including writes in sibling closures.
+    pub fn decl_assignments(&self, decl: &SemanticId) -> &[(TextSize, FlowId)] {
+        self.decl_assignments
+            .get(decl)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     /// Whether any assignment to `member` occurs in the flow tree.
@@ -669,6 +738,7 @@ fn flow_node_position(kind: &FlowNodeKind) -> Option<TextSize> {
         | FlowNodeKind::Continue
         | FlowNodeKind::Return => None,
         FlowNodeKind::DeclPosition(pos) => Some(*pos),
+        FlowNodeKind::ClosureEntry(closure) => Some(closure.get_position()),
         FlowNodeKind::Assignment(ptr) => Some(ptr.get_syntax_id().get_range().start()),
         FlowNodeKind::CallExprStat(ptr) => Some(ptr.get_syntax_id().get_range().start()),
         FlowNodeKind::TrueCondition(ptr) | FlowNodeKind::FalseCondition(ptr) => {
