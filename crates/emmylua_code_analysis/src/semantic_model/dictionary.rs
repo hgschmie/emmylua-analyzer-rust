@@ -343,28 +343,6 @@ impl SemanticModel<'_> {
         &self,
         table: &emmylua_parser::LuaTableExpr,
     ) -> Option<LuaType> {
-        // Every recursion moves to a containing table, so there is no cyclic lookup.
-        if let Some(decl) = self.file_facts()?.decl_by_value_range(table.get_range()) {
-            return self.type_of_decl(&decl.id);
-        }
-        if let Some(assign) = table.get_parent::<emmylua_parser::LuaAssignStat>() {
-            let (vars, values) = assign.get_var_and_expr_list();
-            let position = values
-                .iter()
-                .position(|value| value.get_range() == table.get_range())?;
-            return Some(self.assignment_target_type(vars.get(position)?.to_expr()));
-        }
-        let field = table.get_parent::<emmylua_parser::LuaTableField>()?;
-        let outer = field.get_parent::<emmylua_parser::LuaTableExpr>()?;
-        let typ = self.table_assignment_context(&outer)?;
-        let key = match field.get_field_key()? {
-            LuaIndexKey::Name(n) => LuaMemberKey::Name(n.get_name_text().into()),
-            LuaIndexKey::String(s) => LuaMemberKey::Name(s.get_value().into()),
-            _ => return None,
-        };
-        if let Some((_, write)) = self.directional_member(&typ, &key) {
-            return Some(write.typ);
-        }
-        lookup(self, &typ, &key_type(&key)?, false).or_else(|| self.member_type(&typ, &key))
+        self.contextual_constructor_type(table)
     }
 }

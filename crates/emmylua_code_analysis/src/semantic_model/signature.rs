@@ -1,4 +1,5 @@
 use crate::{MemberList, OperatorDef};
+use emmylua_parser::LuaIndexKey;
 
 use super::prelude::*;
 
@@ -771,32 +772,20 @@ impl<'db> SemanticModel<'db> {
                 }
             }
             SemanticId::Member(table_key) => {
-                // Table fields have a synthetic owner. Recover the declared
-                // context from either a local initializer or a member assignment.
-                if let Some(decl) = facts.decl_by_value_range(table_key.key_range) {
-                    self.type_of_decl(&decl.id)?
-                } else {
-                    let doc = [
-                        LuaSyntaxKind::TableArrayExpr,
-                        LuaSyntaxKind::TableObjectExpr,
-                    ]
-                    .into_iter()
-                    .find_map(|kind| {
-                        let syntax = LuaSyntaxId::new(kind.into(), table_key.key_range);
-                        facts.member_by_value_syntax(syntax)
-                    })
-                    .and_then(|member| member.doc_type_syntax);
-                    if let Some(doc) = doc {
-                        self.doc_type_lua_rich_in(member_file, doc)
-                    } else {
-                        let root = self.chunk()?;
-                        let table = root
-                            .descendants::<LuaTableExpr>()
-                            .find(|table| table.get_range() == table_key.key_range)?;
-                        self.table_assignment_context(&table)?
-                    }
-                }
+                let tree = self.syntax_tree_of(member_file)?;
+                let table = [
+                    LuaSyntaxKind::TableArrayExpr,
+                    LuaSyntaxKind::TableObjectExpr,
+                ]
+                .into_iter()
+                .find_map(|kind| {
+                    LuaSyntaxId::new(kind.into(), table_key.key_range)
+                        .to_node_from_root(&tree.get_red_root())
+                        .and_then(LuaTableExpr::cast)
+                })?;
+                self.contextual_constructor_type(&table)?
             }
+
             _ => return None,
         };
 
@@ -822,6 +811,72 @@ impl<'db> SemanticModel<'db> {
         }
         Some(out)
     }
+    /// Recover the value contract of a nested constructor without inferring its contents.
+    pub(crate) fn contextual_constructor_type(&self, table: &LuaTableExpr) -> Option<LuaType> {
+        let facts = self.file_facts()?;
+        if let Some(decl) = facts.decl_by_value_range(table.get_range()) {
+            return self.type_of_decl(&decl.id);
+        }
+        if let Some(doc) = facts
+            .member_by_value_syntax(table.get_syntax_id())
+            .and_then(|member| member.doc_type_syntax)
+        {
+            return Some(self.doc_type_lua_rich_in(self.view.file_id(), doc));
+        }
+        if let Some(assign) = table.get_parent::<LuaAssignStat>() {
+            let (targets, values) = assign.get_var_and_expr_list();
+            let position = values
+                .iter()
+                .position(|value| value.get_range() == table.get_range())?;
+            let typ = self.assignment_target_type(targets.get(position)?.to_expr());
+            return (!matches!(
+                typ,
+                LuaType::TableConst(_) | LuaType::Unknown | LuaType::Any
+            ))
+            .then_some(typ);
+        }
+        // Recursion always moves to an enclosing table, so it cannot cycle.
+        let field = table.get_parent::<LuaTableField>()?;
+        let outer = field.get_parent::<LuaTableExpr>()?;
+        let owner = self.contextual_constructor_type(&outer)?;
+        let key_type = match field.get_field_key()? {
+            LuaIndexKey::Name(name) => {
+                LuaType::StringConst(SmolStr::new(name.get_name_text()).into())
+            }
+            LuaIndexKey::String(value) => {
+                LuaType::StringConst(SmolStr::new(value.get_value()).into())
+            }
+            LuaIndexKey::Integer(value) => match value.get_number_value() {
+                NumberResult::Int(value) => LuaType::IntegerConst(value),
+                _ => return None,
+            },
+            LuaIndexKey::Idx(index) => LuaType::IntegerConst(index as i64),
+            LuaIndexKey::Expr(expr) => {
+                self.type_of_expr_at(expr.get_syntax_id(), expr.get_position())
+            }
+        };
+        let key = match &key_type {
+            LuaType::StringConst(value) | LuaType::DocStringConst(value) => {
+                Some(LuaMemberKey::Name(value.as_ref().clone()))
+            }
+            LuaType::IntegerConst(value) | LuaType::DocIntegerConst(value) => {
+                Some(LuaMemberKey::Integer(*value))
+            }
+            _ => None,
+        };
+        if let Some(key) = &key
+            && let Some((_, write)) = self.directional_member(&owner, key)
+        {
+            return Some(write.typ);
+        }
+        if let Some(key) = key
+            && let Some(typ) = self.member_type(&owner, &key)
+        {
+            return Some(typ);
+        }
+        self.contextual_table_value_by_key_type(&owner, &key_type)
+    }
+
     /// Follow plain and generic aliases without recursing through cycles.
     fn contextual_alias_target(&self, ty: &LuaType) -> LuaType {
         let mut current = ty.clone();
@@ -866,12 +921,19 @@ impl<'db> SemanticModel<'db> {
     }
 
     fn contextual_table_value(&self, owner: &LuaType, key: &LuaMemberKey) -> Option<LuaType> {
-        let key = key.to_index_type()?;
+        self.contextual_table_value_by_key_type(owner, &key.to_index_type()?)
+    }
+
+    fn contextual_table_value_by_key_type(
+        &self,
+        owner: &LuaType,
+        key: &LuaType,
+    ) -> Option<LuaType> {
         let owner = self.contextual_alias_target(owner);
         let params = match &owner {
             LuaType::Array(array) => {
                 return self
-                    .type_check(&key, &LuaType::Integer)
+                    .type_check(key, &LuaType::Integer)
                     .then(|| array.get_base().clone());
             }
             LuaType::TableGeneric(params) => params.as_ref(),
@@ -883,7 +945,7 @@ impl<'db> SemanticModel<'db> {
         let [expected_key, value] = params.as_slice() else {
             return None;
         };
-        self.type_check(&key, expected_key).then(|| value.clone())
+        self.type_check(key, expected_key).then(|| value.clone())
     }
 
     /// `---@param` / `---@return` annotations on table-literal fields override the closure's bare signature.

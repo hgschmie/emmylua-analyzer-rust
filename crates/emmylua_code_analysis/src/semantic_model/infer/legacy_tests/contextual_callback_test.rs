@@ -300,3 +300,57 @@ fn local_type(ws: &VirtualWorkspace, file: FileId, name: &str) -> LuaType {
         .unwrap();
     model.type_of_decl(&decl).unwrap()
 }
+
+#[gtest]
+fn contextual_callback_nested_constructor_keys() {
+    for (annotation, entry) in [
+        ("table<string, Entry>", "[Keys.name] = "),
+        ("table<string, Entry>", "['name'] = "),
+        ("Entry[]", ""),
+        ("Entry[]", "[2] = "),
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(DEFINITIONS);
+        ws.def("---@class Entry\n---@field callback SettingFunction?");
+        ws.def("Keys = { name = 'name' }");
+        let file = ws.def(&format!(
+            r#"
+            local Container = {{}}
+            ---@type {annotation}
+            Container.entries = {{ {entry}{{ callback = function(settings, name)
+                local observed_settings = settings
+                local observed_name = name
+            end }} }}
+        "#
+        ));
+        expect_that!(
+            local_type(&ws, file, "observed_settings"),
+            eq(&ws.ty("Settings")),
+            "{annotation}/{entry}"
+        );
+        expect_that!(
+            local_type(&ws, file, "observed_name"),
+            eq(&LuaType::String),
+            "{annotation}/{entry}"
+        );
+    }
+}
+
+#[gtest]
+fn contextual_callback_nested_invalid_key_stays_unknown() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def(DEFINITIONS);
+    ws.def("---@class Entry\n---@field callback SettingFunction?");
+    let file = ws.def(
+        r#"
+        ---@type table<integer, Entry>
+        local entries = { wrong = { callback = function(settings)
+            local observed_settings = settings
+        end } }
+    "#,
+    );
+    expect_that!(
+        local_type(&ws, file, "observed_settings"),
+        eq(&LuaType::Unknown)
+    );
+}
