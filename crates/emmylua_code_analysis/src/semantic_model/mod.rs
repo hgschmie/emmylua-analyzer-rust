@@ -9,6 +9,7 @@ pub mod type_eval;
 
 mod access;
 mod builtin;
+mod dictionary;
 mod doc_types;
 mod prelude;
 mod signature;
