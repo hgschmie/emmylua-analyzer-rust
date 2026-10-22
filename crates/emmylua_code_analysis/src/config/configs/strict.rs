@@ -21,6 +21,9 @@ pub struct EmmyrcStrict {
     /// Whether to enable strict mode array indexing.
     #[serde(default = "default_true")]
     pub array_index: bool,
+    /// Include nil when indexing table<K, V> or an anonymous object index signature.
+    #[serde(default)]
+    pub table_index: bool,
     /// meta define overrides file define
     #[serde(default = "default_true")]
     pub meta_override_file_define: bool,
@@ -35,6 +38,7 @@ impl Default for EmmyrcStrict {
             require_path: false,
             type_call: false,
             array_index: true,
+            table_index: false,
             meta_override_file_define: true,
             doc_base_const_match_base_type: true,
         }

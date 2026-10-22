@@ -1,6 +1,7 @@
 use crate::semantic_model::infer::vm::expand_callable_types_in_model;
 use crate::semantic_model::type_check::TypeCheckFailReason;
 use crate::{IndexInfo, OperatorDef};
+use emmylua_parser::LuaTableExpr;
 
 use super::prelude::*;
 
@@ -852,8 +853,28 @@ impl<'db> SemanticModel<'db> {
             SemanticId::Member(table_key) => {
                 // Table-literal field (`---@type D31; local f = { func = function(...) end }`):
                 // the member owner is a synthetic table identity; go back to the declaration that initializes the table and use its declared type as the field type source.
-                let decl = facts.decl_by_value_range(table_key.key_range)?;
-                self.type_of_decl(&decl.id)?
+                if let Some(decl) = facts.decl_by_value_range(table_key.key_range) {
+                    self.type_of_decl(&decl.id)?
+                } else {
+                    let root = self.chunk()?;
+                    let table = root
+                        .descendants::<LuaTableExpr>()
+                        .find(|table| table.get_range() == table_key.key_range)?;
+                    let assign = table.get_parent::<LuaAssignStat>()?;
+                    let (vars, values) = assign.get_var_and_expr_list();
+                    let position = values
+                        .iter()
+                        .position(|value| value.get_range() == table.get_range())?;
+                    {
+                        let target = vars.get(position)?.to_expr();
+                        if let LuaExpr::IndexExpr(index) = &target {
+                            self.dictionary_index_type(&index, false)
+                                .unwrap_or_else(|| self.type_of_expr(target.get_syntax_id()))
+                        } else {
+                            self.type_of_expr(target.get_syntax_id())
+                        }
+                    }
+                }
             }
             _ => return None,
         };

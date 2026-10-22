@@ -191,6 +191,7 @@ EmmyLua Analyzer Rust 推荐把配置写在项目根目录的 `.emmyrc.json` 中
     "requirePath": false,
     "typeCall": false,
     "arrayIndex": true,
+    "tableIndex": false,
     "metaOverrideFileDefine": true,
     "docBaseConstMatchBaseType": true,
     "requireExportGlobal": false
@@ -443,9 +444,16 @@ EmmyLua Analyzer Rust 推荐把配置写在项目根目录的 `.emmyrc.json` 中
 | `requirePath` | `boolean` | `false` | 强制 require 路径必须命中配置的模块路径 |
 | `typeCall` | `boolean` | `false` | 更严格地检查类型调用 |
 | `arrayIndex` | `boolean` | `true` | 更严格地检查数组索引 |
+| `tableIndex` | `boolean` | `false` | 为 `table<K, V>` 和匿名对象索引签名的查找结果包含 `nil` |
 | `metaOverrideFileDefine` | `boolean` | `true` | 元定义覆盖文件内定义 |
 | `docBaseConstMatchBaseType` | `boolean` | `true` | 允许文档中的基础常量类型与基础类型匹配 |
 | `requireExportGlobal` | `boolean` | `false` | 第三方库必须显式使用 `---@export global` 才可导入 |
+
+启用 `strict.tableIndex: true` 后，对 `table<string, string>` 或
+`{[string]: string}` 的 `mods["nullius"]` 查找返回 `string | nil`，因为键可能不存在。
+条件判断可以正常收窄结果类型。声明的值类型仍为 `string`，因此 `pairs` 迭代出的值
+不包含 `nil`，赋值接受字符串或用于删除键的 `nil`。必需的具名字段、类索引运算符
+和声明的 `__index` 函数返回类型保持原有行为。数组由 `strict.arrayIndex` 单独控制。
 
 ### format
 

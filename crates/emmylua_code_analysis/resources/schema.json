@@ -139,6 +139,7 @@
         "docBaseConstMatchBaseType": true,
         "metaOverrideFileDefine": true,
         "requirePath": false,
+        "tableIndex": false,
         "typeCall": false
       }
     },
@@ -1086,6 +1087,11 @@
         },
         "requirePath": {
           "description": "Whether to enable strict mode require path.",
+          "type": "boolean",
+          "default": false
+        },
+        "tableIndex": {
+          "description": "Include nil when indexing table<K, V> or an anonymous object index signature.",
           "type": "boolean",
           "default": false
         },
