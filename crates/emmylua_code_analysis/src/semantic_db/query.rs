@@ -406,6 +406,16 @@ pub(crate) fn resolve_member_id(
     member_use: &MemberUse,
 ) -> Option<SemanticId> {
     let receiver = member_use.receiver.as_ref()?;
+    let lexical_owner = db
+        .syntax_tree_of(facts.file_id)
+        .and_then(|tree| member_use.syntax.to_node_from_root(&tree.get_red_root()))
+        .and_then(LuaIndexExpr::cast)
+        .and_then(|index| implicit_self_reference_owner(facts, &index));
+    let lexical_receiver = lexical_owner.map(|root| AccessPath {
+        root,
+        ..receiver.clone()
+    });
+    let receiver = lexical_receiver.as_ref().unwrap_or(receiver);
     if let Some(member) = facts.member_for_use(member_use)
         && (member.doc_type_syntax.is_some()
             || !matches!(
@@ -519,6 +529,35 @@ pub(crate) fn members_of_receiver_key(
             .collect();
         Arc::from(members)
     })
+}
+
+/// Resolve the lexical receiver for direct `self.member` references without
+/// changing type inference's separate, flow-sensitive receiver resolution.
+fn implicit_self_reference_owner(
+    facts: &FileFacts,
+    index_expr: &LuaIndexExpr,
+) -> Option<SemanticId> {
+    let LuaExpr::NameExpr(prefix) = index_expr.get_prefix_expr()? else {
+        return None;
+    };
+    if prefix.get_name_text()? != "self" {
+        return None;
+    }
+    let decl = facts
+        .find_visible_decl_before_offset("self", prefix.get_position())
+        .filter(|decl| !matches!(decl.kind, DeclKind::Global));
+    // Nested closures capture the closest colon method's implicit self. A local
+    // or parameter declared inside that method shadows it.
+    for closure in prefix.ancestors::<LuaClosureExpr>() {
+        if let Some(member) = facts.member_by_value_syntax(closure.get_syntax_id())
+            && member.is_method
+        {
+            return decl
+                .is_none_or(|decl| decl.name_range.start() < closure.get_position())
+                .then(|| member.owner.clone());
+        }
+    }
+    None
 }
 
 /// Canonical module owner for a raw file-local owner identity.
