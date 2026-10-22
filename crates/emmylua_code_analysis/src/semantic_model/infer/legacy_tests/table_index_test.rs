@@ -524,3 +524,56 @@ fn dictionary_primitive_guards_keep_negative_cases() {
         );
     }
 }
+
+#[gtest]
+fn class_index_preserves_inherited_runtime_methods() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def(
+        r#"
+        ---@class Methods
+        local Methods = {}
+        ---@return integer
+        function Methods.clear() return 1 end
+        ---@class Element: Methods
+        ---@field [string] Element
+        ---@type Element
+        root = nil
+    "#,
+    );
+    expect_that!(ws.expr_ty("root.clear()"), eq(&LuaType::Integer));
+    expect_that!(ws.expr_ty("root.child"), eq(&ws.ty("Element")));
+}
+
+#[gtest]
+fn class_index_preserves_own_runtime_methods() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def(
+        r#"
+        ---@class Element
+        ---@field [string] Element
+        local Element = {}
+        ---@return integer
+        function Element.clear() return 1 end
+        ---@type Element
+        root = nil
+    "#,
+    );
+    expect_that!(ws.expr_ty("root.clear()"), eq(&LuaType::Integer));
+}
+
+#[gtest]
+fn class_index_preserves_inherited_generic_members() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def(
+        r#"
+        ---@class Base<T>
+        ---@field value T
+        ---@class Element: Base<string>
+        ---@field [string] boolean
+        ---@type Element
+        root = nil
+    "#,
+    );
+    expect_that!(ws.expr_ty("root.value"), eq(&LuaType::String));
+    expect_that!(ws.expr_ty("root.other"), eq(&LuaType::Boolean));
+}
