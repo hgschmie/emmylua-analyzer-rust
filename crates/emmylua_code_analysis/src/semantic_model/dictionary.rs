@@ -338,11 +338,4 @@ impl SemanticModel<'_> {
     pub(crate) fn dictionary_field_type(&self, owner: &LuaType, key: &LuaType) -> Option<LuaType> {
         lookup(self, owner, key, false)
     }
-
-    pub(crate) fn table_assignment_context(
-        &self,
-        table: &emmylua_parser::LuaTableExpr,
-    ) -> Option<LuaType> {
-        self.contextual_constructor_type(table)
-    }
 }
