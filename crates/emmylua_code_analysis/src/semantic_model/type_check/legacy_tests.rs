@@ -484,3 +484,13 @@ fn inherited_dictionary_assignment_checks_declared_values() {
     assert!(!ws.check_type(&narrow, &source));
     assert!(ws.check_type(&broad, &source));
 }
+
+#[test]
+fn inherited_dictionary_assignment_keeps_declared_index_signatures() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def("---@class Child: table<string,integer>\n---@field [integer] boolean");
+    let source = ws.ty("Child");
+    let target = ws.ty("table<integer,boolean>");
+    let model = ws.analysis.semantic_model(file);
+    assert!(super::is_compatible(&model, &source, &target));
+}

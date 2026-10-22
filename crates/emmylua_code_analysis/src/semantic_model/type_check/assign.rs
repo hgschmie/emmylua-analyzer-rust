@@ -34,9 +34,9 @@ fn check_inherited_dictionary(
     if !matches!(
         source,
         LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_)
-    ) || matches!(source, LuaType::Generic(generic) if generic.get_base_type_id().get_name() == "table")
+    ) || matches!(source, LuaType::Generic(generic) if crate::semantic_model::inherited_index::is_standard_table(context.model, &generic.get_base_type_id()))
         || !(matches!(target, LuaType::TableGeneric(_))
-            || matches!(target, LuaType::Generic(generic) if generic.get_base_type_id().get_name() == "table"))
+            || matches!(target, LuaType::Generic(generic) if crate::semantic_model::inherited_index::is_standard_table(context.model, &generic.get_base_type_id())))
     {
         return Ok(None);
     }
