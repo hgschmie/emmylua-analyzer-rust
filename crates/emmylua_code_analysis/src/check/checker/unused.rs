@@ -1,4 +1,4 @@
-//! unused: local variables never referenced after declaration.
+//! unused and unused-self: local variables and implicit self never referenced after declaration.
 
 use crate::DiagnosticCode;
 use crate::semantic_model::SemanticModel;
@@ -8,7 +8,7 @@ use super::{CheckContext, Checker};
 pub struct UnusedChecker;
 
 impl Checker for UnusedChecker {
-    const CODES: &[DiagnosticCode] = &[DiagnosticCode::Unused];
+    const CODES: &[DiagnosticCode] = &[DiagnosticCode::Unused, DiagnosticCode::UnusedSelf];
 
     fn check(context: &mut CheckContext<'_>, semantic_model: &SemanticModel<'_>) {
         let Some(decls) = semantic_model.decls() else {
@@ -22,7 +22,7 @@ impl Checker for UnusedChecker {
             if semantic_model.decl_references(&decl.id).is_empty() {
                 if decl.is_implicit_self {
                     context.add_diagnostic(
-                        DiagnosticCode::Unused,
+                        DiagnosticCode::UnusedSelf,
                         decl.name_range,
                         t!("Implicit self is never used, if this is intentional, please use '.' instead of ':' to define the method"),
                     );
