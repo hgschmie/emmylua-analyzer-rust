@@ -354,3 +354,143 @@ mod test {
         assert_eq!(ws.expr_ty("table.__sentinel()"), ws.ty("integer"));
     }
 }
+
+#[test]
+fn inherited_dictionary_class_assignability() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for (definition, actual, expected) in [
+        (
+            "---@alias Context table<string, any?>\n---@class Child: Context\n---@field pacer integer",
+            "Child",
+            "Context?",
+        ),
+        (
+            "---@class Parent: table<string, integer>\n---@class Child: Parent",
+            "Child",
+            "table<string, integer>",
+        ),
+        (
+            "---@class Parent<T>: table<string, T>\n---@class Child<T>: Parent<T>",
+            "Child<integer>",
+            "table<string, integer>",
+        ),
+        (
+            "---@alias Map<T> table<string, T>\n---@class Child<T>: Map<T>",
+            "Child<string>",
+            "table<string, string>",
+        ),
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(definition);
+        for code in [
+            DiagnosticCode::ParamTypeMismatch,
+            DiagnosticCode::AssignTypeMismatch,
+        ] {
+            assert!(
+                ws.has_no_diagnostic(
+                    code,
+                    &format!(
+                        r#"
+                ---@param value {expected}
+                local function accept(value) end
+                ---@param value {actual}
+                local function use(value)
+                    accept(value)
+                    ---@type {expected}
+                    local assigned = value
+                end
+            "#
+                    )
+                ),
+                "{definition}: {code:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn inherited_dictionary_class_rejects_wrong_contracts() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for (definition, actual, expected) in [
+        (
+            "---@class Child: table<string, integer>",
+            "Child",
+            "table<string, boolean>",
+        ),
+        (
+            "---@class Child: table<integer, integer>",
+            "Child",
+            "table<string, integer>",
+        ),
+        (
+            "---@class Child<T>: table<string, T>",
+            "Child<boolean>",
+            "table<string, integer>",
+        ),
+        (
+            "---@class Child\n---@field value integer",
+            "Child",
+            "table<string, integer>",
+        ),
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(definition);
+        assert!(
+            !ws.has_no_diagnostic(
+                DiagnosticCode::ParamTypeMismatch,
+                &format!(
+                    r#"
+            ---@param value {expected}
+            local function accept(value) end
+            ---@param value {actual}
+            local function use(value) accept(value) end
+        "#
+                )
+            ),
+            "{definition}"
+        );
+    }
+}
+
+#[test]
+fn inherited_dictionary_projection_handles_cycles() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def("---@class Child: Parent\n---@class Parent: Child");
+    let source = ws.ty("Child");
+    let model = ws.analysis.semantic_model(file);
+    assert!(crate::semantic_model::inherited_index::dictionaries(&model, &source).is_empty());
+}
+
+#[test]
+fn inherited_dictionary_overlapping_contracts_preserve_all_values() {
+    let mut ws = crate::VirtualWorkspace::new();
+    ws.def("---@class Mixed: table<string,integer>, table<string,boolean>\n---@class Separate: table<string,integer>, table<integer,boolean>");
+    let mixed = ws.ty("Mixed");
+    let separate = ws.ty("Separate");
+    let integer = ws.ty("table<string,integer>");
+    let both = ws.ty("table<string,integer|boolean>");
+    assert!(!ws.check_type(&integer, &mixed));
+    assert!(ws.check_type(&both, &mixed));
+    assert!(ws.check_type(&integer, &separate));
+}
+
+#[test]
+fn inherited_dictionary_assignment_checks_declared_values() {
+    let mut ws = crate::VirtualWorkspace::new();
+    ws.def("---@class Child: table<string,string>\n---@field pacer integer");
+    let source = ws.ty("Child");
+    let narrow = ws.ty("table<string,string>");
+    let broad = ws.ty("table<string,string|integer>");
+    assert!(!ws.check_type(&narrow, &source));
+    assert!(ws.check_type(&broad, &source));
+}
+
+#[test]
+fn inherited_dictionary_assignment_keeps_declared_index_signatures() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def("---@class Child: table<string,integer>\n---@field [integer] boolean");
+    let source = ws.ty("Child");
+    let target = ws.ty("table<integer,boolean>");
+    let model = ws.analysis.semantic_model(file);
+    assert!(super::is_compatible(&model, &source, &target));
+}
