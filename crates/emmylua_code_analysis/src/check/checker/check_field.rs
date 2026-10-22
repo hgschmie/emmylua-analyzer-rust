@@ -490,8 +490,8 @@ fn find_type_def(semantic_model: &SemanticModel<'_>, type_def_id: &SemanticId) -
     defs.iter().next().cloned()
 }
 
-/// Whether the field is optional (nullable / unknown).
-fn is_optional(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> bool {
+/// Whether the field permits omission after alias expansion (nilable, any or unknown).
+pub(super) fn is_optional(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> bool {
     let ty = expand_alias_branches(semantic_model, ty).unwrap_or_else(|| ty.clone());
     match &ty {
         LuaType::Any | LuaType::Unknown | LuaType::Nil => true,

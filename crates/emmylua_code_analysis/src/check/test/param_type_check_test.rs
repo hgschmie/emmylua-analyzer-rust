@@ -3562,3 +3562,65 @@ mod test {
         );
     }
 }
+
+#[test]
+fn constructor_nullable_field_contracts() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for field in [
+        "elements table<string, integer>?",
+        "elements? table<string, integer>",
+        "elements OptionalElements",
+        "elements Optional<table<string, integer>>",
+        "elements integer|nil",
+        "elements any",
+        "elements unknown",
+        "elements Identity<unknown>",
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        assert!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::ParamTypeMismatch,
+                &format!(
+                    r#"
+            ---@alias OptionalElements table<string, integer>?
+            ---@alias Optional<T> T|nil
+            ---@alias Identity<T> T
+            ---@class Options
+            ---@field kind string
+            ---@field {field}
+            local Options = {{}}
+            ---@param options Options
+            local function create(options) end
+            create {{kind = "test"}}
+        "#
+                )
+            ),
+            "{field}"
+        );
+    }
+}
+
+#[test]
+fn constructor_required_field_contract_still_checked() {
+    use crate::DiagnosticCode;
+    use crate::check::test::{check_source, count_by_code};
+    for field_type in ["Elements", "string", "UnresolvedElements"] {
+        let diagnostics = check_source(&format!(
+            r#"
+        ---@alias Elements table<string, integer>
+        ---@class Options
+        ---@field kind string
+        ---@field elements {field_type}
+        local Options = {{}}
+        ---@param options Options
+        local function create(options) end
+        create {{kind = "test"}}
+    "#
+        ));
+        assert_eq!(
+            count_by_code(&diagnostics, DiagnosticCode::ParamTypeMismatch),
+            1,
+            "missing required {field_type} field must be diagnosed: {diagnostics:?}",
+        );
+    }
+}
