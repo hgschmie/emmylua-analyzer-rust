@@ -24,6 +24,7 @@ impl Checker for CheckFieldChecker {
         for stat in tree
             .get_red_root()
             .descendants()
+            .take_while(|_| !semantic_model.is_cancelled())
             .filter_map(LuaAssignStat::cast)
         {
             check_index_assign(context, semantic_model, &stat);

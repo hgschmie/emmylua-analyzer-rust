@@ -8,6 +8,11 @@ use crate::check::checker::param_type_check::callable_candidates_uncached;
 use emmylua_parser::LuaIndexKey;
 
 impl<'db> SemanticModel<'db> {
+    /// Reports whether the owner has cancelled this model's diagnostic computation.
+    pub fn is_cancelled(&self) -> bool {
+        self.cache.is_cancelled()
+    }
+
     /// Currently configured runtime version (used for `---@version` visibility checks).
     pub fn lua_version(&self) -> Option<LuaVersionNumber> {
         self.db().lua_version()
