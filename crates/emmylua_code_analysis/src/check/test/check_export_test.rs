@@ -60,6 +60,21 @@ fn test_export_declared_class_fields() {
     );
 }
 
+#[test]
+fn imported_missing_fields_report_once_per_key() {
+    for read in ["m.absent", "m['absent']"] {
+        let diagnostics = check_export(
+            "---@class Exported\nlocal M = {}\nreturn M",
+            &format!("local m = require 'mod'\nreturn {read}"),
+        );
+        assert_eq!(
+            count_by_code(&diagnostics, DiagnosticCode::UndefinedField),
+            1,
+            "{read}: {diagnostics:#?}"
+        );
+    }
+}
+
 /// `return { a = 1 }`: imported tables may only read/write fields on the export surface.
 #[test]
 fn test_export_table_literal() {
@@ -150,4 +165,158 @@ fn test_local_table_not_limited() {
     );
     assert_eq!(count_by_code(&diags, DiagnosticCode::InjectField), 0);
     assert_eq!(count_by_code(&diags, DiagnosticCode::UndefinedField), 0);
+}
+
+#[test]
+fn imported_class_exports_validate_missing_fields() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def_file(
+        "framework.lua",
+        r#"
+        ---@class ExportSettings
+        local Settings = {}
+        function Settings:add_defaults(definitions) end
+
+        ---@class ExportRoot
+        ---@field settings ExportSettings
+        local Root = {}
+        function Root:init() end
+        return Root
+        "#,
+    );
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::UndefinedField,
+        r#"
+        local framework = require("framework")
+        framework:init()
+        framework.settings:add_defaults({})
+        local settings = require("framework").settings
+        "#,
+    ));
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::InjectField,
+        r#"
+        local framework = require("framework")
+        framework.settings = framework.settings
+        "#,
+    ));
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::UndefinedField,
+        r#"local missing = require("framework").missing"#,
+    ));
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::InjectField,
+        r#"require("framework").newField = 1"#,
+    ));
+    for code in [DiagnosticCode::InjectField, DiagnosticCode::UndefinedField] {
+        assert!(!ws.has_no_diagnostic(
+            code,
+            r#"
+            local framework = require("framework")
+            ---@type integer
+            framework.consumerField = 1
+            local value = framework.consumerField
+            "#,
+        ));
+    }
+}
+
+#[test]
+fn test_export_annotated_inherited_fields() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def_file(
+        "types.lua",
+        r#"
+        ---@class ExportBase
+        ---@field inherited integer
+        ---@class ExportChild: ExportBase
+        ---@field declared string
+        "#,
+    );
+    ws.def_file(
+        "annotated.lua",
+        r#"
+        ---@type ExportChild
+        local M = {}
+        return M
+        "#,
+    );
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::UndefinedField,
+        r#"
+        local m = require("annotated")
+        local a, b = m.inherited, m.declared
+        "#,
+    ));
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::InjectField,
+        r#"
+        local m = require("annotated")
+        m.inherited = 1
+        m.declared = "ok"
+        "#,
+    ));
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::UndefinedField,
+        r#"local missing = require("annotated").missing"#,
+    ));
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::InjectField,
+        r#"require("annotated").newField = 1"#,
+    ));
+}
+
+#[test]
+fn test_export_annotation_preserves_runtime_surface() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def_file(
+        "loose.lua",
+        r#"
+        ---@type any
+        local M = { existing = 1 }
+        return M
+        "#,
+    );
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::UndefinedField,
+        r#"local value = require("loose").existing"#,
+    ));
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::UndefinedField,
+        r#"return require("loose").dynamic"#
+    ));
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::InjectField,
+        r#"require("loose").newField = true"#
+    ));
+}
+
+#[test]
+fn open_annotations_allow_new_export_fields() {
+    for annotation in ["table", "unknown", "table<string, integer>"] {
+        let module = format!("---@type {annotation}\nlocal M = {{}}\nreturn M");
+        let result = check_export(&module, "local m = require 'mod'\nm.newField = 1");
+        assert_eq!(
+            count_by_code(&result, DiagnosticCode::InjectField),
+            0,
+            "{annotation}: {result:?}"
+        );
+    }
+}
+
+#[test]
+fn factory_exports_use_the_declared_class() {
+    let module = "---@class Exported\n---@field name string\nlocal Foo = {}\n---@return Exported\nlocal function make() return Foo end\nreturn make()";
+    let result = check_export(module, "local m = require 'mod'\nreturn m.name, m.absent");
+    assert_eq!(
+        count_by_code(&result, DiagnosticCode::UndefinedField),
+        1,
+        "{result:?}"
+    );
+    let written = check_export(module, "local m = require 'mod'\nm.extra = 1");
+    assert_eq!(
+        count_by_code(&written, DiagnosticCode::InjectField),
+        1,
+        "{written:?}"
+    );
 }
