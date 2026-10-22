@@ -1,3 +1,21 @@
+# UP-089 array navigation amendment — 2026-10-21
+
+Amendment `f8bde6ce` on `fix/table-field-hover-context` excludes implicit
+list-entry values from declaration-key hit testing. Array member identities
+remain available for inference and expected callback types. Go to Definition,
+references and hover now resolve the expression inside an array callback rather
+than the enclosing array field. This is reproduced on current upstream/main
+`bb7c7d4c`; UP-088 and UP-107 are not prerequisites.
+
+The merge preserves UP-014's directional member access metadata and all existing
+patches. Six added regressions cover semantic identity, definition, references,
+function/field hover, nested array values and explicit keys. All 2,582 standalone
+workspace tests, Clippy and rustfmt pass. Combined validation passes all 3,070
+workspace tests, Clippy and rustfmt. Packaged build193 evidence are recorded in workspace
+`upstream/memory/TRAIN_TRACKER_ARRAY_NAVIGATION_2026-10-21.md`.
+
+Only EmmyLua2 is rebuilt. Preserve FDE and LSP4IJ archives. No push or new PR.
+
 # UP-088 array callback context — 2026-10-21
 
 Amendment `b457f521` on `fix/contextual-callback-parameters` extends expected
