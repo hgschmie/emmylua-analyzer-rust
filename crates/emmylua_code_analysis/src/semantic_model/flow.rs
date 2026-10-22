@@ -18,6 +18,8 @@ mod guards;
 use std::collections::HashSet;
 use std::rc::Rc;
 
+mod captured;
+
 use emmylua_parser::{
     BinaryOperator, LuaAssignStat, LuaAstNode, LuaCallExprStat, LuaComment, LuaExpr,
     LuaLiteralToken, UnaryOperator,
@@ -1979,6 +1981,20 @@ fn trace_decl_uncached(
             FlowNodeKind::CallExprStat(call_stat_ptr) => {
                 if mode == TraceMode::MergeBranch && call_stat_returns_never(model, call_stat_ptr) {
                     return Some(LuaType::Never);
+                }
+            }
+            FlowNodeKind::ClosureEntry(closure) => {
+                if options.assignments
+                    && let Some(base) = captured::entry_type(model, decl, tree, *closure)
+                {
+                    return finish_decl_frames(
+                        model,
+                        decl,
+                        tree,
+                        finalize(model, base, path),
+                        frames,
+                        root_mode,
+                    );
                 }
             }
             FlowNodeKind::DeclPosition(pos) => {
