@@ -3,6 +3,89 @@ mod test {
     use crate::VirtualWorkspace;
 
     #[test]
+    fn required_factory_keeps_exported_closure_signature() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def_file(
+            "state.lua",
+            r#"
+---@class ModState
+local This = {}
+---@return string
+function This:storage() return "value" end
+return This
+"#,
+        );
+        ws.def_file(
+            "init.lua",
+            r#"
+local this = require('state')
+local framework = { marker = true }
+return function() return this, framework end
+"#,
+        );
+        ws.def("This, Framework = require('init')()");
+        assert_eq!(ws.expr_ty("This:storage()"), ws.ty("string"));
+        assert_eq!(ws.expr_ty("Framework.marker"), ws.ty("true"));
+    }
+
+    #[test]
+    fn annotated_global_table_keeps_overloaded_callback_types() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def_file(
+            "api.lua",
+            r#"
+---@meta _
+---@alias uint32 integer
+---@class BaseEvent
+---@field name string
+local BaseEvent = {}
+do
+---@class Tick
+---@field tick integer
+local Tick = {}
+end
+---@class OtherEvent
+---@field message string
+local OtherEvent = {}
+---@class EventKinds
+kinds = {
+    ---@class EventKinds.tick
+    tick = {},
+    ---@class EventKinds.other
+    other = {},
+}
+---@class Bootstrap
+script = {
+    ---@param index uint32|string
+    ---@return Tick?
+    get_tick = function(index) end,
+    ---@param event string
+    ---@param handler (fun(event:BaseEvent))|(nil)
+    ---@overload fun(event:integer, handler:fun(event:Tick))
+    ---@overload fun(event:(EventKinds.tick)|("on_tick"), handler:fun(event:Tick))
+    ---@overload fun(event:EventKinds.other, handler:fun(event:OtherEvent))
+    on_event = function(event, handler) end,
+}
+"#,
+        );
+        ws.def(r#"script.on_event(1, function(event) captured = event end)"#);
+        assert_eq!(ws.expr_ty("captured"), ws.ty("Tick"));
+        assert_eq!(ws.expr_ty("kinds.tick"), ws.ty("EventKinds.tick"));
+        ws.def(r#"script.on_event(kinds.tick, function(event) named = event if event.tick % 600 == 0 then end end)"#);
+        assert_eq!(ws.expr_ty("named"), ws.ty("Tick"));
+        ws.def(r#"script.on_event("on_tick", function(event) literal = event end)"#);
+        assert_eq!(ws.expr_ty("literal"), ws.ty("Tick"));
+        ws.def(r#"script.on_event(kinds.other, function(event) other = event end)"#);
+        assert_eq!(ws.expr_ty("other"), ws.ty("OtherEvent"));
+        assert_eq!(ws.expr_ty("script.get_tick(1)"), ws.ty("Tick?"));
+        assert_eq!(ws.expr_ty("script.get_tick('one')"), ws.ty("Tick?"));
+        assert_eq!(
+            ws.expr_ty("script.get_tick(false)"),
+            crate::LuaType::Unknown
+        );
+    }
+
+    #[test]
     fn test_closure_param_infer() {
         let mut ws = VirtualWorkspace::new();
 

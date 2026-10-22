@@ -295,3 +295,352 @@ mod test {
         ));
     }
 }
+
+#[test]
+fn test_computed_guards() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for body in [
+        "if rows[key] then mutate() local value = rows[key][other] end",
+        "if rows[key] then local changed = mutate() local value = rows[key][other] end",
+        "if rows[key] and mutate() then local value = rows[key][other] end",
+        "if rows[key] and rows[key][other] then local value = rows[key][other] end",
+        "if rows[key] ~= nil then local value = rows[key][other] end",
+        "if nil ~= rows[key] then local value = rows[key][other] end",
+        "if not rows[key] then return end local value = rows[key][other]",
+        "if rows[key] == nil then return end local value = rows[key][other]",
+        "if rows[key] then local unrelated = 1 local value = rows[key][other] end",
+        "if rows[key] then local deferred = function() mutate() end local value = rows[key][other] end",
+    ] {
+        for library in [false, true] {
+            let mut ws = if library {
+                VirtualWorkspace::new_with_init_std_lib()
+            } else {
+                VirtualWorkspace::new()
+            };
+            assert!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::NeedCheckNil,
+                    &format!(
+                        r#"
+---@param rows integer[][]
+---@param key integer
+---@param other integer
+local function read(rows, key, other)
+    {body}
+end
+"#
+                    )
+                ),
+                "{body} (stdlib: {library})"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_computed_guards_do_not_cross_mutations() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for body in [
+        "if rows[key] then key = nextkey local value = rows[key][other] end",
+        "if rows[key] then rows = replacement local value = rows[key][other] end",
+        "if rows[key] then rows[key] = nil local value = rows[key][other] end",
+        "if rows[key] then alias[key] = nil local value = rows[key][other] end",
+        "if rows[key] then local key = nextkey local value = rows[key][other] end",
+        "if rows[key] then local deferred = function() local value = rows[key][other] end end",
+        "if rows[key] then end local value = rows[key][other]",
+        "if rows[key] or rows[key][other] then end",
+        "if rows[key] == nil then local value = rows[key][other] end",
+        "if rows[nextkey] then local value = rows[key][other] end",
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        assert!(
+            !ws.has_no_diagnostic(
+                DiagnosticCode::NeedCheckNil,
+                &format!(
+                    r#"
+---@param rows integer[][]
+---@param replacement integer[][]
+---@param key integer
+---@param nextkey integer
+---@param other integer
+local function read(rows, replacement, key, nextkey, other)
+    local alias = rows
+    {body}
+end
+"#
+                )
+            ),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn test_nested_computed_guards() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::NeedCheckNil,
+        r#"
+---@class Dispatcher
+---@field Provided integer[][]
+---@param dispatcher Dispatcher
+---@param key integer
+---@param other integer
+local function read(dispatcher, key, other)
+    if dispatcher.Provided[key] and dispatcher.Provided[key][other] then
+        local count = dispatcher.Provided[key][other]
+    end
+end
+"#
+    ));
+    let mut ws = VirtualWorkspace::new();
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::NeedCheckNil,
+        r#"
+---@param rows integer[][]
+---@param key integer
+local function read(rows, key)
+    if rows[key] then local first = rows[key][1] end
+end
+"#
+    ));
+}
+
+#[test]
+fn test_nonempty_array_length_index() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for (guard, index, mutation, expected_warning) in [
+        ("if not a[1] then return end", "a[#a]", "", false),
+        ("if #a > 0 then", "a[#a]", "", false),
+        ("if #a >= 1 then", "a[#a]", "", false),
+        ("if #a == 1 then", "a[#a]", "", false),
+        ("if #a <= 0 then return end", "a[#a]", "", false),
+        ("", "a[#a]", "", true),
+        ("if #a <= 1 then", "a[#a]", "", true),
+        ("if 1 >= #a then", "a[#a]", "", true),
+        ("if 1 > #a then", "a[#a]", "", true),
+        ("if #a == 0 then", "a[#a]", "", true),
+        ("if a[1] then return end", "a[#a]", "", true),
+        ("if not a[1] then return end", "b[#b]", "", true),
+        ("if not a[1] then return end", "a[#b]", "", true),
+        ("if not a[1] then return end", "a[#a]", "a[1] = nil", true),
+        ("if not a[1] then return end", "a[#a]", "a = {}", true),
+        (
+            "if not a[1] then return end",
+            "a[#a]",
+            "local alias = a; alias[1] = nil",
+            true,
+        ),
+        ("if not a[1] then return end", "a[#a]", "mutate(a)", true),
+        (
+            "if not a[1] then return end",
+            "a[#a]",
+            "local ignored = mutate(a)",
+            true,
+        ),
+    ] {
+        let closing = if guard.ends_with("then") { "end" } else { "" };
+        let source = format!(
+            r#"
+            ---@param a string[]
+            ---@param b string[]
+            function example(a, b)
+                {guard}
+                {mutation}
+                ---@type string
+                local s = {index}
+                {closing}
+            end
+        "#
+        );
+        let mut ws = VirtualWorkspace::new();
+        assert_eq!(
+            ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
+            !expected_warning,
+            "{source}"
+        );
+    }
+}
+
+fn check_global_collection_guard(body: &str, safe: bool) {
+    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    ws.def(
+        r#"
+---@class Entry
+---@field label string
+---@class Collection<K,V>: table<K,V>
+---@alias Entries Collection<string, Entry?>
+---@class Registry
+---@field entries Entries
+---@field array Entry[]
+---@type Registry
+registry = {}
+---@type string
+selected = ''
+"#,
+    );
+    let source = format!(
+        r#"
+---@param key string
+---@param other string
+---@param flag boolean
+---@param replacement Registry
+---@param record {{id: string}}
+local function label(key, other, flag, replacement, record)
+    {body}
+end
+"#
+    );
+    assert_eq!(
+        ws.has_no_diagnostic(crate::DiagnosticCode::NeedCheckNil, &source),
+        safe,
+        "{body}"
+    );
+}
+
+#[test]
+fn guarded_global_inherited_index_reads() {
+    for body in [
+        "if registry.entries[key] then refresh(); return registry.entries[key].label end",
+        "if registry.entries[key] then local result = refresh(); return registry.entries[key].label end",
+        "return registry.entries[key] and registry.entries[key].label or ''",
+        "if registry.entries[key] then return registry.entries[key].label end",
+        "if not registry.entries[key] then return end; return registry.entries[key].label",
+        "local same = registry; return same.entries[key] and same.entries[key].label or ''",
+        "return registry.entries[selected] and registry.entries[selected].label or ''",
+        "return registry.entries[record.id] and registry.entries[record.id].label or ''",
+        "return registry.entries['fixed'] and registry.entries['fixed'].label or ''",
+        "if registry.array[1] then return registry.array[1].label end",
+        "for i = 1, 10 do if registry.entries[key] then return registry.entries[key].label end end",
+    ] {
+        check_global_collection_guard(body, true);
+    }
+}
+
+#[test]
+fn guarded_global_index_facts_expire_on_mutations() {
+    for body in [
+        "return registry.entries[key].label",
+        "if registry.entries[record.id] then record.id = other; return registry.entries[record.id].label end",
+        "if registry.entries[key] then local _ENV = replacement; return registry.entries[key].label end",
+        "return registry.entries[key] and registry.entries[other].label or ''",
+        "if registry.entries[key] then key = other; return registry.entries[key].label end",
+        "if registry.entries[selected] then selected = other; return registry.entries[selected].label end",
+        "if registry.entries[key] then registry = replacement; return registry.entries[key].label end",
+        "if registry.entries[key] then registry.entries[key] = nil; return registry.entries[key].label end",
+        "if registry.entries[key] then local alias = registry.entries; alias[key] = nil; return registry.entries[key].label end",
+        "if registry.entries[key] then local key = other; return registry.entries[key].label end",
+        "if registry.entries[key] then local registry = replacement; return registry.entries[key].label end",
+        "if registry.entries[key] then return function() return registry.entries[key].label end end",
+    ] {
+        check_global_collection_guard(body, false);
+    }
+}
+
+#[test]
+fn guarded_inherited_indexes_do_not_assume_pure_metamethods() {
+    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    assert!(!ws.has_no_diagnostic(
+        crate::DiagnosticCode::NeedCheckNil,
+        r#"
+---@class Entry
+---@field label string
+---@class Changing: table<string, Entry?>
+---@field __index fun(self: Changing, key: string): Entry?
+---@param changing Changing
+---@param key string
+local function label(changing, key)
+    return changing[key] and changing[key].label or ''
+end
+"#
+    ));
+}
+
+#[test]
+fn guarded_optional_reference_field_after_many_loop_merges() {
+    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    let mut source = String::from(
+        r#"
+---@class SignalValue
+---@field name string
+---@class Signal
+---@field value? SignalValue
+---@param values boolean[]
+---@param signal Signal?
+local function f(values, signal)
+"#,
+    );
+    for _ in 0..12 {
+        source.push_str("for _, value in pairs(values) do print(value) end\n");
+    }
+    source.push_str("local color = (signal and signal.value and signal.value.name == 'blue') and 'blue' or 'yellow'\nend");
+    assert!(ws.has_no_diagnostic(crate::DiagnosticCode::NeedCheckNil, &source));
+    let unguarded = source.replace("signal.value and ", "");
+    assert!(!ws.has_no_diagnostic(crate::DiagnosticCode::NeedCheckNil, &unguarded));
+}
+
+#[cfg(test)]
+mod equality_nullability_tests {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+
+    fn check(required: bool, guard: &str, safe: bool) {
+        let mut ws = VirtualWorkspace::new();
+        let existing = if required { "Distance" } else { "Distance?" };
+        let source = format!(
+            r#"
+---@class Distance
+---@field value number?
+---@param existing {existing}
+---@param maybe Distance?
+---@param enabled boolean
+local function probe(existing, maybe, enabled)
+    {guard}
+end
+"#
+        );
+        assert_eq!(
+            ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+            safe,
+            "{guard}"
+        );
+    }
+
+    #[test]
+    fn equality_nullability_required_parameter_survives_equivalent_guards() {
+        for guard in [
+            "if maybe ~= existing then return end; existing.value = 1",
+            "if existing ~= maybe then return end; return existing.value",
+            "if maybe ~= existing then else return existing.value end",
+            "if not (maybe == existing) then return end; return existing.value",
+            "if maybe == existing then return existing.value end",
+            "if not enabled or maybe ~= existing then return end; return existing.value",
+        ] {
+            check(true, guard, true);
+        }
+    }
+
+    #[test]
+    fn equality_nullability_optional_parameters_can_both_be_nil() {
+        for guard in [
+            "if maybe ~= existing then return end; return existing.value",
+            "if existing == maybe then return existing.value end",
+        ] {
+            check(false, guard, false);
+        }
+    }
+
+    #[test]
+    fn equality_nullability_inequality_does_not_prove_presence() {
+        check(
+            false,
+            "if maybe ~= existing then return existing.value end",
+            false,
+        );
+        check(
+            false,
+            "if maybe == existing then return end; return existing.value",
+            false,
+        );
+    }
+}

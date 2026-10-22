@@ -728,6 +728,74 @@ mod tests {
     }
 
     #[test]
+    fn test_class_member_identity_self_reference() {
+        for annotation in [
+            "---@class Metrics",
+            "---@class Metrics: { [string]: integer }",
+        ] {
+            let diagnostics = check_source(&format!(
+                r#"
+{annotation}
+local M = {{}}
+M.COUNTERS = {{"requests", "misses"}}
+M.__index = M
+M.self = (M)
+function M:get() return self end
+return M
+"#
+            ));
+            assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        }
+    }
+
+    #[test]
+    fn test_class_member_identity_rejects_incompatible_reassignment() {
+        for value in ["1", "Other"] {
+            let source = format!(
+                r#"
+---@class Other
+local Other = {{}}
+---@class Example
+local M = {{}}
+M.__index = M
+M.__index = {value}
+return M, Other
+"#
+            );
+            let diagnostics = check_source(&source);
+            let mismatches = diagnostics
+                .iter()
+                .filter(|d| d.code == DiagnosticCode::AssignTypeMismatch)
+                .collect::<Vec<_>>();
+            assert_eq!(mismatches.len(), 1, "{diagnostics:?}");
+            assert_eq!(
+                mismatches[0].range.start(),
+                rowan::TextSize::from(
+                    (source.rfind("M.__index = ").unwrap() + "M.__index = ".len()) as u32
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn test_class_member_identity_respects_declared_field_type() {
+        let diagnostics = check_source(
+            r#"
+---@class Example
+---@field self string
+local M = {}
+M.self = M
+return M
+"#,
+        );
+        assert_eq!(
+            diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+            vec![DiagnosticCode::AssignTypeMismatch],
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
     fn test_vararg_packing_keeps_tuple_assignment_checks() {
         let source = r#"
             ---@param ... [string, integer]
@@ -2818,6 +2886,138 @@ return t
                 source.find("M.value = M").unwrap() + "M.value = ".len(),
             ],
             "{diagnostics:#?}"
+        );
+    }
+    #[test]
+    fn inferred_literal_assignment_contracts_allow_new_values() {
+        for cast in ["", "---@cast flag boolean"] {
+            let source = format!(
+                r#"
+                ---@param count integer
+                ---@param flag boolean
+                local function update(count, flag)
+                    local stacks = 0
+                    local label = 'empty'
+                    local active = false
+                    {cast}
+                    if flag then
+                        stacks = count / 10
+                        label = 'full'
+                        active = true
+                    end
+                    return stacks, label, active
+                end
+            "#
+            );
+            assert!(
+                VirtualWorkspace::new()
+                    .has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn inferred_literal_assignment_contracts_keep_explicit_restrictions() {
+        use emmylua_parser::{LuaAstNode, LuaNameExpr};
+        for (declaration, expected) in [
+            ("---@type 0\nlocal value = 0", "0"),
+            ("local value = 0 --[[@as 0]]", "0"),
+            ("local value = 0\n---@cast value 0", "0"),
+            ("---@alias Zero 0\n---@type Zero\nlocal value = 0", "Zero"),
+        ] {
+            let source = format!("{declaration}\nvalue = 2");
+            let mut ws = VirtualWorkspace::new();
+            let file = ws.def(&source);
+            let model = ws.analysis.semantic_model(file);
+            let name = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaNameExpr>()
+                .find(|name| {
+                    name.get_position() == (source.rfind("value = 2").unwrap() as u32).into()
+                })
+                .unwrap();
+            let decl = model.resolve_name(name.get_position()).unwrap();
+            let target = model.type_of_decl_assign_target_at(&decl, name.get_position());
+            assert_eq!(ws.humanize_type(target), expected, "{source}");
+        }
+        assert!(!VirtualWorkspace::new().has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            "local value = 0\nvalue = 'wrong'"
+        ));
+    }
+
+    #[test]
+    fn inferred_literal_assignment_contracts_keep_read_precision() {
+        assert!(VirtualWorkspace::new().has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+                ---@param value 0
+                local function zero(value) end
+                local value = 0
+                zero(value)
+            "#
+        ));
+    }
+}
+
+#[test]
+fn test_length_result_initializes_unannotated_runtime_member() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for source in [
+        "local result = {}; local values = {}; result.count = #values",
+        "local result = {}; local values = {}; result.count = ((#values))",
+        r#"
+        ---@class Delivery
+        ---@field connections string[]
+        ---@param delivery Delivery
+        local function update(delivery)
+            local connections = {}
+            delivery.connections = connections
+            delivery.count = #connections
+        end
+        "#,
+        r#"
+        ---@class Collection
+        ---@operator len: string
+        local Collection = {}
+        ---@type Collection
+        local values
+        local result = {}
+        result.count = #values
+        "#,
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        assert!(
+            ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, source),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn test_length_runtime_member_preserves_declared_contract() {
+    use crate::DiagnosticCode;
+    use crate::check::test::{check_source, count_by_code};
+    for source in [
+        "local result = {}; local values = {};\n---@type string\nresult.count = #values",
+        r#"
+        ---@class Delivery
+        ---@field count string
+        ---@param delivery Delivery
+        local function update(delivery)
+            local values = {}
+            delivery.count = #values
+        end
+        "#,
+        "local result = {}; local values = {}; result.count = #values; result.count = 'bad'",
+    ] {
+        let diagnostics = check_source(source);
+        assert_eq!(
+            count_by_code(&diagnostics, DiagnosticCode::AssignTypeMismatch),
+            1,
+            "{source}: {diagnostics:#?}"
         );
     }
 }

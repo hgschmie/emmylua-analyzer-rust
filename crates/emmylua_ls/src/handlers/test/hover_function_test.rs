@@ -3,6 +3,65 @@ mod tests {
     use crate::handlers::test_lib::{ProviderVirtualWorkspace, VirtualHoverResult, check};
     use googletest::prelude::*;
 
+    #[gtest]
+    fn open_global_table_hover_shows_workspace_fields() {
+        use crate::handlers::hover::hover;
+        use lsp_types::{HoverContents, Position};
+        let mut ws = ProviderVirtualWorkspace::new_with_init_std_lib();
+        ws.def_file("api.lua", "---@meta _\n---@type table\nstorage = {}");
+        ws.def_file("state.lua", "storage.sensor_data = { sensors = {} }");
+        let file = ws.def_file("consumer.lua", "local saved = storage");
+        let result = hover(&ws.analysis, file, Position::new(0, 17)).unwrap();
+        let HoverContents::Markup(markup) = result.contents else {
+            panic!("expected markdown hover")
+        };
+        assert_that!(&markup.value, contains_substring("sensor_data"));
+    }
+
+    #[gtest]
+    fn imported_factory_global_member_navigation() {
+        use crate::handlers::definition::definition;
+        use lsp_types::Position;
+        let mut ws = ProviderVirtualWorkspace::new_with_init_std_lib();
+        ws.def_file("state.lua", "---@class ModState\nlocal This = {}\n---@return string\nfunction This:storage() return 'value' end\nreturn This");
+        ws.def_file(
+            "init.lua",
+            "local this = require('state')\nreturn function() return this, {} end",
+        );
+        ws.def_file("control.lua", "This, Framework = require('init')()");
+        let file = ws.def_file("consumer.lua", "local saved = This:storage()");
+        let result = definition(&ws.analysis, file, Position::new(0, 21));
+        assert_that!(format!("{result:?}"), contains_substring("state.lua"));
+    }
+
+    #[gtest]
+    fn annotated_inline_api_method_hover_keeps_return_type() {
+        use crate::handlers::hover::hover;
+        use lsp_types::{HoverContents, Position};
+        let mut ws = ProviderVirtualWorkspace::new_with_init_std_lib();
+        ws.def_file(
+            "api.lua",
+            r#"
+---@meta _
+---@class Surface
+---@field name string
+local Surface = {}
+---@class Game
+game = {
+    ---@param index integer|string
+    ---@return Surface?
+    get_surface = function(index) end,
+}
+"#,
+        );
+        let file = ws.def_file("consumer.lua", "local surface = game.get_surface(1)");
+        let result = hover(&ws.analysis, file, Position::new(0, 24)).unwrap();
+        let HoverContents::Markup(markup) = result.contents else {
+            panic!("expected markdown hover")
+        };
+        assert_that!(&markup.value, contains_substring("Surface"));
+    }
+
     // M3 batch 2 retirement: function signature rendering stack (old HoverBuilder/overload matching/generic substitution); see migration notes §M3.
     #[gtest]
     fn test_1() -> Result<()> {
@@ -381,7 +440,7 @@ mod tests {
                 }
             "#,
             VirtualHoverResult {
-                value: "```lua\n(field) T.func(self: string)\n```\n\n---\n\n注释注释".to_string(),
+                value: "```lua\n(method) T:func()\n```\n\n---\n\n注释注释".to_string(),
             },
         ));
         Ok(())
@@ -1083,5 +1142,82 @@ mod tests {
             )
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod collection_generics {
+    use crate::handlers::{hover::hover, test_lib::ProviderVirtualWorkspace};
+    use lsp_types::HoverContents;
+
+    fn hover_text(source: &str) -> String {
+        let mut ws = ProviderVirtualWorkspace::new_with_init_std_lib();
+        let (text, position) = ProviderVirtualWorkspace::handle_file_content(source).unwrap();
+        let file = ws.def(&text);
+        let result = hover(&ws.analysis, file, position).expect("hover");
+        let HoverContents::Markup(contents) = result.contents else {
+            panic!("markup hover")
+        };
+        contents.value
+    }
+
+    #[test]
+    fn collection_call_hover_specializes_iterators() {
+        for (iterator, collection, expected_key) in [
+            ("pairs", "Foo[]", "integer"),
+            ("pairs", "table<string, Foo>", "string"),
+            ("ipairs", "Foo[]", "integer"),
+            ("ipairs", "table<integer, Foo>", "integer"),
+        ] {
+            let text = hover_text(&format!(
+                r#"
+                ---@class Foo
+                ---@field name string
+                ---@type {collection}
+                local items = {{}}
+                for key, value in <??>{iterator}(items) do end
+            "#
+            ));
+            let primary = text.split("```").nth(1).unwrap();
+            assert!(primary.contains(&format!("({expected_key},Foo)")), "{text}");
+            assert!(!primary.contains("unknown"), "{text}");
+            assert!(
+                text.contains("Returns three values") || text.contains("returns three values"),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn collection_call_hover_prefers_generic_union_over_table_fallback() {
+        let text = hover_text(
+            r#"
+            ---@generic T
+            ---@param items T[]|table
+            ---@return T
+            local function first(items) end
+            ---@type string[]
+            local values = {}
+            local result = <??>first(values)
+        "#,
+        );
+        assert!(text.contains("string[]"), "{text}");
+        assert!(text.contains("-> string"), "{text}");
+        assert!(!text.contains("unknown"), "{text}");
+    }
+
+    #[test]
+    fn collection_call_hover_respects_shadowed_iterators() {
+        let text = hover_text(
+            r#"
+            ---@param items number
+            ---@return boolean
+            local function pairs(items) end
+            local result = <??>pairs(10)
+        "#,
+        );
+        assert!(text.contains("items: number"), "{text}");
+        assert!(text.contains("-> boolean"), "{text}");
+        assert!(!text.contains("integer,"), "{text}");
     }
 }
