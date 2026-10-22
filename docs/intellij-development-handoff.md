@@ -1,3 +1,24 @@
+# UP-111 explicit module export annotations — 2026-10-21
+
+Independent fix `76c321fd` on `fix/annotated-module-export-types` preserves a
+module's explicit @type without adding its local variable name to the return
+union. Unannotated export owner lookup and declared class/enum identity remain
+unchanged. The work-only UP-021 class identity rule is preserved.
+
+The train-tracker lib/this.lua:57 require result incorrectly included a synthetic
+Settings type alongside ff2.ModSettings. Both build196 and unpatched current
+upstream/main bb7c7d4c reproduce it. The assignment is valid Lua/type usage;
+UP-110's field-validation change is separate and is not a prerequisite.
+
+All 1,602 standalone analysis tests and 3,109 combined workspace tests pass.
+Clippy/rustfmt pass. Four positive
+regression groups fail before the fix; wrong consumer contracts and invalid
+annotated initializers still produce diagnostics. Combined/package build197
+results are recorded in workspace
+`upstream/memory/TRAIN_TRACKER_MODULE_SETTINGS_2026-10-21.md`.
+Only EmmyLua2 is rebuilt; FDE's development pin follows the verified package.
+No mod edits, push, upstream PR or IDE installation.
+
 # UP-110 declared module export fields — 2026-10-21
 
 Independent fix `f89a2037` on `fix/typed-module-export-fields` adds the exported
