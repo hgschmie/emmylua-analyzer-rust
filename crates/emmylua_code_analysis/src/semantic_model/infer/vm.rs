@@ -3737,6 +3737,15 @@ fn super_generic_type(
     arg_ty: &LuaType,
     target_base: &LuaTypeDeclId,
 ) -> Option<LuaType> {
+    super_generic_type_on_path(model, arg_ty, target_base, &mut HashSet::new())
+}
+
+fn super_generic_type_on_path(
+    model: &SemanticModel,
+    arg_ty: &LuaType,
+    target_base: &LuaTypeDeclId,
+    path: &mut HashSet<LuaTypeDeclId>,
+) -> Option<LuaType> {
     use LuaType::*;
     let (arg_id, arg_params): (&LuaTypeDeclId, Option<&[LuaType]>) = match arg_ty {
         Generic(arg_generic) => (
@@ -3747,33 +3756,43 @@ fn super_generic_type(
         _ => return None,
     };
 
-    let mut pending = model
-        .base_types(arg_id)
-        .into_iter()
-        .map(|ty| match arg_params {
-            Some(params) => model.substitute_generic_params(&ty, params),
-            None => ty,
-        })
-        .rev()
-        .collect::<Vec<_>>();
-    while let Some(super_ty) = pending.pop() {
-        let super_id = match &super_ty {
-            Ref(id) | Def(id) => id.clone(),
-            Generic(generic) => generic.get_base_type_id(),
-            Intersection(intersection) => {
-                pending.extend(intersection.get_types().iter().rev().cloned());
-                continue;
-            }
-            _ => continue,
-        };
-        if &super_id == target_base {
-            return Some(super_ty);
-        }
-        if let Some(recursive) = super_generic_type(model, &super_ty, target_base) {
-            return Some(recursive);
-        }
+    // Repeated class identities form an inheritance cycle even when generic
+    // arguments grow on each visit. Keep sibling paths independent.
+    if !path.insert(arg_id.clone()) {
+        return None;
     }
-    None
+    let result = (|| {
+        let mut pending = model
+            .base_types(arg_id)
+            .into_iter()
+            .map(|ty| match arg_params {
+                Some(params) => model.substitute_generic_params(&ty, params),
+                None => ty,
+            })
+            .rev()
+            .collect::<Vec<_>>();
+        while let Some(super_ty) = pending.pop() {
+            let super_id = match &super_ty {
+                Ref(id) | Def(id) => id.clone(),
+                Generic(generic) => generic.get_base_type_id(),
+                Intersection(intersection) => {
+                    pending.extend(intersection.get_types().iter().rev().cloned());
+                    continue;
+                }
+                _ => continue,
+            };
+            if &super_id == target_base {
+                return Some(super_ty);
+            }
+            if let Some(recursive) = super_generic_type_on_path(model, &super_ty, target_base, path)
+            {
+                return Some(recursive);
+            }
+        }
+        None
+    })();
+    path.remove(arg_id);
+    result
 }
 
 fn type_contains_any_tpl_id(ty: &LuaType, ids: &HashSet<GenericTplId>) -> bool {
@@ -5217,4 +5236,46 @@ fn merge(a: LuaType, b: LuaType) -> LuaType {
         _ => types.push(b),
     }
     LuaType::Union(Rc::new(LuaUnionType::from_vec(types)))
+}
+
+#[cfg(test)]
+mod generic_superclass_cycle_tests {
+    use super::*;
+
+    #[test]
+    fn generic_superclass_lookup_stops_cyclic_inheritance() {
+        for definition in [
+            "---@class Child: Parent\n\n---@class Parent: Child",
+            "---@class Child<T>: Parent<Child<T>>\n\n---@class Parent<T>: Child<T>",
+        ] {
+            let mut ws = crate::VirtualWorkspace::new();
+            let file = ws.def(definition);
+            let model = ws.analysis.semantic_model(file);
+            assert!(
+                super_generic_type(
+                    &model,
+                    &LuaType::Ref(LuaTypeDeclId::global("Child")),
+                    &LuaTypeDeclId::global("table")
+                )
+                .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn generic_superclass_lookup_preserves_valid_base_after_cycle() {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def("---@class Child: Loop, Parent<integer>\n\n---@class Loop: Child\n\n---@class Parent<T>");
+        let model = ws.analysis.semantic_model(file);
+        let result = super_generic_type(
+            &model,
+            &LuaType::Ref(LuaTypeDeclId::global("Child")),
+            &LuaTypeDeclId::global("Parent"),
+        )
+        .unwrap();
+        let LuaType::Generic(generic) = result else {
+            panic!("expected generic parent")
+        };
+        assert_eq!(generic.get_params(), &vec![LuaType::Integer]);
+    }
 }
