@@ -6,7 +6,8 @@ use emmylua_code_analysis::{
 };
 use emmylua_parser::{
     LuaAssignStat, LuaAstNode, LuaCallExpr, LuaDocAttributeUse, LuaDocDescriptionOwner, LuaDocType,
-    LuaExpr, LuaIndexExpr, LuaLocalStat, LuaSyntaxToken, LuaTableExpr, LuaTableField,
+    LuaExpr, LuaIndexExpr, LuaIndexKey, LuaLocalStat, LuaSyntaxToken, LuaTableExpr, LuaTableField,
+    NumberResult,
 };
 use hashbrown::HashMap;
 use lsp_types::{Hover, HoverContents, MarkupContent};
@@ -53,7 +54,12 @@ pub fn build_semantic_info_hover(
     token: LuaSyntaxToken,
     range: TextRange,
 ) -> Option<Hover> {
-    let info = model.semantic_info(token.clone().into())?;
+    let mut info = model.semantic_info(token.clone().into())?;
+    if let Some(table) = token.parent().and_then(LuaTableExpr::cast)
+        && let Some(context) = table_context_type_for_expr(model, &table)
+    {
+        info.typ = context;
+    }
     let member_call_typ = if matches!(info.decl, Some(SemanticId::Member(_))) {
         let in_call = token
             .parent_ancestors()
@@ -322,15 +328,38 @@ fn member_context_infos(
         let Some(member) = facts.member_by_id(decl) else {
             return Vec::new();
         };
+        // An explicit field annotation overrides the enclosing constructor contract.
+        if member.doc_type_syntax.is_some() {
+            return Vec::new();
+        }
         if let Some(context_ty) = table_context_type_for_token(model, token) {
-            let mut infos = model
-                .member_infos_with_key_all(&context_ty, &member.key)
+            let Some(field) = token.parent_ancestors().find_map(LuaTableField::cast) else {
+                return Vec::new();
+            };
+            let mut infos = constructor_field_infos(model, &context_ty, &field)
                 .into_iter()
                 .map(|info| MemberContextInfo {
                     info,
                     show_unknown: false,
                 })
                 .collect::<Vec<_>>();
+            // An unmatched key has no contract. Keep its initializer's type
+            // instead of borrowing a same-named field from an array element.
+            if infos.is_empty()
+                && let Some(value) = field.get_value_expr()
+            {
+                infos.push(MemberContextInfo {
+                    info: MemberInfo {
+                        key: member.key.clone(),
+                        typ: model.type_of_expr(value.get_syntax_id()),
+                        index_key_type: None,
+                        id: None,
+                        file_id: None,
+                        is_method: false,
+                    },
+                    show_unknown: false,
+                });
+            }
             if context_ty.contain_tpl() {
                 // When the generic context cannot be inferred from the call site, bind generics in the
                 // type-surface member using the field value's own `---@param` signatures
@@ -450,6 +479,125 @@ fn substitute_class_generics_to_unknown(
     model.substitute_generic_params_named_str(&ty, &params, &name_refs)
 }
 
+/// Project the contract of a constructor entry without adding lookup nullability.
+fn constructor_field_infos(
+    model: &SemanticModel<'_>,
+    owner: &LuaType,
+    field: &LuaTableField,
+) -> Vec<MemberInfo> {
+    let Some(key) = field.get_field_key() else {
+        return Vec::new();
+    };
+    let key_type = match &key {
+        LuaIndexKey::Name(name) => LuaMemberKey::Name(name.get_name_text().into())
+            .to_index_type()
+            .unwrap(),
+        LuaIndexKey::String(value) => LuaMemberKey::Name(value.get_value().into())
+            .to_index_type()
+            .unwrap(),
+        LuaIndexKey::Integer(value) => match value.get_number_value() {
+            NumberResult::Int(value) => LuaType::IntegerConst(value),
+            NumberResult::Uint(value) => LuaType::IntegerConst(value as i64),
+            NumberResult::Float(value) => LuaType::FloatConst(value),
+            _ => return Vec::new(),
+        },
+        LuaIndexKey::Idx(value) => LuaType::IntegerConst(*value as i64),
+        LuaIndexKey::Expr(expr) => model.type_of_expr(expr.get_syntax_id()),
+    };
+    let member_key = match &key_type {
+        LuaType::StringConst(value) | LuaType::DocStringConst(value) => {
+            Some(LuaMemberKey::Name(value.as_str().into()))
+        }
+        LuaType::IntegerConst(value) | LuaType::DocIntegerConst(value) => {
+            Some(LuaMemberKey::Integer(*value))
+        }
+        _ => None,
+    };
+    constructor_context_infos(model, owner, &key_type, &member_key, &mut Vec::new())
+}
+
+fn constructor_context_infos(
+    model: &SemanticModel<'_>,
+    owner: &LuaType,
+    key: &LuaType,
+    member_key: &Option<LuaMemberKey>,
+    path: &mut Vec<LuaType>,
+) -> Vec<MemberInfo> {
+    if path.len() >= 64 || path.contains(owner) {
+        return Vec::new();
+    }
+    path.push(owner.clone());
+    let value_info = |expected_key: &LuaType, value: &LuaType| {
+        if key.is_nil() || !model.type_check(&strip_nullable(key), expected_key) {
+            return Vec::new();
+        }
+        vec![MemberInfo {
+            key: member_key
+                .clone()
+                .unwrap_or_else(|| LuaMemberKey::Name("[index]".into())),
+            typ: value.clone(),
+            index_key_type: Some(key.clone()),
+            id: None,
+            file_id: None,
+            is_method: false,
+        }]
+    };
+    let named_infos = || {
+        member_key
+            .as_ref()
+            .map(|key| model.member_infos_with_key_all(owner, key))
+            .unwrap_or_default()
+    };
+    let expanded = model.expand_alias_for_hover(owner);
+    let result = if expanded != *owner {
+        constructor_context_infos(model, &expanded, key, member_key, path)
+    } else {
+        match owner {
+            LuaType::Ref(id) | LuaType::Def(id) => {
+                if let Some(def) = model
+                    .type_def_of(id)
+                    .filter(|def| def.kind == TypeDefKind::Alias)
+                    && let Some(ty) = model.alias_target(&def)
+                {
+                    constructor_context_infos(model, &ty, key, member_key, path)
+                } else {
+                    named_infos()
+                }
+            }
+            LuaType::Generic(generic)
+                if generic.get_base_type_id().get_name() == "table"
+                    && generic.get_params().len() == 2 =>
+            {
+                let params = generic.get_params();
+                value_info(&params[0], &params[1])
+            }
+            LuaType::TableGeneric(params) if params.len() == 2 => {
+                value_info(&params[0], &params[1])
+            }
+            LuaType::Array(array) => value_info(&LuaType::Integer, array.get_base()),
+            LuaType::Object(object) => {
+                let named = named_infos();
+                if !named.is_empty() {
+                    named
+                } else {
+                    object
+                        .get_index_access()
+                        .iter()
+                        .flat_map(|(index, ty)| value_info(index, ty))
+                        .collect()
+                }
+            }
+            LuaType::Union(union) => union
+                .iter()
+                .flat_map(|ty| constructor_context_infos(model, ty, key, member_key, path))
+                .collect(),
+            _ => named_infos(),
+        }
+    };
+    path.pop();
+    result
+}
+
 fn table_context_type_for_token(
     model: &SemanticModel<'_>,
     token: &LuaSyntaxToken,
@@ -457,7 +605,11 @@ fn table_context_type_for_token(
     let field = token.parent_ancestors().find_map(LuaTableField::cast)?;
     // Context belongs to the constructor key, not arbitrary members inside
     // its value expression or callback body.
-    let key_range = field.get_field_key()?.get_range()?;
+    let key = field.get_field_key()?;
+    if matches!(key, LuaIndexKey::Expr(_) | LuaIndexKey::Idx(_)) {
+        return None;
+    }
+    let key_range = key.get_range()?;
     if !key_range.contains_range(token.text_range()) {
         return None;
     }
@@ -471,12 +623,34 @@ fn table_context_type_for_expr(
 ) -> Option<LuaType> {
     let syntax_id = table_expr.get_syntax_id();
 
+    // A nested constructor inherits the selected value contract of its parent.
+    // Walk only direct fields: a callback body must not inherit its table's type.
+    if let Some(field) = table_expr.get_parent::<LuaTableField>() {
+        if let Some(facts) = model.file_facts()
+            && let Some(member) = facts.member_by_value_syntax(syntax_id)
+            && let Some(syntax) = member.doc_type_syntax
+        {
+            return Some(model.doc_type_lua_rich_in(model.file_id(), syntax));
+        }
+        if let Some(parent) = field.get_parent::<LuaTableExpr>()
+            && let Some(owner) = table_context_type_for_expr(model, &parent)
+        {
+            let types = constructor_field_infos(model, &owner, &field)
+                .into_iter()
+                .map(|info| info.typ)
+                .collect::<Vec<_>>();
+            if !types.is_empty() {
+                return Some(LuaType::from_vec(types));
+            }
+        }
+    }
+
     // `---@type T local t = { ... }`: type from the local declaration.
     if let Some(local) = table_expr.ancestors::<LuaLocalStat>().next() {
-        if local
+        if let Some(name) = local
             .get_value_exprs()
-            .any(|expr| expr.get_syntax_id() == syntax_id)
-            && let Some(name) = local.get_local_name_list().next()
+            .position(|expr| expr.get_syntax_id() == syntax_id)
+            .and_then(|index| local.get_local_name_list().nth(index))
             && let Some(decl) = model.decl_by_offset(name.get_position())
         {
             if let Some(ty) = model.type_of_decl(&decl)
@@ -490,8 +664,10 @@ fn table_context_type_for_expr(
     // `x = { ... }`: type of the assignment target.
     if let Some(assign) = table_expr.ancestors::<LuaAssignStat>().next() {
         let (vars, values) = assign.get_var_and_expr_list();
-        if values.iter().any(|expr| expr.get_syntax_id() == syntax_id)
-            && let Some(var) = vars.first()
+        if let Some(index) = values
+            .iter()
+            .position(|expr| expr.get_syntax_id() == syntax_id)
+            && let Some(var) = vars.get(index)
         {
             let ty = model.type_of_expr(var.to_expr().get_syntax_id());
             if !matches!(ty, LuaType::Unknown) {
@@ -1544,6 +1720,12 @@ fn build_member_hover(
     let show_unknown = context_infos.iter().any(|ctx| ctx.show_unknown);
     if !call_site_substituted && !context_infos.is_empty() {
         let first = &context_infos[0];
+        effective_typ_override = Some(LuaType::from_vec(
+            context_infos
+                .iter()
+                .map(|ctx| ctx.info.typ.clone())
+                .collect(),
+        ));
         if let (Some(id), Some(file_id)) = (&first.info.id, first.info.file_id)
             && let Some(facts) = model.file_facts_of(file_id)
             && let Some(context_member) = facts.member_by_id(id)

@@ -24,6 +24,8 @@ pub struct Member {
     pub key: LuaMemberKey,
     /// Implicit list-entry key: its identity spans the value, not a written declaration key.
     pub is_implicit_key: bool,
+    /// Computed constructor keys contain expression uses, not declaration names.
+    pub is_computed_key: bool,
     /// Owner (resolved association): `Decl(local)` / `TypeDef(@field)` / `Name(global, resolved in phase 2)` / `Member(nested a.b.c)`.
     pub owner: SemanticId,
     /// Value: `TypeDef` members = doc type nodes; others = expressions.
@@ -57,6 +59,7 @@ impl Member {
             id: SemanticId::member(file_id, key_range),
             key,
             is_implicit_key: false,
+            is_computed_key: false,
             owner,
             value_syntax: None,
             doc_type_syntax: None,

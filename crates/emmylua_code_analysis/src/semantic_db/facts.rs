@@ -183,7 +183,7 @@ impl FileFacts {
         None
     }
 
-    /// Finds the member whose written key contains `offset`, excluding implicit list keys.
+    /// Finds a declaration key at `offset`, excluding list values and computed key expressions.
     pub fn member_at_offset(&self, offset: TextSize) -> Option<&Member> {
         let idx = self
             .member_by_range_start
@@ -880,7 +880,7 @@ impl FactsBuilder {
             .enumerate()
             // List entries retain their full value range as a stable identity,
             // but expressions within that range are not member declarations.
-            .filter(|(_, member)| !member.is_implicit_key)
+            .filter(|(_, member)| !member.is_implicit_key && !member.is_computed_key)
             .filter_map(|(i, member)| member.id.member_key_range().map(|range| (range.start(), i)))
             .collect::<Vec<_>>();
         member_by_range_start.sort_by_key(|(start, _)| *start);
@@ -1971,6 +1971,7 @@ impl FactsBuilder {
     fn collect_table_fields(&mut self, table: &LuaTableExpr, owner: SemanticId) {
         for (field, key) in table.get_fields_with_keys() {
             let is_implicit_key = matches!(key, LuaIndexKey::Idx(_));
+            let is_computed_key = matches!(key, LuaIndexKey::Expr(_));
             let path_part = SmolStr::new(key.get_path_part());
             let member_key =
                 member_key_from_index_key(key).unwrap_or(LuaMemberKey::Name(path_part));
@@ -1982,6 +1983,7 @@ impl FactsBuilder {
             );
             member.value_syntax = field.get_value_expr().map(|expr| expr.get_syntax_id());
             member.is_implicit_key = is_implicit_key;
+            member.is_computed_key = is_computed_key;
             self.mark_member(&mut member);
             self.members.push(member);
         }
