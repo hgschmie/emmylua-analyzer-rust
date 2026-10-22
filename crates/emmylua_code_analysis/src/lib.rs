@@ -54,6 +54,7 @@ pub use semantic_model::render::{
 pub use semantic_model::{ResolvedMember, SemanticInfo};
 use std::{path::PathBuf, sync::Arc};
 pub use test_lib::VirtualWorkspace;
+use tokio_util::sync::CancellationToken;
 
 pub use vfs::*;
 
@@ -71,6 +72,7 @@ pub struct EmmyLuaAnalysis {
     pub db: SemanticDatabase,
     pub diagnostic: LuaDiagnostic,
     pub emmyrc: Arc<Emmyrc>,
+    diagnostic_cancellation: CancellationToken,
 }
 
 impl EmmyLuaAnalysis {
@@ -81,6 +83,7 @@ impl EmmyLuaAnalysis {
         Self {
             db,
             diagnostic: LuaDiagnostic::new(),
+            diagnostic_cancellation: CancellationToken::new(),
             emmyrc,
         }
     }
@@ -214,13 +217,42 @@ impl EmmyLuaAnalysis {
         SemanticModel::new(&self.db, file_id)
     }
 
+    /// Returns the token a host can cancel before waiting for exclusive analysis access.
+    pub fn diagnostic_cancellation_token(&self) -> CancellationToken {
+        self.diagnostic_cancellation.clone()
+    }
+
+    /// Starts a new diagnostic lifetime while the host holds exclusive analysis access.
+    pub fn renew_diagnostic_cancellation(&mut self) -> CancellationToken {
+        self.diagnostic_cancellation = CancellationToken::new();
+        self.diagnostic_cancellation.clone()
+    }
+
     pub fn diagnose_file_with_config(
         &self,
         file_id: FileId,
         config: Arc<CheckConfig>,
     ) -> Option<Vec<lsp_types::Diagnostic>> {
-        let model = self.semantic_model(file_id);
+        self.diagnose_file_cancellable(file_id, config, CancellationToken::new())
+    }
+
+    pub(crate) fn diagnose_file_cancellable(
+        &self,
+        file_id: FileId,
+        config: Arc<CheckConfig>,
+        token: CancellationToken,
+    ) -> Option<Vec<lsp_types::Diagnostic>> {
+        let model = self
+            .semantic_model(file_id)
+            .with_cancellation(vec![token, self.diagnostic_cancellation.clone()]);
+        if model.is_cancelled() {
+            return None;
+        }
         let diagnostics = check::check_file(&model, config);
+        // Never publish partial diagnostics, including an empty clearing report.
+        if model.is_cancelled() {
+            return None;
+        }
         let line_index = self.db.line_index(file_id)?;
         let text = self.db.get_file_text(file_id)?;
         Some(
@@ -259,7 +291,7 @@ impl EmmyLuaAnalysis {
     pub fn diagnose_file(
         &self,
         file_id: FileId,
-        cancel_token: tokio_util::sync::CancellationToken,
+        cancel_token: CancellationToken,
     ) -> Option<Vec<lsp_types::Diagnostic>> {
         self.diagnostic.diagnose_file(self, file_id, cancel_token)
     }

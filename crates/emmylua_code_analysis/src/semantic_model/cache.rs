@@ -55,6 +55,10 @@ pub(super) struct TypeEvaluationScope<'a> {
 
 impl<'a> TypeEvaluationScope<'a> {
     pub(super) fn new(cache: &'a super::LazyCache) -> Option<Self> {
+        if cache.is_cancelled() {
+            cache.borrow().mark_incomplete();
+            return None;
+        }
         let query = QueryCacheScope::new(cache);
         let mut state = cache.borrow_mut();
         const MAX_EVALUATION_DEPTH: usize = 64;
@@ -79,6 +83,10 @@ impl<'a> TypeEvaluationScope<'a> {
         let mut pending = vec![ty];
         const MAX_TYPE_VISITS: usize = 1_000_000;
         while let Some(ty) = pending.pop() {
+            if self.query.cache.is_cancelled() {
+                cache.mark_incomplete();
+                return false;
+            }
             if cache.evaluation_exhausted || cache.evaluation_work >= MAX_TYPE_VISITS {
                 cache.exhaust_evaluation();
                 return false;

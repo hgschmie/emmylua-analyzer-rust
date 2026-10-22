@@ -342,6 +342,7 @@ async fn run_workspace_batch(
     drop(tx);
 
     let mut count = 0;
+    let mut incomplete = false;
     if valid_file_count != 0 {
         if progress {
             let mut last_percentage = 0;
@@ -351,6 +352,8 @@ async fn run_workspace_batch(
                 }
                 if let Some((uri, diagnostics)) = item {
                     result.push((uri, diagnostics));
+                } else {
+                    incomplete = true;
                 }
                 count += 1;
                 let percentage_done = ((count as f32 / valid_file_count as f32) * 100.0) as u32;
@@ -367,7 +370,8 @@ async fn run_workspace_batch(
                 }
             }
         } else {
-            while rx.recv().await.is_some() {
+            while let Some(item) = rx.recv().await {
+                incomplete |= item.is_none();
                 count += 1;
                 if count == valid_file_count {
                     break;
@@ -383,5 +387,5 @@ async fn run_workspace_batch(
         );
     }
 
-    (result, count == valid_file_count)
+    (result, count == valid_file_count && !incomplete)
 }

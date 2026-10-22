@@ -34,9 +34,16 @@ use crate::{FileId, LuaFunctionType, LuaType};
 #[derive(Default)]
 struct LazyCache {
     inner: RefCell<Option<Box<cache::SemanticLocalCache>>>,
+    cancellation: Vec<tokio_util::sync::CancellationToken>,
 }
 
 impl LazyCache {
+    fn is_cancelled(&self) -> bool {
+        self.cancellation
+            .iter()
+            .any(tokio_util::sync::CancellationToken::is_cancelled)
+    }
+
     fn ensure(&self) {
         if self.inner.borrow().is_none() {
             *self.inner.borrow_mut() = Some(Box::new(cache::SemanticLocalCache::default()));
