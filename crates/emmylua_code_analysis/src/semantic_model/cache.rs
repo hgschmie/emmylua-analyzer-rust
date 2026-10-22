@@ -208,6 +208,8 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) resolve_owner_set: HashMap<SemanticId, Vec<SemanticId>>,
     pub(crate) member_type_at: HashMap<(FileId, SemanticId, TextSize), LuaType>,
     pub(crate) flow_decl: HashMap<(FileId, SemanticId, FlowId), LuaType>,
+    /// Values a mutable captured local can hold when any of its closures runs.
+    pub(crate) captured_decl: HashMap<(FileId, SemanticId), CacheEntry<LuaType>>,
     /// Memoized declaration traces; incoming path facts are part of the key.
     pub(crate) trace_state: HashMap<TraceStateKey, CacheEntry<Option<LuaType>>>,
     /// Member traces with an empty incoming guard/cast path on an acyclic graph.
@@ -254,6 +256,7 @@ impl SemanticLocalCache {
         self.trace_state.retain(|_, entry| entry.is_ready());
         self.loop_carried.retain(|_, entry| entry.is_ready());
         self.member_trace_state.retain(|_, entry| entry.is_ready());
+        self.captured_decl.retain(|_, entry| entry.is_ready());
         self.type_check.retain(|_, entry| entry.is_ready());
         self.alias_targets.retain(|_, entry| entry.is_ready());
         self.alias_heads.retain(|_, entry| entry.is_ready());

@@ -12,6 +12,7 @@
 //! - `---@cast x +string` adds string to x's path type;
 //! - Flow type for member assignment `t.x = v` / `self.x = v` (FlowEffect::AssignMember).
 
+mod captured;
 mod computed_effects;
 mod computed_guard;
 mod computed_index;
@@ -2400,6 +2401,20 @@ fn trace_decl_uncached(
             FlowNodeKind::CallExprStat(call_stat_ptr) => {
                 if mode == TraceMode::MergeBranch && call_stat_returns_never(model, call_stat_ptr) {
                     return Some(LuaType::Never);
+                }
+            }
+            FlowNodeKind::ClosureEntry(closure) => {
+                if options.assignments
+                    && let Some(base) = captured::entry_type(model, decl, tree, *closure)
+                {
+                    return finish_decl_frames(
+                        model,
+                        decl,
+                        tree,
+                        finalize(model, base, path),
+                        frames,
+                        root_mode,
+                    );
                 }
             }
             FlowNodeKind::DeclPosition(pos) => {

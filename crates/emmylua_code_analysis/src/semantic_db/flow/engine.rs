@@ -269,7 +269,15 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                 None => Step::Done(current),
             },
             LuaExpr::ClosureExpr(closure_expr) => {
-                self.spawn_children(LuaAst::LuaClosureExpr(closure_expr), current)
+                let entry = self.binder.create_node(FlowNodeKind::ClosureEntry(
+                    LuaClosureId::from_closure(closure_expr.clone()),
+                ));
+                self.binder.add_antecedent(entry, current);
+                // Defining the function does not execute its body.
+                self.stack.push(Continuation::Seq {
+                    pending: vec![Task::Pass(current)],
+                });
+                self.spawn_children(LuaAst::LuaClosureExpr(closure_expr), entry)
             }
             LuaExpr::CallExpr(call_expr) => {
                 self.spawn_children(LuaAst::LuaCallExpr(call_expr), current)

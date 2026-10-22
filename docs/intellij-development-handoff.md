@@ -1,3 +1,26 @@
+# UP-112 mutable captured variables — 2026-10-21
+
+Independent fix `fc482372` on `fix/mutable-captured-variable-flow` adds explicit
+closure-entry flow nodes. Captured locals with visible assignments use their
+annotation or the union of their initializer and assigned values at entry;
+local guards and writes then refine that value. New locals and immutable
+captures keep their existing precision. Recursive summaries use the existing
+provisional-cache lifecycle; multi-return and missing assignment slots retain
+Lua's value semantics.
+
+This fixes train-tracker scripts/event-setup.lua:27, where a persistent tick
+counter was incorrectly treated as its initial zero on every callback invocation.
+The real case and minimal versions reproduce on upstream/main bb7c7d4c and
+packaged197. UP-112 has no pending prerequisite on UP-061/074/076/078. The work
+merge preserves UP-094's path-aware cache and existing loop/member caches.
+
+All 1,604 standalone analysis tests pass, including seven new regression groups;
+three initial positive groups fail before the fix. All 3,116 combined workspace tests also pass. Standalone all-target/all-feature
+Clippy and rustfmt pass. Combined/package/native validation is recorded in
+workspace `upstream/memory/TRAIN_TRACKER_EVENT_UPVALUE_2026-10-21.md`.
+Only EmmyLua2 is rebuilt; FDE's development pin follows the verified package.
+No original mod edits, push, upstream PR or IDE installation.
+
 # UP-111 explicit module export annotations — 2026-10-21
 
 Independent fix `76c321fd` on `fix/annotated-module-export-types` preserves a
