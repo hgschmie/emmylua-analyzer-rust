@@ -2820,4 +2820,77 @@ return t
             "{diagnostics:#?}"
         );
     }
+
+    #[test]
+    fn test_annotated_module_export_matches_field_contract() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def_file(
+            "settings.lua",
+            r#"
+            ---@alias ExportedSettings table<string, boolean>
+            ---@type ExportedSettings
+            local Settings = { enabled = false }
+            return Settings
+            "#,
+        );
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+            ---@class ConfiguredMod
+            ---@field settings ExportedSettings
+            local Mod = { settings = require("settings") }
+            ---@type ExportedSettings
+            local settings = require("settings")
+            "#,
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+            ---@type table<string, number>
+            local settings = require("settings")
+            "#,
+        ));
+    }
+
+    #[test]
+    fn test_annotated_module_export_ignores_unrelated_class_with_variable_name() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def_file("types.lua", "---@class Settings\n---@field count integer");
+        ws.def_file(
+            "settings.lua",
+            r#"
+            ---@alias SettingsValues table<string, boolean>
+            ---@type SettingsValues
+            local Settings = { enabled = false }
+            return Settings
+            "#,
+        );
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+            ---@type SettingsValues
+            local settings = require("settings")
+            "#,
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+            ---@type Settings
+            local settings = require("settings")
+            "#,
+        ));
+    }
+
+    #[test]
+    fn test_annotated_module_export_still_checks_initializer() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+            ---@type boolean
+            local Enabled = "wrong"
+            return Enabled
+            "#,
+        ));
+    }
 }

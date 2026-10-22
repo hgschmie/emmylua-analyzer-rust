@@ -1990,6 +1990,45 @@ fn test_module_export_nested_class_decl_uses_named_type() {
 }
 
 #[test]
+fn test_module_export_annotated_alias_uses_declared_type() {
+    let mut db = setup();
+    let fid = set_test_file(
+        &mut db,
+        1,
+        "settings.lua",
+        "---@alias ModSettings table<string, boolean>\n---@type ModSettings\nlocal Settings = {}\nreturn Settings",
+    );
+    let shell = db.analysis().module_export_type(fid).expect("export type");
+    assert_eq!(shell, TypeShell::from_name("ModSettings"));
+}
+
+#[test]
+fn test_module_export_annotations_do_not_gain_variable_name_types() {
+    for (annotation, value) in [
+        ("table<string, boolean>", "{}"),
+        ("{enabled: boolean}", "{enabled = false}"),
+        ("string?", "nil"),
+        ("fun(): boolean", "function() return true end"),
+        ("any", "{}"),
+    ] {
+        let mut db = setup();
+        let fid = set_test_file(
+            &mut db,
+            1,
+            "value.lua",
+            &format!("---@type {annotation}\nlocal Value = {value}\nreturn Value"),
+        );
+        let facts = db.analysis().file_facts(fid).expect("facts");
+        let decl = decl_local(&facts, "Value");
+        assert_eq!(
+            db.analysis().module_export_type(fid),
+            db.analysis().decl_type(fid, decl),
+            "{annotation}",
+        );
+    }
+}
+
+#[test]
 fn test_module_export_expr_and_none() {
     let mut db = setup();
     let fid = set_test_file(&mut db, 1, "mod.lua", "return { a = 1 }");
