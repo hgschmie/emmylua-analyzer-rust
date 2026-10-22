@@ -2852,15 +2852,17 @@ pub(crate) fn module_export_type(
             // Merging the runtime variable name (`Bar`) would produce an
             // unrelated union member and make `require("mod")` appear as
             // `(Bar|{...})` instead of `Foo.Bar`.
-            let declared_type_name = facts
-                .decl_by_id(decl)
+            let exported_decl = facts.decl_by_id(decl);
+            let declared_type_name = exported_decl
                 .and_then(|decl| decl.owner_syntax)
                 .and_then(|owner| facts.type_def_by_owner_syntax(owner))
                 .filter(|def| matches!(def.kind, TypeDefKind::Class | TypeDefKind::Enum))
                 .map(|def| def.full_name.clone());
             if let Some(type_name) = declared_type_name {
                 shell = TypeShell::from_name(type_name.as_str());
-            } else {
+            } else if exported_decl.is_none_or(|decl| decl.doc_type_syntax.is_none()) {
+                // An explicit @type is already the export contract. The local
+                // variable's name must not become another union alternative.
                 shell.merge(&TypeShell::from_name(name.as_str()));
             }
             shell
