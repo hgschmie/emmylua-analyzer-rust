@@ -2,13 +2,15 @@ use std::collections::HashSet;
 use std::ops::Deref;
 
 use emmylua_parser::{
-    LuaAst, LuaAstNode, LuaCallExpr, LuaExpr, LuaIndexExpr, LuaIndexKey, LuaVarExpr, NumberResult,
+    LuaAst, LuaAstNode, LuaCallExpr, LuaExpr, LuaIndexExpr, LuaIndexKey, LuaSyntaxKind, LuaVarExpr,
+    NumberResult,
 };
 
 use crate::DiagnosticCode;
-use crate::semantic_db::def::ModuleExport;
+use crate::semantic_db::def::{ModuleExport, SemanticId};
+use crate::semantic_db::facts::FileFacts;
 use crate::semantic_model::SemanticModel;
-use crate::{FileId, LuaMemberKey, LuaType};
+use crate::{FileId, InFiled, LuaMemberKey, LuaType};
 
 use super::{CheckContext, Checker};
 use crate::semantic_model::render::humanize_type;
@@ -23,6 +25,13 @@ impl Checker for CheckExportChecker {
             return;
         };
         let root = tree.get_red_root();
+        // Ordinary member checking can already diagnose the same imported read.
+        let reported_fields: HashSet<_> = context
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == DiagnosticCode::UndefinedField)
+            .map(|diagnostic| diagnostic.range)
+            .collect();
         let mut checked_index_exprs = HashSet::new();
         for node in root.descendants().filter_map(LuaAst::cast) {
             match node {
@@ -41,7 +50,12 @@ impl Checker for CheckExportChecker {
                     }
                 }
                 LuaAst::LuaIndexExpr(index_expr) => {
-                    if checked_index_exprs.contains(&index_expr.get_syntax_id()) {
+                    if checked_index_exprs.contains(&index_expr.get_syntax_id())
+                        || index_expr
+                            .get_index_key()
+                            .and_then(|key| key.get_range())
+                            .is_some_and(|range| reported_fields.contains(&range))
+                    {
                         continue;
                     }
                     check_index_expr(
@@ -80,7 +94,10 @@ fn check_index_expr(
         ModuleExport::Expr { value_syntax } => Some(module_model.type_of_expr(*value_syntax)),
         ModuleExport::Global { .. } | ModuleExport::None => None,
     };
-    let Some(export_ty @ LuaType::TableConst(_)) = export_ty else {
+    let Some(export_ty) = export_ty
+        .filter(|ty| matches!(ty, LuaType::TableConst(_)))
+        .or_else(|| export_table_type(module_file, module_facts))
+    else {
         return;
     };
     let Some(index_key) = index_expr.get_index_key() else {
@@ -89,16 +106,39 @@ fn check_index_expr(
     let Some(key) = lua_member_key(semantic_model, &index_key) else {
         return;
     };
+    let declared_ty = match &module_facts.module_export {
+        ModuleExport::Decl { decl, .. } => semantic_model.type_of_decl(decl),
+        _ => None,
+    };
     // If the export surface contains the member → valid.
     //
     // Canonical module owners also aggregate mutations contributed by other
     // files (P5 require aliases). Those are visible to semantic resolution but
     // are *not* part of the original export surface: a consumer doing
     // `local a = require("mod"); a.newField = 1` is still an injection.
+    // Declared class fields (including inherited fields in another file) are
+    // part of the contract, even when absent from the initial table literal.
     let is_surface_member = semantic_model
         .member_infos_with_key(&export_ty, &key)
         .into_iter()
-        .any(|info| info.file_id.is_none_or(|file_id| file_id == module_file));
+        .chain(
+            declared_ty
+                .as_ref()
+                .into_iter()
+                .flat_map(|ty| semantic_model.member_infos_with_key(ty, &key)),
+        )
+        .any(|info| {
+            info.file_id.is_none_or(|file_id| file_id == module_file)
+                || info
+                    .file_id
+                    .zip(info.id.as_ref())
+                    .is_some_and(|(file_id, id)| {
+                        semantic_model
+                            .file_facts_of(file_id)
+                            .and_then(|facts| facts.member_by_id(id))
+                            .is_some_and(|member| matches!(member.owner, SemanticId::TypeDef(_)))
+                    })
+        });
     if is_surface_member {
         return;
     }
@@ -127,6 +167,30 @@ fn check_index_expr(
         }
         _ => {}
     }
+}
+
+/// Runtime surface of a table constructor exported directly or through a local declaration.
+/// Non-table initializers are left to the other field checkers.
+fn export_table_type(module_file: FileId, facts: &FileFacts) -> Option<LuaType> {
+    let syntax = match &facts.module_export {
+        ModuleExport::Expr { value_syntax } => Some(*value_syntax),
+        ModuleExport::Decl { decl, .. } => facts
+            .decl_by_id(decl)
+            .and_then(|decl| decl.value_expr_syntax),
+        ModuleExport::Global { .. } | ModuleExport::None => None,
+    }?;
+    if !matches!(
+        syntax.get_kind(),
+        LuaSyntaxKind::TableArrayExpr
+            | LuaSyntaxKind::TableObjectExpr
+            | LuaSyntaxKind::TableEmptyExpr
+    ) {
+        return None;
+    }
+    Some(LuaType::TableConst(InFiled::new(
+        module_file,
+        syntax.get_range(),
+    )))
 }
 
 /// Prefix is a require import:
