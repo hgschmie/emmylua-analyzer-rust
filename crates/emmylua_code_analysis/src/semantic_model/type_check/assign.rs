@@ -46,20 +46,22 @@ fn check_inherited_dictionary(
     if contracts.is_empty() {
         return Ok(None);
     }
-    let normalize = |ty: &LuaType| match ty {
-        LuaType::Generic(generic) if generic.get_base_type_id().get_name() == "table" => {
-            LuaType::TableGeneric(std::rc::Rc::new(generic.get_params().to_vec()))
-        }
-        ty => ty.clone(),
+    let params = match target {
+        LuaType::TableGeneric(params) => params.as_slice(),
+        LuaType::Generic(generic) => generic.get_params(),
+        _ => return Ok(None),
     };
-    let expected = normalize(target);
-    super::check_alternatives(
-        context.mismatch(source, target),
-        contracts
-            .iter()
-            .map(|contract| check_general_type_compact(context, &normalize(contract), &expected)),
-    )
-    .map(|()| Some(()))
+    let [key, value] = params else {
+        return Ok(None);
+    };
+    // Overlapping contracts contribute all their possible values. A contract
+    // for a disjoint key domain must not reject an otherwise valid projection.
+    let projected = context
+        .require_complete(|| {
+            crate::semantic_model::inherited_index::lookup(context.model, source, key)
+        })?
+        .ok_or_else(|| context.mismatch(source, target))?;
+    check_general_type_compact(context, &projected, value).map(|()| Some(()))
 }
 
 /// Check integer index signatures item-by-item for `Object -> Ref/Def`.

@@ -460,3 +460,16 @@ fn inherited_dictionary_projection_handles_cycles() {
     let model = ws.analysis.semantic_model(file);
     assert!(crate::semantic_model::inherited_index::dictionaries(&model, &source).is_empty());
 }
+
+#[test]
+fn inherited_dictionary_overlapping_contracts_preserve_all_values() {
+    let mut ws = crate::VirtualWorkspace::new();
+    ws.def("---@class Mixed: table<string,integer>, table<string,boolean>\n---@class Separate: table<string,integer>, table<integer,boolean>");
+    let mixed = ws.ty("Mixed");
+    let separate = ws.ty("Separate");
+    let integer = ws.ty("table<string,integer>");
+    let both = ws.ty("table<string,integer|boolean>");
+    assert!(!ws.check_type(&integer, &mixed));
+    assert!(ws.check_type(&both, &mixed));
+    assert!(ws.check_type(&integer, &separate));
+}
