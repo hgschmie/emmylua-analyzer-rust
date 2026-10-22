@@ -921,7 +921,7 @@ fn table_index_constructor_cross_file_enum_keys() {
         }
     }
 }
-#[test]
+#[gtest]
 fn class_index_preserves_inherited_runtime_methods() {
     let mut ws = VirtualWorkspace::new();
     ws.def(
