@@ -473,3 +473,14 @@ fn inherited_dictionary_overlapping_contracts_preserve_all_values() {
     assert!(ws.check_type(&both, &mixed));
     assert!(ws.check_type(&integer, &separate));
 }
+
+#[test]
+fn inherited_dictionary_assignment_checks_declared_values() {
+    let mut ws = crate::VirtualWorkspace::new();
+    ws.def("---@class Child: table<string,string>\n---@field pacer integer");
+    let source = ws.ty("Child");
+    let narrow = ws.ty("table<string,string>");
+    let broad = ws.ty("table<string,string|integer>");
+    assert!(!ws.check_type(&narrow, &source));
+    assert!(ws.check_type(&broad, &source));
+}
