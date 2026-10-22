@@ -1,6 +1,8 @@
 use std::sync::Mutex;
 
-use emmylua_code_analysis::{DeclKind, SemanticDatabase, SemanticId, SemanticModel};
+use emmylua_code_analysis::{
+    DeclKind, LuaType, OwnerId, SemanticDatabase, SemanticId, SemanticModel,
+};
 use emmylua_parser::{
     LuaAssignStat, LuaAstNode, LuaDocTagField, LuaExpr, LuaFuncStat, LuaIndexExpr, LuaStat,
     LuaSyntaxToken, LuaTableField,
@@ -38,9 +40,21 @@ fn search_member_implementations(
     member: &SemanticId,
     result: &mut Vec<Location>,
 ) -> Option<()> {
+    let SemanticId::Member(key) = member else {
+        return None;
+    };
+    let member_model = SemanticModel::new(db, key.file_id);
     let mut ranges = member_reference_ranges(db, member, true);
-    // Other definition sites of the same member key (`@field` / table field / runtime assignment / method implementation) are also implementation positions.
-    if let Some(key_text) = member_key_text(db, member) {
+    // Include other definitions only when both the key and receiver identity match.
+    if let Some(target) = member_model.file_facts()?.member_by_id(member) {
+        // Initializer fields also have a synthetic table owner; retain the
+        // declaration owner of that same source field and its annotated type.
+        let owners: Vec<_> = member_model
+            .members()?
+            .iter()
+            .filter(|candidate| candidate.id == *member)
+            .flat_map(|candidate| implementation_owner_ids(&member_model, &candidate.owner))
+            .collect();
         let discovered = Mutex::new(Vec::new());
         db.parallel_for_each_file(|file_id, model| {
             let Some(members) = model.members() else {
@@ -48,7 +62,10 @@ fn search_member_implementations(
             };
             let mut discovered = discovered.lock().expect("implementation locations lock");
             for m in members.iter() {
-                if m.key.to_path() == key_text
+                if m.key == target.key
+                    && implementation_owner_ids(model, &m.owner)
+                        .iter()
+                        .any(|owner| owners.contains(owner))
                     && let Some(key_range) = m.id.member_key_range()
                     && !discovered.contains(&(file_id, key_range))
                 {
@@ -215,16 +232,21 @@ fn is_decl_implementation_position(
         .any(|var| var.to_expr().get_syntax_id() == name_expr.get_syntax_id())
 }
 
-fn member_key_text(db: &SemanticDatabase, member: &SemanticId) -> Option<String> {
-    let SemanticId::Member(key) = member else {
-        return None;
-    };
-    let model = SemanticModel::new(db, key.file_id);
-    let members = model.members()?;
-    members
-        .iter()
-        .find(|m| &m.id == member)
-        .map(|m| m.key.to_path())
+/// Receiver identities, including a local table's explicitly declared class.
+fn implementation_owner_ids(model: &SemanticModel<'_>, owner: &SemanticId) -> Vec<OwnerId> {
+    let mut owners = model.resolve_owner_ids(owner);
+    if matches!(owner, SemanticId::Decl(_)) {
+        let ty = model.type_of_decl(owner);
+        let type_id = match &ty {
+            Some(LuaType::Ref(id) | LuaType::Def(id)) => Some(id),
+            Some(LuaType::Generic(generic)) => Some(generic.get_base_type_id_ref()),
+            _ => None,
+        };
+        if let Some(def) = type_id.and_then(|id| model.type_def_of(id)) {
+            owners.extend(model.resolve_owner_ids(&def.id));
+        }
+    }
+    owners
 }
 
 fn make_location(
