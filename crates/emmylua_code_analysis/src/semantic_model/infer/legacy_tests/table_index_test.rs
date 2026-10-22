@@ -633,7 +633,7 @@ fn dictionary_function_definitions_prove_an_entry_exists() {
 #[test]
 fn dictionary_numeric_literal_forms_keep_strict_reads() {
     use emmylua_parser::{LuaAstNode, LuaIndexExpr};
-    for literal in ["1", "1.0", "1ULL", "18446744073709551615ULL"] {
+    for literal in ["1", "1.0", "(1.0)", "1ULL", "18446744073709551615ULL"] {
         let mut ws = workspace(true);
         let mut config = ws.get_emmyrc();
         config.runtime.version = crate::EmmyrcLuaVersion::LuaJIT;
@@ -707,5 +707,13 @@ fn dictionary_metatable_index_cycles_are_bounded() {
         let mut ws = workspace(true);
         ws.def(source);
         let _ = ws.expr_ty("observed");
+    }
+}
+
+#[test]
+fn dictionary_dynamic_required_fields_reject_deletion() {
+    for key in ["string", "'required'|'other'"] {
+        let mut ws = workspace(true);
+        assert!(!ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch,&format!("---@alias Record {{required:string,[string]:number}}\n---@param record Record\n---@param key {key}\nlocal function clear(record,key) record[key]=nil end")), "{key}");
     }
 }

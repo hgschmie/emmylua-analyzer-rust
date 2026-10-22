@@ -48,12 +48,7 @@ pub(crate) fn lookup(
     } else {
         LookupMode::Value
     };
-    let normalized = match key {
-        LuaType::FloatConst(value) => {
-            crate::semantic_db::types::exact_integer(*value).map(LuaType::IntegerConst)
-        }
-        _ => None,
-    };
+    let normalized = normalized_key(key);
     lookup_inner(
         model,
         owner,
@@ -62,6 +57,38 @@ pub(crate) fn lookup(
         &mut Vec::new(),
     )
 }
+fn combine_values(values: Vec<LuaType>, mode: LookupMode) -> LuaType {
+    if matches!(mode, LookupMode::Write) && values.len() > 1 {
+        LuaType::Intersection(std::rc::Rc::new(crate::LuaIntersectionType::new(values)))
+    } else {
+        LuaType::from_vec(values)
+    }
+}
+
+// Keep write constraints separate: the general compatibility checker currently
+// treats target intersections as alternatives, which is unsuitable for a key
+// that can select multiple required fields.
+fn write_targets(typ: LuaType) -> Vec<LuaType> {
+    match typ {
+        LuaType::Intersection(intersection) => intersection
+            .get_types()
+            .iter()
+            .cloned()
+            .flat_map(write_targets)
+            .collect(),
+        typ => vec![typ],
+    }
+}
+
+fn normalized_key(key: &LuaType) -> Option<LuaType> {
+    match key {
+        LuaType::FloatConst(value) => {
+            crate::semantic_db::types::exact_integer(*value).map(LuaType::IntegerConst)
+        }
+        _ => None,
+    }
+}
+
 fn is_standard_table(model: &SemanticModel, id: &crate::LuaTypeDeclId) -> bool {
     *id == crate::LuaTypeDeclId::global("table")
         && model
@@ -135,7 +162,7 @@ fn lookup_keys(
     let value = if *key == LuaType::Nil {
         Some(LuaType::Nil)
     } else if let LuaType::Union(union) = key {
-        Some(LuaType::from_vec(
+        Some(combine_values(
             union
                 .into_vec()
                 .iter()
@@ -143,6 +170,7 @@ fn lookup_keys(
                     lookup_keys(model, owner, key, mode, owners, keys).unwrap_or(LuaType::Nil)
                 })
                 .collect(),
+            mode,
         ))
     } else if let Some(expanded) = expanded {
         // Keep an exact alias match as one signature check. Expanding thousands
@@ -228,16 +256,24 @@ fn lookup_atomic(
             } else if object.get_index_access().is_empty() {
                 None
             } else {
-                let values: Vec<_> = object
+                let mut values: Vec<_> = object
                     .get_index_access()
                     .iter()
                     .filter(|(declared, _)| super::type_check::is_compatible(model, key, declared))
                     .map(|(_, value)| mode.value(model, value))
                     .collect();
+                for (field, value) in object.get_fields() {
+                    if let Some(field_key) = key_type(field)
+                        && super::type_check::is_compatible(model, &field_key, key)
+                        && !values.contains(value)
+                    {
+                        values.push(value.clone());
+                    }
+                }
                 Some(if values.is_empty() {
                     LuaType::Nil
                 } else {
-                    LuaType::from_vec(values)
+                    combine_values(values, mode)
                 })
             }
         }
@@ -260,7 +296,7 @@ fn lookup_atomic(
                 .iter()
                 .filter_map(|owner| lookup_inner(model, owner, key, mode, seen))
                 .collect();
-            (!values.is_empty()).then(|| LuaType::from_vec(values))
+            (!values.is_empty()).then(|| combine_values(values, mode))
         }
         _ => None,
     }
@@ -294,8 +330,12 @@ impl SemanticModel<'_> {
         self.dictionary_index_type_with_mode(index, mode)
     }
 
-    pub(crate) fn dictionary_index_write_type(&self, index: &LuaIndexExpr) -> Option<LuaType> {
+    pub(crate) fn dictionary_index_write_types(
+        &self,
+        index: &LuaIndexExpr,
+    ) -> Option<Vec<LuaType>> {
         self.dictionary_index_type_with_mode(index, LookupMode::Write)
+            .map(write_targets)
     }
 
     fn dictionary_index_type_with_mode(
@@ -329,7 +369,14 @@ impl SemanticModel<'_> {
             }
             _ => return None,
         };
-        lookup_inner(self, &prefix, &key, mode, &mut Vec::new())
+        let normalized = normalized_key(&key);
+        lookup_inner(
+            self,
+            &prefix,
+            normalized.as_ref().unwrap_or(&key),
+            mode,
+            &mut Vec::new(),
+        )
     }
 }
 
@@ -341,4 +388,51 @@ fn dictionary_named_table_requires_standard_identity() {
     let owner = ws.ty("table<integer,boolean>");
     let model = ws.analysis.semantic_model(file);
     assert_eq!(lookup(&model, &owner, &LuaType::Integer, false), None);
+}
+
+#[cfg(test)]
+#[test]
+fn dictionary_dynamic_object_keys_include_fields_and_protect_writes() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let mut config = ws.get_emmyrc();
+    config.strict.table_index = true;
+    ws.update_emmyrc(config);
+    let file = ws.def("");
+    let owner = ws.ty("{required:string,[string]:number}");
+    let model = ws.analysis.semantic_model(file);
+    assert_eq!(
+        lookup(&model, &owner, &LuaType::String, true),
+        Some(LuaType::from_vec(vec![
+            LuaType::String,
+            LuaType::Number,
+            LuaType::Nil
+        ]))
+    );
+    let target = lookup_inner(
+        &model,
+        &owner,
+        &LuaType::String,
+        LookupMode::Write,
+        &mut Vec::new(),
+    )
+    .unwrap();
+    assert!(
+        !write_targets(target.clone())
+            .iter()
+            .all(|target| super::type_check::is_compatible(&model, &LuaType::Nil, target))
+    );
+    assert!(
+        !write_targets(target)
+            .iter()
+            .all(|target| super::type_check::is_compatible(&model, &LuaType::String, target))
+    );
+    assert_eq!(
+        lookup(
+            &model,
+            &owner,
+            &LuaType::StringConst(smol_str::SmolStr::new("required").into()),
+            true
+        ),
+        Some(LuaType::String)
+    );
 }
