@@ -12,6 +12,9 @@ pub(crate) fn check_special(
     source: &LuaType,
     target: &LuaType,
 ) -> Result<Option<()>, TypeCheckFailReason> {
+    if check_inherited_dictionary(context, source, target)?.is_some() {
+        return Ok(Some(()));
+    }
     if check_object_index_against_class(context, source, target)?.is_some() {
         return Ok(Some(()));
     }
@@ -19,6 +22,43 @@ pub(crate) fn check_special(
         return Ok(Some(()));
     }
     Ok(None)
+}
+
+/// Project inherited dictionary contracts before checking their key and value types.
+fn check_inherited_dictionary(
+    context: &mut TypeCheckContext,
+    source: &LuaType,
+    target: &LuaType,
+) -> Result<Option<()>, TypeCheckFailReason> {
+    if !matches!(
+        source,
+        LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_)
+    ) || matches!(source, LuaType::Generic(generic) if generic.get_base_type_id().get_name() == "table")
+        || !(matches!(target, LuaType::TableGeneric(_))
+            || matches!(target, LuaType::Generic(generic) if generic.get_base_type_id().get_name() == "table"))
+    {
+        return Ok(None);
+    }
+    let contracts = context.require_complete(|| {
+        crate::semantic_model::inherited_index::dictionaries(context.model, source)
+    })?;
+    if contracts.is_empty() {
+        return Ok(None);
+    }
+    let normalize = |ty: &LuaType| match ty {
+        LuaType::Generic(generic) if generic.get_base_type_id().get_name() == "table" => {
+            LuaType::TableGeneric(std::rc::Rc::new(generic.get_params().to_vec()))
+        }
+        ty => ty.clone(),
+    };
+    let expected = normalize(target);
+    super::check_alternatives(
+        context.mismatch(source, target),
+        contracts
+            .iter()
+            .map(|contract| check_general_type_compact(context, &normalize(contract), &expected)),
+    )
+    .map(|()| Some(()))
 }
 
 /// Check integer index signatures item-by-item for `Object -> Ref/Def`.
