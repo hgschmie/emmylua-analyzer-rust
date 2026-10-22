@@ -124,6 +124,7 @@ impl<'a> CheckContext<'a> {
     }
 
     /// Collects a diagnostic with extra data (consumed by code actions etc.).
+    /// `unused-self` also respects suppression of its parent category, `unused`.
     pub fn add_diagnostic_with_data(
         &mut self,
         code: DiagnosticCode,
@@ -131,7 +132,10 @@ impl<'a> CheckContext<'a> {
         message: String,
         data: Option<serde_json::Value>,
     ) {
-        if !self.is_diagnostic_enabled(code, range) {
+        if !self.is_diagnostic_enabled(code, range)
+            || (code == DiagnosticCode::UnusedSelf
+                && !self.is_diagnostic_enabled(DiagnosticCode::Unused, range))
+        {
             return;
         }
         let severity = self.config.severity_of(&code);
