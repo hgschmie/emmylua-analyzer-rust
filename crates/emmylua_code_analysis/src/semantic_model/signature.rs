@@ -759,10 +759,23 @@ impl<'db> SemanticModel<'db> {
                 }
             }
             SemanticId::Member(table_key) => {
-                // Table-literal field (`---@type D31; local f = { func = function(...) end }`):
-                // the member owner is a synthetic table identity; go back to the declaration that initializes the table and use its declared type as the field type source.
-                let decl = facts.decl_by_value_range(table_key.key_range)?;
-                self.type_of_decl(&decl.id)?
+                // Table fields have a synthetic owner. Recover the declared
+                // context from either a local initializer or a member assignment.
+                if let Some(decl) = facts.decl_by_value_range(table_key.key_range) {
+                    self.type_of_decl(&decl.id)?
+                } else {
+                    let doc = [
+                        LuaSyntaxKind::TableArrayExpr,
+                        LuaSyntaxKind::TableObjectExpr,
+                    ]
+                    .into_iter()
+                    .find_map(|kind| {
+                        let syntax = LuaSyntaxId::new(kind.into(), table_key.key_range);
+                        facts.member_by_value_syntax(syntax)
+                    })?
+                    .doc_type_syntax?;
+                    self.doc_type_lua_rich_in(member_file, doc)
+                }
             }
             _ => return None,
         };
@@ -772,7 +785,7 @@ impl<'db> SemanticModel<'db> {
         for info in &infos {
             out.extend(self.contextual_callback_signatures(&info.typ));
         }
-        // A dictionary's value contract is not an enumerated named member.
+        // A dictionary or array's value contract is not an enumerated named member.
         // Use its declared value type, not an indexed read (which may add nil).
         if out.is_empty()
             && let Some(value) = self.contextual_table_value(&owner_ty, &key)
@@ -832,6 +845,11 @@ impl<'db> SemanticModel<'db> {
         let key = key.to_index_type()?;
         let owner = self.contextual_alias_target(owner);
         let params = match &owner {
+            LuaType::Array(array) => {
+                return self
+                    .type_check(&key, &LuaType::Integer)
+                    .then(|| array.get_base().clone());
+            }
             LuaType::TableGeneric(params) => params.as_ref(),
             LuaType::Generic(generic) if generic.get_base_type_id().get_name() == "table" => {
                 generic.get_params()
