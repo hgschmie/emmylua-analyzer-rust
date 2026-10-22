@@ -3407,3 +3407,55 @@ fn test_optional_alias_parameter_preserves_generic_binding() {
         .collect();
     assert_eq!(mismatches.len(), 1, "{mismatches:#?}");
 }
+
+#[test]
+fn constructor_nullable_field_contracts() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for field in [
+        "elements table<string, integer>?",
+        "elements? table<string, integer>",
+        "elements OptionalElements",
+        "elements Optional<table<string, integer>>",
+        "elements integer|nil",
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        assert!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::ParamTypeMismatch,
+                &format!(
+                    r#"
+            ---@alias OptionalElements table<string, integer>?
+            ---@alias Optional<T> T|nil
+            ---@class Options
+            ---@field kind string
+            ---@field {field}
+            local Options = {{}}
+            ---@param options Options
+            local function create(options) end
+            create {{kind = "test"}}
+        "#
+                )
+            ),
+            "{field}"
+        );
+    }
+}
+
+#[test]
+fn constructor_required_field_contract_still_checked() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let mut ws = VirtualWorkspace::new();
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::ParamTypeMismatch,
+        r#"
+        ---@alias Elements table<string, integer>
+        ---@class Options
+        ---@field kind string
+        ---@field elements Elements
+        local Options = {}
+        ---@param options Options
+        local function create(options) end
+        create {kind = "test"}
+    "#
+    ));
+}
