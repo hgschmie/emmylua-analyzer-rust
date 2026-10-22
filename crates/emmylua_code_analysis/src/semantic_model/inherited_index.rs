@@ -5,6 +5,13 @@ use super::cache::{CacheEntry, QueryCacheScope, TypeEvaluationScope};
 use super::{SemanticModel, infer::unify, type_check, type_eval};
 use crate::{GenericTplId, LuaType, TypeDefKind};
 
+fn is_standard_table(model: &SemanticModel, id: &crate::LuaTypeDeclId) -> bool {
+    *id == crate::LuaTypeDeclId::global("table")
+        && model
+            .type_def_of(id)
+            .is_none_or(|def| model.is_std_file(def.file_id))
+}
+
 pub(crate) fn dictionaries(model: &SemanticModel<'_>, owner: &LuaType) -> Vec<LuaType> {
     let key = (model.file_id(), owner.clone());
     {
@@ -48,6 +55,7 @@ fn collect(
         return;
     }
     let (def, params) = match owner {
+        LuaType::Object(object) if object.get_index_access().is_empty() => return,
         LuaType::TableGeneric(_) | LuaType::Object(_) => {
             if !out.contains(owner) {
                 out.push(owner.clone());
@@ -55,7 +63,7 @@ fn collect(
             return;
         }
         LuaType::Generic(generic) => {
-            if generic.get_base_type_id().get_name() == "table" {
+            if is_standard_table(model, &generic.get_base_type_id()) {
                 if !out.contains(owner) {
                     out.push(owner.clone());
                 }
@@ -129,7 +137,7 @@ pub(crate) fn lookup(model: &SemanticModel<'_>, owner: &LuaType, key: &LuaType) 
     if !matches!(
         owner,
         LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_)
-    ) || matches!(owner, LuaType::Generic(g) if g.get_base_type_id().get_name() == "table")
+    ) || matches!(owner, LuaType::Generic(g) if is_standard_table(model, &g.get_base_type_id()))
     {
         return None;
     }
@@ -280,17 +288,42 @@ mod field_contract_tests {
         let owner = ws.ty("People");
         let person = ws.ty("Person");
         let model = ws.analysis.semantic_model(file);
-        assert_eq!(
-            lookup(&model, &owner, &LuaType::String),
-            Some(LuaType::from_vec(vec![person, LuaType::Integer]))
-        );
-        assert_eq!(
-            lookup(
-                &model,
-                &owner,
-                &LuaType::StringConst(smol_str::SmolStr::new("count").into())
-            ),
-            Some(LuaType::Integer)
-        );
+        for _ in 0..2 {
+            assert_eq!(
+                lookup(&model, &owner, &LuaType::String),
+                Some(LuaType::from_vec(vec![person.clone(), LuaType::Integer]))
+            );
+            assert_eq!(
+                lookup(
+                    &model,
+                    &owner,
+                    &LuaType::StringConst(smol_str::SmolStr::new("count").into())
+                ),
+                Some(LuaType::Integer)
+            );
+        }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn inherited_fixed_fields_do_not_create_dictionary_contracts() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let file =
+        ws.def("---@alias Fields {foo:string}\n---@class Fixed: Fields\n---@field bar integer");
+    let ty = ws.ty("Fixed");
+    let model = ws.analysis.semantic_model(file);
+    assert!(dictionaries(&model, &ty).is_empty());
+    assert_eq!(lookup(&model, &ty, &LuaType::String), None);
+}
+
+#[cfg(test)]
+#[test]
+fn inherited_dictionary_named_table_requires_standard_identity() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def("---@class table<K,V>\n---@field fixed string");
+    let owner = ws.ty("table<integer,boolean>");
+    let model = ws.analysis.semantic_model(file);
+    assert!(dictionaries(&model, &owner).is_empty());
+    assert_eq!(lookup(&model, &owner, &LuaType::Integer), None);
 }
