@@ -443,7 +443,8 @@ fn numeric_key_expanded_inner(
             .base_types(&def.type_decl_id())
             .iter()
             .any(|ty| matches!(ty, LuaType::Integer | LuaType::Number)),
-        TypeDefKind::Enum => false,
+        // An enum's values determine whether it can index a numeric collection.
+        TypeDefKind::Enum => is_compatible(semantic_model, ty, &LuaType::Number),
     }
 }
 
