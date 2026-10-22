@@ -203,11 +203,11 @@ mod tests {
     const MIXED_UNUSED: &str = "local C = {}\nfunction C:run(argument)\n    local value = 1\nend";
 
     #[test]
-    fn test_unused_self_configuration_is_independent() {
+    fn test_unused_self_configuration_respects_unused_group() {
         for (disabled, expected_unused, expected_self) in [
             (vec![], 2, 1),
             (vec!["unused-self"], 2, 0),
-            (vec!["unused"], 0, 1),
+            (vec!["unused"], 0, 0),
             (vec!["unused", "unused-self"], 0, 0),
         ] {
             let config: Emmyrc = serde_json::from_value(serde_json::json!({
@@ -233,41 +233,102 @@ mod tests {
 
     #[test]
     fn test_unused_self_annotation_suppression() {
-        for annotation in [
-            "---@diagnostic disable: unused-self",
-            "---@diagnostic disable-next-line: unused-self",
-        ] {
-            let source = format!("local C = {{}}\n{annotation}\nfunction C:run(argument) end");
+        for (code, expected_unused) in [("unused", 0), ("unused-self", 1)] {
+            for action in ["disable", "disable-next-line"] {
+                let source = format!(
+                    "local C = {{}}\n---@diagnostic {action}: {code}\nfunction C:run(argument) end"
+                );
+                let diags = check_source(&source);
+                assert_eq!(
+                    count_by_code(&diags, DiagnosticCode::Unused),
+                    expected_unused,
+                    "{source}: {diags:?}"
+                );
+                assert_eq!(
+                    count_by_code(&diags, DiagnosticCode::UnusedSelf),
+                    0,
+                    "{source}: {diags:?}"
+                );
+            }
+            let source = format!(
+                "local C = {{}}\nfunction C:run(argument) end ---@diagnostic disable-line: {code}"
+            );
             let diags = check_source(&source);
             assert_eq!(
                 count_by_code(&diags, DiagnosticCode::Unused),
-                1,
-                "{diags:?}"
+                expected_unused,
+                "{source}: {diags:?}"
             );
-            assert!(!diags.iter().any(|d| d.code == DiagnosticCode::UnusedSelf));
+            assert_eq!(
+                count_by_code(&diags, DiagnosticCode::UnusedSelf),
+                0,
+                "{source}: {diags:?}"
+            );
         }
-        let diags = check_source(
-            "local C = {}\nfunction C:run(argument) end ---@diagnostic disable-line: unused-self",
-        );
-        assert_eq!(
-            count_by_code(&diags, DiagnosticCode::Unused),
-            1,
-            "{diags:?}"
-        );
-        assert!(!diags.iter().any(|d| d.code == DiagnosticCode::UnusedSelf));
+    }
+
+    #[test]
+    fn test_unused_self_enable_respects_unused_suppression() {
+        for (disabled, enabled, annotation, expected_unused, expected_self) in [
+            (vec!["unused"], vec!["unused-self"], "", 0, 0),
+            (
+                vec!["unused"],
+                vec![],
+                "---@diagnostic enable: unused-self\n",
+                0,
+                0,
+            ),
+            (
+                vec![],
+                vec![],
+                "---@diagnostic disable: unused\n---@diagnostic enable: unused-self\n",
+                0,
+                0,
+            ),
+            (
+                vec!["unused"],
+                vec![],
+                "---@diagnostic enable: unused\n",
+                2,
+                1,
+            ),
+            (
+                vec!["unused", "unused-self"],
+                vec![],
+                "---@diagnostic enable: unused\n",
+                2,
+                0,
+            ),
+        ] {
+            let config: Emmyrc = serde_json::from_value(serde_json::json!({
+                "diagnostics": { "disable": disabled, "enables": enabled }
+            }))
+            .unwrap();
+            let diags = check_source_with_emmyrc(&format!("{annotation}{MIXED_UNUSED}"), config);
+            assert_eq!(
+                count_by_code(&diags, DiagnosticCode::Unused),
+                expected_unused,
+                "{annotation}: {diags:?}"
+            );
+            assert_eq!(
+                count_by_code(&diags, DiagnosticCode::UnusedSelf),
+                expected_self,
+                "{annotation}: {diags:?}"
+            );
+        }
     }
 
     #[test]
     fn test_unused_self_file_enable_overrides_disabled_checker() {
         let config: Emmyrc = serde_json::from_value(serde_json::json!({
-            "diagnostics": { "disable": ["unused", "unused-self"] }
+            "diagnostics": { "disable": ["unused-self"] }
         }))
         .unwrap();
         let diags = check_source_with_emmyrc(
             &format!("---@diagnostic enable: unused-self\n{MIXED_UNUSED}"),
             config,
         );
-        assert_eq!(count_by_code(&diags, DiagnosticCode::Unused), 0);
+        assert_eq!(count_by_code(&diags, DiagnosticCode::Unused), 2);
         assert_eq!(
             diags
                 .iter()

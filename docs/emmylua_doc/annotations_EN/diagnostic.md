@@ -120,8 +120,8 @@ local json = require("external-json-lib")
 
 ## Unused variables and implicit self
 
-`unused` reports unused local variables and explicit parameters. `unused-self`
-reports only the implicit `self` parameter introduced by a colon method definition,
+`unused` controls all unused diagnostics, including unused implicit self.
+`unused-self` reports only the implicit `self` parameter introduced by a colon method definition,
 such as `function C:run() end`. Both diagnostics default to hint severity and mark
 the unused token as unnecessary.
 
@@ -146,6 +146,8 @@ end
 ```
 
 An explicit parameter named `self` in `function C.run(self) end` still uses
-`unused`. Existing settings or annotations that disable `unused` no longer
-suppress unused implicit self; list both `unused` and `unused-self` to suppress
-both kinds.
+`unused`. Disabling `unused` suppresses both categories, while disabling only
+`unused-self` retains other unused diagnostics. This applies to project settings
+and file/line diagnostic annotations, so existing `unused` suppressions keep
+their behavior. Enabling `unused-self` does not override a disabled `unused`
+category; the parent category must also be enabled.
