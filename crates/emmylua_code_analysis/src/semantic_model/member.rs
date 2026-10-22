@@ -85,7 +85,6 @@ fn find_member_in_owner(
                 }
             }
         }
-        return None;
     }
     for member_ref in model.members_of_owner(owner).iter() {
         if member_ref_matches_key(model, &member_ref, key) {
@@ -181,6 +180,24 @@ fn direct_member_info(
     prefix_type: &LuaType,
     key: &LuaMemberKey,
 ) -> Option<MemberInfo> {
+    // Alias members use the shared lazy head expansion below. Eager dictionary
+    // expansion here would re-enter an alias whose fields are being compared.
+    if (matches!(prefix_type, LuaType::TableGeneric(_) | LuaType::Object(_))
+        || matches!(prefix_type, LuaType::Generic(generic)
+            if generic.get_base_type_id() == crate::LuaTypeDeclId::global("table")
+                && model.type_def_of(&generic.get_base_type_id())
+                    .is_none_or(|def| model.is_std_file(def.file_id))))
+        && let Some(key_type) = super::dictionary::key_type(key)
+        && let Some(typ) = super::dictionary::lookup(model, prefix_type, &key_type, true)
+    {
+        return Some(MemberInfo {
+            key: key.clone(),
+            typ,
+            id: None,
+            file_id: None,
+            is_method: false,
+        });
+    }
     match prefix_type {
         LuaType::Ref(id) | LuaType::Def(id) => {
             let def = model.type_def_of(id)?;
@@ -341,6 +358,31 @@ pub(crate) fn member_info_impl(
     {
         return Some(info);
     }
+    // An index signature is a fallback: explicit inherited and runtime members
+    // must take precedence over a broad key domain such as `[string]`.
+    let nominal_id = match prefix_type {
+        LuaType::Ref(id) | LuaType::Def(id) => Some(id.clone()),
+        LuaType::Generic(generic) => Some(generic.get_base_type_id()),
+        _ => None,
+    };
+    if nominal_id
+        .and_then(|id| model.type_def_of(&id))
+        .is_some_and(|def| def.kind == TypeDefKind::Class)
+        && let Some(key_type) = key.to_index_type()
+        && let Some(info) = model
+            .applicable_index_infos(prefix_type, &key_type)
+            .ok()?
+            .into_iter()
+            .next()
+    {
+        return Some(MemberInfo {
+            key: key.clone(),
+            typ: info.value_type,
+            id: info.id,
+            file_id: info.file_id,
+            is_method: false,
+        });
+    }
     // An anonymous table literal can supply missing members through the
     // `__index` function in `setmetatable(t, { __index = function ... end })`:
     // Lua passes the access key to that function, and its return type is the member type.
@@ -349,7 +391,7 @@ pub(crate) fn member_info_impl(
         && let Some(ret) = match &index_info.typ {
             LuaType::DocFunction(fun) => Some(fun.get_ret().clone()),
             LuaType::Function | LuaType::Signature(_) => None,
-            _ => None,
+            _ => member_info(model, &index_info.typ, key).map(|info| info.typ),
         }
     {
         return Some(MemberInfo {
