@@ -825,3 +825,99 @@ optional_key = nil
         ));
     }
 }
+
+#[test]
+fn table_index_constructor_literal_string_keys() {
+    for enabled in [false, true] {
+        for (entry, accepted) in [
+            ("startup = 'ok'", true),
+            ("['startup'] = 'ok'", true),
+            (r"['\x73tartup'] = 'ok'", true),
+            ("[('startup')] = 'ok'", true),
+            ("runtime = nil", true),
+            ("startup = false", false),
+            ("invalid = 'ok'", false),
+        ] {
+            let mut ws = workspace(enabled);
+            let mut config = ws.get_emmyrc();
+            config.strict.doc_base_const_match_base_type = false;
+            ws.update_emmyrc(config);
+            let source = format!(
+                "---@alias SettingGroupKey 'startup'|'runtime'\n---@type table<SettingGroupKey, string>\nlocal settings = {{ {entry} }}"
+            );
+            assert_eq!(
+                ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
+                accepted,
+                "strict_index={enabled}: {source}"
+            );
+        }
+    }
+}
+
+#[test]
+fn table_index_constructor_literal_integer_keys() {
+    for enabled in [false, true] {
+        for (entry, accepted) in [
+            ("[1] = 'ok'", true),
+            ("[0x1] = 'ok'", true),
+            ("[1.0] = 'ok'", true),
+            ("'first', 'second'", true),
+            ("[2] = nil", true),
+            ("[1] = false", false),
+            ("[3] = 'invalid'", false),
+            ("'first', 'second', 'invalid'", false),
+            ("[1.5] = 'invalid'", false),
+        ] {
+            let mut ws = workspace(enabled);
+            let mut config = ws.get_emmyrc();
+            config.strict.doc_base_const_match_base_type = false;
+            ws.update_emmyrc(config);
+            let source = format!(
+                "---@alias SettingIndex 1|2\n---@type table<SettingIndex, string>\nlocal settings = {{ {entry} }}"
+            );
+            assert_eq!(
+                ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
+                accepted,
+                "strict_index={enabled}: {source}"
+            );
+        }
+    }
+}
+
+#[test]
+fn table_index_constructor_cross_file_enum_keys() {
+    for enabled in [false, true] {
+        for (key, value, accepted) in [
+            ("startup", "false", true),
+            ("['startup']", "false", true),
+            ("runtime", "false", true),
+            ("invalid", "false", false),
+            ("startup", "42", false),
+        ] {
+            let mut ws = workspace(enabled);
+            let mut config = ws.get_emmyrc();
+            config.strict.doc_base_const_match_base_type = false;
+            ws.update_emmyrc(config);
+            ws.def(
+                r#"
+                ---@enum SettingGroupName
+                local Groups = { startup = 'startup', runtime = 'runtime' }
+                ---@class SettingDefinition
+                ---@field key string
+                ---@field value boolean
+                ---@alias SettingsGroup table<string, SettingDefinition>
+                ---@alias ModSettings table<SettingGroupName, SettingsGroup>
+                return Groups
+                "#,
+            );
+            let source = format!(
+                "---@type ModSettings\nlocal settings = {{ {key} = {{ example = {{ key = 'example', value = {value} }} }} }}"
+            );
+            assert_eq!(
+                ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
+                accepted,
+                "strict_index={enabled}: {source}"
+            );
+        }
+    }
+}

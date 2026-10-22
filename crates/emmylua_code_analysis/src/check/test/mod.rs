@@ -14,6 +14,7 @@ mod circle_doc_class_test;
 mod code_style;
 mod code_style_test;
 mod constructor_call_test;
+mod constructor_key_literals_test;
 mod dependent_call_test;
 mod deprecated_test;
 mod disable_line_test;

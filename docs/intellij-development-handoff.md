@@ -1,3 +1,27 @@
+# UP-016 constructor literal keys — 2026-10-21
+
+Amendment `7ec0b234` on `fix/nullable-table-index` preserves concrete constructor
+keys when selecting value contracts. Named/quoted strings, numeric literals and
+implicit list positions retain their identity; integral float keys normalize to
+the same integer key. Dynamic expressions keep their inferred type.
+
+The false expected-nil warning in train-tracker lib/settings.lua came from work's
+UP-016/directional-field constructor integration (`b04690cf`) passing a widened
+string key to finite enum matching. The standalone amendment also repairs skipped
+value checks in literal-key object index signatures; both regression tests fail
+before the fix. All 2,587 standalone workspace tests, Clippy and rustfmt pass.
+
+Integration keeps the existing dictionary/read-write behavior, enum compatibility
+and all other patches. Three additional work tests reproduce the actual constructor
+failure, checking string/number literal unions and cross-file enum keys with nested
+class values, valid/invalid entries and nil omissions under both strict-index modes.
+All 3,075 combined workspace tests pass. Final Clippy/rustfmt and packaged
+build194 receipts live in workspace
+`upstream/memory/TRAIN_TRACKER_SETTINGS_2026-10-21.md`.
+
+Only EmmyLua2 is rebuilt; FDE's development analyzer pin is updated after package
+validation. Preserve FDE/LSP4IJ archives. No push or new PR.
+
 # UP-089 array navigation amendment — 2026-10-21
 
 Amendment `f8bde6ce` on `fix/table-field-hover-context` excludes implicit

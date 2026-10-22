@@ -785,10 +785,23 @@ fn check_table_value(
 }
 
 fn index_key_type(semantic_model: &SemanticModel<'_>, key: &LuaIndexKey) -> LuaType {
+    // Preserve exact keys when selecting a finite index signature or dictionary
+    // contract. Widening `startup` to string loses its enum/union membership.
+    if let Some(key) = static_member_key(semantic_model, key) {
+        match key {
+            LuaMemberKey::Name(name) => return LuaType::StringConst(name.into()),
+            LuaMemberKey::Integer(value) => return LuaType::IntegerConst(value),
+            _ => {}
+        }
+    }
     match key {
-        LuaIndexKey::Name(_) | LuaIndexKey::String(_) => LuaType::String,
-        LuaIndexKey::Integer(_) | LuaIndexKey::Idx(_) => LuaType::Integer,
+        LuaIndexKey::Integer(number) => match number.get_number_value() {
+            NumberResult::Uint(value) => LuaType::IntegerConst(value as i64),
+            NumberResult::Float(value) => LuaType::FloatConst(value),
+            _ => LuaType::Number,
+        },
         LuaIndexKey::Expr(expr) => semantic_model.type_of_expr(expr.get_syntax_id()),
+        _ => LuaType::Unknown,
     }
 }
 
