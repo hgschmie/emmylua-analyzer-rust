@@ -16,7 +16,9 @@ mod array;
 #[cfg(test)]
 mod callable_tests;
 mod guards;
+mod loop_carried;
 mod member_call_effects;
+use loop_carried::loop_carried_type;
 
 use std::collections::HashSet;
 use std::ops::ControlFlow;
@@ -88,6 +90,7 @@ pub fn type_of_decl_at(model: &SemanticModel, decl: &SemanticId, offset: TextSiz
     // the flow value is exactly the declared value. This keeps straight-line
     // initialization sections from walking O(offset) CFG nodes for every read.
     if let Some(decl_start) = decl_owner_syntax_start(model, decl)
+        && (!tree.has_complex_control() || !tree.has_decl_assignment(decl))
         && tree.latest_decl_assignment(decl, offset).is_none()
         && !tree.has_flow_event_between(decl_start, offset, true)
     {
@@ -2283,6 +2286,29 @@ fn trace_decl_uncached(
                     if !is_decl_self_assignment(model, decl, *value_syntax) {
                         break 'trace Some(LuaType::Unknown);
                     }
+                }
+            }
+        }
+        // An independent assignment in this iteration overwrites the loop-entry
+        // state. Keep its literal precision instead of widening through the loop.
+        if matches!(purpose, DeclTracePurpose::ReadValue)
+            && !frames
+                .iter()
+                .rev()
+                .find_map(|frame| match frame {
+                    DeclTraceFrame::Assignment(frame) => Some(frame),
+                    _ => None,
+                })
+                .is_some_and(|frame| {
+                    !loop_carried::references_decl(model, frame.value_syntax, decl)
+                })
+        {
+            for effect in tree.get_flow_effects(current) {
+                if let FlowEffect::LoopEntry(syntax) = effect
+                    && let Some(entry) = first_antecedent(tree, node.antecedent.as_ref())
+                    && let Some(typ) = loop_carried_type(model, decl, *syntax, entry)
+                {
+                    break 'trace Some(finalize(model, typ, path));
                 }
             }
         }

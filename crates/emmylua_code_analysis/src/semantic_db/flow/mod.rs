@@ -27,6 +27,10 @@ pub use flow_tree::*;
 /// Merges a label's incoming flow (folds back predecessors), matching the old `bind_analyze::finish_flow_label`.
 fn finish_flow_label(binder: &mut FlowBinder, label: FlowId, default: FlowId) -> FlowId {
     if let Some(flow_node) = binder.get_flow(label) {
+        // Even a single entry carries loop mutation information.
+        if flow_node.kind.is_loop_label() {
+            return label;
+        }
         if let Some(antecedent) = &flow_node.antecedent {
             if let FlowAntecedent::Single(existing_id) = antecedent {
                 return *existing_id;
