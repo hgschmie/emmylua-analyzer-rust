@@ -102,6 +102,22 @@ fn test_inferred_computed_table_writes() {
         ),
         ("local seen = {}; local observed = seen[key]", LuaType::Nil),
         (
+            "local seen = {}; local other = {}; local observed = seen[next_key(other)]",
+            LuaType::Nil,
+        ),
+        (
+            "for i = 1, 3 do local seen = {}; local observed = seen[key]; populate(seen) end",
+            LuaType::Nil,
+        ),
+        (
+            "local seen = {}; local other = {}; populate(other); local observed = seen[key]",
+            LuaType::Nil,
+        ),
+        (
+            "local seen = {}; print('unrelated'); seen[key] = true; local observed = seen[key]",
+            LuaType::BooleanConst(true),
+        ),
+        (
             "local seen = {}; seen[key] = true; seen[key] = nil; local observed = seen[key]",
             LuaType::Nil,
         ),
@@ -331,4 +347,55 @@ fn test_inferred_computed_table_writes_written_key_domains() {
             "{other_type}"
         );
     }
+}
+
+#[test]
+fn test_inferred_computed_table_writes_open_empty_tables() {
+    use crate::{LuaType, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    let mut failures = Vec::new();
+    for body in [
+        "local seen = {}; populate(seen); local function probe(key) local observed = seen[key] end",
+        "local parent = {seen = {}}; populate(parent.seen); local function probe(key) local observed = parent.seen[key] end",
+        "local key = 'Foobar'; local seen = {}; populate(seen); local observed = seen[key]",
+        "local key = 'Foobar'; local parent = {seen = {}}; populate(parent.seen); local observed = parent.seen[key]",
+        "local key = 'Foobar'; local parent = {seen = {}}; populate(parent); local observed = parent.seen[key]",
+        "local key = 'Foobar'; local seen = {}; local alias = seen; populate(alias); local observed = seen[key]",
+        "local key = 'Foobar'; local seen = {}; local result = populate(seen); local observed = seen[key]",
+        "local key = 'Foobar'; local seen = {}; if populate(seen) then end; local observed = seen[key]",
+        "local key = 'Foobar'; local seen = {}; seen:populate(); local observed = seen[key]",
+        "---@type table?\nlocal alias; local function fill() populate(alias) end; local seen = {}; alias = seen; fill(); local key = 'Foobar'; local observed = seen[key]",
+        "local seen; local key = 'Foobar'; for i = 1, 2 do if not seen then seen = {} end; local observed = seen[key]; populate(seen) end",
+        "local seen = {}; local key = 'Foobar'; ::again:: local observed = seen[key]; populate(seen); goto again",
+        "local seen; local function fill() populate(seen) end; seen = {}; fill(); local key = 'Foobar'; local observed = seen[key]",
+        "---@param value table\n---@return 'Foobar'\nlocal function populate_and_key(value) value.Foobar = true; return 'Foobar' end\nlocal seen = {}; local observed = seen[populate_and_key(seen)]",
+        "---@param value table\n---@return 'Foobar'\nlocal function populate_and_key(value) value.Foobar = true; return 'Foobar' end\nlocal seen = {}; local alias = seen;\n---@cast alias table\nlocal observed = seen[populate_and_key(alias)]",
+        "local key = 'Foobar'; local seen = {};\n---@type table\nlocal alias = seen; populate(alias); local observed = seen[key]",
+        "local key = 'Foobar'; local seen = {}; local alias = seen;\n---@cast alias table\npopulate(alias); local observed = seen[key]",
+        "local key = 'Foobar'; local seen = {}; local alias = seen; local second = alias;\n---@cast second table\npopulate(second); local observed = seen[key]",
+        "---@type boolean\nlocal flag = ...; local key = 'Foobar'; local seen = {}; populate(flag and seen or nil); local observed = seen[key]",
+        "---@type boolean\nlocal flag = ...; local key = 'Foobar'; local seen = {}; local box = {}; box.inner = flag and seen or nil; populate(box); local observed = seen[key]",
+        "local key = 'Foobar'; local seen = {}; for i = 1, 2 do local observed = seen[key]; populate(seen) end",
+        "local key = 'Foobar'; local seen = {}; stored = seen; populate(); local observed = seen[key]",
+        "local key = 'Foobar'; local seen = {}; store.inner = seen; populate(store); local observed = seen[key]",
+        "local key = 'Foobar'; local seen = {}; populate({inner = seen}); local observed = seen[key]",
+        "local key = 'Foobar'; local seen = {}; local box = {inner = seen}; populate(box); local observed = seen[key]",
+        "local key = 'Foobar'; local seen = {}; local function callback() populate(seen) end; callback(); local observed = seen[key]",
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def(body);
+        let model = ws.analysis.semantic_model(file);
+        let pos = body.find("local observed = ").unwrap() + "local observed = ".len();
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .find(|index| u32::from(index.get_position()) as usize == pos)
+            .unwrap();
+        let ty = model.type_of_expr_at(index.get_syntax_id(), index.get_position());
+        if ty != LuaType::Unknown {
+            failures.push(format!("{body}: {ty:?}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
