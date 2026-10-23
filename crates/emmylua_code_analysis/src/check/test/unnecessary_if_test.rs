@@ -3,6 +3,107 @@ mod test {
     use crate::{DiagnosticCode, VirtualWorkspace};
 
     #[test]
+    fn test_mutable_capture_preserves_completed_normalization() {
+        for normalization in [
+            "invert = invert or false",
+            "if invert == nil then invert = false end",
+        ] {
+            let source = format!(
+                r#"
+                ---@param invert boolean?
+                local function factory(invert)
+                    {normalization}
+                    ---@return boolean
+                    local function callback() return invert end
+                    return callback
+                end
+            "#
+            );
+            let mut ws = VirtualWorkspace::new();
+            assert!(
+                ws.has_no_diagnostic(DiagnosticCode::ReturnTypeMismatch, &source),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_mutable_capture_keeps_later_and_deferred_writes() {
+        for source in [
+            r#"
+            ---@type boolean?
+            local invert
+            local function factory()
+                invert = nil
+                ---@return boolean
+                local function callback() return invert end
+                invert = false
+                return callback
+            end
+            "#,
+            r#"
+            ---@param invert boolean?
+            local function factory(invert)
+                invert = invert or false
+                ---@return boolean
+                local function callback() return invert end
+                invert = nil
+                return callback
+            end
+            "#,
+            r#"
+            ---@param invert boolean?
+            local function factory(invert)
+                local function clear() invert = nil end
+                invert = invert or false
+                ---@return boolean
+                local function callback() return invert end
+                return callback, clear
+            end
+            "#,
+            r#"
+            ---@param invert boolean?
+            local function factory(invert)
+                local callbacks = {}
+                for i = 1, 2 do
+                    invert = nil
+                    callbacks[i] = function() return invert end
+                    invert = false
+                    ---@return boolean
+                    local function callback() return invert end
+                    callbacks[i + 2] = callback
+                end
+                return callbacks
+            end
+            "#,
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            assert!(
+                !ws.has_no_diagnostic(DiagnosticCode::ReturnTypeMismatch, source),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_mutable_capture_preserves_normalized_local() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ReturnTypeMismatch,
+            r#"
+            local function factory()
+                ---@type boolean?
+                local invert
+                invert = false
+                ---@return boolean
+                local function callback() return invert end
+                return callback
+            end
+        "#
+        ));
+    }
+
+    #[test]
     fn test_mutable_capture_across_callback_invocations() {
         let mut ws = VirtualWorkspace::new();
         assert!(ws.has_no_diagnostic(

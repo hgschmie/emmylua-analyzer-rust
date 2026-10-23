@@ -3,6 +3,7 @@
 use super::{FlowEffect, FlowTree, LuaClosureId, LuaType, SemanticId, SemanticModel};
 use crate::DeclKind;
 use crate::semantic_model::cache::CacheEntry;
+use emmylua_parser::{LuaSyntaxId, LuaSyntaxKind};
 
 pub(super) fn entry_type(
     model: &SemanticModel,
@@ -15,6 +16,11 @@ pub(super) fn entry_type(
     if closure.get_range().contains_range(info.name_range)
         || !matches!(info.kind, DeclKind::Local { .. } | DeclKind::Param)
         || !tree.has_decl_assignment(decl)
+    {
+        return None;
+    }
+    if assignments_finished_before_capture(model, tree, decl, info.owner_syntax, closure)
+        == Some(true)
     {
         return None;
     }
@@ -79,6 +85,53 @@ pub(super) fn entry_type(
     let entry = CacheEntry::finish(result.clone(), cache.is_complete(revision));
     cache.captured_decl.insert(key, entry);
     Some(result)
+}
+
+/// Retain definition-time flow only when all writes belong to the same invocation
+/// and finish before the closure is created. Deferred writers and repeatable
+/// control flow must still use the mutable-capture summary.
+fn assignments_finished_before_capture(
+    model: &SemanticModel,
+    tree: &FlowTree,
+    decl: &SemanticId,
+    owner: Option<LuaSyntaxId>,
+    closure: LuaClosureId,
+) -> Option<bool> {
+    let root = model.syntax_tree()?.get_red_root();
+    let closure_node = LuaSyntaxId::new(LuaSyntaxKind::ClosureExpr.into(), closure.get_range())
+        .to_node_from_root(&root)?;
+    let enclosing = LuaClosureId::from_node(&closure_node.parent()?);
+    let declaration = owner?.to_node_from_root(&root)?;
+    if LuaClosureId::from_node(&declaration) != enclosing {
+        return Some(false);
+    }
+    for &(position, flow) in tree.decl_assignments(decl) {
+        if position >= closure.get_position() || tree.is_loop_reachable(flow) {
+            return Some(false);
+        }
+        let super::FlowNodeKind::Assignment(assignment) = &tree.get_flow_node(flow)?.kind else {
+            return Some(false);
+        };
+        let node = assignment.get_syntax_id().to_node_from_root(&root)?;
+        if LuaClosureId::from_node(&node) != enclosing
+            || node
+                .ancestors()
+                .map(|node| LuaSyntaxKind::from(node.kind()))
+                .take_while(|kind| *kind != LuaSyntaxKind::ClosureExpr)
+                .any(|kind| {
+                    matches!(
+                        kind,
+                        LuaSyntaxKind::WhileStat
+                            | LuaSyntaxKind::RepeatStat
+                            | LuaSyntaxKind::ForStat
+                            | LuaSyntaxKind::ForRangeStat
+                    )
+                })
+        {
+            return Some(false);
+        }
+    }
+    Some(true)
 }
 
 fn widen(ty: LuaType) -> LuaType {
