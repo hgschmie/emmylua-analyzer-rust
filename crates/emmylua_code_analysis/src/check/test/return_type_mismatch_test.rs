@@ -5,6 +5,36 @@ mod tests {
     use emmylua_parser::{LuaAstNode, LuaClosureExpr};
 
     #[test]
+    fn test_inferred_signature_flow_preserves_uncertain_return_branches() {
+        for (annotation, expected) in [("any", LuaType::Any), ("unknown", LuaType::Unknown)] {
+            let mut ws = VirtualWorkspace::new();
+            let file = ws.def(&format!(
+                r#"
+                ---@param flag boolean
+                ---@param value {annotation}
+                local function callback(flag, value)
+                    if flag then return true end
+                    return value
+                end
+            "#
+            ));
+            let model = ws.analysis.semantic_model(file);
+            let callback = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaClosureExpr>()
+                .next()
+                .unwrap();
+            let inferred = model.type_of_signature(callback.get_syntax_id()).unwrap();
+            assert_eq!(
+                inferred.get_ret(),
+                &LuaType::from_vec(vec![LuaType::Boolean, expected]),
+                "{inferred:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_inferred_signature_flow_normalizes_optional_boolean() {
         for body in [
             "return invert or false",
