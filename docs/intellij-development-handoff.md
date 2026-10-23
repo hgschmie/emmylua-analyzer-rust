@@ -1,3 +1,44 @@
+# Dollies truthiness and numeric enum contracts — 2026-10-23
+
+Build203 preserves analyzer202 `3219ece3` and every active patch. Reviewed UP-130
+`6719406b` maps to signed work `f0996e7e`, retaining UP-016's two-stage guarded
+checker while alias-expanding both semantic decisions and preserving unrestricted
+receiver fields. UP-131 `2a5e5384` maps to signed work `324b3b9a`, sharing one
+bounded integer enum/alias proof across arithmetic and numeric loops, retaining
+UP-062 runtime enum-owner/literal projection and explicit nullable member contracts.
+
+Additive work-only `0aa9fa75` restores the earlier multiline-union arm omitted in
+the first helper adaptation. An explicit representation/operator/loop-contract test
+fails before restoration; source-level multiline controls pass before and after
+because parser paths normalize ordinary Union. All10 numeric-alias and8 enum
+focused groups pass, preserving mixed number/string/nil and operator negatives.
+All12 falsy-receiver groups pass. Exact source/work interoperability review passes.
+
+Final code `0aa9fa75` passes **3,243 all-feature Rust tests**:2,142 analysis,
+354 language server,495 formatter,191 parser,51 configuration,10 schema; zero
+failures/ignored/filtered. All-target/all-feature workspace Clippy with -D warnings
+and rustfmt pass. This handoff changes documentation only after tested source.
+Prior35 client tests are reused with exact source/Gradle input equivalence.
+
+The matching toolkit UP-129 source `732c89b0` is integrated as signed
+`1c1db13d8543714bbf4471ff9db7c63bea2238fc`, exact producer tree. Only EmmyLua
+numeric direction/transport_line groups emit named integer aliases, @type and nil;
+no runtime numeric values are invented. Fresh isolated typecheck, changed-file
+lint, CLI build and four docs controls pass; full105 source evidence retains one
+verified baseline settings-list failure and two skips, plus four unchanged
+whole-repository lint errors. FDE privately consumes that exact source, generates
+immutable current2.1.23 API, and owns version0.9.4-dev and its distribution.
+
+Early source/new-API proof clears both actual files including control251/304 and
+all reported tools sites; old API retains four numeric-model warnings. Final
+packaged193cases/241types/5navigation, unchanged prior202 fixtures, LTN and FDE
+unit/cache/API/native20/archive gates remain required before coordinated delivery.
+Exact artifacts and completed owner receipts are in workspace
+`memory/findings/F-20261023-124808-dollies-flow-enum-build/integration-receipt.md`.
+Only macOS arm64 receives the custom analyzer. Original mods/live API caches are
+read-only; unrelated model/pure-self findings remain deferred. Local signed work
+only; no push, PR or IDE installation.
+
 # Callable compatibility and captured signatures — 2026-10-23
 
 Build202 preserves build201 `98696a91` as an ancestor and every active patch.
