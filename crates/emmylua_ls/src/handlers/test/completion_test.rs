@@ -3042,4 +3042,29 @@ items.<??>
         ));
         Ok(())
     }
+    #[gtest]
+    fn test_union_projection_member_completion_retains_available_fields() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        let items = get_completion_items(
+            &mut ws,
+            r#"
+            ---@class Present
+            ---@field player_index integer
+            ---@field handle fun(value: integer): boolean
+            ---@class Absent
+            ---@alias Event Present|Absent
+            ---@param event Event
+            local function run(event) event.<??> end
+        "#,
+            CompletionTriggerKind::INVOKED,
+        )?;
+        for label in ["player_index", "handle"] {
+            assert_eq!(
+                items.iter().filter(|item| item.label == label).count(),
+                1,
+                "{items:?}"
+            );
+        }
+        Ok(())
+    }
 }

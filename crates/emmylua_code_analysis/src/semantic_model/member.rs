@@ -301,6 +301,21 @@ pub(crate) fn member_info_impl(
     prefix_type: &LuaType,
     key: &LuaMemberKey,
 ) -> Option<MemberInfo> {
+    // Alias expansion must use the complete projection, including missing union alternatives.
+    let alias_id = match prefix_type {
+        LuaType::Ref(id) | LuaType::Def(id) => Some(id.clone()),
+        LuaType::Generic(generic) => Some(generic.get_base_type_id()),
+        _ => None,
+    };
+    if alias_id
+        .and_then(|id| model.type_def_of(&id))
+        .is_some_and(|def| def.kind == TypeDefKind::Alias)
+    {
+        return with_expanded_alias(model, prefix_type, |expanded| {
+            member_info(model, expanded, key)
+        })
+        .flatten();
+    }
     // Single-key direct lookup avoids collecting every member of a type when only one key is needed.
     if let Some(info) = direct_member_info(model, prefix_type, key) {
         return Some(info);
@@ -335,10 +350,53 @@ pub(crate) fn member_info_impl(
             is_method: first.as_ref().is_some_and(|info| info.is_method),
         });
     }
-    if let Some(info) = member_infos_with_key(model, prefix_type, key)
+    if let Some(mut info) = member_infos_with_key(model, prefix_type, key)
         .into_iter()
         .find(|info| &info.key == key)
     {
+        if let LuaType::Union(union) = prefix_type
+            && union.iter().any(|component| {
+                if component.is_nil() {
+                    return false;
+                }
+                let revision = model.cache.borrow().revision();
+                // An alias to an unloaded definition does not prove absence either.
+                let Some(expanded) =
+                    crate::semantic_model::type_eval::expand_alias_head(model, component)
+                else {
+                    return false;
+                };
+                let unresolved_nominal = match &expanded {
+                    LuaType::Ref(id) | LuaType::Def(id) => model.type_def_of(id).is_none(),
+                    LuaType::Generic(generic) => {
+                        model.type_def_of(&generic.get_base_type_id()).is_none()
+                    }
+                    _ => false,
+                };
+                if unresolved_nominal {
+                    return false;
+                }
+                // Reuse complete per-component projections on subsequent lookups.
+                // The model cache does not publish cycle-limited/provisional results.
+                let component_info = model.member_info(component, key);
+                // Declaration IDs retain inherited optional markers. Synthetic
+                // members carry nullability directly in their projected type.
+                let optional = component_info.as_ref().is_some_and(|info| {
+                    let Some(member_id @ SemanticId::Member(key)) = info.id.as_ref() else {
+                        return false;
+                    };
+                    model
+                        .file_facts_of(key.file_id)
+                        .and_then(|facts| facts.member_by_id(member_id))
+                        .is_some_and(|member| member.is_nullable)
+                });
+                // A cycle-limited query is unresolved, not evidence of an absent field.
+                optional || (component_info.is_none() && model.cache.borrow().is_complete(revision))
+            })
+        {
+            // Preserve overload/member merging, while accounting for absent or optional fields.
+            info.typ = LuaType::from_vec(vec![info.typ, LuaType::Nil]);
+        }
         return Some(info);
     }
     // An anonymous table literal can supply missing members through the
@@ -1318,5 +1376,483 @@ mod tests {
         let map = member_map(&infos);
         assert_eq!(map.get("x"), Some(&LuaType::Number));
         assert_eq!(map.get("y"), Some(&LuaType::String));
+    }
+}
+
+#[cfg(test)]
+mod union_callable_projection {
+    use crate::{DiagnosticCode, LuaType, VirtualWorkspace};
+
+    #[test]
+    fn union_callable_projection_keeps_imported_closure_identity() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def_file("lib.lua", "local lib = {}\n---@param value number\n---@return integer\nfunction lib.round(value) return 1 end\nreturn lib");
+        let file = ws.def("local lib = require('lib')\nlocal alias = lib.round\nlocal result = alias(2.5)\nlocal count = result + 1");
+        let model = ws.analysis.semantic_model(file);
+        for name in ["result", "count"] {
+            let result = model
+                .decls()
+                .unwrap()
+                .iter()
+                .find(|decl| decl.name == name)
+                .unwrap();
+            assert_eq!(
+                model.type_of_decl(&result.id),
+                Some(LuaType::Integer),
+                "{name}"
+            );
+        }
+        let alias = model
+            .decls()
+            .unwrap()
+            .iter()
+            .find(|decl| decl.name == "alias")
+            .unwrap();
+        let ty = model.type_of_decl(&alias.id).unwrap();
+        assert!(!ty.is_nullable(), "{ty:?}");
+        let functions = model.callable_functions_cached(&ty);
+        assert!(
+            !functions.is_empty(),
+            "imported callable lost its signature: {ty:?}"
+        );
+        assert!(
+            functions
+                .iter()
+                .all(|function| function.get_ret() == &LuaType::Integer),
+            "{functions:?}"
+        );
+    }
+
+    #[test]
+    fn union_callable_projection_keeps_typed_alternatives_and_absence() {
+        for (other, nullable, returns) in [
+            ("Second", false, vec![LuaType::Integer, LuaType::String]),
+            ("Empty", true, vec![LuaType::Integer]),
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            let file = ws.def(&format!(
+                r#"
+                ---@class First
+                ---@field round fun(): integer
+                ---@class Second
+                ---@field round fun(): string
+                ---@class Empty
+                local Empty = {{}}
+                ---@param source First|{other}
+                local function run(source)
+                    local alias = source.round
+                    return alias
+                end
+            "#
+            ));
+            let model = ws.analysis.semantic_model(file);
+            let alias = model
+                .decls()
+                .unwrap()
+                .iter()
+                .find(|decl| decl.name == "alias")
+                .unwrap();
+            let ty = model.type_of_decl(&alias.id).unwrap();
+            assert_eq!(ty.is_nullable(), nullable, "{other}: {ty:?}");
+            let functions = model.callable_functions_cached(&ty);
+            for expected in returns {
+                assert!(
+                    functions
+                        .iter()
+                        .any(|function| function.get_ret() == &expected),
+                    "{other}: expected {expected:?}, {ty:?}, {functions:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn union_callable_projection_keeps_explicit_broad_contract() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(
+            r#"
+            ---@class Broad
+            ---@field round function
+            local Broad = {}
+            ---@return integer
+            function Broad.round() return 1 end
+            ---@class Empty
+            local Empty = {}
+            ---@param source Broad|Empty
+            local function run(source)
+                local alias = source.round
+                return alias
+            end
+        "#,
+        );
+        let model = ws.analysis.semantic_model(file);
+        let alias = model
+            .decls()
+            .unwrap()
+            .iter()
+            .find(|decl| decl.name == "alias")
+            .unwrap();
+        let ty = model.type_of_decl(&alias.id).unwrap();
+        assert!(ty.is_nullable(), "{ty:?}");
+        assert!(
+            model.callable_functions_cached(&ty).is_empty(),
+            "explicit broad contract was specialized: {ty:?}"
+        );
+    }
+
+    #[test]
+    fn union_callable_projection_keeps_optional_generic_and_unresolved_alternatives() {
+        for (source_type, nullable, expected_return) in [
+            ("Maybe|Required", true, LuaType::Integer),
+            ("Required|Maybe", true, LuaType::Integer),
+            ("Nullable|Required", true, LuaType::Integer),
+            ("Generic<string>|Empty", true, LuaType::String),
+            ("Unresolved|Required", false, LuaType::Integer),
+            ("Unresolved|Required|Empty", true, LuaType::Integer),
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            let file = ws.def(&format!(
+                r#"
+                ---@class Maybe
+                ---@field round? fun(): integer
+                ---@class Required
+                ---@field round fun(): integer
+                ---@class Nullable
+                ---@field round (fun(): integer)?
+                ---@class Generic<T>
+                ---@field round fun(): T
+                ---@class Empty
+                ---@param source {source_type}
+                local function run(source)
+                    local alias = source.round
+                    return alias
+                end
+            "#
+            ));
+            let model = ws.analysis.semantic_model(file);
+            let alias = model
+                .decls()
+                .unwrap()
+                .iter()
+                .find(|decl| decl.name == "alias")
+                .unwrap();
+            let ty = model.type_of_decl(&alias.id).unwrap();
+            assert_eq!(ty.is_nullable(), nullable, "{source_type}: {ty:?}");
+            let functions = model.callable_functions_cached(&ty);
+            assert!(!functions.is_empty(), "{source_type}: {ty:?}");
+            assert!(
+                functions
+                    .iter()
+                    .all(|function| function.get_ret() == &expected_return),
+                "{source_type}: {functions:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn union_callable_projection_keeps_declared_optional_marker_over_implementation() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(
+            r#"
+            ---@class OptionalImpl
+            ---@field round? fun(): integer
+            local OptionalImpl = {}
+            ---@return integer
+            function OptionalImpl.round() return 1 end
+            ---@class RequiredImpl
+            ---@field round fun(): integer
+            ---@param source RequiredImpl|OptionalImpl
+            local function run(source)
+                local alias = source.round
+                return alias
+            end
+        "#,
+        );
+        let model = ws.analysis.semantic_model(file);
+        let alias = model
+            .decls()
+            .unwrap()
+            .iter()
+            .find(|decl| decl.name == "alias")
+            .unwrap();
+        let ty = model.type_of_decl(&alias.id).unwrap();
+        assert!(
+            ty.is_nullable(),
+            "implementation erased optional declaration: {ty:?}"
+        );
+    }
+
+    #[test]
+    fn union_callable_projection_keeps_argument_diagnostics() {
+        for (argument, valid) in [("2.5", true), ("'invalid'", false)] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            ws.def_file("lib.lua", "local lib = {}\n---@param value number\n---@return integer\nfunction lib.round(value) return 1 end\nreturn lib");
+            let source = format!(
+                "local lib = require('lib')\nlocal alias = lib.round\nlocal result = alias({argument})"
+            );
+            assert_eq!(
+                ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, &source),
+                valid,
+                "{argument}"
+            );
+            assert!(
+                ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+                "false missing member: {argument}"
+            );
+        }
+    }
+}
+#[cfg(test)]
+mod union_projection_review_regressions {
+    use crate::{DiagnosticCode, LuaMemberKey, LuaType, LuaTypeDeclId, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+
+    const TYPES: &str = "---@class Present\n---@field value integer\n---@class Absent\n---@alias Middle Present|Absent\n---@alias Outer Middle";
+
+    #[test]
+    fn union_projection_keeps_optional_synthetic_intersection_members() {
+        let mut ws = VirtualWorkspace::new();
+        // Anonymous object types need a caller model but no named declarations.
+        let file = ws.def("");
+        let cases = [
+            "({value?: integer} & {tag: string}) | {value: integer}",
+            "{value: integer} | ({value?: integer} & {tag: string})",
+        ]
+        .map(|source| ws.ty(source));
+        let model = ws.analysis.semantic_model(file);
+        let expected = LuaType::from_vec(vec![LuaType::Integer, LuaType::Nil]);
+        for typ in cases {
+            for _ in 0..2 {
+                assert_eq!(
+                    model.member_type(&typ, &LuaMemberKey::from("value")),
+                    Some(expected.clone()),
+                    "{typ:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn chained_union_alias_projection_preserves_guarded_arguments() {
+        for (body, valid) in [
+            ("accept(event.value)", false),
+            ("if event.value then accept(event.value) end", true),
+        ] {
+            let source = format!(
+                "{TYPES}\n---@param value integer\nlocal function accept(value) end\n---@param event Outer\nlocal function run(event) {body} end"
+            );
+            let mut ws = VirtualWorkspace::new();
+            assert_eq!(
+                ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, &source),
+                valid,
+                "{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn union_alias_projection_is_identical_on_cold_and_warm_expression_queries() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def(&format!(
+            "{TYPES}\n---@param event Outer\nlocal function run(event) return event.value end"
+        ));
+        let model = ws.analysis.semantic_model(file);
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .next()
+            .unwrap();
+        let expected = LuaType::from_vec(vec![LuaType::Integer, LuaType::Nil]);
+        // The first expression query populates the cache; the second must reuse it safely.
+        for phase in ["cold", "warm"] {
+            assert_eq!(
+                model.type_of_expr_at(index.get_syntax_id(), index.get_position()),
+                expected,
+                "{phase}"
+            );
+        }
+    }
+
+    #[test]
+    fn self_alias_member_projection_terminates_without_false_absence() {
+        for (annotation, expected) in [
+            ("SelfCycle", None),
+            ("RecursivePresent", Some(LuaType::Integer)),
+            ("GenericSelf<string>", None),
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            let file = ws.def(&format!("{TYPES}\n---@alias SelfCycle SelfCycle\n---@alias RecursivePresent RecursivePresent|Present\n---@alias GenericSelf<T> GenericSelf<T>\n---@alias GenericBranch<T> GenericBranch<T>|{{value:T}}"));
+            let ty = ws.ty(annotation);
+            let model = ws.analysis.semantic_model(file);
+            for phase in ["cold", "warm"] {
+                assert_eq!(
+                    model.member_type(&ty, &LuaMemberKey::from("value")),
+                    expected,
+                    "{annotation}: {phase}; input={ty:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unresolved_union_nominal_is_not_a_proven_missing_member() {
+        for reversed in [false, true] {
+            let mut ws = VirtualWorkspace::new();
+            let file = ws.def(TYPES);
+            let model = ws.analysis.semantic_model(file);
+            let missing = LuaTypeDeclId::global("UnloadedDefinition");
+            assert!(model.type_def_of(&missing).is_none());
+            let mut arms = vec![
+                LuaType::Ref(missing),
+                LuaType::Ref(LuaTypeDeclId::global("Present")),
+            ];
+            if reversed {
+                arms.reverse();
+            }
+            let unresolved = LuaType::from_vec(arms.clone());
+            arms.push(LuaType::Ref(LuaTypeDeclId::global("Absent")));
+            let absent = LuaType::from_vec(arms);
+            for phase in ["cold", "warm"] {
+                assert_eq!(
+                    model.member_type(&unresolved, &LuaMemberKey::from("value")),
+                    Some(LuaType::Integer),
+                    "{phase}, reversed={reversed}"
+                );
+                assert_eq!(
+                    model.member_type(&absent, &LuaMemberKey::from("value")),
+                    Some(LuaType::from_vec(vec![LuaType::Integer, LuaType::Nil])),
+                    "{phase}, reversed={reversed}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn nil_union_arm_preserves_member_type_and_receiver_diagnostics() {
+        for (field, nullable) in [("integer", false), ("integer?", true)] {
+            let mut ws = VirtualWorkspace::new();
+            let file = ws.def(&format!("---@class NilOwner\n---@field value {field}"));
+            let model = ws.analysis.semantic_model(file);
+            let owner = LuaType::from_vec(vec![
+                LuaType::Ref(LuaTypeDeclId::global("NilOwner")),
+                LuaType::Nil,
+            ]);
+            let expected = if nullable {
+                LuaType::from_vec(vec![LuaType::Integer, LuaType::Nil])
+            } else {
+                LuaType::Integer
+            };
+            for phase in ["cold", "warm"] {
+                let actual = model
+                    .member_type(&owner, &LuaMemberKey::from("value"))
+                    .unwrap();
+                assert_eq!(actual, expected, "{phase}: {field}");
+                if let LuaType::Union(union) = actual {
+                    assert_eq!(union.into_vec().iter().filter(|ty| ty.is_nil()).count(), 1);
+                }
+            }
+        }
+        for (body, valid) in [
+            ("return event.value + 1", false),
+            ("if event then return event.value + 1 end", true),
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            let source = format!(
+                "{TYPES}\n---@param event Present|nil\nlocal function run(event) {body} end"
+            );
+            assert_eq!(
+                ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+                valid,
+                "{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn union_projection_unresolved_alias_bodies_do_not_manufacture_absence() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def(&format!("{TYPES}\n---@alias MissingBody UndeclaredBody"));
+        let model = ws.analysis.semantic_model(file);
+        let missing = LuaType::Ref(LuaTypeDeclId::global("MissingBody"));
+        let combined = LuaType::from_vec(vec![
+            missing.clone(),
+            LuaType::Ref(LuaTypeDeclId::global("Present")),
+        ]);
+        for _ in 0..2 {
+            assert_eq!(
+                model.member_type(&missing, &LuaMemberKey::from("value")),
+                None
+            );
+            assert_eq!(
+                model.member_type(&combined, &LuaMemberKey::from("value")),
+                Some(LuaType::Integer)
+            );
+        }
+    }
+
+    #[test]
+    fn union_projection_array_and_dynamic_indexes_preserve_existing_paths() {
+        for (annotation, index, guarded, expected) in [
+            (
+                "integer[]|nil",
+                "1",
+                true,
+                LuaType::from_vec(vec![LuaType::Integer, LuaType::Nil]),
+            ),
+            ("Present|Absent", "key", false, LuaType::Unknown),
+        ] {
+            let source = format!(
+                "{TYPES}\n---@param event {annotation}\n---@param key string\nlocal function run(event, key) {}return event[{index}]{} end",
+                if guarded { "if event then " } else { "" },
+                if guarded { " end" } else { "" }
+            );
+            let mut ws = VirtualWorkspace::new();
+            let file = ws.def(&source);
+            let model = ws.analysis.semantic_model(file);
+            let index = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaIndexExpr>()
+                .next()
+                .unwrap();
+            for _ in 0..2 {
+                assert_eq!(
+                    model.type_of_expr_at(index.get_syntax_id(), index.get_position()),
+                    expected,
+                    "{annotation}"
+                );
+            }
+            assert!(
+                ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+                "{annotation}"
+            );
+        }
+    }
+
+    #[test]
+    // Preserve explicit absence using the shared union constructor; normalization
+    // of Unknown belongs to that constructor, not a special case in projection.
+    fn union_projection_unknown_field_remains_conservative() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def("---@class UnknownField\n---@field value unknown\n---@class Empty");
+        let owner = ws.ty("UnknownField|Empty");
+        let model = ws.analysis.semantic_model(file);
+        assert_eq!(
+            model.member_type(&owner, &LuaMemberKey::from("value")),
+            Some(LuaType::from_vec(vec![LuaType::Unknown, LuaType::Nil]))
+        );
+    }
+    #[test]
+    #[ignore = "Known upstream limitation: recursive generic unions with inline object arms"]
+    fn recursive_generic_inline_object_arm_retains_its_member() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def("---@alias Recursive<T> Recursive<T>|{value:T}");
+        let ty = ws.ty("Recursive<integer>");
+        let model = ws.analysis.semantic_model(file);
+        assert_eq!(
+            model.member_type(&ty, &LuaMemberKey::from("value")),
+            Some(LuaType::Integer)
+        );
     }
 }
