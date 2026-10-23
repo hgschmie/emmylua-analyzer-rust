@@ -1205,7 +1205,9 @@ impl<'db> SemanticModel<'db> {
     ) -> Vec<member::MemberInfo> {
         member::member_infos_with_key_mode(self, prefix_type, key, mode)
     }
-    /// Member type for prefix type + key (old `infer_member_type`).
+    /// Project the value of a member at the given key.
+    /// Union projections include nil for known absent or optional non-nil arms;
+    /// member enumeration retains declaration information without that projection.
     pub fn member_type(&self, prefix_type: &LuaType, key: &LuaMemberKey) -> Option<LuaType> {
         member::member_type(self, prefix_type, key)
     }
