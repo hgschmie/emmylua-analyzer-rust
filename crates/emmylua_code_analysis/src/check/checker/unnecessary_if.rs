@@ -35,7 +35,16 @@ fn check_condition(
     semantic_model: &SemanticModel<'_>,
     condition: &emmylua_parser::LuaExpr,
 ) {
-    let expr_type = semantic_model.type_of_expr(condition.get_syntax_id());
+    let expr_type = if is_documented_field(semantic_model, condition) {
+        semantic_model.type_of_expr_at(condition.get_syntax_id(), condition.get_position())
+    } else {
+        semantic_model.type_of_expr(condition.get_syntax_id())
+    };
+    let Some(expr_type) =
+        crate::semantic_model::type_eval::expand_alias_branches(semantic_model, &expr_type)
+    else {
+        return;
+    };
     if expr_type.is_always_truthy() {
         context.add_diagnostic(
             DiagnosticCode::UnnecessaryIf,
@@ -49,4 +58,28 @@ fn check_condition(
             t!("Impossible `if` statement: this condition is always falsy"),
         );
     }
+}
+
+fn is_documented_field(model: &SemanticModel, expr: &emmylua_parser::LuaExpr) -> bool {
+    let emmylua_parser::LuaExpr::IndexExpr(index) = expr else {
+        return false;
+    };
+    let Some(id) = model
+        .resolve_member(index)
+        .and_then(|resolved| resolved.member_id)
+    else {
+        return false;
+    };
+    let crate::SemanticId::Member(key) = &id else {
+        return false;
+    };
+    model
+        .file_facts_of(key.file_id)
+        .and_then(|facts| facts.member_by_id(&id))
+        .is_some_and(|member| {
+            matches!(
+                member.source,
+                crate::semantic_db::def::MemberSource::DocField
+            )
+        })
 }
