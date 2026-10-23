@@ -289,6 +289,9 @@ impl SemanticLocalCache {
             .set(self.incomplete_revision.get().wrapping_add(1));
     }
 
+    /// No incomplete dependency has been observed since this snapshot.
+    /// Successful cache insertions do not advance the revision; recursion and
+    /// budget exhaustion do, so their partial results cannot prove absence.
     pub(crate) fn is_complete(&self, revision: u64) -> bool {
         self.revision() == revision
     }

@@ -359,8 +359,14 @@ pub(crate) fn member_info_impl(
                 if component.is_nil() {
                     return false;
                 }
-                // An unresolved name (including a synthetic module name) does not prove absence.
-                let unresolved_nominal = match component {
+                let revision = model.cache.borrow().revision();
+                // An alias to an unloaded definition does not prove absence either.
+                let Some(expanded) =
+                    crate::semantic_model::type_eval::expand_alias_head(model, component)
+                else {
+                    return false;
+                };
+                let unresolved_nominal = match &expanded {
                     LuaType::Ref(id) | LuaType::Def(id) => model.type_def_of(id).is_none(),
                     LuaType::Generic(generic) => {
                         model.type_def_of(&generic.get_base_type_id()).is_none()
@@ -370,8 +376,9 @@ pub(crate) fn member_info_impl(
                 if unresolved_nominal {
                     return false;
                 }
-                let revision = model.cache.borrow().revision();
                 let component_info = member_info(model, component, key);
+                // Declaration IDs retain inherited optional markers. Synthetic
+                // members carry nullability directly in their projected type.
                 let optional = component_info.as_ref().is_some_and(|info| {
                     let Some(member_id @ SemanticId::Member(key)) = info.id.as_ref() else {
                         return false;
@@ -1647,16 +1654,17 @@ mod union_projection_review_regressions {
         for (annotation, expected) in [
             ("SelfCycle", None),
             ("RecursivePresent", Some(LuaType::Integer)),
+            ("GenericSelf<string>", None),
         ] {
             let mut ws = VirtualWorkspace::new();
-            let file = ws.def(&format!("{TYPES}\n---@alias SelfCycle SelfCycle\n---@alias RecursivePresent RecursivePresent|Present"));
+            let file = ws.def(&format!("{TYPES}\n---@alias SelfCycle SelfCycle\n---@alias RecursivePresent RecursivePresent|Present\n---@alias GenericSelf<T> GenericSelf<T>\n---@alias GenericBranch<T> GenericBranch<T>|{{value:T}}"));
+            let ty = ws.ty(annotation);
             let model = ws.analysis.semantic_model(file);
-            let ty = LuaType::Ref(LuaTypeDeclId::global(annotation));
             for phase in ["cold", "warm"] {
                 assert_eq!(
                     model.member_type(&ty, &LuaMemberKey::from("value")),
                     expected,
-                    "{annotation}: {phase}"
+                    "{annotation}: {phase}; input={ty:?}"
                 );
             }
         }
@@ -1734,5 +1742,90 @@ mod union_projection_review_regressions {
                 "{body}"
             );
         }
+    }
+
+    #[test]
+    fn union_projection_unresolved_alias_bodies_do_not_manufacture_absence() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def(&format!("{TYPES}\n---@alias MissingBody UndeclaredBody"));
+        let model = ws.analysis.semantic_model(file);
+        let missing = LuaType::Ref(LuaTypeDeclId::global("MissingBody"));
+        let combined = LuaType::from_vec(vec![
+            missing.clone(),
+            LuaType::Ref(LuaTypeDeclId::global("Present")),
+        ]);
+        for _ in 0..2 {
+            assert_eq!(
+                model.member_type(&missing, &LuaMemberKey::from("value")),
+                None
+            );
+            assert_eq!(
+                model.member_type(&combined, &LuaMemberKey::from("value")),
+                Some(LuaType::Integer)
+            );
+        }
+    }
+
+    #[test]
+    fn union_projection_array_and_dynamic_indexes_preserve_existing_paths() {
+        for (annotation, index, guarded, expected) in [
+            (
+                "integer[]|nil",
+                "1",
+                true,
+                LuaType::from_vec(vec![LuaType::Integer, LuaType::Nil]),
+            ),
+            ("Present|Absent", "key", false, LuaType::Unknown),
+        ] {
+            let source = format!(
+                "{TYPES}\n---@param event {annotation}\n---@param key string\nlocal function run(event, key) {}return event[{index}]{} end",
+                if guarded { "if event then " } else { "" },
+                if guarded { " end" } else { "" }
+            );
+            let mut ws = VirtualWorkspace::new();
+            let file = ws.def(&source);
+            let model = ws.analysis.semantic_model(file);
+            let index = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaIndexExpr>()
+                .next()
+                .unwrap();
+            for _ in 0..2 {
+                assert_eq!(
+                    model.type_of_expr_at(index.get_syntax_id(), index.get_position()),
+                    expected,
+                    "{annotation}"
+                );
+            }
+            assert!(
+                ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+                "{annotation}"
+            );
+        }
+    }
+
+    #[test]
+    fn union_projection_unknown_field_remains_conservative() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def("---@class UnknownField\n---@field value unknown\n---@class Empty");
+        let owner = ws.ty("UnknownField|Empty");
+        let model = ws.analysis.semantic_model(file);
+        assert_eq!(
+            model.member_type(&owner, &LuaMemberKey::from("value")),
+            Some(LuaType::from_vec(vec![LuaType::Unknown, LuaType::Nil]))
+        );
+    }
+    #[test]
+    #[ignore = "Known upstream limitation: recursive generic unions with inline object arms"]
+    fn recursive_generic_inline_object_arm_retains_its_member() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def("---@alias Recursive<T> Recursive<T>|{value:T}");
+        let ty = ws.ty("Recursive<integer>");
+        let model = ws.analysis.semantic_model(file);
+        assert_eq!(
+            model.member_type(&ty, &LuaMemberKey::from("value")),
+            Some(LuaType::Integer)
+        );
     }
 }

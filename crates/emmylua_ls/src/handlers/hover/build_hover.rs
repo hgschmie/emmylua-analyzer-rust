@@ -118,20 +118,26 @@ pub fn build_semantic_info_hover(
             } else {
                 false
             };
-            let origin_typ = semantic_type_of(&origin_model, &origin);
-            // Data aliases retain the value projected at the use site. Following the
-            // declaration for documentation must not discard absent union alternatives.
-            let projected_member = matches!(decl, SemanticId::Decl(_))
-                && matches!(origin, SemanticId::Member(_))
-                && !matches!(
-                    &origin_typ,
-                    LuaType::Function | LuaType::DocFunction(_) | LuaType::Signature(_)
-                )
-                && !matches!(&info.typ, LuaType::Unknown | LuaType::Any);
-            let hover_typ = if &origin == decl || origin_is_param || projected_member {
-                info.typ.clone()
+            // Same-origin and parameter hovers already have their use-site type.
+            let (projected_member, hover_typ) = if &origin == decl || origin_is_param {
+                (false, info.typ.clone())
             } else {
-                origin_typ
+                let origin_typ = semantic_type_of(&origin_model, &origin);
+                // Following a data alias for documentation must not discard
+                // absent union alternatives from its projected value.
+                let projected_member = matches!(decl, SemanticId::Decl(_))
+                    && matches!(origin, SemanticId::Member(_))
+                    && !matches!(
+                        &origin_typ,
+                        LuaType::Function | LuaType::DocFunction(_) | LuaType::Signature(_)
+                    )
+                    && !matches!(&info.typ, LuaType::Unknown | LuaType::Any);
+                let hover_typ = if projected_member {
+                    info.typ.clone()
+                } else {
+                    origin_typ
+                };
+                (projected_member, hover_typ)
             };
             match &origin {
                 SemanticId::Decl(_) => build_decl_hover(
