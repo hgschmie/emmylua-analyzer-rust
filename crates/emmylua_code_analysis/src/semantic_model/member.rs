@@ -1608,6 +1608,28 @@ mod union_projection_review_regressions {
     const TYPES: &str = "---@class Present\n---@field value integer\n---@class Absent\n---@alias Middle Present|Absent\n---@alias Outer Middle";
 
     #[test]
+    fn union_projection_keeps_optional_synthetic_intersection_members() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def("");
+        let cases = [
+            "({value?: integer} & {tag: string}) | {value: integer}",
+            "{value: integer} | ({value?: integer} & {tag: string})",
+        ]
+        .map(|source| ws.ty(source));
+        let model = ws.analysis.semantic_model(file);
+        let expected = LuaType::from_vec(vec![LuaType::Integer, LuaType::Nil]);
+        for typ in cases {
+            for _ in 0..2 {
+                assert_eq!(
+                    model.member_type(&typ, &LuaMemberKey::from("value")),
+                    Some(expected.clone()),
+                    "{typ:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn chained_union_alias_projection_preserves_guarded_arguments() {
         for (body, valid) in [
             ("accept(event.value)", false),
