@@ -124,7 +124,7 @@ fn unnarrowed_union_still_reports_missing_member() {
         "#,
     );
     assert_that!(diagnostics.len(), eq(1));
-    assert_that!(diagnostics[0].message, contains_substring("nil"));
+    assert_that!(diagnostics[0].message, contains_substring("`uint32?`"));
 }
 
 #[gtest]
@@ -172,7 +172,7 @@ fn cast_can_widen_non_union_owner_to_union_with_missing_member() {
         "#,
     );
     assert_that!(diagnostics.len(), eq(1));
-    assert_that!(diagnostics[0].message, contains_substring("nil"));
+    assert_that!(diagnostics[0].message, contains_substring("`uint32?`"));
 }
 
 #[gtest]

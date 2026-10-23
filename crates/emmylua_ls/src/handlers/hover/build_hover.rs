@@ -118,10 +118,28 @@ pub fn build_semantic_info_hover(
             } else {
                 false
             };
-            let hover_typ = if &origin == decl || origin_is_param {
-                info.typ.clone()
+            // Same-origin and parameter hovers already have their use-site type.
+            let (projected_member, hover_typ) = if &origin == decl || origin_is_param {
+                (false, info.typ.clone())
             } else {
-                semantic_type_of(&origin_model, &origin)
+                let origin_typ = semantic_type_of(&origin_model, &origin);
+                // Following a data alias for documentation must not discard
+                // absent union alternatives from its projected value. Plain callable
+                // declarations keep the signature renderer; callable unions and
+                // aliases remain value contracts whose nullability must survive.
+                let projected_member = matches!(decl, SemanticId::Decl(_))
+                    && matches!(origin, SemanticId::Member(_))
+                    && !matches!(
+                        &origin_typ,
+                        LuaType::Function | LuaType::DocFunction(_) | LuaType::Signature(_)
+                    )
+                    && !matches!(&info.typ, LuaType::Unknown | LuaType::Any);
+                let hover_typ = if projected_member {
+                    info.typ.clone()
+                } else {
+                    origin_typ
+                };
+                (projected_member, hover_typ)
             };
             match &origin {
                 SemanticId::Decl(_) => build_decl_hover(
@@ -136,6 +154,7 @@ pub fn build_semantic_info_hover(
                     member_call_typ.as_ref().unwrap_or(&hover_typ),
                     &origin,
                     member_call_typ.is_some(),
+                    projected_member,
                     member_context_infos.as_slice(),
                 ),
                 SemanticId::TypeDef(_) => {
@@ -157,6 +176,7 @@ pub fn build_semantic_info_hover(
                     member_call_typ.as_ref().unwrap_or(&info.typ),
                     decl,
                     member_call_typ.is_some(),
+                    false,
                     member_context_infos.as_slice(),
                 ),
                 SemanticId::TypeDef(_) => build_type_hover(model, &info.typ, decl, &token),
@@ -1494,6 +1514,7 @@ fn build_member_hover(
     typ: &LuaType,
     member: &SemanticId,
     call_site_substituted: bool,
+    projected_value: bool,
     context_infos: &[MemberContextInfo],
 ) -> (String, Option<HoverDescription>) {
     let Some(members) = model.members() else {
@@ -1665,7 +1686,11 @@ fn build_member_hover(
     } else {
         None
     };
-    let effective_typ = if let Some(override_ty) = effective_typ_override {
+    let effective_typ = if projected_value {
+        // The caller already supplied the use-site projection. An override from
+        // one origin declaration would erase other alternatives or their absence.
+        typ.clone()
+    } else if let Some(override_ty) = effective_typ_override {
         override_ty
     } else if call_site_substituted && !matches!(typ, LuaType::Unknown) {
         typ.clone()
@@ -1717,7 +1742,7 @@ fn build_member_hover(
         && let Some(runtime_ty) = &runtime_non_nil_ty
     {
         runtime_ty.clone()
-    } else if runtime_non_nil_ty.is_some() && effective_typ.is_nullable() {
+    } else if !projected_value && runtime_non_nil_ty.is_some() && effective_typ.is_nullable() {
         strip_nullable(&effective_typ)
     } else {
         effective_typ
@@ -1885,7 +1910,8 @@ fn build_member_hover(
         return (code, Some(description));
     }
     let mut rendered_typ = render_member_typ_with_default(model, &effective_typ);
-    if runtime_literal_ty.is_none()
+    if !projected_value
+        && runtime_literal_ty.is_none()
         && member_is_nullable(model, &display_member_id)
         && !rendered_typ.ends_with('?')
     {

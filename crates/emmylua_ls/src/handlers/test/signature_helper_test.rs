@@ -46,4 +46,24 @@ mod tests {
         ));
         Ok(())
     }
+    #[gtest]
+    fn test_union_projection_callable_retains_signature_help() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        check!(ws.check_signature_helper(
+            r#"
+            ---@class Present
+            ---@field handle fun(value: integer): boolean
+            ---@class Absent
+            ---@alias Event Present|Absent
+            ---@param event Event
+            local function run(event) event.handle(<??>) end
+        "#,
+            VirtualSignatureHelp {
+                target_label: "event.handle(value: integer): boolean".into(),
+                active_signature: 0,
+                active_parameter: 0,
+            }
+        ));
+        Ok(())
+    }
 }
