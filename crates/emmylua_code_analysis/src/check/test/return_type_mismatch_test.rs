@@ -1,7 +1,118 @@
 #[cfg(test)]
 mod tests {
     use crate::check::test::check_source;
-    use crate::{DiagnosticCode, VirtualWorkspace};
+    use crate::{DiagnosticCode, LuaType, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaClosureExpr};
+
+    #[test]
+    fn test_inferred_signature_flow_normalizes_optional_boolean() {
+        for body in [
+            "return invert or false",
+            "invert = invert or false; return invert",
+            "if invert == nil then return false end; return invert",
+            "local normalized = invert or false; return normalized",
+        ] {
+            let source = format!(
+                r#"
+                ---@return fun(invert: boolean?): boolean
+                local function factory()
+                    ---@param invert boolean?
+                    local function callback(invert) {body} end
+                    return callback
+                end
+            "#
+            );
+            let mut ws = VirtualWorkspace::new();
+            assert!(
+                ws.has_no_diagnostic(DiagnosticCode::ReturnTypeMismatch, &source),
+                "{source}"
+            );
+            let file = ws.def(&source);
+            let model = ws.analysis.semantic_model(file);
+            let callback = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaClosureExpr>()
+                .last()
+                .unwrap();
+            let inferred = model.type_of_signature(callback.get_syntax_id()).unwrap();
+            assert!(!matches!(
+                inferred.get_ret(),
+                LuaType::Unknown | LuaType::Any
+            ));
+            assert!(!inferred.get_ret().is_nullable(), "{source}\n{inferred:?}");
+        }
+    }
+
+    #[test]
+    fn test_inferred_signature_flow_preserves_nullable_contracts() {
+        for (annotation, body) in [
+            ("", "return invert"),
+            ("---@return boolean?\n", "return true"),
+            ("", "if invert then return true end; return nil"),
+        ] {
+            let source = format!(
+                r#"
+                ---@return fun(invert: boolean?): boolean
+                local function factory()
+                    ---@param invert boolean?
+                    {annotation}local function callback(invert) {body} end
+                    return callback
+                end
+            "#
+            );
+            let mut ws = VirtualWorkspace::new();
+            assert!(
+                !ws.has_no_diagnostic(DiagnosticCode::ReturnTypeMismatch, &source),
+                "{source}"
+            );
+            let file = ws.def(&source);
+            let model = ws.analysis.semantic_model(file);
+            let closures: Vec<_> = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaClosureExpr>()
+                .collect();
+            let inferred = model
+                .type_of_signature(closures.last().unwrap().get_syntax_id())
+                .unwrap();
+            assert!(inferred.get_ret().is_nullable(), "{source}\n{inferred:?}");
+        }
+    }
+
+    #[test]
+    fn test_inferred_signature_flow_normalizes_captured_boolean() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ReturnTypeMismatch,
+            r#"
+            ---@param invert boolean?
+            ---@return fun(match: boolean): boolean
+            local function factory(invert)
+                invert = invert or false
+                return function(match)
+                    return (match and not invert) or (not match and invert)
+                end
+            end
+        "#
+        ));
+    }
+
+    #[test]
+    fn test_inferred_signature_flow_preserves_multiple_returns() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ReturnTypeMismatch,
+            r#"
+            ---@return fun(invert: boolean?): (boolean, string)
+            local function factory()
+                ---@param invert boolean?
+                local function callback(invert) return invert or false, 'result' end
+                return callback
+            end
+        "#
+        ));
+    }
 
     #[test]
     fn test_field_flow_does_not_change_the_returned_table_type() {
