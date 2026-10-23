@@ -59,11 +59,9 @@ pub(super) fn guarded_type(
                     .is_some_and(|def| model.is_std_file(def.file_id)) => {}
         _ => return None,
     }
-    let base = model.type_of_expr(index.get_syntax_id());
-    if !base.is_nullable() {
-        return None;
-    }
-    if contains_call(index.ancestors::<LuaStat>().next()?.syntax(), offset) {
+    let mut base = model.type_of_expr(index.get_syntax_id());
+    let mut narrowed = false;
+    if contains_call(model, index.ancestors::<LuaStat>().next()?.syntax(), offset) {
         return None;
     }
     let closure = LuaClosureId::from_node(index.syntax());
@@ -75,64 +73,79 @@ pub(super) fn guarded_type(
         match &node.kind {
             FlowNodeKind::TrueCondition(ptr) | FlowNodeKind::FalseCondition(ptr) => {
                 let condition = ptr.to_node(&chunk)?;
-                if LuaClosureId::from_node(condition.syntax()) != closure
-                    || contains_call(condition.syntax(), offset)
-                {
-                    return None;
+                if LuaClosureId::from_node(condition.syntax()) != closure {
+                    return narrowed.then_some(base);
                 }
+                let primitive = super::primitive_guard_target(
+                    model,
+                    &condition,
+                    matches!(node.kind, FlowNodeKind::TrueCondition(_)),
+                )
+                .filter(|(target, _, _)| access_matches(model, target, &access));
                 if condition.get_range().end() <= offset
-                    && excludes_nil(
-                        model,
-                        &condition,
-                        &access,
-                        matches!(node.kind, FlowNodeKind::TrueCondition(_)),
-                    )
+                    && let Some((_, primitive, keep_matching)) = primitive
                 {
-                    return Some(super::remove_type(base, &LuaType::Nil));
+                    base = super::filter_type_by_primitive(model, base, &primitive, keep_matching);
+                    narrowed = true;
+                } else {
+                    if contains_call(model, condition.syntax(), offset) {
+                        return narrowed.then_some(base);
+                    }
+                    if condition.get_range().end() <= offset
+                        && excludes_nil(
+                            model,
+                            &condition,
+                            &access,
+                            matches!(node.kind, FlowNodeKind::TrueCondition(_)),
+                        )
+                    {
+                        base = super::remove_type(base, &LuaType::Nil);
+                        narrowed = true;
+                    }
                 }
             }
             FlowNodeKind::Assignment(ptr) => {
                 let assignment = ptr.to_node(&chunk)?;
                 if assignment.get_range().end() <= offset {
                     if LuaClosureId::from_node(assignment.syntax()) != closure {
-                        return None;
+                        return narrowed.then_some(base);
                     }
                     let (vars, _) = assignment.get_var_and_expr_list();
                     if vars
                         .iter()
                         .any(|var| matches!(var, LuaVarExpr::IndexExpr(_)))
                     {
-                        return None;
+                        return narrowed.then_some(base);
                     }
                 }
             }
             FlowNodeKind::CallExprStat(ptr) => {
-                if contains_call(ptr.to_node(&chunk)?.syntax(), offset) {
-                    return None;
+                if contains_call(model, ptr.to_node(&chunk)?.syntax(), offset) {
+                    return narrowed.then_some(base);
                 }
             }
             FlowNodeKind::LoopLabel | FlowNodeKind::NamedLabel(_) | FlowNodeKind::ImplFunc(_) => {
-                return None;
+                return narrowed.then_some(base);
             }
             _ => {}
         }
         for effect in tree.get_flow_effects(current) {
             if let FlowEffect::AssignDecl { decl, value_syntax } = effect {
                 if value_syntax.get_range().end() <= offset && access.depends_on(decl) {
-                    return None;
+                    return narrowed.then_some(base);
                 }
                 let value = value_syntax.to_node_from_root(chunk.syntax())?;
-                if contains_call(&value, offset) {
-                    return None;
+                if contains_call(model, &value, offset) {
+                    return narrowed.then_some(base);
                 }
             }
         }
         let Some(FlowAntecedent::Single(next)) = node.antecedent else {
-            return None;
+            return narrowed.then_some(base);
         };
         current = next;
     }
-    None
+    narrowed.then_some(base)
 }
 
 fn access(model: &SemanticModel, expr: &LuaExpr) -> Option<Access> {
@@ -170,6 +183,10 @@ fn access(model: &SemanticModel, expr: &LuaExpr) -> Option<Access> {
         LuaExpr::ParenExpr(paren) => access(model, &paren.get_expr()?),
         _ => None,
     }
+}
+
+fn access_matches(model: &SemanticModel, target: &LuaExpr, expected: &Access) -> bool {
+    access(model, target).as_ref() == Some(expected)
 }
 
 fn excludes_nil(model: &SemanticModel, expr: &LuaExpr, expected: &Access, truthy: bool) -> bool {
@@ -211,14 +228,55 @@ fn excludes_nil(model: &SemanticModel, expr: &LuaExpr, expected: &Access, truthy
     }
 }
 
-fn contains_call(node: &LuaSyntaxNode, before: TextSize) -> bool {
+fn contains_call(model: &SemanticModel, node: &LuaSyntaxNode, before: TextSize) -> bool {
     let mut pending = vec![node.clone()];
     while let Some(node) = pending.pop() {
         match node.kind().into() {
             LuaSyntaxKind::ClosureExpr => {}
-            LuaSyntaxKind::CallExpr if node.text_range().end() <= before => return true,
+            _ if node.text_range().end() <= before
+                && emmylua_parser::LuaCallExpr::cast(node.clone())
+                    .is_some_and(|call| !primitive_read_pure_call(model, &call)) =>
+            {
+                return true;
+            }
             _ => pending.extend(node.children()),
         }
     }
     false
+}
+
+fn primitive_read_pure_call(model: &SemanticModel, call: &emmylua_parser::LuaCallExpr) -> bool {
+    let Some(LuaExpr::NameExpr(callee)) = call.get_prefix_expr() else {
+        return false;
+    };
+    let Some(SemanticId::Decl(decl)) = model.resolve_name(callee.get_position()) else {
+        return false;
+    };
+    if !model.is_std_file(decl.file_id) {
+        return false;
+    }
+    match callee.get_name_text().as_deref() {
+        Some("type") => true,
+        Some("tostring") => call
+            .get_args_list()
+            .and_then(|args| args.get_args().next())
+            .is_some_and(|arg| {
+                matches!(
+                    model.type_of_expr_at(arg.get_syntax_id(), arg.get_position()),
+                    LuaType::Nil
+                        | LuaType::Boolean
+                        | LuaType::BooleanConst(_)
+                        | LuaType::DocBooleanConst(_)
+                        | LuaType::String
+                        | LuaType::StringConst(_)
+                        | LuaType::DocStringConst(_)
+                        | LuaType::Number
+                        | LuaType::Integer
+                        | LuaType::IntegerConst(_)
+                        | LuaType::DocIntegerConst(_)
+                        | LuaType::FloatConst(_)
+                )
+            }),
+        _ => false,
+    }
 }

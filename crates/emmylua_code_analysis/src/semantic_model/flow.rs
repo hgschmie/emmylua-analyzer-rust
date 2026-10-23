@@ -13,9 +13,8 @@
 //! - Flow type for member assignment `t.x = v` / `self.x = v` (FlowEffect::AssignMember).
 
 mod array;
-mod guards;
 mod computed_guard;
-
+mod guards;
 
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -460,7 +459,6 @@ pub(crate) fn type_of_expr_at_node(
             }
             if let Some(typ) = computed_guard::guarded_type(model, index_expr, offset) {
                 return apply_casts(typ, All);
-
             }
             if let Some(resolved) = model.resolve_member(index_expr)
                 && let Some(member_id) = resolved.member_id.clone().or_else(|| {
