@@ -3459,3 +3459,89 @@ fn constructor_required_field_contract_still_checked() {
     "#
     ));
 }
+
+#[test]
+fn test_nullable_union_projection_argument_contracts() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for (target, present, expected_ok) in [
+        ("integer?", "integer", true),
+        ("any", "integer", true),
+        ("integer", "integer", false),
+        ("integer?", "string", false),
+    ] {
+        for argument in ["event.player_index", "(event.player_index)", "copy"] {
+            let source = format!(
+                r#"
+                ---@class ProjectionPresent
+                ---@field player_index {present}
+                local Present = {{}}
+                ---@class ProjectionAbsent
+                local Absent = {{}}
+                ---@param index {target}
+                local function accept(index) end
+                ---@param event ProjectionPresent|ProjectionAbsent
+                local function handler(event)
+                    local copy = event.player_index
+                    accept({argument})
+                end
+            "#
+            );
+            let mut ws = VirtualWorkspace::new();
+            assert_eq!(
+                ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, &source),
+                expected_ok,
+                "{source}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_nullable_union_projection_preserves_guarded_member() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let source = r#"
+        ---@class ProjectionGuardPresent
+        ---@field player_index integer
+        local Present = {}
+        ---@class ProjectionGuardAbsent
+        local Absent = {}
+        ---@param index integer
+        local function accept(index) end
+        ---@param event ProjectionGuardPresent|ProjectionGuardAbsent
+        local function handler(event)
+            if event.player_index then accept(event.player_index) end
+        end
+    "#;
+    let mut ws = VirtualWorkspace::new();
+    assert!(ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, source));
+    assert!(ws.has_no_diagnostic(DiagnosticCode::UnnecessaryIf, source));
+}
+
+#[test]
+fn test_nullable_union_projection_retains_integer_and_nil_in_type() {
+    use crate::{LuaType, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def(
+        r#"
+        ---@class ProjectionTypePresent
+        ---@field player_index integer
+        local Present = {}
+        ---@class ProjectionTypeAbsent
+        local Absent = {}
+        ---@param event ProjectionTypePresent|ProjectionTypeAbsent
+        local function handler(event) return event.player_index end
+    "#,
+    );
+    let model = ws.analysis.semantic_model(file);
+    let index = model
+        .chunk()
+        .unwrap()
+        .descendants::<LuaIndexExpr>()
+        .next()
+        .unwrap();
+    assert_eq!(
+        model.type_of_expr_at(index.get_syntax_id(), index.get_position()),
+        LuaType::from_vec(vec![LuaType::Integer, LuaType::Nil])
+    );
+}
