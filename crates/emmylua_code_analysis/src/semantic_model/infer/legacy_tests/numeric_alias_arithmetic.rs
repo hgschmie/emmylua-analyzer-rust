@@ -193,3 +193,148 @@ fn numeric_for_alias_variable_types() {
         );
     }
 }
+
+#[test]
+fn multiline_integer_alias_arithmetic() {
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    let file = ws.def(
+        r#"
+        ---@alias MultilineCount
+        ---| 1 # First allowed integer.
+        ---| 2 # Second allowed integer.
+        ---@alias MultilineNumber
+        ---| integer # Integer alternative.
+        ---| number # Floating alternative must remain broad.
+        ---@alias MultilineString
+        ---| integer # Integer alternative.
+        ---| string # Nonnumeric alternative must not establish integer evidence.
+        ---@param count MultilineCount
+        ---@param mixed_number MultilineNumber
+        ---@param mixed_string MultilineString
+        local function calculate(count, mixed_number, mixed_string)
+            local sum = count + 1
+            local difference = count - 1
+            local product = count * 2
+            local remainder = count % 2
+            local quotient = count // 2
+            local floating = mixed_number + 1
+            local invalid_numeric = mixed_string + 1
+        end
+    "#,
+    );
+    let model = ws.analysis.semantic_model(file);
+    for (name, expected) in [
+        ("sum", LuaType::Integer),
+        ("difference", LuaType::Integer),
+        ("product", LuaType::Integer),
+        ("remainder", LuaType::Integer),
+        ("quotient", LuaType::Integer),
+        ("floating", LuaType::Number),
+        ("invalid_numeric", LuaType::Number),
+    ] {
+        let decl = model
+            .decls()
+            .unwrap()
+            .iter()
+            .find(|decl| decl.name == name)
+            .unwrap();
+        assert_eq!(model.type_of_decl(&decl.id), Some(expected), "{name}");
+    }
+}
+
+#[test]
+fn multiline_integer_alias_loop_variables() {
+    use emmylua_parser::{LuaAstNode, LuaNameExpr};
+    for (start, step, expected) in [
+        ("count", "1", LuaType::Integer),
+        ("1", "count", LuaType::Integer),
+        ("mixed_number", "1", LuaType::Number),
+        ("1", "mixed_number", LuaType::Number),
+        ("mixed_string", "1", LuaType::Number),
+        ("1", "mixed_string", LuaType::Number),
+    ] {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(&format!(
+            r#"
+            ---@alias MultilineCount
+            ---| 1 # First allowed integer.
+            ---| 2 # Second allowed integer.
+            ---@alias MultilineNumber
+            ---| integer # Integer alternative.
+            ---| number # Floating alternative must remain broad.
+            ---@alias MultilineString
+            ---| integer # Integer alternative.
+            ---| string # Nonnumeric alternative must remain broad.
+            ---@param count MultilineCount
+            ---@param mixed_number MultilineNumber
+            ---@param mixed_string MultilineString
+            local function visit(count, mixed_number, mixed_string)
+                for i = {start}, 10, {step} do print(i) end
+            end
+        "#
+        ));
+        let model = ws.analysis.semantic_model(file);
+        let variable = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaNameExpr>()
+            .find(|name| name.get_name_text().as_deref() == Some("i"))
+            .unwrap();
+        assert_eq!(
+            model.type_of_expr(variable.get_syntax_id()),
+            expected,
+            "start={start}, step={step}"
+        );
+    }
+}
+
+#[test]
+fn multiline_integer_operand_representation() {
+    use crate::LuaMultiLineUnion;
+    use crate::semantic_model::infer::vm::{binary_type, is_integer_operand};
+    use emmylua_parser::BinaryOperator;
+    use std::rc::Rc;
+
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    let file = ws.def("");
+    let model = ws.analysis.semantic_model(file);
+    for (members, integer) in [
+        (
+            vec![LuaType::IntegerConst(1), LuaType::DocIntegerConst(2)],
+            true,
+        ),
+        (vec![LuaType::Integer, LuaType::Number], false),
+        (vec![LuaType::Integer, LuaType::String], false),
+        (vec![LuaType::Integer, LuaType::Nil], false),
+    ] {
+        // Keep documented alternatives as their multiline representation rather than parser-normalized Union.
+        let operand = LuaType::MultiLineUnion(Rc::new(LuaMultiLineUnion::new(
+            members
+                .into_iter()
+                .map(|ty| (ty, Some("Documented alternative".into())))
+                .collect(),
+        )));
+        for op in [
+            BinaryOperator::OpAdd,
+            BinaryOperator::OpSub,
+            BinaryOperator::OpMul,
+            BinaryOperator::OpMod,
+            BinaryOperator::OpIDiv,
+        ] {
+            assert_eq!(
+                binary_type(&model, op, &operand, &LuaType::Integer),
+                if integer {
+                    LuaType::Integer
+                } else {
+                    LuaType::Number
+                },
+                "{op:?}: {operand:?}"
+            );
+        }
+        assert_eq!(
+            is_integer_operand(&model, &operand, &mut Vec::new()),
+            integer,
+            "numeric-for operand contract: {operand:?}"
+        );
+    }
+}
