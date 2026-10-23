@@ -973,3 +973,92 @@ fn class_index_preserves_inherited_generic_members() {
     expect_that!(ws.expr_ty("root.value"), eq(&LuaType::String));
     expect_that!(ws.expr_ty("root.other"), eq(&LuaType::Boolean));
 }
+
+#[test]
+fn dictionary_primitive_guards_narrow_nested_reads() {
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    for access in ["elem.tags.handler", "elem.tags['handler']"] {
+        for guard in [
+            format!("type({access}) == 'table'"),
+            format!("'table' == type({access})"),
+        ] {
+            let source = format!(
+                r#"
+            ---@alias PrimitiveTagValue string|boolean|number|table
+            ---@class PrimitiveTagElement
+            ---@field tags table<string, PrimitiveTagValue>
+            local Element = {{}}
+            ---@param elem PrimitiveTagElement
+            ---@param key string
+            ---@param event {{name: integer}}
+            local function read(elem, key, event)
+                if {guard} then
+                    local deferred = function() mutate() end
+                    local primitive_name = type(event.name)
+                    local number_text = tostring(1)
+                    local first = {access}[event.name]
+                    local second = {access}[tostring(event.name)]
+                end
+            end
+            "#
+            );
+            let mut ws = workspace(true);
+            assert!(
+                ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+                "{guard}"
+            );
+            let file = ws.def(&source);
+            let model = ws.analysis.semantic_model(file);
+            let pos = source.rfind(&access).unwrap();
+            let index = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaIndexExpr>()
+                .find(|i| {
+                    u32::from(i.get_position()) as usize == pos
+                        && u32::from(i.get_range().len()) as usize == access.len()
+                })
+                .unwrap();
+            assert_eq!(
+                model.type_of_expr_at(index.get_syntax_id(), index.get_position()),
+                LuaType::Table,
+                "{guard}"
+            );
+        }
+    }
+}
+
+#[test]
+fn dictionary_primitive_guards_keep_negative_cases() {
+    for body in [
+        "print(elem.tags.handler.name)",
+        "if type(elem.tags.handler) == 'table' and mutate(elem) then print(elem.tags.handler.name) end",
+        "if type(elem.tags.handler) == 'table' then print(mutate(elem), elem.tags.handler.name) end",
+        "if type(elem.tags.handler) == 'table' then elem.tags = {}; print(elem.tags.handler.name) end",
+        "if type(elem.tags.handler) == 'table' then mutate(elem); print(elem.tags.handler.name) end",
+        "if type(elem.tags.handler) == 'table' then local changed = mutate(elem); print(elem.tags.handler.name) end",
+        "if type(other.tags.handler) == 'table' then print(elem.tags.handler.name) end",
+        "if type(elem.tags.other) == 'table' then print(elem.tags.handler.name) end",
+        "if type(elem.tags.handler) == 'table' then elem.tags.handler = nil; print(elem.tags.handler.name) end",
+        "local type = function(_) return 'table' end; if type(elem.tags.handler) == 'table' then print(elem.tags.handler.name) end",
+    ] {
+        let source = format!(
+            r#"
+        ---@class PrimitiveNegativeTagElement
+        ---@field tags table<string, table>
+        local Element = {{}}
+        ---@param elem PrimitiveNegativeTagElement
+        ---@param other PrimitiveNegativeTagElement
+        local function read(elem, other)
+            local function mutate(_) elem.tags.handler = nil end
+            {body}
+        end
+        "#
+        );
+        let mut ws = workspace(true);
+        assert!(
+            !ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+            "{body}"
+        );
+    }
+}
