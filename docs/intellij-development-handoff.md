@@ -1,3 +1,25 @@
+# Dictionary entry hover completion — 2026-10-23
+
+UP-080 additive `1ece54a1` is integrated as signed `b32387a9`. Reads without a
+physical declaration ID now display their exact flow type, preserving existing
+member documentation, callable signatures, assignment contracts and copied-alias
+presentation. Combined path-aware helper and UP-063/125 flags remain unchanged.
+Four paired semantic/hover regression groups are added; original frozen GUI
+Table/Number expectations remain binding.
+
+All **354 combined language-server tests** pass, with zero failed/ignored/filtered.
+All non-LS source, tools and Cargo inputs are byte-identical to the previously
+validated full tree: its 2,844 non-LS tests remain applicable. Validation covers
+**3,198 distinct Rust tests** without rerunning unchanged analysis. All-target,
+all-feature workspace Clippy with -D warnings and rustfmt pass. This handoff
+changes documentation only after the tested LS commit.
+
+The unpublished EmmyLua2 build201 is regenerated with a new immutable candidate;
+the rejected first candidate remains in build verification evidence. Final
+126-case/100-type-observation replay, LTN delta evidence and all18 native tests
+are required before publication and recorded in workspace
+`memory/findings/F-20261023-000345-five-analyzer-fixes/integration-receipt.md`.
+
 # Five analyzer findings and integration follow-ups — 2026-10-23
 
 The work branch preserves build200 `ca4943a8` as an ancestor and integrates exact
