@@ -1593,3 +1593,146 @@ mod union_callable_projection {
         }
     }
 }
+#[cfg(test)]
+mod union_projection_review_regressions {
+    use crate::{DiagnosticCode, LuaMemberKey, LuaType, LuaTypeDeclId, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+
+    const TYPES: &str = "---@class Present\n---@field value integer\n---@class Absent\n---@alias Middle Present|Absent\n---@alias Outer Middle";
+
+    #[test]
+    fn chained_union_alias_projection_preserves_guarded_arguments() {
+        for (body, valid) in [
+            ("accept(event.value)", false),
+            ("if event.value then accept(event.value) end", true),
+        ] {
+            let source = format!(
+                "{TYPES}\n---@param value integer\nlocal function accept(value) end\n---@param event Outer\nlocal function run(event) {body} end"
+            );
+            let mut ws = VirtualWorkspace::new();
+            assert_eq!(
+                ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, &source),
+                valid,
+                "{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn union_alias_projection_is_identical_on_cold_and_warm_expression_queries() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def(&format!(
+            "{TYPES}\n---@param event Outer\nlocal function run(event) return event.value end"
+        ));
+        let model = ws.analysis.semantic_model(file);
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .next()
+            .unwrap();
+        let expected = LuaType::from_vec(vec![LuaType::Integer, LuaType::Nil]);
+        // The first expression query populates the cache; the second must reuse it safely.
+        for phase in ["cold", "warm"] {
+            assert_eq!(
+                model.type_of_expr_at(index.get_syntax_id(), index.get_position()),
+                expected,
+                "{phase}"
+            );
+        }
+    }
+
+    #[test]
+    fn self_alias_member_projection_terminates_without_false_absence() {
+        for (annotation, expected) in [
+            ("SelfCycle", None),
+            ("RecursivePresent", Some(LuaType::Integer)),
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            let file = ws.def(&format!("{TYPES}\n---@alias SelfCycle SelfCycle\n---@alias RecursivePresent RecursivePresent|Present"));
+            let model = ws.analysis.semantic_model(file);
+            let ty = LuaType::Ref(LuaTypeDeclId::global(annotation));
+            for phase in ["cold", "warm"] {
+                assert_eq!(
+                    model.member_type(&ty, &LuaMemberKey::from("value")),
+                    expected,
+                    "{annotation}: {phase}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unresolved_union_nominal_is_not_a_proven_missing_member() {
+        for reversed in [false, true] {
+            let mut ws = VirtualWorkspace::new();
+            let file = ws.def(TYPES);
+            let model = ws.analysis.semantic_model(file);
+            let missing = LuaTypeDeclId::global("UnloadedDefinition");
+            assert!(model.type_def_of(&missing).is_none());
+            let mut arms = vec![
+                LuaType::Ref(missing),
+                LuaType::Ref(LuaTypeDeclId::global("Present")),
+            ];
+            if reversed {
+                arms.reverse();
+            }
+            let unresolved = LuaType::from_vec(arms.clone());
+            arms.push(LuaType::Ref(LuaTypeDeclId::global("Absent")));
+            let absent = LuaType::from_vec(arms);
+            for phase in ["cold", "warm"] {
+                assert_eq!(
+                    model.member_type(&unresolved, &LuaMemberKey::from("value")),
+                    Some(LuaType::Integer),
+                    "{phase}, reversed={reversed}"
+                );
+                assert_eq!(
+                    model.member_type(&absent, &LuaMemberKey::from("value")),
+                    Some(LuaType::from_vec(vec![LuaType::Integer, LuaType::Nil])),
+                    "{phase}, reversed={reversed}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn nil_union_arm_preserves_member_type_and_receiver_diagnostics() {
+        for (field, nullable) in [("integer", false), ("integer?", true)] {
+            let mut ws = VirtualWorkspace::new();
+            let file = ws.def(&format!("---@class NilOwner\n---@field value {field}"));
+            let model = ws.analysis.semantic_model(file);
+            let owner = LuaType::from_vec(vec![
+                LuaType::Ref(LuaTypeDeclId::global("NilOwner")),
+                LuaType::Nil,
+            ]);
+            let expected = if nullable {
+                LuaType::from_vec(vec![LuaType::Integer, LuaType::Nil])
+            } else {
+                LuaType::Integer
+            };
+            for phase in ["cold", "warm"] {
+                let actual = model
+                    .member_type(&owner, &LuaMemberKey::from("value"))
+                    .unwrap();
+                assert_eq!(actual, expected, "{phase}: {field}");
+                if let LuaType::Union(union) = actual {
+                    assert_eq!(union.into_vec().iter().filter(|ty| ty.is_nil()).count(), 1);
+                }
+            }
+        }
+        for (body, valid) in [
+            ("return event.value + 1", false),
+            ("if event then return event.value + 1 end", true),
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            let source = format!(
+                "{TYPES}\n---@param event Present|nil\nlocal function run(event) {body} end"
+            );
+            assert_eq!(
+                ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+                valid,
+                "{body}"
+            );
+        }
+    }
+}
