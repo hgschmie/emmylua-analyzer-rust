@@ -3,8 +3,8 @@
 use std::collections::HashSet;
 
 use emmylua_parser::{
-    LuaAssignStat, LuaAstNode, LuaExpr, LuaIndexExpr, LuaIndexKey, LuaKind, LuaSyntaxId,
-    LuaSyntaxKind, LuaTableExpr, LuaVarExpr,
+    BinaryOperator, LuaAssignStat, LuaAstNode, LuaCallExpr, LuaExpr, LuaIndexExpr, LuaIndexKey,
+    LuaKind, LuaLocalStat, LuaSyntaxId, LuaSyntaxKind, LuaTableExpr, LuaVarExpr,
 };
 
 use crate::semantic_db::flow::{FlowAntecedent, FlowEffect, FlowNodeKind, LuaClosureId};
@@ -40,17 +40,23 @@ pub(super) fn read_type(
         return None;
     }
     let root = model.syntax_tree()?.get_red_root();
-    let initial = if initial.is_unknown()
-        && LuaSyntaxId::new(LuaKind::Syntax(LuaSyntaxKind::TableEmptyExpr), table.value)
+    let key = LuaExpr::cast(key_syntax.to_node_from_root(&root)?)?;
+    let empty_literal =
+        LuaSyntaxId::new(LuaKind::Syntax(LuaSyntaxKind::TableEmptyExpr), table.value)
             .to_node_from_root(&root)
-            .and_then(LuaTableExpr::cast)
-            .is_some_and(|literal| literal.get_fields().next().is_none())
+            .and_then(LuaTableExpr::cast);
+    let initial = if initial.is_unknown()
+        && let Some(literal) = empty_literal
     {
+        // A captured or escaped empty shape does not prove that runtime keys are
+        // absent. Preserve the ordinary member query's permissive fallback.
+        if !empty_table_is_unexposed(model, &literal, &key, receiver, &mut budget) {
+            return None;
+        }
         &LuaType::Nil
     } else {
         initial
     };
-    let key = LuaExpr::cast(key_syntax.to_node_from_root(&root)?)?;
     let key_decl = name_decl(model, &key);
     let index = key.syntax().ancestors().find_map(LuaIndexExpr::cast)?;
     let receiver_decl = name_decl(model, &index.get_prefix_expr()?);
@@ -279,6 +285,252 @@ pub(super) fn read_type(
     } else {
         LuaType::from_vec(types)
     })
+}
+
+fn empty_table_is_unexposed(
+    model: &SemanticModel,
+    literal: &LuaTableExpr,
+    key: &LuaExpr,
+    receiver: &LuaType,
+    budget: &mut usize,
+) -> bool {
+    let closure = LuaClosureId::from_node(key.syntax());
+    if LuaClosureId::from_node(literal.syntax()) != closure {
+        return false;
+    }
+    let mut aliases = HashSet::new();
+    let mut local_initialization = false;
+    // Preserve source identity even when an annotation or cast erases TableConst.
+    for node in literal.syntax().ancestors().skip(1) {
+        if *budget == 0 {
+            return false;
+        }
+        *budget -= 1;
+        if LuaCallExpr::cast(node.clone()).is_some() {
+            return false;
+        }
+        if let Some(local) = LuaLocalStat::cast(node.clone()) {
+            local_initialization = true;
+            for name in local.get_local_name_list() {
+                if *budget == 0 {
+                    return false;
+                }
+                *budget -= 1;
+                aliases.insert(SemanticId::decl(model.file_id(), name.get_range()));
+            }
+            break;
+        }
+        if let Some(assign) = LuaAssignStat::cast(node.clone()) {
+            let Some(targets) = local_assignment_targets(model, &assign, closure, budget) else {
+                return false;
+            };
+            aliases.extend(targets);
+            break;
+        }
+        if matches!(
+            node.kind(),
+            LuaKind::Syntax(LuaSyntaxKind::ClosureExpr | LuaSyntaxKind::Chunk)
+        ) {
+            break;
+        }
+    }
+    // Key calls execute before the lookup and can expose its receiver too.
+    let mut scan_end = key.get_range().end();
+    // A table that predates a loop can escape later in one iteration and be
+    // observed at this earlier source position during the next iteration.
+    for node in key.syntax().ancestors() {
+        if matches!(node.kind(), LuaKind::Syntax(LuaSyntaxKind::ClosureExpr)) {
+            break;
+        }
+        if matches!(
+            node.kind(),
+            LuaKind::Syntax(
+                LuaSyntaxKind::ForStat
+                    | LuaSyntaxKind::ForRangeStat
+                    | LuaSyntaxKind::WhileStat
+                    | LuaSyntaxKind::RepeatStat
+            )
+        ) && (!node.text_range().contains_range(literal.get_range()) || !local_initialization)
+        {
+            scan_end = scan_end.max(node.text_range().end());
+        }
+    }
+    let Some(scope) = literal
+        .syntax()
+        .ancestors()
+        .find(|node| node.text_range() == closure.get_range())
+    else {
+        return false;
+    };
+    let mut captured = HashSet::new();
+    let mut pending = vec![scope];
+    while let Some(node) = pending.pop() {
+        if *budget == 0 {
+            return false;
+        }
+        *budget -= 1;
+        let in_window = node.text_range().start() < scan_end;
+        if in_window
+            && matches!(
+                node.kind(),
+                LuaKind::Syntax(LuaSyntaxKind::LabelStat | LuaSyntaxKind::GotoStat)
+            )
+            && LuaClosureId::from_node(&node) == closure
+        {
+            // Named jumps can reenter after a later effect without a lexical loop.
+            return false;
+        }
+        let expr = LuaExpr::cast(node.clone());
+        if let Some(LuaExpr::NameExpr(name)) = &expr
+            && LuaClosureId::from_node(&node) != closure
+            && let Some(id) = model.resolve_name(name.get_position())
+        {
+            captured.insert(id);
+        }
+        if let Some(expr) = expr
+            && in_window
+            && !expr.get_range().contains_range(key.get_range())
+            && !expr.get_range().contains_range(literal.get_range())
+            && (name_decl(model, &expr).is_some_and(|id| aliases.contains(&id))
+                || exposes_table(model, &expr, receiver, budget))
+            && (LuaClosureId::from_node(&node) != closure
+                || !trackable_table_use(model, &expr, closure, &mut aliases, budget))
+        {
+            return false;
+        }
+        // Captures anywhere in this invocation may run through a later alias
+        // assignment or loop iteration. Their discovery is independent of the
+        // narrower read window and the order in which aliases are discovered.
+        if !aliases.is_disjoint(&captured) {
+            return false;
+        }
+        // Alias declarations must be observed before their later uses.
+        pending.extend(node.children().collect::<Vec<_>>().into_iter().rev());
+    }
+    true
+}
+
+fn local_assignment_targets(
+    model: &SemanticModel,
+    assign: &LuaAssignStat,
+    closure: LuaClosureId,
+    budget: &mut usize,
+) -> Option<Vec<SemanticId>> {
+    let mut targets = Vec::new();
+    for var in assign.get_var_and_expr_list().0 {
+        if *budget == 0 {
+            return None;
+        }
+        *budget -= 1;
+        let LuaVarExpr::NameExpr(name) = var else {
+            return None;
+        };
+        let id = model.resolve_name(name.get_position())?;
+        let decl = model.file_facts()?.decl_by_id(&id)?;
+        if !decl.kind.is_local() || !closure.get_range().contains_range(decl.name_range) {
+            return None;
+        }
+        targets.push(id);
+    }
+    Some(targets)
+}
+
+// Only direct indexing and current-invocation local aliasing/rebinding have a
+// tracked effect. Every other use retains the original permissive Unknown.
+fn trackable_table_use(
+    model: &SemanticModel,
+    expr: &LuaExpr,
+    closure: LuaClosureId,
+    aliases: &mut HashSet<SemanticId>,
+    budget: &mut usize,
+) -> bool {
+    let mut value = expr.syntax().clone();
+    while let Some(parent) = value.parent() {
+        if *budget == 0 {
+            return false;
+        }
+        *budget -= 1;
+        match LuaExpr::cast(parent.clone()) {
+            Some(LuaExpr::ParenExpr(_)) => {
+                value = parent;
+                continue;
+            }
+            Some(LuaExpr::BinaryExpr(binary))
+                if binary.get_op_token().is_some_and(|op| {
+                    matches!(op.get_op(), BinaryOperator::OpAnd | BinaryOperator::OpOr)
+                }) =>
+            {
+                value = parent;
+                continue;
+            }
+            Some(LuaExpr::IndexExpr(index)) => {
+                return index
+                    .get_prefix_expr()
+                    .is_some_and(|prefix| prefix.get_range() == value.text_range())
+                    && index
+                        .get_index_token()
+                        .is_some_and(|token| !token.is_colon());
+            }
+            _ => {}
+        }
+        if let Some(local) = LuaLocalStat::cast(parent.clone()) {
+            if !local
+                .get_value_exprs()
+                .any(|expr| expr.get_range() == value.text_range())
+            {
+                return false;
+            }
+            for name in local.get_local_name_list() {
+                if *budget == 0 {
+                    return false;
+                }
+                *budget -= 1;
+                aliases.insert(SemanticId::decl(model.file_id(), name.get_range()));
+            }
+            return true;
+        }
+        if let Some(assign) = LuaAssignStat::cast(parent) {
+            let Some(targets) = local_assignment_targets(model, &assign, closure, budget) else {
+                return false;
+            };
+            aliases.extend(targets);
+            return true;
+        }
+        return false;
+    }
+    false
+}
+
+fn exposes_table(
+    model: &SemanticModel,
+    expr: &LuaExpr,
+    receiver: &LuaType,
+    budget: &mut usize,
+) -> bool {
+    let LuaType::TableConst(table) = receiver else {
+        return false;
+    };
+    let mut pending = vec![model.type_of_expr_at(expr.get_syntax_id(), expr.get_position())];
+    while let Some(ty) = pending.pop() {
+        if *budget == 0 {
+            return true;
+        }
+        *budget -= 1;
+        match ty {
+            LuaType::TableConst(candidate)
+                if candidate.file_id == table.file_id
+                    && candidate.value.contains_range(table.value) =>
+            {
+                return true;
+            }
+            LuaType::Union(union) => pending.extend(union.iter().cloned()),
+            LuaType::Intersection(intersection) => {
+                pending.extend(intersection.get_types().iter().cloned())
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 fn name_decl(model: &SemanticModel, expr: &LuaExpr) -> Option<SemanticId> {
