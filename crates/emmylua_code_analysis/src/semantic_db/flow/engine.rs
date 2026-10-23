@@ -11,7 +11,7 @@
 use emmylua_parser::{
     BinaryOperator, LuaAssignStat, LuaAst, LuaAstNode, LuaBlock, LuaCallExprStat,
     LuaElseIfClauseStat, LuaExpr, LuaForRangeStat, LuaForStat, LuaFuncStat, LuaIfStat,
-    LuaIndexExpr, LuaLocalStat, LuaRepeatStat, LuaVarExpr, LuaWhileStat, UnaryOperator,
+    LuaIndexExpr, LuaLocalStat, LuaRepeatStat, LuaWhileStat, UnaryOperator,
 };
 
 use super::comment::bind_comment;
@@ -1054,17 +1054,32 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                 }
             },
             Continuation::FuncDone { func_stat, current } => match func_stat.get_func_name() {
-                Some(var @ LuaVarExpr::NameExpr(_)) => {
+                Some(var) => {
                     let func_kind = FlowNodeKind::ImplFunc(func_stat.to_ptr());
                     let flow_id = self.binder.create_node(func_kind);
                     self.binder.add_antecedent(flow_id, current);
-                    if let Some(Some(decl)) = get_var_decl_ids(self.binder, &[var]).first()
+                    if let Some(Some(decl)) =
+                        get_var_decl_ids(self.binder, std::slice::from_ref(&var)).first()
                         && let Some(closure) = func_stat.get_closure()
                     {
                         self.binder.add_effect(
                             flow_id,
                             FlowEffect::AssignDecl {
                                 decl: decl.clone(),
+                                value_syntax: closure.get_syntax_id(),
+                            },
+                        );
+                    }
+                    if let Some(Some((owner, key, member))) =
+                        get_var_member_ids(self.binder, &[var]).first()
+                        && let Some(closure) = func_stat.get_closure()
+                    {
+                        self.binder.add_effect(
+                            flow_id,
+                            FlowEffect::AssignMember {
+                                owner: owner.clone(),
+                                key: key.clone(),
+                                member: member.clone(),
                                 value_syntax: closure.get_syntax_id(),
                             },
                         );
