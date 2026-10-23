@@ -4808,8 +4808,8 @@ pub(crate) fn binary_type(
                     .map(LuaType::IntegerConst)
                     .unwrap_or(LuaType::Number)
             } else if matches!(op, OpIDiv | OpMod)
-                && integer_operand(left)
-                && integer_operand(&right)
+                && is_integer_operand(model, left, &mut Vec::new())
+                && is_integer_operand(model, &right, &mut Vec::new())
             {
                 LuaType::Integer
             } else {
@@ -4818,45 +4818,6 @@ pub(crate) fn binary_type(
         }
         _ => LuaType::Unknown,
     }
-}
-
-/// Integer aliases have the same built-in arithmetic behavior as `integer`.
-/// Keep nominal classes and nullable/mixed unions out of this classification;
-/// operator overloads have already been dispatched by `binary_type`.
-pub(crate) fn is_integer_operand(
-    model: &SemanticModel,
-    ty: &LuaType,
-    seen: &mut Vec<LuaType>,
-) -> bool {
-    if matches!(
-        ty,
-        LuaType::Integer | LuaType::IntegerConst(_) | LuaType::DocIntegerConst(_)
-    ) {
-        return true;
-    }
-    if seen.len() >= 32 || seen.contains(ty) {
-        return false;
-    }
-    seen.push(ty.clone());
-    let result = match ty {
-        LuaType::Ref(id) | LuaType::Def(id) => model
-            .type_def_of(id)
-            .filter(|def| def.kind == TypeDefKind::Alias)
-            .and_then(|def| model.alias_target(&def))
-            .is_some_and(|target| is_integer_operand(model, &target, seen)),
-        LuaType::Generic(_) => {
-            let target = expand_alias_generic(model, ty);
-            target != *ty && is_integer_operand(model, &target, seen)
-        }
-        LuaType::Union(union) => {
-            let members = union.into_vec();
-            !members.is_empty() && members.iter().all(|ty| is_integer_operand(model, ty, seen))
-        }
-        LuaType::MultiLineUnion(union) => is_integer_operand(model, &union.to_union(), seen),
-        _ => false,
-    };
-    seen.pop();
-    result
 }
 
 /// In short-circuit logical expressions, if the left/right side is a nullable field
@@ -5149,11 +5110,46 @@ fn integer_const_value(ty: &LuaType) -> Option<i64> {
     }
 }
 
-fn integer_operand(ty: &LuaType) -> bool {
-    match ty {
-        LuaType::Union(union) => union.iter().all(LuaType::is_integer),
-        _ => ty.is_integer(),
+/// Integer aliases and enums share built-in arithmetic and numeric-loop behavior.
+/// Nominal classes and nullable/mixed unions remain outside this classification;
+/// operator overloads have already been dispatched by `binary_type`.
+pub(crate) fn is_integer_operand(
+    model: &SemanticModel,
+    ty: &LuaType,
+    seen: &mut Vec<LuaType>,
+) -> bool {
+    fn visit(model: &SemanticModel, ty: &LuaType, seen: &mut Vec<LuaType>) -> bool {
+        let Some(evaluation) = crate::semantic_model::cache::TypeEvaluationScope::new(&model.cache)
+        else {
+            return false;
+        };
+        if seen.len() >= 32 || !evaluation.visit(ty) || seen.contains(ty) {
+            return false;
+        }
+        seen.push(ty.clone());
+        let revision = model.cache.borrow().revision();
+        let result =
+            super::super::type_eval::expand_alias_branches(model, ty).is_some_and(|expanded| {
+                if expanded.is_integer() {
+                    return true;
+                }
+                match &expanded {
+                    LuaType::Union(union) => {
+                        !union.into_vec().is_empty()
+                            && union.iter().all(|ty| visit(model, ty, seen))
+                    }
+                    LuaType::Ref(id) | LuaType::Def(id) => model
+                        .type_def_of(id)
+                        .filter(|def| def.kind == TypeDefKind::Enum)
+                        .and_then(|def| super::super::type_check::enum_value_type(model, &def))
+                        .is_some_and(|values| visit(model, &values, seen)),
+                    _ => false,
+                }
+            });
+        seen.pop();
+        result && model.cache.borrow().is_complete(revision)
     }
+    visit(model, ty, seen)
 }
 
 fn is_enum_like_dynamic_key(model: &SemanticModel, ty: &LuaType) -> bool {

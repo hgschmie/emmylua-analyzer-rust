@@ -58,3 +58,5 @@ mod iterator_non_nil_values;
 mod cast_guarded_member_path;
 
 mod member_truthiness;
+
+mod integer_enum_arithmetic;
