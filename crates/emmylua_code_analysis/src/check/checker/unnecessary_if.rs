@@ -36,6 +36,11 @@ fn check_condition(
     condition: &emmylua_parser::LuaExpr,
 ) {
     let expr_type = semantic_model.type_of_expr(condition.get_syntax_id());
+    let Some(expr_type) =
+        crate::semantic_model::type_eval::expand_alias_branches(semantic_model, &expr_type)
+    else {
+        return;
+    };
     if expr_type.is_always_truthy() {
         context.add_diagnostic(
             DiagnosticCode::UnnecessaryIf,
