@@ -35,7 +35,33 @@ fn check_condition(
     semantic_model: &SemanticModel<'_>,
     condition: &emmylua_parser::LuaExpr,
 ) {
-    let expr_type = semantic_model.type_of_expr(condition.get_syntax_id());
+    let is_declared_field = if let emmylua_parser::LuaExpr::IndexExpr(index) = condition
+        && let Some(ref id @ crate::SemanticId::Member(ref key)) = semantic_model
+            .resolve_member(index)
+            .and_then(|resolved| resolved.member_id)
+    {
+        semantic_model
+            .file_facts_of(key.file_id)
+            .and_then(|facts| facts.member_by_id(&id))
+            .is_some_and(|member| {
+                matches!(
+                    member.source,
+                    crate::semantic_db::def::MemberSource::DocField
+                )
+            })
+    } else {
+        false
+    };
+    let expr_type = if is_declared_field {
+        semantic_model.type_of_expr_at(condition.get_syntax_id(), condition.get_position())
+    } else {
+        semantic_model.type_of_expr(condition.get_syntax_id())
+    };
+    let Some(expr_type) =
+        crate::semantic_model::type_eval::expand_alias_branches(semantic_model, &expr_type)
+    else {
+        return;
+    };
     if expr_type.is_always_truthy() {
         context.add_diagnostic(
             DiagnosticCode::UnnecessaryIf,
