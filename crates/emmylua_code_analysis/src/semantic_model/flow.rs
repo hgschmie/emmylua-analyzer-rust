@@ -456,7 +456,16 @@ pub(crate) fn type_of_expr_at_node(
             if let Some(ty) = array::last_element_type(model, index_expr, offset) {
                 return apply_casts(ty, All);
             }
-            if let Some(resolved) = model.resolve_member(index_expr)
+            // A union projection cannot use one component's declaration as its entire value.
+            let union_prefix = index_expr.get_prefix_expr().is_some_and(|prefix| {
+                let ty = model.type_of_expr_at(prefix.get_syntax_id(), offset);
+                matches!(
+                    super::type_eval::expand_alias_head(model, &ty),
+                    Some(LuaType::Union(_))
+                )
+            });
+            if !union_prefix
+                && let Some(resolved) = model.resolve_member(index_expr)
                 && let Some(member_id) = resolved.member_id.clone().or_else(|| {
                     let prefix = index_expr.get_prefix_expr()?;
                     let prefix_ty = model.type_of_expr_at(prefix.get_syntax_id(), offset);

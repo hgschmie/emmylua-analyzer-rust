@@ -2376,9 +2376,14 @@ fn test_nullable_union_projection_argument_contracts() {
         ("integer", "integer", false),
         ("integer?", "string", false),
     ] {
-        for argument in ["event.player_index", "(event.player_index)", "copy"] {
-            let source = format!(
-                r#"
+        for receiver in [
+            "ProjectionPresent|ProjectionAbsent",
+            "ProjectionAlias",
+            "ProjectionGeneric<ProjectionPresent>",
+        ] {
+            for argument in ["event.player_index", "(event.player_index)", "copy"] {
+                let source = format!(
+                    r#"
                 ---@class ProjectionPresent
                 ---@field player_index {present}
                 local Present = {{}}
@@ -2386,19 +2391,22 @@ fn test_nullable_union_projection_argument_contracts() {
                 local Absent = {{}}
                 ---@param index {target}
                 local function accept(index) end
-                ---@param event ProjectionPresent|ProjectionAbsent
+                ---@alias ProjectionAlias ProjectionPresent|ProjectionAbsent
+                ---@alias ProjectionGeneric<T> T|ProjectionAbsent
+                ---@param event {receiver}
                 local function handler(event)
                     local copy = event.player_index
                     accept({argument})
                 end
             "#
-            );
-            let mut ws = VirtualWorkspace::new();
-            assert_eq!(
-                ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, &source),
-                expected_ok,
-                "{source}"
-            );
+                );
+                let mut ws = VirtualWorkspace::new();
+                assert_eq!(
+                    ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, &source),
+                    expected_ok,
+                    "{source}"
+                );
+            }
         }
     }
 }
@@ -2451,4 +2459,46 @@ fn test_nullable_union_projection_retains_integer_and_nil_in_type() {
         model.type_of_expr_at(index.get_syntax_id(), index.get_position()),
         LuaType::from_vec(vec![LuaType::Integer, LuaType::Nil])
     );
+}
+
+#[test]
+fn test_nullable_union_projection_named_aliases() {
+    use crate::{DiagnosticCode, LuaType, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    for annotation in [
+        "ProjectionEvent",
+        "ProjectionGeneric<ProjectionAliasPresent>",
+    ] {
+        let source = format!(
+            r#"
+        ---@class ProjectionAliasPresent
+        ---@field player_index integer
+        local Present = {{}}
+        ---@class ProjectionAliasAbsent
+        local Absent = {{}}
+        ---@alias ProjectionEvent ProjectionAliasPresent|ProjectionAliasAbsent
+        ---@alias ProjectionGeneric<T> T|ProjectionAliasAbsent
+        ---@param value integer
+        local function accept(value) end
+        ---@param event {annotation}
+        local function handler(event) accept(event.player_index) end
+        "#
+        );
+        let mut ws = VirtualWorkspace::new();
+        let accepts = ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, &source);
+        let file = ws.def(&source);
+        let model = ws.analysis.semantic_model(file);
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .next()
+            .unwrap();
+        assert_eq!(
+            model.type_of_expr_at(index.get_syntax_id(), index.get_position()),
+            LuaType::from_vec(vec![LuaType::Integer, LuaType::Nil]),
+            "{annotation}"
+        );
+        assert!(!accepts, "{annotation}");
+    }
 }

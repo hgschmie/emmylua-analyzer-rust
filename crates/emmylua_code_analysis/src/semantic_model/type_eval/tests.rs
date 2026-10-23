@@ -290,9 +290,10 @@ fn recursive_alias_arguments_can_change_within_a_finite_set() {
     let accepted = ws.ty("{value: string, next: Tail}");
     let rejected = ws.ty("{value: string, next: {value: boolean}}");
     let model = ws.analysis.semantic_model(file);
+    // The concrete string[] arm lacks `value`; the recursive Fixed arm still supplies integer.
     assert_eq!(
         model.member_type(&candidate, &LuaMemberKey::Name("value".into())),
-        Some(LuaType::Integer)
+        Some(LuaType::from_vec(vec![LuaType::Integer, LuaType::Nil]))
     );
     // The string alternative cannot supply an integer.
     assert!(!model.type_check(&changed, &LuaType::Integer));
