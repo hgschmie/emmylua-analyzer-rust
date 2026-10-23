@@ -59,7 +59,7 @@ pub fn build_semantic_info_hover(
         .as_ref()
         .filter(|decl| matches!(decl, SemanticId::Member(_)))
         .and_then(|member| {
-            member_read_type_at_token(model, &token, member)
+            member_read_type_at_token(model, &token, Some(member))
                 .filter(|ty| ty != &info.typ || member_is_nullable(model, member))
         });
     let member_call_typ = if matches!(info.decl, Some(SemanticId::Member(_))) {
@@ -174,7 +174,8 @@ pub fn build_semantic_info_hover(
             }
         }
     } else {
-        (humanize(model, &info.typ), None)
+        let read_typ = member_read_type_at_token(model, &token, None).unwrap_or(info.typ);
+        (humanize(model, &read_typ), None)
     };
 
     // `pcall(foo)` synthesizes the full display from the call-site callback signature (covering std's anonymous `...` signature).
@@ -258,13 +259,13 @@ pub fn build_semantic_info_hover(
     })
 }
 
-/// A member read should display the type at the cursor, retaining the member's
+/// An index read should display the type at the cursor, retaining any member's
 /// declaration identity for documentation. Assignment targets still describe
 /// their writable contract, and callable members keep signature rendering.
 fn member_read_type_at_token(
     model: &SemanticModel,
     token: &LuaSyntaxToken,
-    member: &SemanticId,
+    member: Option<&SemanticId>,
 ) -> Option<LuaType> {
     let index = LuaIndexExpr::cast(token.parent()?)?;
     if index
@@ -287,7 +288,7 @@ fn member_read_type_at_token(
     ) {
         return None;
     }
-    if member_is_nullable(model, member) {
+    if let Some(member) = member.filter(|member| member_is_nullable(model, member)) {
         // Prefix projection supplies generic arguments, but can omit the `?`
         // in `@field value? T` or restore it after a guard. Keep that projected
         // value type while taking optionality from the member's flow state.
