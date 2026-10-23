@@ -301,6 +301,21 @@ pub(crate) fn member_info_impl(
     prefix_type: &LuaType,
     key: &LuaMemberKey,
 ) -> Option<MemberInfo> {
+    // Alias expansion must use the complete projection, including missing union alternatives.
+    let alias_id = match prefix_type {
+        LuaType::Ref(id) | LuaType::Def(id) => Some(id.clone()),
+        LuaType::Generic(generic) => Some(generic.get_base_type_id()),
+        _ => None,
+    };
+    if alias_id
+        .and_then(|id| model.type_def_of(&id))
+        .is_some_and(|def| def.kind == TypeDefKind::Alias)
+    {
+        return with_expanded_alias(model, prefix_type, |expanded| {
+            member_info(model, expanded, key)
+        })
+        .flatten();
+    }
     // Single-key direct lookup avoids collecting every member of a type when only one key is needed.
     if let Some(info) = direct_member_info(model, prefix_type, key) {
         return Some(info);
@@ -335,10 +350,44 @@ pub(crate) fn member_info_impl(
             is_method: first.as_ref().is_some_and(|info| info.is_method),
         });
     }
-    if let Some(info) = member_infos_with_key(model, prefix_type, key)
+    if let Some(mut info) = member_infos_with_key(model, prefix_type, key)
         .into_iter()
         .find(|info| &info.key == key)
     {
+        if let LuaType::Union(union) = prefix_type
+            && union.iter().any(|component| {
+                if component.is_nil() {
+                    return false;
+                }
+                // An unresolved name (including a synthetic module name) does not prove absence.
+                let unresolved_nominal = match component {
+                    LuaType::Ref(id) | LuaType::Def(id) => model.type_def_of(id).is_none(),
+                    LuaType::Generic(generic) => {
+                        model.type_def_of(&generic.get_base_type_id()).is_none()
+                    }
+                    _ => false,
+                };
+                if unresolved_nominal {
+                    return false;
+                }
+                let revision = model.cache.borrow().revision();
+                let component_info = member_info(model, component, key);
+                let optional = component_info.as_ref().is_some_and(|info| {
+                    let Some(member_id @ SemanticId::Member(key)) = info.id.as_ref() else {
+                        return false;
+                    };
+                    model
+                        .file_facts_of(key.file_id)
+                        .and_then(|facts| facts.member_by_id(member_id))
+                        .is_some_and(|member| member.is_nullable)
+                });
+                // A cycle-limited query is unresolved, not evidence of an absent field.
+                optional || (component_info.is_none() && model.cache.borrow().is_complete(revision))
+            })
+        {
+            // Preserve overload/member merging, while accounting for absent or optional fields.
+            info.typ = LuaType::from_vec(vec![info.typ, LuaType::Nil]);
+        }
         return Some(info);
     }
     // An anonymous table literal can supply missing members through the
@@ -1318,5 +1367,229 @@ mod tests {
         let map = member_map(&infos);
         assert_eq!(map.get("x"), Some(&LuaType::Number));
         assert_eq!(map.get("y"), Some(&LuaType::String));
+    }
+}
+
+#[cfg(test)]
+mod union_callable_projection {
+    use crate::{DiagnosticCode, LuaType, VirtualWorkspace};
+
+    #[test]
+    fn union_callable_projection_keeps_imported_closure_identity() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def_file("lib.lua", "local lib = {}\n---@param value number\n---@return integer\nfunction lib.round(value) return 1 end\nreturn lib");
+        let file = ws.def("local lib = require('lib')\nlocal alias = lib.round\nlocal result = alias(2.5)\nlocal count = result + 1");
+        let model = ws.analysis.semantic_model(file);
+        for name in ["result", "count"] {
+            let result = model
+                .decls()
+                .unwrap()
+                .iter()
+                .find(|decl| decl.name == name)
+                .unwrap();
+            assert_eq!(
+                model.type_of_decl(&result.id),
+                Some(LuaType::Integer),
+                "{name}"
+            );
+        }
+        let alias = model
+            .decls()
+            .unwrap()
+            .iter()
+            .find(|decl| decl.name == "alias")
+            .unwrap();
+        let ty = model.type_of_decl(&alias.id).unwrap();
+        assert!(!ty.is_nullable(), "{ty:?}");
+        let functions = model.callable_functions_cached(&ty);
+        assert!(
+            !functions.is_empty(),
+            "imported callable lost its signature: {ty:?}"
+        );
+        assert!(
+            functions
+                .iter()
+                .all(|function| function.get_ret() == &LuaType::Integer),
+            "{functions:?}"
+        );
+    }
+
+    #[test]
+    fn union_callable_projection_keeps_typed_alternatives_and_absence() {
+        for (other, nullable, returns) in [
+            ("Second", false, vec![LuaType::Integer, LuaType::String]),
+            ("Empty", true, vec![LuaType::Integer]),
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            let file = ws.def(&format!(
+                r#"
+                ---@class First
+                ---@field round fun(): integer
+                ---@class Second
+                ---@field round fun(): string
+                ---@class Empty
+                local Empty = {{}}
+                ---@param source First|{other}
+                local function run(source)
+                    local alias = source.round
+                    return alias
+                end
+            "#
+            ));
+            let model = ws.analysis.semantic_model(file);
+            let alias = model
+                .decls()
+                .unwrap()
+                .iter()
+                .find(|decl| decl.name == "alias")
+                .unwrap();
+            let ty = model.type_of_decl(&alias.id).unwrap();
+            assert_eq!(ty.is_nullable(), nullable, "{other}: {ty:?}");
+            let functions = model.callable_functions_cached(&ty);
+            for expected in returns {
+                assert!(
+                    functions
+                        .iter()
+                        .any(|function| function.get_ret() == &expected),
+                    "{other}: expected {expected:?}, {ty:?}, {functions:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn union_callable_projection_keeps_explicit_broad_contract() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(
+            r#"
+            ---@class Broad
+            ---@field round function
+            local Broad = {}
+            ---@return integer
+            function Broad.round() return 1 end
+            ---@class Empty
+            local Empty = {}
+            ---@param source Broad|Empty
+            local function run(source)
+                local alias = source.round
+                return alias
+            end
+        "#,
+        );
+        let model = ws.analysis.semantic_model(file);
+        let alias = model
+            .decls()
+            .unwrap()
+            .iter()
+            .find(|decl| decl.name == "alias")
+            .unwrap();
+        let ty = model.type_of_decl(&alias.id).unwrap();
+        assert!(ty.is_nullable(), "{ty:?}");
+        assert!(
+            model.callable_functions_cached(&ty).is_empty(),
+            "explicit broad contract was specialized: {ty:?}"
+        );
+    }
+
+    #[test]
+    fn union_callable_projection_keeps_optional_generic_and_unresolved_alternatives() {
+        for (source_type, nullable, expected_return) in [
+            ("Maybe|Required", true, LuaType::Integer),
+            ("Required|Maybe", true, LuaType::Integer),
+            ("Nullable|Required", true, LuaType::Integer),
+            ("Generic<string>|Empty", true, LuaType::String),
+            ("Unresolved|Required", false, LuaType::Integer),
+            ("Unresolved|Required|Empty", true, LuaType::Integer),
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            let file = ws.def(&format!(
+                r#"
+                ---@class Maybe
+                ---@field round? fun(): integer
+                ---@class Required
+                ---@field round fun(): integer
+                ---@class Nullable
+                ---@field round (fun(): integer)?
+                ---@class Generic<T>
+                ---@field round fun(): T
+                ---@class Empty
+                ---@param source {source_type}
+                local function run(source)
+                    local alias = source.round
+                    return alias
+                end
+            "#
+            ));
+            let model = ws.analysis.semantic_model(file);
+            let alias = model
+                .decls()
+                .unwrap()
+                .iter()
+                .find(|decl| decl.name == "alias")
+                .unwrap();
+            let ty = model.type_of_decl(&alias.id).unwrap();
+            assert_eq!(ty.is_nullable(), nullable, "{source_type}: {ty:?}");
+            let functions = model.callable_functions_cached(&ty);
+            assert!(!functions.is_empty(), "{source_type}: {ty:?}");
+            assert!(
+                functions
+                    .iter()
+                    .all(|function| function.get_ret() == &expected_return),
+                "{source_type}: {functions:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn union_callable_projection_keeps_declared_optional_marker_over_implementation() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(
+            r#"
+            ---@class OptionalImpl
+            ---@field round? fun(): integer
+            local OptionalImpl = {}
+            ---@return integer
+            function OptionalImpl.round() return 1 end
+            ---@class RequiredImpl
+            ---@field round fun(): integer
+            ---@param source RequiredImpl|OptionalImpl
+            local function run(source)
+                local alias = source.round
+                return alias
+            end
+        "#,
+        );
+        let model = ws.analysis.semantic_model(file);
+        let alias = model
+            .decls()
+            .unwrap()
+            .iter()
+            .find(|decl| decl.name == "alias")
+            .unwrap();
+        let ty = model.type_of_decl(&alias.id).unwrap();
+        assert!(
+            ty.is_nullable(),
+            "implementation erased optional declaration: {ty:?}"
+        );
+    }
+
+    #[test]
+    fn union_callable_projection_keeps_argument_diagnostics() {
+        for (argument, valid) in [("2.5", true), ("'invalid'", false)] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            ws.def_file("lib.lua", "local lib = {}\n---@param value number\n---@return integer\nfunction lib.round(value) return 1 end\nreturn lib");
+            let source = format!(
+                "local lib = require('lib')\nlocal alias = lib.round\nlocal result = alias({argument})"
+            );
+            assert_eq!(
+                ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, &source),
+                valid,
+                "{argument}"
+            );
+            assert!(
+                ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+                "false missing member: {argument}"
+            );
+        }
     }
 }
