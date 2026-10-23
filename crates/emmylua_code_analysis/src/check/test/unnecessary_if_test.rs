@@ -801,3 +801,87 @@ fn test_inferred_computed_table_writes_finite_key_domains() {
         );
     }
 }
+
+#[test]
+fn test_inferred_computed_table_writes_recursive_key_domains() {
+    use crate::{LuaType, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    for (alias, key_type) in [
+        ("---@alias RecursiveKey 'a'|RecursiveKey", "RecursiveKey"),
+        ("---@alias RecursiveKey RecursiveKey|'a'", "RecursiveKey"),
+        (
+            "---@alias GrowingKey<T> T|GrowingKey<T[]>",
+            "GrowingKey<'a'>",
+        ),
+    ] {
+        let source = format!(
+            r#"
+        {alias}
+        ---@param key {key_type}
+        local function probe(key)
+            local seen = {{}}
+            seen.other = true
+            local observed = seen[key]
+        end
+        "#
+        );
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def(&source);
+        let model = ws.analysis.semantic_model(file);
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .last()
+            .unwrap();
+        let ty = model.type_of_expr_at(index.get_syntax_id(), index.get_position());
+        assert!(
+            ty.is_unknown()
+                || ty == LuaType::from_vec(vec![LuaType::BooleanConst(true), LuaType::Nil]),
+            "unresolved key domain must retain possible writes: {alias}: {ty:?}"
+        );
+    }
+}
+
+#[test]
+fn test_inferred_computed_table_writes_written_key_domains() {
+    use crate::{LuaType, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    for (other_type, expected) in [
+        ("'a'|'b'", LuaType::Nil),
+        ("FiniteWrittenKeys", LuaType::Nil),
+        ("integer", LuaType::Nil),
+        (
+            "RecursiveWrittenKey",
+            LuaType::from_vec(vec![LuaType::BooleanConst(true), LuaType::Nil]),
+        ),
+    ] {
+        let source = format!(
+            r#"
+        ---@alias FiniteWrittenKeys 'a'|'b'
+        ---@alias RecursiveWrittenKey 'a'|RecursiveWrittenKey
+        ---@param key 'wanted'
+        ---@param other {other_type}
+        local function probe(key, other)
+            local seen = {{}}
+            seen[other] = true
+            local observed = seen[key]
+        end
+        "#
+        );
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def(&source);
+        let model = ws.analysis.semantic_model(file);
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .last()
+            .unwrap();
+        assert_eq!(
+            model.type_of_expr_at(index.get_syntax_id(), index.get_position()),
+            expected,
+            "{other_type}"
+        );
+    }
+}
