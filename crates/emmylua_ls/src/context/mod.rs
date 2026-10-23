@@ -171,8 +171,11 @@ impl ServerContext {
             .cancel_workspace_diagnostic()
             .await;
         self.inner.file_diagnostic.cancel_all().await;
-        let mut workspace_manager = self.inner.workspace_manager.lock().await;
-        workspace_manager.watcher = None;
+        {
+            let mut workspace_manager = self.inner.workspace_manager.lock().await;
+            workspace_manager.watcher = None;
+        }
+        let _ = self.inner.update_tx.send(UpdateEvent::Shutdown);
     }
 
     pub async fn send_response(&self, response: Response) {

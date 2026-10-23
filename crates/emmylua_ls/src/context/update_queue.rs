@@ -26,6 +26,7 @@ pub enum UpdateEvent {
     DidRenameFiles(RenameFilesParams),
     /// Acknowledge preceding updates without running the request on this worker.
     Barrier(oneshot::Sender<()>),
+    Shutdown,
 }
 
 pub fn spawn_update_queue(
@@ -65,6 +66,9 @@ pub fn spawn_update_queue(
                 UpdateEvent::Barrier(ready) => {
                     // The requester may already have been cancelled.
                     let _ = ready.send(());
+                }
+                UpdateEvent::Shutdown => {
+                    break;
                 }
             }
         }
