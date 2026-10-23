@@ -670,6 +670,8 @@ pub(crate) fn type_of_expr_at_node(
                     ) && let Some(prefix_member_ty) = model.member_type(&prefix_ty, &key)
                         && !matches!(prefix_member_ty, LuaType::Unknown)
                     {
+                        let prefix_member_ty =
+                            apply_field_nullable(model, &member_id, prefix_member_ty);
                         let ty = if prefix_member_ty.is_nullable()
                             && !member_ty.is_nullable()
                             && member_type_more_specific(model, &member_ty, &prefix_member_ty)
@@ -754,7 +756,12 @@ pub(crate) fn type_of_expr_at_node(
                         && (member_type_more_specific(model, &prefix_member_ty, &member_ty)
                             || matches!(&prefix_ty, LuaType::Generic(_)))
                     {
-                        return apply_casts(prefix_member_ty, All);
+                        let ty = if member_ty.is_nullable() {
+                            apply_field_nullable(model, &member_id, prefix_member_ty)
+                        } else {
+                            prefix_member_ty
+                        };
+                        return apply_casts(ty, All);
                     }
                 }
                 let member_ty =
@@ -5678,9 +5685,15 @@ fn filter_type_by_member_truthiness(
     };
     let mut kept = Vec::new();
     for component in components {
+        let unresolved = match &component {
+            LuaType::Any | LuaType::Unknown | LuaType::TplRef(_) => true,
+            LuaType::Ref(id) | LuaType::Def(id) => model.type_def_of(id).is_none(),
+            LuaType::Generic(generic) => model.type_def_of(&generic.get_base_type_id()).is_none(),
+            _ => false,
+        };
         // An unrestricted table's field may have either value/truthiness.
         // Absence from the declared member set does not mean the field is nil.
-        if has_unrestricted_members(model, &component) {
+        if unresolved || has_unrestricted_members(model, &component) {
             kept.push(component);
             continue;
         }
@@ -5696,10 +5709,31 @@ fn filter_type_by_member_truthiness(
                 continue;
             }
         }
-        // Missing member is equivalent to nil: `obj.missing` is false.
-        let member_ty = model.member_type(&component, key).unwrap_or(LuaType::Nil);
-        let truthy = type_is_truthy(&member_ty);
-        if truthy == keep_matching {
+        let revision = model.cache.borrow().revision();
+        let info = super::member::member_info(model, &component, key);
+        // Some member shapes omit nil from their projection; the declaration still permits absence.
+        let optional = info.as_ref().is_some_and(|info| {
+            let Some(member_id @ SemanticId::Member(key)) = info.id.as_ref() else {
+                return false;
+            };
+            model
+                .file_facts_of(key.file_id)
+                .and_then(|facts| facts.member_by_id(member_id))
+                .is_some_and(|member| member.is_nullable)
+        });
+        if !keep_matching && optional {
+            kept.push(component);
+            continue;
+        }
+        // An unresolved query does not prove that a field is absent.
+        let member_ty = info.map(|info| info.typ).unwrap_or_else(|| {
+            if model.cache.borrow().is_complete(revision) {
+                LuaType::Nil
+            } else {
+                LuaType::Unknown
+            }
+        });
+        if member_can_match_truthiness(model, &member_ty, keep_matching) {
             kept.push(component);
         }
     }
@@ -5710,17 +5744,30 @@ fn filter_type_by_member_truthiness(
     }
 }
 
-fn type_is_truthy(ty: &LuaType) -> bool {
-    let components: Vec<LuaType> = match ty {
-        LuaType::Union(union) => union.into_vec(),
-        other => vec![other.clone()],
+/// A field with both truthy and falsy values permits its receiver on either branch.
+fn member_can_match_truthiness(model: &SemanticModel, ty: &LuaType, truthy: bool) -> bool {
+    let Some(expanded) = super::type_eval::expand_alias_branches(model, ty) else {
+        return true;
     };
-    !components.iter().all(|component| {
-        matches!(
-            component,
-            LuaType::Nil | LuaType::BooleanConst(false) | LuaType::DocBooleanConst(false)
-        )
-    })
+    fn can_match(model: &SemanticModel, ty: &LuaType, truthy: bool) -> bool {
+        match ty {
+            LuaType::Never => false,
+            LuaType::Nil | LuaType::BooleanConst(false) | LuaType::DocBooleanConst(false) => {
+                !truthy
+            }
+            LuaType::Boolean | LuaType::Any | LuaType::Unknown | LuaType::TplRef(_) => true,
+            LuaType::Union(union) => union.iter().any(|ty| can_match(model, ty, truthy)),
+            LuaType::Ref(id) | LuaType::Def(id) => model
+                .type_def_of(id)
+                .is_none_or(|def| def.kind != TypeDefKind::Class || truthy),
+            LuaType::Generic(generic) => model
+                .type_def_of(&generic.get_base_type_id())
+                .is_none_or(|def| def.kind != TypeDefKind::Class || truthy),
+            LuaType::Intersection(_) => true,
+            _ => truthy,
+        }
+    }
+    can_match(model, &expanded, truthy)
 }
 
 fn component_matches_primitive(
