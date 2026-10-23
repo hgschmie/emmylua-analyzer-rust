@@ -11,13 +11,13 @@ use crate::semantic_db::flow::{FlowAntecedent, FlowId, FlowNodeKind, FlowTree, L
 use super::{SemanticModel, flow_condition_expr, literal_type};
 
 /// Each incoming path must reach a guard in the same function before a loop,
-/// goto boundary, or entry point. Callers decide which assignments are safe.
+/// goto boundary, or entry point. Callers decide which intervening flow nodes are safe.
 pub(super) fn guarded_on_all_paths(
     model: &SemanticModel,
     index: &LuaIndexExpr,
     offset: TextSize,
     mut is_guard: impl FnMut(LuaExpr, bool) -> bool,
-    check_assignment: impl Fn(&FlowTree, FlowId) -> Option<()>,
+    check_node: impl Fn(&FlowTree, FlowId) -> Option<()>,
 ) -> Option<()> {
     let tree = model.flow_tree()?;
     if !tree.has_condition() {
@@ -31,10 +31,8 @@ pub(super) fn guarded_on_all_paths(
             continue;
         }
         let node = tree.get_flow_node(current)?;
+        check_node(&tree, current)?;
         match &node.kind {
-            FlowNodeKind::Assignment(ptr) if !ptr.get_syntax_id().get_range().contains(offset) => {
-                check_assignment(&tree, current)?;
-            }
             FlowNodeKind::TrueCondition(ptr) | FlowNodeKind::FalseCondition(ptr) => {
                 let cond = flow_condition_expr(model, ptr)?;
                 if LuaClosureId::from_node(cond.syntax()) != closure {
