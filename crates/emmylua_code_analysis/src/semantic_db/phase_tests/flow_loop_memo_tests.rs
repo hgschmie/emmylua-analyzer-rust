@@ -111,6 +111,8 @@ fn flow_trace_cache_keeps_guard_paths_separate() {
 ---@param value string?
 ---@param flag boolean
 local function probe(value, flag)
+    if flag then print("left") else print("right") end
+    ---@cast value string?
     if flag then
         if value then
             print(value) -- read string
