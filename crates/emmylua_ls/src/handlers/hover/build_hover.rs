@@ -186,7 +186,8 @@ pub fn build_semantic_info_hover(
             }
         }
     } else {
-        (humanize(model, &info.typ), None)
+        let read_typ = member_read_type_at_token(model, &token).unwrap_or(info.typ);
+        (humanize(model, &read_typ), None)
     };
 
     // `pcall(foo)` synthesizes the full display from the call-site callback signature (covering std's anonymous `...` signature).
@@ -270,7 +271,7 @@ pub fn build_semantic_info_hover(
     })
 }
 
-/// A member read should display the type at the cursor, retaining the member's
+/// An index read should display the type at the cursor, retaining any member's
 /// declaration identity for documentation. Assignment targets still describe
 /// their writable contract, and callable members keep signature rendering.
 fn member_read_type_at_token(model: &SemanticModel, token: &LuaSyntaxToken) -> Option<LuaType> {

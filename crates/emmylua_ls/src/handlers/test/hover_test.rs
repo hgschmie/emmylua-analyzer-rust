@@ -1485,3 +1485,115 @@ fn test_copied_union_member_hover_keeps_projected_nil() {
         .unwrap();
     }
 }
+
+#[cfg(test)]
+mod dictionary_use_site {
+    use crate::handlers::{
+        hover::{hover, render::humanize},
+        test_lib::ProviderVirtualWorkspace,
+    };
+    use emmylua_code_analysis::LuaType;
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    use lsp_types::HoverContents;
+
+    const DEFINITIONS: &str = r#"
+    ---@alias HoverDictionaryValue string|boolean|number|table
+    ---@class HoverDictionaryElement
+    ---@field tags table<string, HoverDictionaryValue?>
+    local HoverDictionaryElement = {}
+    "#;
+
+    fn check(body: &str, expected_read: Option<LuaType>, expected_hover: Option<&str>) {
+        let source = format!(
+            "{DEFINITIONS}\n---@param elem HoverDictionaryElement\n---@param other HoverDictionaryElement\nlocal function probe(elem, other)\n{body}\nend"
+        );
+        let mut ws = ProviderVirtualWorkspace::new();
+        let offset = source.find("<??>").unwrap() as u32;
+        let (content, position) = ProviderVirtualWorkspace::handle_file_content(&source).unwrap();
+        let file = ws.def(&content);
+        let model = ws.analysis.semantic_model(file);
+        let token = model
+            .chunk()
+            .unwrap()
+            .syntax()
+            .token_at_offset(offset.into())
+            .right_biased()
+            .unwrap();
+        let index = LuaIndexExpr::cast(token.parent().unwrap()).unwrap();
+        let info = model.semantic_info(token.clone().into()).unwrap();
+        assert!(
+            info.decl.is_none(),
+            "dictionary read must exercise no-member-ID path: {:?}",
+            info.decl
+        );
+        if let Some(expected_read) = expected_read {
+            assert_eq!(
+                model.type_of_expr_at(index.get_syntax_id(), index.get_position()),
+                expected_read,
+                "semantic read must already be narrowed"
+            );
+            assert_ne!(
+                info.typ, expected_read,
+                "raw semantic type must differ from the flow read"
+            );
+        }
+        let expected = expected_hover
+            .map(str::to_owned)
+            .unwrap_or_else(|| humanize(&model, &info.typ));
+        let result = hover(&ws.analysis, file, position).unwrap();
+        let HoverContents::Markup(markup) = result.contents else {
+            panic!("markup required")
+        };
+        assert_eq!(markup.value, format!("```lua\n{expected}\n```"), "{body}");
+    }
+
+    #[test]
+    fn dictionary_index_hover_uses_table_flow_without_member_id() {
+        check(
+            "---@cast elem.tags.handler table\nlocal observed = elem.tags.<??>handler",
+            Some(LuaType::Table),
+            Some("table"),
+        );
+    }
+
+    #[test]
+    fn dictionary_index_hover_uses_number_flow_without_member_id() {
+        check(
+            "---@cast elem.tags.handler number\nlocal observed = elem.tags.<??>handler",
+            Some(LuaType::Number),
+            Some("number"),
+        );
+    }
+
+    #[test]
+    fn dictionary_index_hover_preserves_unrelated_reads() {
+        for body in [
+            "local observed = elem.tags.<??>handler",
+            "---@cast elem.tags.different table\nlocal observed = elem.tags.<??>handler",
+            "---@cast other.tags.handler table\nlocal observed = elem.tags.<??>handler",
+        ] {
+            check(body, None, None);
+        }
+    }
+
+    #[test]
+    fn dictionary_index_write_hover_retains_its_contract() {
+        let mut results = Vec::new();
+        for cast in ["", "---@cast elem.tags.handler table\n"] {
+            let source = format!(
+                "{DEFINITIONS}\n---@param elem HoverDictionaryElement\nlocal function probe(elem)\n{cast}elem.tags.<??>handler = nil\nend"
+            );
+            let mut ws = ProviderVirtualWorkspace::new();
+            let (content, position) =
+                ProviderVirtualWorkspace::handle_file_content(&source).unwrap();
+            let file = ws.def(&content);
+            let HoverContents::Markup(markup) =
+                hover(&ws.analysis, file, position).unwrap().contents
+            else {
+                panic!("markup required")
+            };
+            results.push(markup.value);
+        }
+        assert_eq!(results[0], results[1]);
+    }
+}
