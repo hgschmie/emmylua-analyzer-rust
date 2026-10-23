@@ -17,6 +17,7 @@
 //! back-inference, closure parameter back-inference) and does not duplicate model methods.
 
 pub(crate) mod callable;
+mod computed_table;
 pub(crate) mod function_solver;
 pub(crate) mod overload;
 pub(crate) mod unify;
