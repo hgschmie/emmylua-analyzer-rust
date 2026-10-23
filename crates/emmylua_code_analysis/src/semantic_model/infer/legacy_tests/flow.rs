@@ -11,6 +11,103 @@ mod test {
     const REPEATED_SELF_ASSIGNMENT_VARIANT_STEPS: usize = 128;
 
     #[test]
+    fn test_ordered_cast_guard_narrows_earlier_nullable_cast() {
+        for guard in [
+            "if value then",
+            "if value ~= nil then",
+            "if value == nil then return end; do",
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            let source = format!(
+                r#"
+                ---@param value unknown
+                local function read(value)
+                    ---@cast value string?
+                    {guard}
+                        print(value)
+                    end
+                end
+            "#
+            );
+            let file = ws.def(&source);
+            assert_eq!(
+                last_name_expr_type(&ws, file, "value"),
+                LuaType::String,
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ordered_cast_guard_retains_later_cast_and_assignment() {
+        for update in ["---@cast value string?", "value = nil"] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            let source = format!(
+                r#"
+                ---@param value string?
+                local function read(value)
+                    if value then
+                        {update}
+                        print(value)
+                    end
+                end
+            "#
+            );
+            let file = ws.def(&source);
+            assert!(
+                last_name_expr_type(&ws, file, "value").is_nullable(),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ordered_cast_guard_interleaves_add_remove_and_branches() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(
+            r#"
+            ---@param value unknown
+            ---@param flag boolean
+            local function read(value, flag)
+                ---@cast value string
+                ---@cast value +nil
+                if flag then
+                    ---@cast value -string
+                    value = 'restored'
+                end
+                if value then
+                    ---@cast value +number
+                    if type(value) == 'string' then print(value) end
+                end
+            end
+        "#,
+        );
+        assert_eq!(last_name_expr_type(&ws, file, "value"), LuaType::String);
+    }
+
+    #[test]
+    fn test_ordered_cast_guard_accepts_enum_dictionary_and_argument() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let source = r#"
+            ---@enum SortColumn
+            local columns = { name = 'name', count = 'count' }
+            ---@param key SortColumn
+            local function accept(key) end
+            ---@param value unknown
+            ---@param modes table<SortColumn, boolean>
+            local function read(value, modes)
+                ---@cast value SortColumn?
+                if value then
+                    accept(value)
+                    print(modes[value])
+                end
+            end
+        "#;
+        assert!(ws.has_no_diagnostic(DiagnosticCode::UndefinedField, source));
+        assert!(ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, source));
+    }
+
+    #[test]
     fn test_inline_as_does_not_apply_named_cast_to_initializers() {
         let mut ws = VirtualWorkspace::new_with_init_std_lib();
         let file = ws.def(
