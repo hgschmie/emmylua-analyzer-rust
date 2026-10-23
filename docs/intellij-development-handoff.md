@@ -1,3 +1,51 @@
+# Five analyzer findings and integration follow-ups — 2026-10-23
+
+The work branch preserves build200 `ca4943a8` as an ancestor and integrates exact
+upstream `56267ead`, retaining UP-045 cancellation/request ordering and all active
+patches. New contributions are UP-121 flow-aware inferred returns, UP-122 ordered
+casts/guards, UP-123 nullable union projections, UP-124 member primitive guards,
+UP-125 copied-member alias hovers and UP-126 inferred computed table writes.
+UP-112 normalization, UP-094 ordered cache keys, UP-033 computed guards and UP-016
+dictionary guards are amended without duplicating their original patches.
+
+Combined adaptations retain member/index cache metadata, alias identity, all-path
+computed guard joins, effect invalidation and projected hover types. Typed guard
+memoization includes incoming filters; a new join regression fails before the
+adaptation and passes afterward. All eleven UP-023 argument regressions remain;
+two work-only message assertions now require the actual uint32? projection instead
+of a fabricated nil-only argument, with rejection counts/codes unchanged.
+
+The initial full integration exposed two existing UP-011 open-table regressions.
+Final UP-126 follow-up `ac284815` adds a bounded positive proof before coercing an
+unknown empty-table shape to Nil; unsupported exposure/capture/alias/store/call/key,
+named-jump and loop cases remain Unknown. All original assertions are preserved.
+Its signed contribution includes seven focused groups and 26 open-table controls.
+
+Final combined source `ca910cad` passes **3,194 Rust tests**: 2,097 analysis,
+350 language-server, 495 formatter, 191 parser, 51 configuration and 10 schema.
+No tests are failed, ignored or filtered. All-target/all-feature Clippy with
+-D warnings and rustfmt pass. This handoff commit changes documentation only;
+validated code is unchanged. Client source is unchanged and its 35 tests passed.
+Exact input/work mappings and logs are in workspace
+`memory/findings/F-20261023-000345-five-analyzer-fixes/integration-receipt.md` and
+work `build/investigations/five-fixes-20261023/integration-manifest.json`.
+
+EmmyLua2 build201 packages the final pin; exact artifact hashes, 126 sealed-case
+packaged replay and FDE native/pin results are recorded in that shared receipt.
+Those package/native stages remain pending at this source handoff. Only macOS
+arm64 receives the custom analyzer; FDE and LSP4IJ archives are retained.
+
+The frozen LTN comparison newly exposes two generated MapPosition read-contract
+warnings at script/init.lua184, alongside its two existing hints. Official concept
+text says reads are dictionaries, while the generated attribute also permits a
+tuple. A separate API-copy control restores the historical zero-warning result by
+changing only LuaControl.position to MapPosition.struct. Management deferred that
+model change separately; do not suppress accurate missing-union nil alternatives.
+The pure nonproductive self-alias crash also reproduces on both old baselines and
+is separately deferred, outside the 126-case acceptance gate.
+
+All task commits remain local and signed. No push, PR or IDE installation.
+
 # Constructor navigation, enum indices and lifecycle follow-ups — 2026-10-22
 
 UP-089 is rebased onto upstream ce61189c and amended as 86c939ae. Definition
