@@ -340,10 +340,18 @@ pub(crate) fn member_info_impl(
             is_method: first.as_ref().is_some_and(|info| info.is_method),
         });
     }
-    if let Some(info) = member_infos_with_key(model, prefix_type, key)
+    if let Some(mut info) = member_infos_with_key(model, prefix_type, key)
         .into_iter()
         .find(|info| &info.key == key)
     {
+        if let LuaType::Union(union) = prefix_type
+            && union.iter().any(|component| {
+                !component.is_nil() && member_info(model, component, key).is_none()
+            })
+        {
+            // Preserve overload/member merging, while accounting for absent fields.
+            info.typ = LuaType::from_vec(vec![info.typ, LuaType::Nil]);
+        }
         return Some(info);
     }
     // An anonymous table literal can supply missing members through the

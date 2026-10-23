@@ -738,17 +738,6 @@ fn check_arg_pairs(
         let param_ty = unify::substitute(param_ty, bindings);
         let param_ty = type_eval::expand_alias_generic(semantic_model, &param_ty);
         let param_ty = type_eval::eval_conditionals(semantic_model, &param_ty);
-        // Missing union member: when only A in `A|C` has `handle`, accessing `target.handle`
-        // should report ParamTypeMismatch even if the type face happens to be string (missing members count as nil).
-        if let LuaExpr::IndexExpr(index_expr) = arg
-            && semantic_model.member_missing_in_union(index_expr)
-        {
-            out.push(Mismatch {
-                range: arg.get_range(),
-                message: mismatch_message(semantic_model, &LuaType::Nil, &param_ty, name),
-            });
-            continue;
-        }
         // Table literals targeting object / intersection: check field by field and then fully take over.
         if let LuaExpr::TableExpr(table) = arg {
             if has_table_literal_shape(&param_ty) {
