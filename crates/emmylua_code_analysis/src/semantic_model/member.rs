@@ -376,7 +376,9 @@ pub(crate) fn member_info_impl(
                 if unresolved_nominal {
                     return false;
                 }
-                let component_info = member_info(model, component, key);
+                // Reuse complete per-component projections on subsequent lookups.
+                // The model cache does not publish cycle-limited/provisional results.
+                let component_info = model.member_info(component, key);
                 // Declaration IDs retain inherited optional markers. Synthetic
                 // members carry nullability directly in their projected type.
                 let optional = component_info.as_ref().is_some_and(|info| {
@@ -1610,6 +1612,7 @@ mod union_projection_review_regressions {
     #[test]
     fn union_projection_keeps_optional_synthetic_intersection_members() {
         let mut ws = VirtualWorkspace::new();
+        // Anonymous object types need a caller model but no named declarations.
         let file = ws.def("");
         let cases = [
             "({value?: integer} & {tag: string}) | {value: integer}",
@@ -1828,6 +1831,8 @@ mod union_projection_review_regressions {
     }
 
     #[test]
+    // Preserve explicit absence using the shared union constructor; normalization
+    // of Unknown belongs to that constructor, not a special case in projection.
     fn union_projection_unknown_field_remains_conservative() {
         let mut ws = VirtualWorkspace::new();
         let file = ws.def("---@class UnknownField\n---@field value unknown\n---@class Empty");

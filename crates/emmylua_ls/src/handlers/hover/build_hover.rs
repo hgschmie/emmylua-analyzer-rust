@@ -124,7 +124,9 @@ pub fn build_semantic_info_hover(
             } else {
                 let origin_typ = semantic_type_of(&origin_model, &origin);
                 // Following a data alias for documentation must not discard
-                // absent union alternatives from its projected value.
+                // absent union alternatives from its projected value. Plain callable
+                // declarations keep the signature renderer; callable unions and
+                // aliases remain value contracts whose nullability must survive.
                 let projected_member = matches!(decl, SemanticId::Decl(_))
                     && matches!(origin, SemanticId::Member(_))
                     && !matches!(
@@ -1685,6 +1687,8 @@ fn build_member_hover(
         None
     };
     let effective_typ = if projected_value {
+        // The caller already supplied the use-site projection. An override from
+        // one origin declaration would erase other alternatives or their absence.
         typ.clone()
     } else if let Some(override_ty) = effective_typ_override {
         override_ty
