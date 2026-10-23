@@ -2461,18 +2461,28 @@ impl<'a> InferVm<'a> {
         callee_fun: &LuaFunctionType,
         bindings: &unify::TplBindings,
     ) -> LuaType {
-        let owner_info = callee.owner.as_ref().and_then(|owner| match owner {
-            SemanticId::Decl(key) => {
-                let facts = self.model.file_facts_of(key.file_id)?;
-                let decl = facts.decl_by_id(owner)?;
-                Some((key.file_id, decl.value_expr_syntax?))
-            }
-            SemanticId::Member(key) => {
-                let facts = self.model.file_facts_of(key.file_id)?;
-                let member = facts.member_by_id(owner)?;
-                Some((key.file_id, member.value_syntax?))
-            }
-            _ => None,
+        let signature_info = if let LuaType::Signature(id) = &callee.ty {
+            self.model
+                .file_facts_of(id.get_file_id())
+                .and_then(|facts| facts.signature_by_position(id.get_position()))
+                .map(|signature| (id.get_file_id(), signature.closure_syntax))
+        } else {
+            None
+        };
+        let owner_info = signature_info.or_else(|| {
+            callee.owner.as_ref().and_then(|owner| match owner {
+                SemanticId::Decl(key) => {
+                    let facts = self.model.file_facts_of(key.file_id)?;
+                    let decl = facts.decl_by_id(owner)?;
+                    Some((key.file_id, decl.value_expr_syntax?))
+                }
+                SemanticId::Member(key) => {
+                    let facts = self.model.file_facts_of(key.file_id)?;
+                    let member = facts.member_by_id(owner)?;
+                    Some((key.file_id, member.value_syntax?))
+                }
+                _ => None,
+            })
         });
         if let Some((file_id, value_syntax)) = owner_info {
             if let Some(facts) = self.model.file_facts_of(file_id)
@@ -2686,6 +2696,16 @@ impl<'a> InferVm<'a> {
                 }
                 (key.file_id, member.value_syntax?, overload_syntaxes)
             }
+            SemanticId::Signature(key) => {
+                let facts = self.model.file_facts_of(key.file_id)?;
+                let overloads = facts
+                    .signature_by_closure(key.closure_syntax)?
+                    .docs
+                    .as_ref()
+                    .map(|docs| docs.overloads.clone())
+                    .unwrap_or_default();
+                (key.file_id, key.closure_syntax, overloads)
+            }
             SemanticId::Name(name) => {
                 // Cross-file global overloads: a global call owns `Name("f")`, but
                 // every file may declare a same-named global function. Collect all
@@ -2706,12 +2726,12 @@ impl<'a> InferVm<'a> {
         };
         let facts = self.model.file_facts_of(file_id)?;
         let signature = facts.signature_by_closure(value_syntax)?;
-        // Runtime member methods without doc annotations: use signature projection (param
-        // names + inferred return + is_colon_define). Decls (plain functions) still prefer
+        // Runtime methods and captured signatures without docs use signature projection
+        // (param names + inferred return + is_colon_define). Decls still prefer
         // the existing `callee.ty` DocFunction (generic docs etc.) to avoid a no-doc body
         // projection overriding `---@type fun<T>...` declared types.
         if signature.docs.is_none() {
-            if matches!(owner, SemanticId::Member(_)) {
+            if matches!(owner, SemanticId::Member(_) | SemanticId::Signature(_)) {
                 let fun = self
                     .model
                     .type_of_signature_in_file(file_id, value_syntax)?;
@@ -3195,6 +3215,20 @@ impl<'a> InferVm<'a> {
     ) -> Vec<LuaFunctionType> {
         match ty {
             LuaType::DocFunction(fun) => vec![fun.as_ref().clone()],
+            LuaType::Signature(id) => {
+                let Some(signature) = self
+                    .model
+                    .file_facts_of(id.get_file_id())
+                    .and_then(|facts| facts.signature_by_position(id.get_position()))
+                else {
+                    return Vec::new();
+                };
+                self.signature_candidates_single(&SemanticId::signature(
+                    id.get_file_id(),
+                    signature.closure_syntax,
+                ))
+                .unwrap_or_default()
+            }
             LuaType::Union(union) => union
                 .into_vec()
                 .iter()

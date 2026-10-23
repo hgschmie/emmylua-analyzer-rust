@@ -5474,6 +5474,8 @@ fn member_type_more_specific(model: &SemanticModel, prefix: &LuaType, base: &Lua
         return prefix == base;
     }
     match (prefix, base) {
+        // A broad callable projection must not erase the captured closure identity.
+        (LuaType::Function, LuaType::Signature(_)) => false,
         (LuaType::Union(prefix_union), LuaType::Union(base_union)) => {
             let base_types = base_union.into_vec();
             prefix_union.into_vec().iter().all(|component| {
