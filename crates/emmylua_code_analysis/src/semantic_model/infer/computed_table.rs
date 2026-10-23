@@ -11,7 +11,7 @@ use crate::semantic_db::flow::{FlowAntecedent, FlowEffect, FlowNodeKind, LuaClos
 use crate::{LuaType, SemanticId};
 
 use super::super::SemanticModel;
-use super::super::type_eval::expand_alias_head;
+use super::super::type_eval::with_expanded_alias;
 
 pub(super) fn receiver_type_at(model: &SemanticModel, key: LuaSyntaxId) -> Option<LuaType> {
     let root = model.syntax_tree()?.get_red_root();
@@ -35,7 +35,8 @@ pub(super) fn read_type(
     let LuaType::TableConst(table) = receiver else {
         return None;
     };
-    if table.file_id != model.file_id() || !may_be_string(model, key_type) {
+    let mut budget = 512;
+    if table.file_id != model.file_id() || !may_be_string(model, key_type, &mut budget) {
         return None;
     }
     let root = model.syntax_tree()?.get_red_root();
@@ -60,7 +61,6 @@ pub(super) fn read_type(
     let mut pending = vec![(start, true)];
     let mut visited = HashSet::new();
     let mut types = Vec::new();
-    let mut budget = 512;
     let mut reaches_creation = false;
     while let Some((current, mut stable)) = pending.pop() {
         if !visited.insert((current, stable)) {
@@ -100,7 +100,7 @@ pub(super) fn read_type(
                     model
                         .member_infos(&replacement)
                         .into_iter()
-                        .filter(|info| matches!(&info.key, crate::LuaMemberKey::Name(name) if string_keys_overlap(model, key_type, &LuaType::StringConst(smol_str::SmolStr::new(name.as_str()).into()))))
+                        .filter(|info| matches!(&info.key, crate::LuaMemberKey::Name(name) if string_keys_overlap(model, key_type, &LuaType::StringConst(smol_str::SmolStr::new(name.as_str()).into()), &mut budget)))
                         .map(|info| info.typ),
                 );
                 types.push(LuaType::from_vec(fields));
@@ -139,7 +139,7 @@ pub(super) fn read_type(
                                 let ty = model
                                     .type_of_expr_at(expr.get_syntax_id(), expr.get_position());
                                 (
-                                    string_keys_overlap(model, key_type, &ty),
+                                    string_keys_overlap(model, key_type, &ty, &mut budget),
                                     stable
                                         && key_decl.is_some()
                                         && name_decl(model, &expr) == key_decl,
@@ -152,6 +152,7 @@ pub(super) fn read_type(
                                     &LuaType::StringConst(
                                         smol_str::SmolStr::new(name.get_name_text()).into(),
                                     ),
+                                    &mut budget,
                                 ),
                                 stable && string_literal(key_type) == Some(name.get_name_text()),
                             ),
@@ -162,6 +163,7 @@ pub(super) fn read_type(
                                     &LuaType::StringConst(
                                         smol_str::SmolStr::new(value.get_value()).into(),
                                     ),
+                                    &mut budget,
                                 ),
                                 stable
                                     && string_literal(key_type) == Some(value.get_value().as_str()),
@@ -247,6 +249,7 @@ pub(super) fn read_type(
                             model,
                             key_type,
                             &model.type_of_expr_at(expr.get_syntax_id(), expr.get_position()),
+                            &mut budget,
                         ),
                         LuaIndexKey::Name(name) => string_keys_overlap(
                             model,
@@ -254,11 +257,13 @@ pub(super) fn read_type(
                             &LuaType::StringConst(
                                 smol_str::SmolStr::new(name.get_name_text()).into(),
                             ),
+                            &mut budget,
                         ),
                         LuaIndexKey::String(value) => string_keys_overlap(
                             model,
                             key_type,
                             &LuaType::StringConst(smol_str::SmolStr::new(value.get_value()).into()),
+                            &mut budget,
                         ),
                         _ => false,
                     };
@@ -269,7 +274,11 @@ pub(super) fn read_type(
             }
         }
     }
-    Some(LuaType::from_vec(types))
+    Some(if budget == 0 {
+        LuaType::Unknown
+    } else {
+        LuaType::from_vec(types)
+    })
 }
 
 fn name_decl(model: &SemanticModel, expr: &LuaExpr) -> Option<SemanticId> {
@@ -287,35 +296,72 @@ fn string_literal(ty: &LuaType) -> Option<&str> {
     }
 }
 
-fn may_be_string(model: &SemanticModel, ty: &LuaType) -> bool {
-    match expand_alias_head(model, ty).as_ref().unwrap_or(ty) {
-        LuaType::String
-        | LuaType::StringConst(_)
-        | LuaType::DocStringConst(_)
-        | LuaType::Any
-        | LuaType::Unknown => true,
-        LuaType::Union(union) => union.iter().any(|ty| may_be_string(model, &ty)),
-        _ => false,
+// Keep aliases active across union descent: an unresolved cycle is not proof
+// that keys are disjoint. Share the read's work budget with these domain queries.
+fn may_be_string(model: &SemanticModel, ty: &LuaType, budget: &mut usize) -> bool {
+    if *budget == 0 {
+        return true;
     }
+    *budget -= 1;
+    if let LuaType::Union(union) = ty {
+        return union.iter().any(|ty| may_be_string(model, &ty, budget));
+    }
+    if is_string_domain(ty) {
+        return true;
+    }
+    with_expanded_alias(model, ty, |expanded| {
+        expanded != ty && may_be_string(model, expanded, budget)
+    })
+    .unwrap_or(true)
 }
 
-fn string_keys_overlap(model: &SemanticModel, left: &LuaType, right: &LuaType) -> bool {
-    let left = expand_alias_head(model, left).unwrap_or_else(|| left.clone());
-    let right = expand_alias_head(model, right).unwrap_or_else(|| right.clone());
-    if let LuaType::Union(union) = &left {
+fn is_string_domain(ty: &LuaType) -> bool {
+    matches!(
+        ty,
+        LuaType::String
+            | LuaType::StringConst(_)
+            | LuaType::DocStringConst(_)
+            | LuaType::Any
+            | LuaType::Unknown
+    )
+}
+
+fn string_keys_overlap(
+    model: &SemanticModel,
+    left: &LuaType,
+    right: &LuaType,
+    budget: &mut usize,
+) -> bool {
+    if *budget == 0 {
+        return true;
+    }
+    *budget -= 1;
+    if let LuaType::Union(union) = left {
         return union
             .iter()
-            .any(|part| string_keys_overlap(model, &part, &right));
+            .any(|part| string_keys_overlap(model, &part, right, budget));
     }
-    if let LuaType::Union(union) = &right {
+    if let LuaType::Union(union) = right {
         return union
             .iter()
-            .any(|part| string_keys_overlap(model, &left, &part));
+            .any(|part| string_keys_overlap(model, left, &part, budget));
     }
-    if let (Some(left), Some(right)) = (string_literal(&left), string_literal(&right)) {
+    if let (Some(left), Some(right)) = (string_literal(left), string_literal(right)) {
         return left == right;
     }
-    may_be_string(model, &left) && may_be_string(model, &right)
+    if !is_string_domain(left) {
+        return with_expanded_alias(model, left, |expanded| {
+            expanded != left && string_keys_overlap(model, expanded, right, budget)
+        })
+        .unwrap_or(true);
+    }
+    if !is_string_domain(right) {
+        return with_expanded_alias(model, right, |expanded| {
+            expanded != right && string_keys_overlap(model, left, expanded, budget)
+        })
+        .unwrap_or(true);
+    }
+    true
 }
 
 fn assignment_value(model: &SemanticModel, values: &[LuaExpr], position: usize) -> LuaType {
