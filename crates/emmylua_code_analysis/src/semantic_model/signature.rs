@@ -15,6 +15,22 @@ fn needs_rich_doc_type(ty: &LuaType) -> bool {
     }
 }
 
+fn widen_inferred_return(ty: LuaType) -> LuaType {
+    match ty {
+        LuaType::Union(union) => {
+            LuaType::from_vec(union.iter().cloned().map(widen_inferred_return).collect())
+        }
+        LuaType::Variadic(variadic) => LuaType::Variadic(Rc::new(match variadic.as_ref() {
+            VariadicType::Multi(types) => {
+                VariadicType::Multi(types.iter().cloned().map(widen_inferred_return).collect())
+            }
+            VariadicType::Base(ty) => VariadicType::Base(widen_inferred_return(ty.clone())),
+            VariadicType::Repeat(ty) => VariadicType::Repeat(widen_inferred_return(ty.clone())),
+        })),
+        other => infer::vm::widen_variadic_const(&other),
+    }
+}
+
 impl<'db> SemanticModel<'db> {
     /// Constructor attributes for a type definition (`---@[constructor("init")]` from the `meta("Class")` factory).
     pub fn constructor_attribute_of_type(
@@ -279,7 +295,7 @@ impl<'db> SemanticModel<'db> {
     ) -> Vec<(LuaType, rowan::TextRange)> {
         infer::infer_expr_list_types(self, exprs, var_count)
     }
-    /// 函数签名的返回类型投影, 显式标注优先于函数体推断.
+    /// Project explicit return contracts, or infer unannotated returns using flow at each return site.
     pub(crate) fn signature_return_type(
         &self,
         file_id: FileId,
@@ -287,6 +303,17 @@ impl<'db> SemanticModel<'db> {
         signature: &Signature,
         generic_names: &[SmolStr],
     ) -> LuaType {
+        if signature
+            .docs
+            .as_ref()
+            .is_none_or(|docs| docs.returns.is_empty() && docs.return_overload_rows.is_empty())
+        {
+            let model = self.model_for(file_id);
+            let inferred = infer::closure_return_lua(&model, closure_syntax);
+            if !matches!(inferred, LuaType::Unknown | LuaType::Any) {
+                return widen_inferred_return(inferred);
+            }
+        }
         let return_shells = self
             .analysis()
             .signature_returns(file_id, closure_syntax)
