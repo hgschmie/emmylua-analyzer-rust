@@ -1,3 +1,35 @@
+# Callable compatibility and captured signatures — 2026-10-23
+
+Build202 preserves build201 `98696a91` as an ancestor and every active patch.
+Reviewed UP-127 `53edb444` maps to work `f731b955`, UP-128 `2e581e4a` to
+`f27742d4`, and additive UP-123 `ed77cc22` to `d4a3ce9b`. All are signed clean
+cherry-picks with provenance; no integration conflict/adaptation was needed.
+
+Broad function arguments now fit unknown parameters without bypassing scalar
+or typed callback checks. Captured member signatures supply original file/closure
+call candidates, overloads, generics and return-overload slots; copied-value
+snapshots and actual alias reassignments retain their own behavior. Complete union
+member reads preserve callable precision with guards/casts, unresolved nominal
+and recursive completeness, missing/optional nil alternatives and explicit broad
+contracts. Earlier computed/iterator/directional/dictionary/optional-flow and
+ordered-cache adapters remain intact.
+
+Combined source `d4a3ce9b` passes **3,220 all-feature Rust tests**: 2,119 analysis,
+354 language server, 495 formatter, 191 parser, 51 configuration and 10 schema.
+Zero failures/ignored/filtered. All13 callable and6 projection groups execute;
+the original cross-file Unknown-versus-Integer red is now green unchanged.
+All-target/all-feature workspace Clippy with -D warnings and rustfmt pass.
+This handoff changes documentation only after the validated code commit.
+
+The35 client tests from201 are reused with exact source/Gradle input equivalence.
+EmmyLua2 build202 packages the final analyzer pin. Final new33cases/42types,
+unchanged prior126cases/100types, LTN replay and18 FDE native tests are binding
+before publication; artifact/hash/pin/receipt details are recorded in workspace
+`memory/findings/F-20261023-114101-callable-alias-fixes-build/integration-receipt.md`.
+Only macOS arm64 receives the custom analyzer; FDE0.9.3-dev and LSP4IJ SNAPSHOT-15
+archives are retained. Separate API-model and pure-self findings remain deferred.
+Local signed changes only; no push, PR or IDE installation.
+
 # Dictionary entry hover completion — 2026-10-23
 
 UP-080 additive `1ece54a1` is integrated as signed `b32387a9`. Reads without a
