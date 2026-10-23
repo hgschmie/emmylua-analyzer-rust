@@ -3156,3 +3156,107 @@ fn loop_generic_integer_seed_does_not_hide_noninteger_writes() {
         );
     }
 }
+#[test]
+fn generic_assignment_preserves_identity_before_constraint_projection() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for constraint in ["table<string, any>", "Animal", "string", "integer"] {
+        for target in ["T", "T?", "T|boolean"] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            ws.def("---@class Animal\n---@field name string");
+            assert!(ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &format!(
+                "---@generic T: {constraint}\n---@param value T\nlocal function copy(value)\n---@type {target}\nlocal result = value\nend"
+            )), "constraint={constraint}, target={target}");
+        }
+    }
+}
+
+#[test]
+fn generic_assignment_preserves_identity_call_result() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaCallExpr, LuaExpr};
+    for guard in ["", "if not value then error('missing') end"] {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def_file(
+            "copy.lua",
+            "---@generic U\n---@param value U\n---@return U\nfunction copy(value) end",
+        );
+        let param = if guard.is_empty() { "T" } else { "T?" };
+        let source = format!(
+            "---@generic T: table<string, any>\n---@param value {param}\nlocal function use(value)\n{guard}\n---@type T\nlocal result = copy(value)\nend"
+        );
+        assert!(
+            ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
+            "guard={guard}"
+        );
+        let file = ws.def(&source);
+        let model = ws.analysis.semantic_model(file);
+        let chunk = model.chunk().unwrap();
+        let call = chunk.descendants::<LuaCallExpr>().find(|call| {
+            matches!(call.get_prefix_expr(), Some(LuaExpr::NameExpr(name)) if name.get_name_text().as_deref() == Some("copy"))
+        }).unwrap();
+        assert_eq!(
+            model.type_of_expr_at(call.get_syntax_id(), call.get_position()),
+            ws.ty("T")
+        );
+    }
+}
+
+#[test]
+fn generic_assignment_does_not_replace_identity_with_constraint() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for value in ["broad", "other", "'not a table'"] {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(!ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &format!(
+            "---@generic T: table<string, any>, U: table<string, any>\n---@param broad table<string, any>\n---@param other U\nlocal function copy(broad, other)\n---@type T\nlocal result = {value}\nend"
+        )), "value={value}");
+    }
+}
+
+#[test]
+fn generic_assignment_keeps_constraint_compatibility() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for (target, accepted) in [("Animal", true), ("string", false), ("integer", false)] {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def("---@class Animal\n---@field name string");
+        assert_eq!(ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &format!(
+            "---@generic T: Animal\n---@param value T\nlocal function copy(value)\n---@type {target}\nlocal result = value\nend"
+        )), accepted, "target={target}");
+    }
+}
+
+#[test]
+fn generic_assignment_keeps_nullable_identity() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for (target, accepted) in [("T?", true), ("T", false)] {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert_eq!(ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &format!(
+            "---@generic T: table<string, any>\n---@param value T?\nlocal function copy(value)\n---@type {target}\nlocal result = value\nend"
+        )), accepted, "target={target}");
+    }
+}
+
+#[test]
+fn generic_assignment_keeps_nested_scope_boundaries() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for (inner_generic, value, accepted) in [
+        ("U", "outer", true),
+        ("T", "outer", false),
+        ("U", "inner", false),
+    ] {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert_eq!(ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &format!(
+            "---@generic T: table<string, any>\n---@param outer T\nlocal function outer_fn(outer)\n---@generic {inner_generic}: table<string, any>\n---@param inner {inner_generic}\nlocal function inner_fn(inner)\n---@type T\nlocal result = {value}\nend\nend"
+        )), accepted, "inner={inner_generic}, value={value}");
+    }
+}
+
+#[test]
+fn generic_assignment_distinguishes_sibling_and_unconstrained_parameters() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for constraint in ["", ": table<string, any>"] {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &format!(
+            "---@generic T: string\n---@param value T\nlocal function sibling(value) end\n---@generic T{constraint}\n---@param value T\nlocal function copy(value)\n---@type T\nlocal result = value\nend"
+        )), "constraint={constraint}");
+    }
+}
