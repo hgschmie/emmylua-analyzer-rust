@@ -937,3 +937,36 @@ mod tests {
         assert!(content.value.contains("a: integer"), "{}", content.value);
     }
 }
+
+#[test]
+fn test_copied_union_member_hover_keeps_projected_nil() {
+    use crate::handlers::test_lib::{ProviderVirtualWorkspace, VirtualHoverResult};
+    for (declaration, use_site) in [
+        ("<??>player_index", "player_index"),
+        ("player_index", "<??>player_index"),
+    ] {
+        let source = format!(
+            r#"
+        ---@class HoverProjectionPresent
+        ---@field player_index integer
+        local Present = {{}}
+        ---@class HoverProjectionAbsent
+        local Absent = {{}}
+        ---@alias HoverProjectionEvent<T> T|HoverProjectionAbsent
+        ---@param event HoverProjectionEvent<HoverProjectionPresent>
+        local function handler(event)
+            local {declaration} = event.player_index
+            print({use_site})
+        end
+        "#
+        );
+        let mut ws = ProviderVirtualWorkspace::new();
+        ws.check_hover(
+            &source,
+            VirtualHoverResult {
+                value: "```lua\n(field) player_index: integer?\n```".to_string(),
+            },
+        )
+        .unwrap();
+    }
+}
