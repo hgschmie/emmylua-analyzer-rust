@@ -78,3 +78,173 @@ mod test {
         ));
     }
 }
+
+#[test]
+fn test_inferred_computed_table_writes() {
+    use crate::{LuaType, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    for (body, expected) in [
+        (
+            "local seen = {}; seen[key] = true; local observed = seen[key]",
+            LuaType::BooleanConst(true),
+        ),
+        (
+            "local seen = {}; if flag then seen[key] = true end; local observed = seen[key]",
+            LuaType::from_vec(vec![LuaType::BooleanConst(true), LuaType::Nil]),
+        ),
+        (
+            "local seen = {}; seen[other] = true; local observed = seen[key]",
+            LuaType::from_vec(vec![LuaType::BooleanConst(true), LuaType::Nil]),
+        ),
+        (
+            "local seen = {}; for i = 1, 3 do local observed = seen[key]; seen[key] = true end",
+            LuaType::from_vec(vec![LuaType::BooleanConst(true), LuaType::Nil]),
+        ),
+        ("local seen = {}; local observed = seen[key]", LuaType::Nil),
+        (
+            "local seen = {}; seen[key] = true; seen[key] = nil; local observed = seen[key]",
+            LuaType::Nil,
+        ),
+        (
+            "for i = 1, 3 do local seen = {}; local observed = seen[key]; seen[key] = true end",
+            LuaType::Nil,
+        ),
+        (
+            "local seen = {}; local different = {}; different[key] = true; local observed = seen[key]",
+            LuaType::Nil,
+        ),
+        (
+            "local seen = {}; seen[key] = true; seen = {}; local observed = seen[key]",
+            LuaType::Nil,
+        ),
+    ] {
+        let source = format!(
+            r#"
+        ---@param key string
+        ---@param other string
+        ---@param flag boolean
+        local function probe(key, other, flag) {body} end
+        "#
+        );
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def(&source);
+        let model = ws.analysis.semantic_model(file);
+        let pos = source.find("local observed = ").unwrap() + "local observed = ".len();
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .find(|i| u32::from(i.get_position()) as usize == pos)
+            .unwrap();
+        let ty = model.type_of_expr_at(index.get_syntax_id(), index.get_position());
+        assert_eq!(ty, expected, "{body}");
+    }
+}
+
+#[test]
+fn test_inferred_computed_table_writes_loop_condition() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::UnnecessaryIf,
+        r#"
+        ---@param keys string[]
+        local function create(keys)
+            local seen = {}
+            for _, key in ipairs(keys) do
+                ---@cast key string
+                if seen[key] then print('duplicate') else seen[key] = true end
+            end
+        end
+    "#
+    ));
+}
+
+#[test]
+fn test_inferred_computed_table_writes_key_and_result_slots() {
+    use crate::{LuaType, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    for (body, expected) in [
+        (
+            "local key = 'wanted'; local seen = {}; seen.other = true; local observed = seen[key]",
+            LuaType::Nil,
+        ),
+        (
+            "local key = 'wanted'; local other = 'different'; local seen = {}; seen[other] = true; local observed = seen[key]",
+            LuaType::Nil,
+        ),
+        (
+            "local seen = {}; seen[key] = pair(); local observed = seen[key]",
+            LuaType::String,
+        ),
+        (
+            "local seen = {}; local spare; seen[key], spare = pair(); local observed = seen[key]",
+            LuaType::String,
+        ),
+        (
+            "local seen = {}; local spare; spare, seen[key] = pair(); local observed = seen[key]",
+            LuaType::Integer,
+        ),
+        (
+            "local seen = {}; seen[key] = true; local alias = seen; seen = {}; local observed = alias[key]",
+            LuaType::BooleanConst(true),
+        ),
+    ] {
+        let source = format!(
+            r#"
+        ---@return string, integer
+        local function pair() return 'value', 7 end
+        ---@param key string
+        local function probe(key) {body} end
+        "#
+        );
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def(&source);
+        let model = ws.analysis.semantic_model(file);
+        let pos = source.find("local observed = ").unwrap() + "local observed = ".len();
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .find(|i| u32::from(i.get_position()) as usize == pos)
+            .unwrap();
+        assert_eq!(
+            model.type_of_expr_at(index.get_syntax_id(), index.get_position()),
+            expected,
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn test_inferred_computed_table_writes_finite_key_domains() {
+    use crate::{LuaType, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    for key_type in ["'a'|'b'", "FiniteComputedKeys"] {
+        let source = format!(
+            r#"
+        ---@alias FiniteComputedKeys 'a'|'b'
+        ---@param key {key_type}
+        local function probe(key)
+            local seen = {{}}
+            seen.other = true
+            local observed = seen[key]
+        end
+        "#
+        );
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def(&source);
+        let model = ws.analysis.semantic_model(file);
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .last()
+            .unwrap();
+        assert_eq!(
+            model.type_of_expr_at(index.get_syntax_id(), index.get_position()),
+            LuaType::Nil,
+            "{key_type}"
+        );
+    }
+}
