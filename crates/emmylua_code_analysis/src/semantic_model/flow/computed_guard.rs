@@ -88,9 +88,6 @@ pub(super) fn guarded_type(
         base = super::apply_field_nullable(model, &id, base);
     }
 
-    if !base.is_nullable() {
-        return None;
-    }
     if computed_effects::calls_conflict(
         model,
         &access,
@@ -101,9 +98,8 @@ pub(super) fn guarded_type(
     }
     let closure = LuaClosureId::from_node(index.syntax());
     let current = model.flow_tree()?.get_flow_id_at(offset)?;
-    GuardSearch::new(model, &access, offset, closure)
-        .prove(current)
-        .then(|| super::remove_type(base, &LuaType::Nil))
+    let narrowed = GuardSearch::new(model, &access, offset, closure).narrow(current, base.clone());
+    (narrowed != base).then_some(narrowed)
 }
 
 // Search all reaching paths, memoizing joins so nested branches do not duplicate
@@ -116,6 +112,7 @@ struct GuardSearch<'a, 'db> {
     initializer: Option<FlowId>,
     remaining: usize,
     memo: hashbrown::HashMap<FlowId, bool>,
+    typed_memo: hashbrown::HashMap<(FlowId, LuaType), Option<LuaType>>,
 }
 
 impl<'a, 'db> GuardSearch<'a, 'db> {
@@ -133,6 +130,117 @@ impl<'a, 'db> GuardSearch<'a, 'db> {
             initializer: None,
             remaining: 256,
             memo: hashbrown::HashMap::new(),
+            typed_memo: hashbrown::HashMap::new(),
+        }
+    }
+
+    fn narrow(&mut self, current: FlowId, base: LuaType) -> LuaType {
+        let key = (current, base.clone());
+        if let Some(result) = self.typed_memo.get(&key) {
+            return result.clone().unwrap_or(base);
+        }
+        if self.remaining == 0 {
+            return base;
+        }
+        self.remaining -= 1;
+        // A backedge cannot establish an older fact. Include incoming filters
+        // so a shared predecessor cannot conflate different reaching branches.
+        self.typed_memo.insert(key.clone(), None);
+        let result = self.narrow_node(current, base.clone()).unwrap_or(base);
+        self.typed_memo.insert(key, Some(result.clone()));
+        result
+    }
+
+    fn narrow_node(&mut self, current: FlowId, mut base: LuaType) -> Option<LuaType> {
+        let model = self.model;
+        let tree = model.flow_tree()?;
+        let chunk = model.chunk()?;
+        let node = tree.get_flow_node(current)?;
+        let offset = self.offset;
+        let access = self.access;
+        match &node.kind {
+            FlowNodeKind::TrueCondition(ptr) | FlowNodeKind::FalseCondition(ptr) => {
+                let condition = ptr.to_node(&chunk)?;
+                if LuaClosureId::from_node(condition.syntax()) != self.closure
+                    || computed_effects::calls_conflict(model, access, condition.syntax(), offset)
+                {
+                    return Some(base);
+                }
+                if condition.get_range().end() <= offset {
+                    let truthy = matches!(node.kind, FlowNodeKind::TrueCondition(_));
+                    if let Some((target, primitive, keep_matching)) =
+                        super::primitive_guard_target(model, &condition, truthy)
+                        && self.matches_guard(&target, current)
+                    {
+                        base =
+                            super::filter_type_by_primitive(model, base, &primitive, keep_matching);
+                    } else if excludes_nil(&condition, truthy, &|expr| {
+                        self.matches_guard(expr, current)
+                    }) {
+                        base = super::remove_type(base, &LuaType::Nil);
+                    }
+                }
+            }
+            FlowNodeKind::Assignment(ptr) => {
+                let assignment = ptr.to_node(&chunk)?;
+                if assignment.get_range().end() <= offset
+                    && (LuaClosureId::from_node(assignment.syntax()) != self.closure
+                        || computed_effects::calls_conflict(
+                            model,
+                            access,
+                            assignment.syntax(),
+                            offset,
+                        )
+                        || assignment.get_var_and_expr_list().0.iter().any(|var| {
+                            computed_effects::write_conflicts(model, access, var, offset)
+                        }))
+                {
+                    return Some(base);
+                }
+            }
+            FlowNodeKind::CallExprStat(ptr) => {
+                if computed_effects::calls_conflict(
+                    model,
+                    access,
+                    ptr.to_node(&chunk)?.syntax(),
+                    offset,
+                ) {
+                    return Some(base);
+                }
+            }
+            FlowNodeKind::NamedLabel(_) | FlowNodeKind::ImplFunc(_) => return Some(base),
+            FlowNodeKind::Unreachable => return Some(LuaType::Never),
+            _ => {}
+        }
+        for effect in tree.get_flow_effects(current) {
+            if let FlowEffect::LoopEntry(syntax) = effect {
+                let loop_node = syntax.to_node_from_root(chunk.syntax())?;
+                if computed_effects::loop_conflicts(model, access, &loop_node) {
+                    return Some(base);
+                }
+            }
+            if let FlowEffect::AssignDecl { decl, value_syntax } = effect {
+                if value_syntax.get_range().end() <= offset && access.depends_on(decl) {
+                    return Some(base);
+                }
+                let value = value_syntax.to_node_from_root(chunk.syntax())?;
+                if computed_effects::calls_conflict(model, access, &value, offset) {
+                    return Some(base);
+                }
+            }
+        }
+        match node.antecedent.as_ref() {
+            Some(FlowAntecedent::Single(next)) => Some(self.narrow(*next, base)),
+            Some(FlowAntecedent::Multiple(id)) => {
+                let predecessors = tree.get_multi_antecedents(*id)?;
+                if predecessors.is_empty() {
+                    return Some(base);
+                }
+                Some(predecessors.iter().fold(LuaType::Never, |merged, id| {
+                    super::merge_types(merged, self.narrow(*id, base.clone()))
+                }))
+            }
+            None => Some(base),
         }
     }
 

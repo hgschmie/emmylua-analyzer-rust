@@ -834,3 +834,116 @@ fn test_member_primitive_guards_filter_other_primitives() {
         );
     }
 }
+
+#[test]
+fn test_computed_primitive_guards() {
+    use crate::{DiagnosticCode, LuaType, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    for body in [
+        "if type(rows[key]) == 'table' then local observed = rows[key]; print(observed.name) end",
+        "if type(rows[key]) == 'table' then local label = type(key); local text = tostring(key); local observed = rows[key]; print(observed.name) end",
+        "if type(rows[key]) ~= 'string' then if type(rows[key]) ~= 'nil' then local observed = rows[key]; print(observed.name) end end",
+        "if type(rows[key]) == 'string' then return end; if type(rows[key]) == 'nil' then return end; local observed = rows[key]; print(observed.name)",
+        "if type(rows[key]) ~= 'string' then if rows[key] then local observed = rows[key]; print(observed.name) end end",
+        "if 'table' == type(rows[key]) then local observed = rows[key]; print(observed.name) end",
+        "if type(rows[key]) ~= 'table' then return end; local observed = rows[key]; print(observed.name)",
+        "if not (type(rows[key]) == 'table') then return end; local observed = rows[key]; print(observed.name)",
+    ] {
+        let source = format!(
+            r#"
+        ---@param rows (table|string|nil)[]
+        ---@param key integer
+        local function read(rows, key) {body} end
+        "#
+        );
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(
+            ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+            "{body}"
+        );
+        let file = ws.def(&source);
+        let model = ws.analysis.semantic_model(file);
+        let pos = source.rfind("rows[key]").unwrap();
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .find(|i| u32::from(i.get_position()) as usize == pos)
+            .unwrap();
+        assert_eq!(
+            model.type_of_expr_at(index.get_syntax_id(), index.get_position()),
+            LuaType::Table,
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn test_computed_primitive_guards_keep_effect_boundaries() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for body in [
+        "if type(rows[key]) == 'table' then key = other; print(rows[key].name) end",
+        "if type(rows[key]) == 'table' then rows[key] = nil; print(rows[key].name) end",
+        "if type(rows[key]) == 'table' then rows = {}; print(rows[key].name) end",
+        "if type(rows[key]) == 'table' then mutate(); print(rows[key].name) end",
+        "if type(rows[key]) == 'table' then local changed = mutate(); print(rows[key].name) end",
+        "if type(rows[other]) == 'table' then print(rows[key].name) end",
+        "local type = function(_) return 'table' end; if type(rows[key]) == 'table' then print(rows[key].name) end",
+    ] {
+        let source = format!(
+            r#"
+        ---@param rows (table|string|nil)[]
+        ---@param key integer
+        ---@param other integer
+        local function read(rows, key, other)
+            local function mutate() rows[key] = nil end
+            {body}
+        end
+        "#
+        );
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(
+            !ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn test_computed_primitive_join_paths_keep_incoming_filters() {
+    use crate::{LuaType, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    for (body, expected) in [
+        (
+            "if flag then if type(rows[key]) ~= 'table' then return end else if type(rows[key]) == 'string' then return end; if not rows[key] then return end end; local observed = rows[key]",
+            LuaType::Table,
+        ),
+        (
+            "if flag then if type(rows[key]) ~= 'string' then return end else if type(rows[key]) ~= 'table' then return end end; local observed = rows[key]",
+            LuaType::from_vec(vec![LuaType::Table, LuaType::String]),
+        ),
+        (
+            "if flag then if type(rows[key]) ~= 'table' then return end end; local observed = rows[key]",
+            LuaType::from_vec(vec![LuaType::Table, LuaType::String, LuaType::Nil]),
+        ),
+    ] {
+        let source = format!(
+            "---@param rows (table|string|nil)[]\n---@param key integer\n---@param flag boolean\nlocal function read(rows, key, flag) {body} end"
+        );
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(&source);
+        let model = ws.analysis.semantic_model(file);
+        let offset = source.rfind("rows[key]").unwrap();
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .find(|index| u32::from(index.get_position()) as usize == offset)
+            .unwrap();
+        assert_eq!(
+            model.type_of_expr_at(index.get_syntax_id(), index.get_position()),
+            expected,
+            "{body}"
+        );
+    }
+}
