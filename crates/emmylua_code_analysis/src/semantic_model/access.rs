@@ -569,10 +569,11 @@ impl<'db> SemanticModel<'db> {
         if alternatives.next().is_some() {
             return None;
         }
-        let (_, name) = self
-            .analysis()
-            .member_ref_of_index(self.file_id(), index.get_syntax_id())?;
-        self.member_info(receiver, &LuaMemberKey::Name(name))?.id
+        let member_use = self.member_use(index.get_syntax_id())?;
+        let LuaMemberKey::Name(_) = &member_use.key else {
+            return None;
+        };
+        self.member_info(receiver, &member_use.key)?.id
     }
 
     /// Hover type for assignment target `x = value`: when the right-hand type is known and non-nil,
