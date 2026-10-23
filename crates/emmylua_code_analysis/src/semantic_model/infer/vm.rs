@@ -2213,7 +2213,9 @@ impl<'a> InferVm<'a> {
             } else {
                 LuaType::Variadic(Rc::new(VariadicType::Multi(slots)))
             };
-            if !matches!(ty, LuaType::Unknown | LuaType::Any) && !types.contains(&ty) {
+            // An uncertain return is still a possible result. Dropping it would
+            // make a concrete sibling branch appear to be the entire contract.
+            if !types.contains(&ty) {
                 types.push(ty);
             }
         }
