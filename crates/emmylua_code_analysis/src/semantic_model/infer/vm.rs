@@ -5138,6 +5138,7 @@ pub(crate) fn is_integer_operand(
                         !union.into_vec().is_empty()
                             && union.iter().all(|ty| visit(model, ty, seen))
                     }
+                    LuaType::MultiLineUnion(union) => visit(model, &union.to_union(), seen),
                     LuaType::Ref(id) | LuaType::Def(id) => model
                         .type_def_of(id)
                         .filter(|def| def.kind == TypeDefKind::Enum)
