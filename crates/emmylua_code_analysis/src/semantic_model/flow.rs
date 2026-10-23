@@ -3782,6 +3782,7 @@ fn narrow_member_condition(
 ) -> Option<Narrowing> {
     let chunk = model.chunk()?;
     let cond = LuaExpr::cast(cond_ptr.to_node(&chunk)?.syntax().clone())?;
+    let (cond, branch_is_true) = normalize_condition(cond, branch_is_true)?;
     if let LuaExpr::CallExpr(call) = &cond {
         if let Some((arg, guard_ty)) = type_guard_call_target(model, call)
             && let LuaExpr::IndexExpr(index_expr) = &arg
@@ -3872,6 +3873,52 @@ fn rawget_member_narrowing(
     Some(Narrowing::NotNil)
 }
 
+/// Identify a built-in `type(value)` comparison without treating a shadowed function as a guard.
+fn primitive_guard_target(
+    model: &SemanticModel,
+    cond: &LuaExpr,
+    branch_is_true: bool,
+) -> Option<(LuaExpr, LuaType, bool)> {
+    let (cond, branch_is_true) = normalize_condition(cond.clone(), branch_is_true)?;
+    let LuaExpr::BinaryExpr(binary) = cond else {
+        return None;
+    };
+    let op = binary.get_op_token()?.get_op();
+    if !matches!(op, BinaryOperator::OpEq | BinaryOperator::OpNe) {
+        return None;
+    }
+    let (left, right) = binary.get_exprs()?;
+    let (value, literal, _) = literal_comparison(left, right, op)?;
+    let LuaType::StringConst(name) = literal else {
+        return None;
+    };
+    let LuaExpr::CallExpr(call) = guards::unparenthesized(value)? else {
+        return None;
+    };
+    let LuaExpr::NameExpr(callee) = call.get_prefix_expr()? else {
+        return None;
+    };
+    if callee.get_name_text().as_deref() != Some("type") {
+        return None;
+    }
+    let SemanticId::Decl(decl) = model.resolve_name(callee.get_position())? else {
+        return None;
+    };
+    if !model.is_std_file(decl.file_id) {
+        return None;
+    }
+    let mut args = call.get_args_list()?.get_args();
+    let target = guards::unparenthesized(args.next()?)?;
+    if args.next().is_some() {
+        return None;
+    }
+    Some((
+        target,
+        primitive_type_from_name(&name)?,
+        branch_is_true == (op == BinaryOperator::OpEq),
+    ))
+}
+
 fn direct_narrow_member_condition(
     model: &SemanticModel,
     member: &SemanticId,
@@ -3885,6 +3932,15 @@ fn direct_narrow_member_condition(
     let op = binary.get_op_token()?.get_op();
     if !matches!(op, BinaryOperator::OpEq | BinaryOperator::OpNe) {
         return None;
+    }
+    if let Some((LuaExpr::IndexExpr(index), primitive, keep_matching)) =
+        primitive_guard_target(model, cond, branch_is_true)
+        && member_access_matches(model, member, access, &index)
+    {
+        return Some(Narrowing::FilterPrimitive {
+            primitive,
+            keep_matching,
+        });
     }
     let (left, right) = binary.get_exprs()?;
     let (index_expr, lit_expr) = match (left, right) {
