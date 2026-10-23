@@ -1022,7 +1022,7 @@ fn check_arg_pairs(
             continue;
         }
         let leaf_compat = (!matches!(call_arg_ty, LuaType::Function)
-            || matches!(param_ty, LuaType::Any))
+            || matches!(param_ty, LuaType::Any | LuaType::Unknown))
             && param_generic_base_match(semantic_model, &call_arg_ty, &param_ty);
         if leaf_compat || enum_name_compatible(semantic_model, &call_arg_ty, &param_ty) {
             continue;

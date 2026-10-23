@@ -182,6 +182,75 @@ mod test {
     }
 
     #[test]
+    fn test_function_argument_accepts_unknown_parameter() {
+        for target in ["unknown", "any", "function", "unknown|string"] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            assert!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::ParamTypeMismatch,
+                    &format!(
+                        r#"
+                    ---@param value {target}
+                    local function accept(value) return value end
+                    ---@param callback function
+                    local function run(callback) return accept(callback) end
+                "#
+                    ),
+                ),
+                "target: {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_guarded_function_argument_accepts_unannotated_helper() {
+        for expression in [
+            "accept(value)",
+            "type(value) == 'function' and accept(value) or value",
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            assert!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::ParamTypeMismatch,
+                    &format!(
+                        r#"
+                    local function accept(value) return value end
+                    ---@param value unknown
+                    local function run(value)
+                        if type(value) == 'function' then
+                            return {expression}
+                        end
+                    end
+                "#
+                    ),
+                ),
+                "expression: {expression}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_function_argument_to_unknown_keeps_scalar_rejections() {
+        for target in ["string", "number"] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            assert!(
+                !ws.has_no_diagnostic(
+                    DiagnosticCode::ParamTypeMismatch,
+                    &format!(
+                        r#"
+                    ---@param value {target}
+                    local function accept(value) return value end
+                    ---@param callback function
+                    local function run(callback) return accept(callback) end
+                "#
+                    ),
+                ),
+                "target: {target}"
+            );
+        }
+    }
+
+    #[test]
     fn test_function_argument_preserves_narrow_parameter_checks() {
         let mut ws = VirtualWorkspace::new_with_init_std_lib();
         let file_id = ws.def(
