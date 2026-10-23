@@ -1,3 +1,33 @@
+# Corrected build203: generic assignment identity — 2026-10-23
+
+The first203 candidate52fdaaea exposed an existing assignment checker defect:
+corrected UP-130 retained generic T where202 had incorrectly inferred Never,
+but assignment checking widened a valid T result to its constraint. First-candidate
+artifacts and193/241/5 plus20native results remain preserved; they were not release
+clearance. No receiver-flow rollback or diagnostic suppression was used.
+
+Independent reviewed UP-132 `fc967484` maps cleanly to signed work `8f1a4482`.
+A compatible raw generic identity is preserved only with a unique enclosing lexical
+binding; original constraint fallback and nullable/U/shadow/concrete rejection
+remain. Seven new regression groups and an existing iterator group pass.
+All source/work reviews are clear; toolkit1c1db13/private419764CLI/API are unchanged.
+
+Corrected exact code `8f1a4482` passes **3,250 all-feature Rust tests**:
+2,149 analysis,354 language server,495 formatter,191 parser,51 configuration and
+10 schema; zero failures/ignored/filtered. All required current and prior tests
+execute. All-workspace/targets/features Clippy with -D warnings and rustfmt pass.
+This handoff changes documentation only after the validated code.
+
+The corrected package retains version0.30.0-203 with a new immutable candidate
+identity. Final203case/255type/5navigation, fullLTN37 and FDE native20/cache/API/
+0.9.4-dev archive gates must pass on those exact final bytes. Prior35 client tests
+are reused with source/Gradle equivalence; toolkit known baseline test/lint limits
+remain documented. Source/API/generic negative expectations are unchanged.
+Exact final source/artifact/owner receipts are in workspace
+`memory/findings/F-20261023-124808-dollies-flow-enum-build/integration-receipt.md`.
+Only macOS arm64 has the custom analyzer; original mods and live caches are read-only.
+Local signed work only; no push, PR or IDE installation.
+
 # Dollies truthiness and numeric enum contracts — 2026-10-23
 
 Build203 preserves analyzer202 `3219ece3` and every active patch. Reviewed UP-130
