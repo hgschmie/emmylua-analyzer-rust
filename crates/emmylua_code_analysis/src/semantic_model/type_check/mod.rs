@@ -545,7 +545,7 @@ fn def_extends_ctx(
     false
 }
 
-fn enum_value_type(model: &SemanticModel, def: &TypeDef) -> Option<LuaType> {
+pub(crate) fn enum_value_type(model: &SemanticModel, def: &TypeDef) -> Option<LuaType> {
     let owner = model.enum_table_owner(def)?;
     let mut values = Vec::new();
     for member_ref in model.members_of_owner(&owner).iter() {
@@ -553,6 +553,15 @@ fn enum_value_type(model: &SemanticModel, def: &TypeDef) -> Option<LuaType> {
         let member = facts.member_by_id(&member_ref.id)?;
         if def.flags.enum_key {
             values.extend(member.key.to_index_type());
+            continue;
+        }
+        if let Some(contract) = member.doc_type_syntax {
+            let value = model.model_for(member_ref.file_id).doc_type_lua(contract);
+            values.push(if member.is_nullable {
+                LuaType::from_vec(vec![value, LuaType::Nil])
+            } else {
+                value
+            });
             continue;
         }
         let syntax = member.value_syntax?;
