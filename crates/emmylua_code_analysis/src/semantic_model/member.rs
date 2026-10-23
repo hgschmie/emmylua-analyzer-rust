@@ -353,6 +353,21 @@ pub(crate) fn member_info_impl(
     prefix_type: &LuaType,
     key: &LuaMemberKey,
 ) -> Option<MemberInfo> {
+    // Alias expansion must use the complete projection, including missing union alternatives.
+    let alias_id = match prefix_type {
+        LuaType::Ref(id) | LuaType::Def(id) => Some(id.clone()),
+        LuaType::Generic(generic) => Some(generic.get_base_type_id()),
+        _ => None,
+    };
+    if alias_id
+        .and_then(|id| model.type_def_of(&id))
+        .is_some_and(|def| def.kind == TypeDefKind::Alias)
+    {
+        return with_expanded_alias(model, prefix_type, |expanded| {
+            member_info(model, expanded, key)
+        })
+        .flatten();
+    }
     // Single-key direct lookup avoids collecting every member of a type when only one key is needed.
     if let Some(info) = direct_member_info(model, prefix_type, key) {
         return Some(info);
@@ -394,7 +409,13 @@ pub(crate) fn member_info_impl(
     {
         if let LuaType::Union(union) = prefix_type
             && union.iter().any(|component| {
-                !component.is_nil() && member_info(model, component, key).is_none()
+                if component.is_nil() {
+                    return false;
+                }
+                let revision = model.cache.borrow().revision();
+                let missing = member_info(model, component, key).is_none();
+                // A cycle-limited query is unresolved, not evidence of an absent field.
+                missing && model.cache.borrow().is_complete(revision)
             })
         {
             // Preserve overload/member merging, while accounting for absent fields.
