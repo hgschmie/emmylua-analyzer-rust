@@ -4545,7 +4545,7 @@ pub(crate) fn binary_type(
             }
             // Addition like `integer + 1` (one side is the integer base type, the other is an
             // integer literal) still stays integer.
-            if integer_operand(left) && integer_operand(&right) {
+            if integer_operand(model, left) && integer_operand(model, &right) {
                 LuaType::Integer
             } else {
                 LuaType::Number
@@ -4564,8 +4564,8 @@ pub(crate) fn binary_type(
                     .map(LuaType::IntegerConst)
                     .unwrap_or(LuaType::Number)
             } else if matches!(op, OpIDiv | OpMod)
-                && integer_operand(left)
-                && integer_operand(&right)
+                && integer_operand(model, left)
+                && integer_operand(model, &right)
             {
                 LuaType::Integer
             } else {
@@ -4856,11 +4856,39 @@ fn integer_const_value(ty: &LuaType) -> Option<i64> {
     }
 }
 
-fn integer_operand(ty: &LuaType) -> bool {
-    match ty {
-        LuaType::Union(union) => union.iter().all(LuaType::is_integer),
-        _ => ty.is_integer(),
+fn integer_operand(model: &SemanticModel, ty: &LuaType) -> bool {
+    fn visit(model: &SemanticModel, ty: &LuaType, seen: &mut Vec<LuaType>) -> bool {
+        let Some(evaluation) = crate::semantic_model::cache::TypeEvaluationScope::new(&model.cache)
+        else {
+            return false;
+        };
+        if !evaluation.visit(ty) || seen.contains(ty) {
+            return false;
+        }
+        seen.push(ty.clone());
+        let revision = model.cache.borrow().revision();
+        let result =
+            super::super::type_eval::expand_alias_branches(model, ty).is_some_and(|expanded| {
+                if expanded.is_integer() {
+                    return true;
+                }
+                match &expanded {
+                    LuaType::Union(union) => {
+                        !union.into_vec().is_empty()
+                            && union.iter().all(|ty| visit(model, ty, seen))
+                    }
+                    LuaType::Ref(id) | LuaType::Def(id) => model
+                        .type_def_of(id)
+                        .filter(|def| def.kind == TypeDefKind::Enum)
+                        .and_then(|def| super::super::type_check::enum_value_type(model, &def))
+                        .is_some_and(|values| visit(model, &values, seen)),
+                    _ => false,
+                }
+            });
+        seen.pop();
+        result && model.cache.borrow().is_complete(revision)
     }
+    visit(model, ty, &mut Vec::new())
 }
 
 fn is_enum_like_dynamic_key(model: &SemanticModel, ty: &LuaType) -> bool {
