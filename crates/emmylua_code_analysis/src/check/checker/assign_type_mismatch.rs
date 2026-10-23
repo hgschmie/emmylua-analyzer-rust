@@ -512,6 +512,13 @@ fn collect_value_mismatches(
         return;
     }
     let value_ty = assignment_value_type(semantic_model, value_expr);
+    // A generic's constraint is a wider type, not a replacement for its identity.
+    if has_unique_generic_binding(semantic_model, value_expr, &value_ty)
+        && is_compatible(semantic_model, &value_ty, target)
+    {
+        return;
+    }
+    let value_ty = resolve_unbound_generic(semantic_model, value_ty);
     if matches!(value_ty, LuaType::Unknown | LuaType::Any | LuaType::Never)
         || is_compatible(semantic_model, &value_ty, target)
     {
@@ -536,7 +543,33 @@ fn assignment_value_type(semantic_model: &SemanticModel<'_>, value_expr: &LuaExp
     {
         return LuaType::DocFunction(Rc::new(fun));
     }
-    resolve_unbound_generic(semantic_model, ty)
+    ty
+}
+
+/// Bare generic references retain identity only when enclosing declarations are unambiguous.
+fn has_unique_generic_binding(
+    semantic_model: &SemanticModel<'_>,
+    value_expr: &LuaExpr,
+    ty: &LuaType,
+) -> bool {
+    let (LuaType::Ref(id) | LuaType::Def(id)) = ty else {
+        return false;
+    };
+    if semantic_model.type_def_of(id).is_some() {
+        return false;
+    }
+    let Some(facts) = semantic_model.file_facts() else {
+        return false;
+    };
+    value_expr
+        .ancestors::<LuaClosureExpr>()
+        .filter_map(|closure| facts.signature_by_closure(closure.get_syntax_id()))
+        .filter_map(|signature| signature.docs.as_ref())
+        .flat_map(|docs| docs.generic_params.iter())
+        .filter(|param| param.name.as_str() == id.get_name())
+        .take(2)
+        .count()
+        == 1
 }
 
 /// `Ref("T")` with a signature declaring `---@generic T: Animal` -> check against the constraint Animal.
