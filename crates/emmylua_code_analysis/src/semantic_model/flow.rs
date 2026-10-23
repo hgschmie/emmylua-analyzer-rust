@@ -5783,16 +5783,34 @@ fn indexed_read_at(
     let tree = model.flow_tree()?;
     let root = model.chunk()?;
     let start = tree.get_flow_id_at(offset)?;
-    let mut pending = vec![(start, PathState::default(), HashSet::new())];
+    let primitive_stable = index
+        .ancestors::<emmylua_parser::LuaStat>()
+        .next()
+        .is_some_and(|stat| !has_evaluated_call_before(model, stat.syntax(), offset));
+    let mut pending = vec![(
+        start,
+        PathState::default(),
+        HashSet::new(),
+        primitive_stable,
+    )];
     let mut results = Vec::new();
     let mut budget = 512;
-    while let Some((mut current, mut path, mut seen)) = pending.pop() {
+    while let Some((mut current, mut path, mut seen, mut primitive_stable)) = pending.pop() {
         loop {
             if budget == 0 || !seen.insert(current) {
                 return Some(read.typ.clone());
             }
             budget -= 1;
             let node = tree.get_flow_node(current)?;
+            for effect in tree.get_flow_effects(current) {
+                if let FlowEffect::AssignDecl { value_syntax, .. } = effect
+                    && value_syntax.get_range().end() <= offset
+                    && let Some(value) = value_syntax.to_node_from_root(root.syntax())
+                    && has_evaluated_call_before(model, &value, offset)
+                {
+                    primitive_stable = false;
+                }
+            }
             match &node.kind {
                 FlowNodeKind::Assignment(ptr) => {
                     let assignment = ptr.to_node(&root)?;
@@ -5811,6 +5829,22 @@ fn indexed_read_at(
                             results.push(finalize_index_read(model, typ, &path));
                             break;
                         }
+                        let target = index_access_path(model, &LuaExpr::IndexExpr(index.clone()));
+                        if let Some((root, keys)) = &target {
+                            for var in vars {
+                                if let Some(written) = LuaExpr::cast(var.syntax().clone())
+                                    .and_then(|expr| index_access_path(model, &expr))
+                                    && path_write_affects(&written, root, keys)
+                                {
+                                    primitive_stable = false;
+                                }
+                            }
+                        }
+                    }
+                }
+                FlowNodeKind::CallExprStat(ptr) => {
+                    if has_evaluated_call_before(model, ptr.to_node(&root)?.syntax(), offset) {
+                        primitive_stable = false;
                     }
                 }
                 FlowNodeKind::TrueCondition(cond) | FlowNodeKind::FalseCondition(cond) => {
@@ -5821,7 +5855,13 @@ fn indexed_read_at(
                         &expr,
                         matches!(node.kind, FlowNodeKind::TrueCondition(_)),
                     ) {
-                        path.narrowings.push(narrowing);
+                        if primitive_stable
+                            || !matches!(narrowing, Narrowing::FilterPrimitive { .. })
+                        {
+                            path.narrowings.push(narrowing);
+                        }
+                    } else if has_evaluated_call_before(model, expr.syntax(), offset) {
+                        primitive_stable = false;
                     }
                 }
                 FlowNodeKind::TagCast(ptr) => {
@@ -5836,7 +5876,7 @@ fn indexed_read_at(
                 Some(FlowAntecedent::Single(next)) => current = *next,
                 Some(FlowAntecedent::Multiple(id)) => {
                     for next in tree.get_multi_antecedents(*id)? {
-                        pending.push((*next, path.clone_path(), seen.clone()));
+                        pending.push((*next, path.clone_path(), seen.clone(), primitive_stable));
                     }
                     break;
                 }
@@ -5855,6 +5895,63 @@ fn indexed_read_at(
     ))
 }
 
+fn has_evaluated_call_before(
+    model: &SemanticModel,
+    node: &emmylua_parser::LuaSyntaxNode,
+    before: TextSize,
+) -> bool {
+    let mut pending = vec![node.clone()];
+    while let Some(node) = pending.pop() {
+        match node.kind().into() {
+            emmylua_parser::LuaSyntaxKind::ClosureExpr => {}
+            _ if node.text_range().end() <= before
+                && emmylua_parser::LuaCallExpr::cast(node.clone())
+                    .is_some_and(|call| !primitive_read_pure_call(model, &call)) =>
+            {
+                return true;
+            }
+            _ => pending.extend(node.children()),
+        }
+    }
+    false
+}
+
+fn primitive_read_pure_call(model: &SemanticModel, call: &emmylua_parser::LuaCallExpr) -> bool {
+    let Some(LuaExpr::NameExpr(callee)) = call.get_prefix_expr() else {
+        return false;
+    };
+    let Some(SemanticId::Decl(decl)) = model.resolve_name(callee.get_position()) else {
+        return false;
+    };
+    if !model.is_std_file(decl.file_id) {
+        return false;
+    }
+    match callee.get_name_text().as_deref() {
+        Some("type") => true,
+        Some("tostring") => call
+            .get_args_list()
+            .and_then(|args| args.get_args().next())
+            .is_some_and(|arg| {
+                matches!(
+                    model.type_of_expr_at(arg.get_syntax_id(), arg.get_position()),
+                    LuaType::Nil
+                        | LuaType::Boolean
+                        | LuaType::BooleanConst(_)
+                        | LuaType::DocBooleanConst(_)
+                        | LuaType::String
+                        | LuaType::StringConst(_)
+                        | LuaType::DocStringConst(_)
+                        | LuaType::Number
+                        | LuaType::Integer
+                        | LuaType::IntegerConst(_)
+                        | LuaType::DocIntegerConst(_)
+                        | LuaType::FloatConst(_)
+                )
+            }),
+        _ => false,
+    }
+}
+
 fn index_owner(model: &SemanticModel, index: &emmylua_parser::LuaIndexExpr) -> Option<SemanticId> {
     if let Some(resolved) = model.resolve_member(index) {
         return Some(resolved.owner);
@@ -5871,9 +5968,21 @@ fn indexed_guard(
     truthy: bool,
 ) -> Option<Narrowing> {
     let same = |other: &emmylua_parser::LuaIndexExpr| {
-        index_owner(model, other) == index_owner(model, index)
-            && member_key_from_index_expr(model, other) == member_key_from_index_expr(model, index)
+        same_member_access(
+            model,
+            &LuaExpr::IndexExpr(index.clone()),
+            &LuaExpr::IndexExpr(other.clone()),
+        )
     };
+    if let Some((LuaExpr::IndexExpr(other), primitive, keep_matching)) =
+        primitive_guard_target(model, cond, truthy)
+        && same(&other)
+    {
+        return Some(Narrowing::FilterPrimitive {
+            primitive,
+            keep_matching,
+        });
+    }
     match cond {
         LuaExpr::IndexExpr(other) if same(other) => Some(if truthy {
             Narrowing::Truthy
