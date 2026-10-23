@@ -1,8 +1,8 @@
 //! Member completion: `.` / `:` / `[]` / string-key contexts, based on semantic `member_infos`.
 
 use emmylua_code_analysis::{
-    DeclKind, FileId, LuaAliasCallKind, LuaFunctionType, LuaGenericType, LuaMemberKey, LuaType,
-    MemberInfo, SemanticId, SemanticModel, TypeDefKind,
+    Decl, DeclKind, FileId, LuaAliasCallKind, LuaFunctionType, LuaGenericType, LuaMemberKey,
+    LuaType, LuaTypeDeclId, MemberInfo, SemanticId, SemanticModel, TypeDefKind,
 };
 use emmylua_parser::{LuaAstNode, LuaAstToken, LuaIndexExpr, LuaStringToken};
 use lsp_types::{CompletionItem, CompletionItemKind, CompletionItemLabelDetails, InsertTextFormat};
@@ -111,7 +111,13 @@ fn complete_provider(builder: &mut CompletionBuilder) -> Option<()> {
 
     let mut members = builder.semantic_model.member_infos(&prefix_type);
     // `---@class B : A local b = {}`: merge table-identity members with associated type definition members.
-    let associated = associated_type_member_infos(&builder.semantic_model, &prefix_expr);
+    let mut associated = associated_type_member_infos(&builder.semantic_model, &prefix_expr);
+    if let LuaType::Ref(id) | LuaType::Def(id) = &prefix_type {
+        associated.extend(type_def_member_infos_from_facts(
+            &builder.semantic_model,
+            id,
+        ));
+    }
     for info in associated {
         if !members.iter().any(|member| member.key == info.key) {
             members.push(info);
@@ -303,6 +309,64 @@ fn generic_keyof_member_infos(
             _ => None,
         })
         .collect()
+}
+
+/// Recover members from this class declaration's file, requiring one runtime declaration.
+/// Multi-name statements are not recovered, even with a single initializer.
+/// The caller merges these candidates by key, preserving its existing members.
+fn type_def_member_infos_from_facts(
+    model: &SemanticModel<'_>,
+    type_id: &LuaTypeDeclId,
+) -> Vec<MemberInfo> {
+    let Some(def) = model.type_def_of(type_id) else {
+        return Vec::new();
+    };
+    let Some(facts) = model.file_facts_of(def.file_id) else {
+        return Vec::new();
+    };
+    let Some(owner) = def.owner_syntax else {
+        return Vec::new();
+    };
+    let mut declarations = facts.decls_by_owner_syntax(owner);
+    let Some(decl) = declarations.next() else {
+        return Vec::new();
+    };
+    // One class owner statement can contain several parallel initializers.
+    // Without a unique runtime declaration, do not borrow a sibling's members.
+    if declarations.next().is_some() {
+        return Vec::new();
+    }
+    let owners = runtime_member_owners(&def.id, decl);
+    owners
+        .iter()
+        .flat_map(|owner| facts.members_of_owner(owner))
+        // Index signatures describe arbitrary keys, not named completion items.
+        .filter(|member| member.index_key_syntax.is_none())
+        .map(|member| MemberInfo {
+            key: member.key.clone(),
+            typ: model.type_of_member(&member.id).unwrap_or(LuaType::Unknown),
+            id: Some(member.id.clone()),
+            file_id: Some(def.file_id),
+            is_method: member.is_method,
+        })
+        .collect()
+}
+
+/// Maps the class and its runtime declaration to the collector's owner identities.
+fn runtime_member_owners(type_owner: &SemanticId, decl: &Decl) -> Vec<SemanticId> {
+    let mut owners = vec![type_owner.clone(), decl.id.clone()];
+    if matches!(decl.kind, DeclKind::Global) {
+        // Global writes use the runtime binding name, which can differ from
+        // the class name. These facts combine writes across global reassignments,
+        // so methods from an earlier or later binding can still appear.
+        owners.push(SemanticId::name(decl.name.clone()));
+    }
+    if let Some(value) = decl.value_expr_syntax {
+        // The facts collector keys inline fields by their table value range.
+        // The syntax and member facts come from the same file version.
+        owners.push(SemanticId::member(decl.file_id, value.get_range()));
+    }
+    owners
 }
 
 /// When `---@class Test1` follows `local Test = {}` (the class name differs from the runtime
@@ -788,4 +852,84 @@ fn function_snippet(
         .collect::<Vec<_>>()
         .join(", ");
     Some(format!("{label}({params})"))
+}
+
+#[cfg(test)]
+mod runtime_class_completion_tests {
+    use super::type_def_member_infos_from_facts;
+    use crate::handlers::test_lib::ProviderVirtualWorkspace;
+    use emmylua_code_analysis::LuaTypeDeclId;
+
+    #[test]
+    fn completion_runtime_members_skip_ambiguous_owner() {
+        let mut ws = ProviderVirtualWorkspace::new();
+        let file = ws.def(
+            r#"
+            ---@class AmbiguousResult
+            local first, second = {}, { foreign = function() end }
+        "#,
+        );
+        let model = ws.analysis.semantic_model(file);
+        let members =
+            type_def_member_infos_from_facts(&model, &LuaTypeDeclId::global("AmbiguousResult"));
+        assert!(members.is_empty(), "{members:?}");
+    }
+    #[test]
+    fn completion_inline_fields_do_not_borrow_replacement_constructor() {
+        let mut ws = ProviderVirtualWorkspace::new();
+        let file = ws.def(
+            r#"
+            ---@class ReboundResult
+            Receiver = { own = function() end }
+            Receiver = { foreign = function() end }
+        "#,
+        );
+        let model = ws.analysis.semantic_model(file);
+        let members =
+            type_def_member_infos_from_facts(&model, &LuaTypeDeclId::global("ReboundResult"));
+        assert!(
+            members
+                .iter()
+                .any(|member| member.key.name() == Some("own"))
+        );
+        assert!(
+            !members
+                .iter()
+                .any(|member| member.key.name() == Some("foreign"))
+        );
+    }
+
+    #[test]
+    fn completion_runtime_members_document_shared_global_write_owner() {
+        let mut ws = ProviderVirtualWorkspace::new();
+        let file = ws.def(
+            r#"
+            ---@class SharedGlobalResult
+            Receiver = {}
+            function Receiver:before() end
+            Receiver = {}
+            function Receiver:after() end
+        "#,
+        );
+        let model = ws.analysis.semantic_model(file);
+        let members =
+            type_def_member_infos_from_facts(&model, &LuaTypeDeclId::global("SharedGlobalResult"));
+        // File facts give both writes the same global binding owner. Temporal
+        // separation of those writes is an existing semantic-model limitation.
+        for name in ["before", "after"] {
+            assert!(members.iter().any(|member| member.key.name() == Some(name)));
+        }
+    }
+
+    #[test]
+    fn completion_runtime_members_do_not_invent_members_for_non_table_values() {
+        for value in ["1", "function() end"] {
+            let mut ws = ProviderVirtualWorkspace::new();
+            let file = ws.def(&format!("---@class NonTableResult\nlocal value = {value}"));
+            let model = ws.analysis.semantic_model(file);
+            let members =
+                type_def_member_infos_from_facts(&model, &LuaTypeDeclId::global("NonTableResult"));
+            assert!(members.is_empty(), "{members:?}");
+        }
+    }
 }

@@ -2586,6 +2586,116 @@ items.<??>
     }
 
     #[gtest]
+    fn test_inferred_return_completion_keeps_runtime_class_identity() -> Result<()> {
+        for (definition, call, expected, absent) in [
+            // Global runtime binding differs from its class name.
+            (
+                r#"
+                ---@class NamedResult
+                GlobalReceiver = {}
+                function GlobalReceiver:own() return self end
+                ---@class OtherResult
+                OtherReceiver = {}
+                function OtherReceiver:foreign() return self end
+                "#,
+                "GlobalReceiver:own():<??>",
+                "own",
+                "foreign",
+            ),
+            // Completion follows the returned class, not the call receiver.
+            (
+                r#"
+                ---@class FirstResult
+                FirstReceiver = {}
+                ---@class SecondResult
+                SecondReceiver = {}
+                function SecondReceiver:second() return self end
+                function FirstReceiver:first() return SecondReceiver end
+                "#,
+                "FirstReceiver:first():<??>",
+                "second",
+                "first",
+            ),
+            // Separately declared local methods use the runtime declaration owner.
+            (
+                r#"
+                ---@class LocalMethodResult
+                local runtime = {}
+                function runtime:own() return self end
+                ---@class OtherLocalMethodResult
+                local unrelated = {}
+                function unrelated:foreign() return self end
+                function local_method_result() return runtime end
+                "#,
+                "local_method_result():<??>",
+                "own",
+                "foreign",
+            ),
+            // Local constructor fields use value-range owners, without sibling leakage.
+            (
+                r#"
+                ---@class LocalResult
+                local runtime = {
+                    own = function(self) return self end,
+                }
+                ---@class OtherLocalResult
+                local unrelated = {
+                    foreign = function(self) return self end,
+                }
+                function local_result() return runtime end
+                "#,
+                "local_result():<??>",
+                "own",
+                "foreign",
+            ),
+        ] {
+            let mut ws = ProviderVirtualWorkspace::new();
+            ws.def(definition);
+            let items =
+                get_completion_items(&mut ws, call, CompletionTriggerKind::TRIGGER_CHARACTER)?;
+            verify_true!(items.iter().any(|item| item.label == expected))?;
+            verify_true!(!items.iter().any(|item| item.label == absent))?;
+        }
+        Ok(())
+    }
+
+    #[gtest]
+    fn test_class_completion_keeps_runtime_members_beside_declared_fields() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@class FieldResult
+            ---@field x number
+            FieldReceiver = {}
+            function FieldReceiver:y() return self end
+            FieldReceiver.z = true
+        "#,
+        );
+        let items = get_completion_items(
+            &mut ws,
+            "FieldReceiver:y().<??>",
+            CompletionTriggerKind::TRIGGER_CHARACTER,
+        )?;
+        verify_eq!(items.iter().filter(|item| item.label == "x").count(), 1)?;
+        verify_eq!(items.iter().filter(|item| item.label == "y").count(), 1)?;
+        verify_eq!(items.iter().filter(|item| item.label == "z").count(), 1)?;
+        Ok(())
+    }
+
+    #[gtest]
+    fn test_bare_class_completion_without_runtime_owner() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        ws.def("---@class DetachedResult");
+        let items = get_completion_items(
+            &mut ws,
+            "---@type DetachedResult\nlocal value\nvalue.<??>",
+            CompletionTriggerKind::TRIGGER_CHARACTER,
+        )?;
+        verify_true!(items.is_empty())?;
+        Ok(())
+    }
+
+    #[gtest]
     fn test_colon_member_completion_before_scope_boundaries() -> Result<()> {
         let cases = [
             (
