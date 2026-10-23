@@ -17,10 +17,24 @@ use crate::semantic_db::def::SemanticId;
 use crate::semantic_db::flow::FlowId;
 use crate::{FileId, LuaFunctionType, LuaType, LuaTypeDeclId, LuaTypeNode};
 
+use super::flow::member_call_effects::{CalleeCacheKey, ReceiverTargets};
 use super::infer::unify::TplBindings;
 use super::member::MemberInfo;
 use super::{CallSiteAnalysis, ResolvedMember};
 use crate::IndexInfo;
+
+/// Identifies an outer scan, which always starts with empty bindings and invocation history.
+/// Nested callees are expanded inside that scan with their substituted context;
+/// they use `CalleeCacheKey` and never re-enter this cache under those bindings.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) struct MemberCallEffectKey {
+    pub(super) file: FileId,
+    pub(super) receiver: SemanticId,
+    pub(super) path: Vec<LuaMemberKey>,
+    pub(super) body: LuaSyntaxId,
+    pub(super) after: TextSize,
+    pub(super) before: TextSize,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum BuiltinKey {
@@ -224,6 +238,16 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) expr_type_at: HashMap<(FileId, LuaSyntaxId, TextSize), CacheEntry<LuaType>>,
     /// Cast-bearing flow bindings on the node and its ancestors, nearest first.
     pub(crate) expr_cast_flows: HashMap<(FileId, LuaSyntaxId), Rc<Vec<FlowId>>>,
+    /// Syntax-only member-callee presence for this model snapshot; never call effects.
+    pub(crate) member_call_resolution: HashMap<FileId, bool>,
+    /// Fixed targets are isolated per file when model views share this query cache.
+    pub(super) member_receiver_targets: HashMap<FileId, CacheEntry<ReceiverTargets>>,
+    /// Whole-file capture state depends on the target and immutable model, not callers.
+    pub(super) mutable_captured_members:
+        HashMap<(FileId, SemanticId, Vec<LuaMemberKey>), CacheEntry<bool>>,
+    pub(super) member_call_effects: HashMap<MemberCallEffectKey, CacheEntry<bool>>,
+    pub(super) member_callees:
+        HashMap<CalleeCacheKey, CacheEntry<Vec<emmylua_parser::LuaClosureExpr>>>,
     pub(crate) resolve_name: HashMap<(FileId, TextSize), Option<SemanticId>>,
     /// Builtin identity at each read and declaration/flow state.
     pub(crate) builtin_function: HashMap<(FileId, BuiltinKey), Option<SmolStr>>,
@@ -269,6 +293,12 @@ impl SemanticLocalCache {
     }
 
     fn discard_provisional(&mut self) {
+        self.member_receiver_targets
+            .retain(|_, entry| entry.is_ready());
+        self.member_callees.retain(|_, entry| entry.is_ready());
+        self.mutable_captured_members
+            .retain(|_, entry| entry.is_ready());
+        self.member_call_effects.retain(|_, entry| entry.is_ready());
         self.expr_type.retain(|_, entry| entry.is_ready());
         self.decl_type.retain(|_, entry| entry.is_ready());
         self.index_infos.retain(|_, entry| entry.is_ready());
