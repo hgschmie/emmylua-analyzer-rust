@@ -295,3 +295,170 @@ mod test {
         ));
     }
 }
+
+#[test]
+fn test_member_primitive_guards() {
+    use crate::{DiagnosticCode, LuaType, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    for body in [
+        "if type(elem.handler) == 'table' then local observed = elem.handler -- observe\n print(elem.handler.name) end",
+        "if 'table' == type(elem.handler) then local observed = elem.handler -- observe\n print(observed.name) end",
+        "if type(elem['handler']) ~= 'table' then return end; local observed = elem.handler -- observe\n print(observed.name)",
+        "if not (type(elem.handler) ~= 'table') then local observed = elem.handler -- observe\n print(observed.name) end",
+        "if type(elem.handler) == 'table' then else return end; local observed = elem.handler -- observe\n print(observed.name)",
+        "if type(elem.handler) == 'string' then return end; if elem.handler ~= nil then local observed = elem.handler -- observe\n print(observed.name) end",
+    ] {
+        let source = format!(
+            r#"
+        ---@class PrimitiveHandler
+        ---@field name string
+        local Handler = {{}}
+        ---@class PrimitiveElement
+        ---@field handler PrimitiveHandler|string|nil
+        local Element = {{}}
+        ---@param elem PrimitiveElement
+        local function read(elem) {body} end
+        "#
+        );
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(
+            ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+            "{body}"
+        );
+        let file = ws.def(&source);
+        let model = ws.analysis.semantic_model(file);
+        let marker = source.find("-- observe").unwrap();
+        let pos = source[..marker].rfind("elem.handler").unwrap() as u32;
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .find(|i| {
+                u32::from(i.get_position()) == pos
+                    && i.get_range().len() == rowan::TextSize::from("elem.handler".len() as u32)
+            })
+            .unwrap();
+        let ty = model.type_of_expr_at(index.get_syntax_id(), index.get_position());
+        assert!(
+            matches!(&ty, LuaType::Ref(id) if id.get_name() == "PrimitiveHandler"),
+            "{body}: {ty:?}"
+        );
+    }
+}
+
+#[test]
+fn test_member_primitive_guards_preserve_invalidations() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for body in [
+        "print(elem.handler.name)",
+        "if type(other.handler) == 'table' then print(elem.handler.name) end",
+        "if type(elem.handler) == 'table' then elem.handler = nil; print(elem.handler.name) end",
+        "local type = function(_) return 'table' end; if type(elem.handler) == 'table' then print(elem.handler.name) end",
+        "if type(elem.handler) == 'nil' then print(elem.handler.name) end",
+    ] {
+        let source = format!(
+            r#"
+        ---@class PrimitiveNegativeHandler
+        ---@field name string
+        local Handler = {{}}
+        ---@class PrimitiveNegativeElement
+        ---@field handler PrimitiveNegativeHandler?
+        local Element = {{}}
+        ---@param elem PrimitiveNegativeElement
+        ---@param other PrimitiveNegativeElement
+        local function read(elem, other) {body} end
+        "#
+        );
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(
+            !ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn test_member_primitive_guards_filter_other_primitives() {
+    use crate::{DiagnosticCode, LuaType, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    for (guard, expected) in [
+        ("type(elem.value) == 'string'", LuaType::String),
+        ("'number' == type(elem.value)", LuaType::Integer),
+        (
+            "type(elem.value) ~= 'string' and type(elem.value) ~= 'nil'",
+            LuaType::Integer,
+        ),
+    ] {
+        let source = format!(
+            r#"
+        ---@class PrimitiveValues
+        ---@field value string|integer|nil
+        local Element = {{}}
+        ---@param elem PrimitiveValues
+        local function read(elem)
+            if {guard} then local observed = elem.value end
+        end
+        "#
+        );
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(
+            ws.has_no_diagnostic(DiagnosticCode::UnnecessaryIf, &source),
+            "{guard}"
+        );
+        let file = ws.def(&source);
+        let model = ws.analysis.semantic_model(file);
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .last()
+            .unwrap();
+        assert_eq!(
+            model.type_of_expr_at(index.get_syntax_id(), index.get_position()),
+            expected,
+            "{guard}"
+        );
+    }
+}
+
+#[test]
+fn unguarded_numeric_runtime_member_keeps_assignment_precision() {
+    use crate::{LuaType, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    for assignment in ["7", "7.5"] {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def(&format!(
+            r#"
+---@class RuntimeNumericMember
+---@field value number|string|nil
+local Values = {{}}
+---@param elem RuntimeNumericMember
+local function read(elem)
+    elem.value = {assignment}
+    local observed = elem.value -- observe
+end
+"#
+        ));
+        let model = ws.analysis.semantic_model(file);
+        let access = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .filter(|index| index.get_text() == "elem.value")
+            .last()
+            .unwrap();
+        let expected = if assignment == "7" {
+            LuaType::IntegerConst(7)
+        } else {
+            LuaType::FloatConst(7.5)
+        };
+        assert_eq!(
+            model.type_of_expr_at(access.get_syntax_id(), access.get_position()),
+            expected
+        );
+        assert_eq!(
+            model.type_of_expr_at(access.get_syntax_id(), access.get_position()),
+            expected
+        );
+    }
+}
