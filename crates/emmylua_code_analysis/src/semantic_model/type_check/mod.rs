@@ -423,13 +423,24 @@ fn def_extends_ctx(
     false
 }
 
-fn enum_value_type(model: &SemanticModel, def: &TypeDef) -> Option<LuaType> {
+pub(crate) fn enum_value_type(model: &SemanticModel, def: &TypeDef) -> Option<LuaType> {
     let facts = model.file_facts_of(def.file_id)?;
     let decl = facts.decl_named(def.name.as_str())?;
     let mut values = Vec::new();
     for member_ref in model.members_of_owner(&decl.id).iter() {
         let facts = model.file_facts_of(member_ref.file_id)?;
         let member = facts.member_by_id(&member_ref.id)?;
+        if let Some(contract) = member.doc_type_syntax {
+            let value = model
+                .model_for(member_ref.file_id)
+                .doc_type_lua_rich(contract);
+            values.push(if member.is_nullable {
+                LuaType::from_vec(vec![value, LuaType::Nil])
+            } else {
+                value
+            });
+            continue;
+        }
         let syntax = member.value_syntax?;
         let tree = model.syntax_tree_of(member_ref.file_id)?;
         let node = syntax.to_node_from_root(&tree.get_red_root())?;

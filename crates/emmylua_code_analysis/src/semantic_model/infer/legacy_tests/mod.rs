@@ -20,6 +20,7 @@ mod generic_infer_test;
 mod generic_test;
 mod infer_str_tpl_test;
 mod inherit_type;
+mod integer_enum_arithmetic;
 mod mathlib_test;
 mod member_infer_test;
 mod metatable_test;
