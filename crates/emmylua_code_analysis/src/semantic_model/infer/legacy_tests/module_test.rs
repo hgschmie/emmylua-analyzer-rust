@@ -187,3 +187,26 @@ mod test {
         }
     }
 }
+
+#[cfg(test)]
+mod investigation_cross_file_alias {
+    use crate::{LuaType, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaAstToken, LuaLocalName};
+    #[test]
+    fn cross_file_alias_semantic_type() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def_file("lib.lua", "local lib = {}\n---@param value number\n---@return integer\nfunction lib.round(value) return 1 end\nreturn lib");
+        let file = ws.def("local lib = require('lib')\nlocal alias = lib.round\nlocal result = alias(2.5)\nlocal count = result + 1");
+        let model = ws.analysis.semantic_model(file);
+        let chunk = model.chunk().unwrap();
+        let mut result = LuaType::Unknown;
+        for local in chunk.descendants::<LuaLocalName>() {
+            let token = local.get_name_token().unwrap();
+            let decl = model.decl_by_offset(token.get_position()).unwrap();
+            let ty = model.type_of_decl(&decl).unwrap_or(LuaType::Unknown);
+            eprintln!("{}: {:?}", token.get_name_text(), ty);
+            if token.get_name_text() == "result" { result = ty; }
+        }
+        assert_eq!(result, LuaType::Integer);
+    }
+}
