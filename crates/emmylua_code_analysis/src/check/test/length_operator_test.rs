@@ -361,7 +361,16 @@ mod tests {
                     return last
                     "#
                 );
-                assert_diagnostic_count(&source, DiagnosticCode::AssignTypeMismatch, 1);
+                // UP-036 tracks writes before this access rather than rejecting
+                // the whole function for later writes or harmless references.
+                let harmless = matches!(
+                    use_array,
+                    "local stored = {values = a}"
+                        | "local edit = function() a[1] = nil end"
+                        | "local equal = a == peer"
+                );
+                let expected = usize::from(before_read && !harmless);
+                assert_diagnostic_count(&source, DiagnosticCode::AssignTypeMismatch, expected);
             }
         }
     }
@@ -411,7 +420,10 @@ mod tests {
                 return last
                 "#
             );
-            assert_diagnostic_count(&source, DiagnosticCode::AssignTypeMismatch, 1);
+            // UP-036 also accepts guarded parameters and aliases, but a known
+            // metatable can override the built-in length contract.
+            let expected = usize::from(declaration.contains("setmetatable"));
+            assert_diagnostic_count(&source, DiagnosticCode::AssignTypeMismatch, expected);
         }
     }
 
