@@ -1,5 +1,6 @@
 //! Generic type checks: generic parameter matching + base type nominal checks.
 
+use super::ref_type;
 use std::rc::Rc;
 
 use crate::{LuaGenericType, LuaType, LuaTypeDeclId};
@@ -54,6 +55,14 @@ pub fn check_generic_type_compact(
                             )
                         }),
                 ),
+            )
+        }
+        LuaType::Array(array) if source_generic.get_base_type_id().get_name() != "table" => {
+            ref_type::check_class_array(
+                context,
+                &LuaType::Generic(Rc::new(source_generic.clone())),
+                compact_type,
+                array.get_base(),
             )
         }
         LuaType::Ref(ref_id) | LuaType::Def(ref_id) => {

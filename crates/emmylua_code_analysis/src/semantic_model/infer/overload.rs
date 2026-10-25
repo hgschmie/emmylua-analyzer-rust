@@ -13,7 +13,7 @@ use crate::semantic_db::def::SemanticId;
 use crate::semantic_model::SemanticModel;
 use crate::{
     LuaArrayType, LuaFunctionType, LuaGenericType, LuaMemberKey, LuaObjectType, LuaTupleStatus,
-    LuaTupleType, LuaType, LuaTypeDeclId, TypeDefKind, VariadicType,
+    LuaTupleType, LuaType, LuaTypeDeclId, LuaTypeNode, TypeDefKind, VariadicType,
 };
 
 use super::unify::{self, TplBindings};
@@ -442,9 +442,8 @@ fn match_call_candidate_impl(
         let Some(param_ty) = param_ty else {
             continue;
         };
-        let mut param_ty = bind_signature_generics(param_ty, fun.get_generic_params());
-        let raw_param_ty = param_ty.clone();
-        param_ty = unify::substitute(&param_ty, &bindings);
+        let raw_param_ty = bind_signature_generics(param_ty, fun.get_generic_params());
+        let mut param_ty = super::call_generics::parameter_type(model, param_ty, fun, &bindings);
         // Only expand conditional aliases; plain structural aliases (e.g. `Arrayable<T>`)
         // keep their Generic form so unify can back-infer T from the generic-parameter
         // structure instead of binding the whole union to T.
@@ -582,6 +581,14 @@ fn match_call_candidate_impl(
             // default/constraint filling, otherwise `---@param a T?` returns would turn
             // `Mock<Procedure>` into `Mock<unknown>`.
             true
+        } else if let Some(arg) = arg
+            && matches!(arg.ty, LuaType::TableConst(_))
+            && !unify_param.contains_tpl_node()
+        {
+            // Concrete table contracts use the original literal identity. The
+            // shallow generic-unification projection loses nested fields and
+            // cannot match empty arrays or unions of named table types.
+            model.type_check_subtype(&arg.ty, unify_param)
         } else if matches!(arg_ty, LuaType::Object(_))
             && matches!(
                 raw_param_ty,

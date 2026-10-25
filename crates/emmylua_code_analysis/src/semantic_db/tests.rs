@@ -577,6 +577,114 @@ fn test_member_global_root() {
 }
 
 #[test]
+fn test_class_member_identity_from_annotated_declaration() {
+    for (annotation, expected) in [
+        ("---@class Example", "Example"),
+        ("---@class Example: { [string]: integer }", "Example"),
+        ("---@namespace sample\n---@class Example", "sample.Example"),
+        ("---@class (private) Example", "Example"),
+        ("---@class (internal) Example", "Example"),
+        ("---@enum Example", "Example"),
+    ] {
+        let mut db = setup();
+        let fid = set_test_file(
+            &mut db,
+            1,
+            "a.lua",
+            &format!(
+                "{annotation}\nlocal M = {{}}\nM.__index = M\nM.self = (M)\nlocal holder = {{}}\nholder.related = M"
+            ),
+        );
+        let facts = db.analysis().file_facts(fid).expect("facts");
+        let expected_id = facts.type_defs[0].type_decl_id();
+        let model = SemanticModel::new(&db, fid);
+        for name in ["__index", "self", "related"] {
+            let member = facts
+                .members
+                .iter()
+                .find(|m| m.key.name() == Some(name))
+                .unwrap();
+            assert_eq!(
+                db.analysis().member_type(fid, member.id.clone()),
+                Some(TypeShell::from_name(expected)),
+                "{annotation}: {name}",
+            );
+            assert_eq!(
+                model.type_of_member(&member.id),
+                Some(LuaType::Ref(expected_id.clone())),
+                "{annotation}: {name} must retain scope as well as name",
+            );
+        }
+    }
+}
+
+#[test]
+fn test_class_member_identity_across_files() {
+    let mut db = setup();
+    let owner = set_test_file(
+        &mut db,
+        1,
+        "owner.lua",
+        r#"
+---@namespace sample
+---@class (private) Example
+local M = {}
+M.__index = M
+return M
+"#,
+    );
+    let consumer = set_test_file(
+        &mut db,
+        2,
+        "consumer.lua",
+        r#"
+---@namespace sample
+---@class (private) Example
+local Other = {}
+return Other
+"#,
+    );
+    let facts = db.analysis().file_facts(owner).expect("facts");
+    let member = facts
+        .members
+        .iter()
+        .find(|m| m.key.name() == Some("__index"))
+        .unwrap();
+    let model = SemanticModel::new(&db, consumer);
+    assert_eq!(
+        model.type_of_member(&member.id),
+        Some(LuaType::Ref(facts.type_defs[0].type_decl_id()))
+    );
+}
+
+#[test]
+fn test_class_member_identity_keeps_explicit_type_priority() {
+    let mut db = setup();
+    let fid = set_test_file(
+        &mut db,
+        1,
+        "a.lua",
+        r#"
+---@class Example
+---@type string
+local value = 'text'
+local holder = {}
+holder.value = value
+"#,
+    );
+    let facts = db.analysis().file_facts(fid).expect("facts");
+    let member = facts
+        .members
+        .iter()
+        .find(|m| m.key.name() == Some("value"))
+        .unwrap();
+    assert_primitive(
+        &db.analysis().member_type(fid, member.id.clone()).unwrap(),
+        PrimitiveType::String,
+    );
+}
+
+#[test]
 fn test_member_chain_resolution() {
     let mut db = setup();
     // T.a = T.b; T.b = 1 → a resolves to Integer through the IndexExpr member chain.
@@ -1990,6 +2098,45 @@ fn test_module_export_nested_class_decl_uses_named_type() {
 }
 
 #[test]
+fn test_module_export_annotated_alias_uses_declared_type() {
+    let mut db = setup();
+    let fid = set_test_file(
+        &mut db,
+        1,
+        "settings.lua",
+        "---@alias ModSettings table<string, boolean>\n---@type ModSettings\nlocal Settings = {}\nreturn Settings",
+    );
+    let shell = db.analysis().module_export_type(fid).expect("export type");
+    assert_eq!(shell, TypeShell::from_name("ModSettings"));
+}
+
+#[test]
+fn test_module_export_annotations_do_not_gain_variable_name_types() {
+    for (annotation, value) in [
+        ("table<string, boolean>", "{}"),
+        ("{enabled: boolean}", "{enabled = false}"),
+        ("string?", "nil"),
+        ("fun(): boolean", "function() return true end"),
+        ("any", "{}"),
+    ] {
+        let mut db = setup();
+        let fid = set_test_file(
+            &mut db,
+            1,
+            "value.lua",
+            &format!("---@type {annotation}\nlocal Value = {value}\nreturn Value"),
+        );
+        let facts = db.analysis().file_facts(fid).expect("facts");
+        let decl = decl_local(&facts, "Value");
+        assert_eq!(
+            db.analysis().module_export_type(fid),
+            db.analysis().decl_type(fid, decl),
+            "{annotation}",
+        );
+    }
+}
+
+#[test]
 fn test_module_export_expr_and_none() {
     let mut db = setup();
     let fid = set_test_file(&mut db, 1, "mod.lua", "return { a = 1 }");
@@ -2250,4 +2397,93 @@ fn test_parallel_for_each_file_runs_on_shared_snapshots() {
     });
 
     assert_eq!(visited.load(std::sync::atomic::Ordering::Relaxed), 2);
+}
+
+#[test]
+fn annotated_table_field_does_not_annotate_callback_assignments() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def(
+        r#"
+        ---@class Settings
+        ---@field count integer
+        ---@alias Handler fun(settings: Settings)
+        ---@class Handlers
+        ---@field change Handler
+        ---@type Handlers
+        local handlers = {
+            ---@type Handler
+            change = function(settings) settings.count = 1 end,
+        }
+    "#,
+    );
+    let model = ws.analysis.semantic_model(file);
+    let facts = model.file_facts().unwrap();
+    let assignment = facts
+        .members
+        .iter()
+        .find(|member| {
+            member.key.name() == Some("count")
+                && member.value_syntax.is_some()
+                && !matches!(member.owner, SemanticId::TypeDef(_))
+        })
+        .unwrap();
+    assert!(
+        assignment.doc_type_syntax.is_none(),
+        "field annotation leaked onto callback assignment"
+    );
+}
+
+#[test]
+fn table_field_module_annotation_stays_on_own_field() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def(
+        r#"
+        local container = {
+            ---@module 'example'
+            module = { child = 1 },
+        }
+    "#,
+    );
+    let model = ws.analysis.semantic_model(file);
+    let facts = model.file_facts().unwrap();
+    let module = facts
+        .members
+        .iter()
+        .find(|member| member.key.name() == Some("module"))
+        .unwrap();
+    let child = facts
+        .members
+        .iter()
+        .find(|member| member.key.name() == Some("child"))
+        .unwrap();
+    assert_eq!(module.module_path.as_deref(), Some("example"));
+    assert_eq!(child.module_path, None);
+}
+
+#[test]
+fn implicit_array_member_values_are_not_declaration_keys() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let source = "local values = { function() return obj.name end, 42, [7] = false, named = true, ['quoted'] = 9 }";
+    let file = ws.def(source);
+    let model = ws.analysis.semantic_model(file);
+    let facts = model.file_facts().unwrap();
+    for token in ["function", "obj", "name end", "42"] {
+        let offset = TextSize::from(source.find(token).unwrap() as u32);
+        assert!(facts.member_at_offset(offset).is_none(), "{token}");
+    }
+    for token in ["7", "named", "quoted"] {
+        let offset = TextSize::from(source.find(token).unwrap() as u32);
+        assert!(facts.member_at_offset(offset).is_some(), "{token}");
+    }
+    for key in [1, 2] {
+        let member = facts
+            .members
+            .iter()
+            .find(|member| member.key == crate::LuaMemberKey::Integer(key))
+            .unwrap();
+        let value = member.value_syntax.unwrap();
+        assert_eq!(facts.member_by_value_syntax(value).unwrap().id, member.id);
+        assert!(facts.member_by_id(&member.id).is_some());
+        assert!(model.type_of_member(&member.id).is_some());
+    }
 }

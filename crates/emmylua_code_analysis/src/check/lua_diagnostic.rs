@@ -62,6 +62,6 @@ impl LuaDiagnostic {
         }
         // Do not diagnose non-main workspace files (mirrors the old module_index.is_main semantics;
         // once semantic workspace scoping is mirrored, filter by workspace id).
-        analysis.diagnose_file_with_config(file_id, self.check_config.clone())
+        analysis.diagnose_file_cancellable(file_id, self.check_config.clone(), cancel_token)
     }
 }

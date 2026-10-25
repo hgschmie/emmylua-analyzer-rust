@@ -1,6 +1,8 @@
 //! Table-field completion: `{ name = <??> }` / `{ <??> }` / expected types for table constructor arguments.
 
-use emmylua_code_analysis::{LuaMemberKey, LuaType, MemberInfo, SemanticId};
+use emmylua_code_analysis::{
+    LuaMemberKey, LuaType, MemberInfo, SemanticId, SemanticModel, TypeDefKind,
+};
 use emmylua_parser::{
     LuaAst, LuaAstNode, LuaCallExpr, LuaExpr, LuaKind, LuaTableExpr, LuaTableField, LuaTokenKind,
 };
@@ -112,7 +114,7 @@ fn add_table_field_key_completion(
 ) -> Option<ProviderDecision> {
     // Members of the table literal itself or its containing local declaration's doc type (`---@type T local t = {...}`).
     let table_type = table_expected_type(builder, &table_expr)?;
-    let members = builder.semantic_model.member_infos(&table_type);
+    let members = table_field_members(&builder.semantic_model, &table_type);
     if members.is_empty() {
         return Some(ProviderDecision::Continue);
     }
@@ -131,6 +133,62 @@ fn add_table_field_key_completion(
         add_field_key_completion(builder, &member);
     }
     Some(ProviderDecision::Continue)
+}
+
+/// A constructor can only use the table alternatives of its expected type.
+/// Ordinary member lookup also exposes string-library methods and array element
+/// members, neither of which are keys to insert into this table.
+fn table_field_members(model: &SemanticModel, expected: &LuaType) -> Vec<MemberInfo> {
+    fn collect(
+        model: &SemanticModel,
+        typ: &LuaType,
+        visited: &mut Vec<LuaType>,
+        tables: &mut Vec<LuaType>,
+    ) {
+        if visited.contains(typ) || visited.len() >= 64 {
+            return;
+        }
+        visited.push(typ.clone());
+        let expanded = model.expand_alias_for_hover(typ);
+        if expanded != *typ {
+            collect(model, &expanded, visited, tables);
+        } else {
+            match typ {
+                LuaType::Ref(id) | LuaType::Def(id) => {
+                    if let Some(def) = model.type_def_of(id)
+                        && def.kind == TypeDefKind::Alias
+                    {
+                        if let Some(target) = model.alias_target(&def) {
+                            collect(model, &target, visited, tables);
+                        }
+                    } else {
+                        tables.push(typ.clone());
+                    }
+                }
+                LuaType::Union(union) => {
+                    for component in union.iter() {
+                        collect(model, component, visited, tables);
+                    }
+                }
+                LuaType::Intersection(intersection) => {
+                    for component in intersection.get_types() {
+                        collect(model, component, visited, tables);
+                    }
+                }
+                LuaType::Generic(_)
+                | LuaType::Object(_)
+                | LuaType::TableConst(_)
+                | LuaType::Tuple(_)
+                | LuaType::TableGeneric(_) => tables.push(typ.clone()),
+                _ => {}
+            }
+        }
+        visited.pop();
+    }
+
+    let mut tables = Vec::new();
+    collect(model, expected, &mut Vec::new(), &mut tables);
+    model.member_infos(&LuaType::from_vec(tables))
 }
 
 fn add_field_key_completion(builder: &mut CompletionBuilder, member: &MemberInfo) {
@@ -180,9 +238,7 @@ fn add_table_field_value_completion(
         let table_expr = field.get_parent::<LuaTableExpr>()?;
         let table_type = table_expected_type(builder, &table_expr)?;
         let key_text = key.get_path_part();
-        if let Some(member) = builder
-            .semantic_model
-            .member_infos(&table_type)
+        if let Some(member) = table_field_members(&builder.semantic_model, &table_type)
             .into_iter()
             .find(|member| member.key.to_path() == key_text)
         {
@@ -274,9 +330,7 @@ fn table_expected_type(builder: &CompletionBuilder, table_expr: &LuaTableExpr) -
         && let Some(parent) = field.get_parent::<LuaTableExpr>()
         && let Some(parent_type) = table_expected_type(builder, &parent)
         && let Some(key) = field.get_field_key()
-        && let Some(info) = builder
-            .semantic_model
-            .member_infos(&parent_type)
+        && let Some(info) = table_field_members(&builder.semantic_model, &parent_type)
             .into_iter()
             .find(|info| info.key.to_path() == key.get_path_part())
     {
@@ -419,9 +473,7 @@ fn expected_table_field_value_type(
             // Named field: continue drilling down through the field key to the field value type.
             let ty = if let Some(key) = field.get_field_key() {
                 let key_text = key.get_path_part();
-                builder
-                    .semantic_model
-                    .member_infos(&ty)
+                table_field_members(&builder.semantic_model, &ty)
                     .into_iter()
                     .find(|info| info.key.to_path() == key_text)
                     .map(|info| info.typ)

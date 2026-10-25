@@ -218,4 +218,67 @@ mod tests {
         ));
         Ok(())
     }
+    #[gtest]
+    fn test_member_implementations_exclude_unrelated_owners() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        ws.def_file(
+            "other.lua",
+            r#"
+            ---@class OtherManager
+            local Manager = {}
+            function Manager:state() end
+            local unrelated = { state = false }
+            return Manager
+        "#,
+        );
+        check!(ws.check_implementation(
+            r#"
+                ---@class GhostManager
+                local Manager = {}
+                function Manager:st<??>ate() end
+                local unrelated = { state = false }
+                function unrelated:state() end
+                function Manager:use()
+                    local state = self:state()
+                end
+                return Manager
+            "#,
+            vec![VirtualLocation {
+                file: "".into(),
+                line: 3
+            }],
+        ));
+        Ok(())
+    }
+
+    #[gtest]
+    fn test_member_implementations_keep_module_alias_writes() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        ws.def_file(
+            "manager.lua",
+            "local M = {}\nfunction M:state() end\nreturn M",
+        );
+        ws.def_file(
+            "extension.lua",
+            "local M = require('manager')\nfunction M:state() end",
+        );
+        ws.def_file(
+            "other.lua",
+            "local M = {}\nfunction M:state() end\nreturn M",
+        );
+        check!(ws.check_implementation(
+            "local M = require('manager')\nM:st<??>ate()",
+            vec![
+                VirtualLocation {
+                    file: "manager.lua".into(),
+                    line: 1
+                },
+                VirtualLocation {
+                    file: "extension.lua".into(),
+                    line: 1
+                },
+            ],
+        ));
+        Ok(())
+    }
 }

@@ -130,7 +130,7 @@ enum Continuation {
     /// for loop: post-process after the loop body completes
     ForDone {
         post_label: FlowId,
-        loop_enters: bool,
+        loop_enters: Option<bool>,
         has_block: bool,
         current: FlowId,
         old_loop_label: FlowId,
@@ -138,6 +138,7 @@ enum Continuation {
     },
     /// for range: post-process after completion
     ForRangeDone {
+        post_label: FlowId,
         current: FlowId,
         old_loop_label: FlowId,
         old_break_target_label: FlowId,
@@ -268,7 +269,15 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                 None => Step::Done(current),
             },
             LuaExpr::ClosureExpr(closure_expr) => {
-                self.spawn_children(LuaAst::LuaClosureExpr(closure_expr), current)
+                let entry = self.binder.create_node(FlowNodeKind::ClosureEntry(
+                    LuaClosureId::from_closure(closure_expr.clone()),
+                ));
+                self.binder.add_antecedent(entry, current);
+                // Defining the function does not execute its body.
+                self.stack.push(Continuation::Seq {
+                    pending: vec![Task::Pass(current)],
+                });
+                self.spawn_children(LuaAst::LuaClosureExpr(closure_expr), entry)
             }
             LuaExpr::CallExpr(call_expr) => {
                 self.spawn_children(LuaAst::LuaCallExpr(call_expr), current)
@@ -650,8 +659,8 @@ impl<'a, 'b> BindEngine<'a, 'b> {
     }
 
     fn evaluate_while_stat(&mut self, while_stat: LuaWhileStat, current: FlowId) -> Step {
-        let pre_while_label = self.binder.create_loop_label();
-        let after_while_label = self.binder.create_branch_label();
+        let pre_while_label = self.binder.create_loop_label(while_stat.get_syntax_id());
+        let after_while_label = self.binder.create_node(FlowNodeKind::LoopLabel);
         let pre_block_label = self.binder.create_branch_label();
         self.binder.add_antecedent(pre_while_label, current);
         let Some(condition_expr) = while_stat.get_condition_expr() else {
@@ -680,8 +689,8 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                     old_break_target_label,
                 });
                 match while_stat.get_block() {
-                    Some(block) => Step::Task(Task::Block(block, current)),
-                    None => Step::Task(Task::Pass(current)),
+                    Some(block) => Step::Task(Task::Block(block, pre_while_label)),
+                    None => Step::Task(Task::Pass(pre_while_label)),
                 }
             }
             None => {
@@ -702,7 +711,7 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                 });
                 Step::Task(Task::Cond(
                     condition_expr,
-                    current,
+                    pre_while_label,
                     pre_block_label,
                     after_while_label,
                 ))
@@ -711,7 +720,7 @@ impl<'a, 'b> BindEngine<'a, 'b> {
     }
 
     fn evaluate_repeat_stat(&mut self, repeat_stat: LuaRepeatStat, current: FlowId) -> Step {
-        let pre_repeat_label = self.binder.create_loop_label();
+        let pre_repeat_label = self.binder.create_loop_label(repeat_stat.get_syntax_id());
         let post_repeat_label = self.binder.create_branch_label();
         self.binder.add_antecedent(pre_repeat_label, current);
 
@@ -771,8 +780,8 @@ impl<'a, 'b> BindEngine<'a, 'b> {
     }
 
     fn evaluate_for_stat(&mut self, for_stat: LuaForStat, current: FlowId) -> Step {
-        let pre_for_label = self.binder.create_loop_label();
-        let post_for_label = self.binder.create_branch_label();
+        let pre_for_label = self.binder.create_loop_label(for_stat.get_syntax_id());
+        let post_for_label = self.binder.create_node(FlowNodeKind::LoopLabel);
         self.binder.add_antecedent(pre_for_label, current);
 
         let iter_exprs = for_stat.get_iter_expr().collect::<Vec<_>>();
@@ -781,8 +790,8 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                 static_number_value(start_expr),
                 static_number_value(stop_expr),
             ) {
-                (Some(start), Some(stop)) => start <= stop,
-                _ => false,
+                (Some(start), Some(stop)) => Some(start <= stop),
+                _ => None,
             },
             [start_expr, stop_expr, step_expr, ..] => match (
                 static_number_value(start_expr),
@@ -790,11 +799,11 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                 static_number_value(step_expr),
             ) {
                 (Some(start), Some(stop), Some(step)) => {
-                    (step > 0.0 && start <= stop) || (step < 0.0 && start >= stop)
+                    Some((step > 0.0 && start <= stop) || (step < 0.0 && start >= stop))
                 }
-                _ => false,
+                _ => None,
             },
-            _ => false,
+            _ => None,
         };
 
         let old_loop_label = self.binder.loop_label;
@@ -826,8 +835,10 @@ impl<'a, 'b> BindEngine<'a, 'b> {
         for_range_stat: LuaForRangeStat,
         current: FlowId,
     ) -> Step {
-        let pre_for_range_label = self.binder.create_loop_label();
-        let post_for_range_label = self.binder.create_branch_label();
+        let pre_for_range_label = self
+            .binder
+            .create_loop_label(for_range_stat.get_syntax_id());
+        let post_for_range_label = self.binder.create_node(FlowNodeKind::LoopLabel);
         self.binder.add_antecedent(pre_for_range_label, current);
 
         let old_loop_label = self.binder.loop_label;
@@ -837,6 +848,7 @@ impl<'a, 'b> BindEngine<'a, 'b> {
 
         let exprs = for_range_stat.get_expr_list().collect::<Vec<_>>();
         self.stack.push(Continuation::ForRangeDone {
+            post_label: post_for_range_label,
             current,
             old_loop_label,
             old_break_target_label,
@@ -1079,6 +1091,9 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                         after_label,
                         value,
                     ))
+                } else if has_block {
+                    self.binder.add_antecedent(after_label, value);
+                    Step::Done(after_label)
                 } else {
                     Step::Done(current)
                 }
@@ -1102,24 +1117,31 @@ impl<'a, 'b> BindEngine<'a, 'b> {
             } => {
                 self.binder.loop_label = old_loop_label;
                 self.binder.break_target_label = old_break_target_label;
-                if loop_enters && has_block {
+                if loop_enters == Some(true) && has_block {
                     Step::Done(finish_entered_loop_post_flow(
                         self.binder,
                         post_label,
                         value,
                     ))
+                } else if loop_enters.is_none() && has_block {
+                    self.binder.add_antecedent(post_label, current);
+                    self.binder.add_antecedent(post_label, value);
+                    Step::Done(post_label)
                 } else {
                     Step::Done(current)
                 }
             }
             Continuation::ForRangeDone {
+                post_label,
                 current,
                 old_loop_label,
                 old_break_target_label,
             } => {
                 self.binder.loop_label = old_loop_label;
                 self.binder.break_target_label = old_break_target_label;
-                Step::Done(current)
+                self.binder.add_antecedent(post_label, current);
+                self.binder.add_antecedent(post_label, value);
+                Step::Done(post_label)
             }
             Continuation::ThenForNode {
                 for_stat,

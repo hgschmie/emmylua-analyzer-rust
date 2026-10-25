@@ -160,6 +160,13 @@ fn is_valid_member(
     }
     match prefix_ty {
         LuaType::TableConst(table) => {
+            if let Some(key) = static_member_key(semantic_model, index_key)
+                && semantic_model
+                    .member_info(prefix_ty, &key)
+                    .is_some_and(|info| !info.typ.is_nil())
+            {
+                return true;
+            }
             let Some((decl, def)) = table_binding(semantic_model, table.file_id, table.value)
             else {
                 // Unbound table: a local export table is still checked against the export surface (old check_export semantics).
@@ -262,6 +269,10 @@ fn valid_named_member(
     }
 
     let key_ty = key_type(semantic_model, index_key);
+    if crate::semantic_model::inherited_index::lookup(semantic_model, &prefix_ty, &key_ty).is_some()
+    {
+        return true;
+    }
     // Index signatures on named types: `@field [string]` / `@field [integer]`.
     if let Some(def) = named_type_def(semantic_model, &prefix_ty)
         && has_index_signature(semantic_model, &def, &key_ty)
@@ -280,7 +291,7 @@ fn valid_named_member(
     }
     // `m[expr]`: dynamic string / enum alias / enum member table identity keys are allowed broadly on named types (keyof/enum parameter scenarios).
     if matches!(index_key, LuaIndexKey::Expr(_))
-        && (is_string_key(&key_ty)
+        && (string_key_expanded(semantic_model, &key_ty)
             || is_enum_like_key(semantic_model, &key_ty)
             || matches!(key_ty, LuaType::TableConst(_)))
     {
@@ -338,7 +349,7 @@ fn enum_table_access(
     accepted.iter().any(|text| text == &key_text)
 }
 
-/// Finds the declaration and same-named type definition bound to a TableConst.
+/// Finds the declaration and type annotation attached to a TableConst initializer.
 fn table_binding(
     semantic_model: &SemanticModel<'_>,
     file_id: FileId,
@@ -346,14 +357,9 @@ fn table_binding(
 ) -> Option<(Decl, TypeDef)> {
     let facts = semantic_model.file_facts_of(file_id)?;
     let decl = facts.decl_by_value_range(range)?;
-    let def = facts
-        .type_defs_named_case_insensitive(decl.name.as_str())
-        .next()
-        .or_else(|| {
-            // `---@enum K3` + `local apiAlias = {...}`: when names differ, associate with the nearest preceding type definition by position.
-            facts.nearest_type_def_before(decl.name_range.start())
-        })?
-        .clone();
+    // A nearby or same-named type can belong to an entirely different declaration.
+    // Use doc ownership, which also handles differently named runtime tables.
+    let def = facts.type_def_by_owner_syntax(decl.owner_syntax?)?.clone();
     Some((decl.clone(), def))
 }
 
@@ -389,6 +395,43 @@ fn is_string_key(ty: &LuaType) -> bool {
         LuaType::Union(union) => union.into_vec().iter().any(is_string_key),
         _ => false,
     }
+}
+
+/// String keys may be named aliases (including aliases inside unions).
+/// Track visited definitions so recursive aliases cannot loop indefinitely.
+fn string_key_expanded(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> bool {
+    fn expand(
+        semantic_model: &SemanticModel<'_>,
+        ty: &LuaType,
+        visited: &mut Vec<LuaTypeDeclId>,
+    ) -> bool {
+        if is_string_key(ty) {
+            return true;
+        }
+        match ty {
+            LuaType::Union(union) => union
+                .into_vec()
+                .iter()
+                .any(|ty| expand(semantic_model, ty, visited)),
+            LuaType::MultiLineUnion(union) => expand(semantic_model, &union.to_union(), visited),
+            LuaType::Ref(id) | LuaType::Def(id) => {
+                if visited.len() >= 32 || visited.contains(id) {
+                    return false;
+                }
+                visited.push(id.clone());
+                let result = named_type_def(semantic_model, ty).is_some_and(|def| {
+                    def.kind == TypeDefKind::Alias
+                        && semantic_model
+                            .alias_target(&def)
+                            .is_some_and(|target| expand(semantic_model, &target, visited))
+                });
+                visited.pop();
+                result
+            }
+            _ => false,
+        }
+    }
+    expand(semantic_model, ty, &mut Vec::new())
 }
 
 fn numeric_key(ty: &LuaType) -> bool {
@@ -440,7 +483,8 @@ fn numeric_key_expanded_inner(
             .base_types(&def.type_decl_id())
             .iter()
             .any(|ty| matches!(ty, LuaType::Integer | LuaType::Number)),
-        TypeDefKind::Enum => false,
+        // An enum's values determine whether it can index a numeric collection.
+        TypeDefKind::Enum => is_compatible(semantic_model, ty, &LuaType::Number),
     }
 }
 
@@ -451,7 +495,7 @@ fn key_matches(semantic_model: &SemanticModel<'_>, key: &LuaType, table_key: &Lu
     }
     match table_key {
         LuaType::String | LuaType::StringConst(_) | LuaType::DocStringConst(_) => {
-            is_string_key(key)
+            string_key_expanded(semantic_model, key)
         }
         LuaType::Integer
         | LuaType::Number
@@ -484,7 +528,7 @@ fn has_index_signature(
         };
         match member.key.to_path().as_str() {
             "string" => {
-                if is_string_key(key_ty) {
+                if string_key_expanded(semantic_model, key_ty) {
                     return true;
                 }
             }

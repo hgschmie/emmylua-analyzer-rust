@@ -290,9 +290,10 @@ fn recursive_alias_arguments_can_change_within_a_finite_set() {
     let accepted = ws.ty("{value: string, next: Tail}");
     let rejected = ws.ty("{value: string, next: {value: boolean}}");
     let model = ws.analysis.semantic_model(file);
+    // The concrete string[] arm lacks `value`; the recursive Fixed arm still supplies integer.
     assert_eq!(
         model.member_type(&candidate, &LuaMemberKey::Name("value".into())),
-        Some(LuaType::Integer)
+        Some(LuaType::from_vec(vec![LuaType::Integer, LuaType::Nil]))
     );
     // The string alternative cannot supply an integer.
     assert!(!model.type_check(&changed, &LuaType::Integer));
@@ -872,5 +873,109 @@ fn recursive_alias_member_queries_keep_concrete_alternatives() {
         let members = model.member_infos(&tree);
         assert_eq!(members.len(), 1);
         assert_eq!(members[0].typ, LuaType::String);
+    }
+}
+
+#[test]
+fn rawget_broad_keys_resolve_index_contracts() {
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    ws.def(
+        r#"
+        ---@class Metrics: { [string]: integer }
+        ---@class Dictionary<K,V>: table<K,V>
+        ---@class Child: Dictionary<string, integer>
+        ---@class Fields
+        ---@field [string] integer?
+        ---@alias Key string
+        ---@alias Values table<string, integer>
+        ---@type Metrics
+        metrics = {}
+        ---@type Dictionary<string, integer>
+        generic = {}
+        ---@type Child
+        child = {}
+        ---@type Fields
+        fields = {}
+        ---@type Values
+        values = {}
+        ---@type { [string]: integer }
+        object = {}
+        ---@type string
+        key = ''
+        ---@type Key
+        alias_key = ''
+    "#,
+    );
+    for name in ["metrics", "generic", "child", "fields", "values", "object"] {
+        for key in ["key", "alias_key"] {
+            let ty = ws.expr_ty(&format!("rawget({name}, {key}) or 0"));
+            assert_eq!(ty, LuaType::Integer, "{name}[{key}]: {ty:?}");
+        }
+    }
+}
+
+#[test]
+fn rawget_metrics_arithmetic_has_no_type_mismatch() {
+    use crate::DiagnosticCode;
+    let source = r#"
+        ---@class Metrics: { [string]: integer }
+        local Metrics = {}
+        ---@param key string
+        ---@return integer
+        function Metrics:get(key) return rawget(self, key) or 0 end
+        ---@param key string
+        ---@return integer
+        function Metrics:inc(key)
+            local value = (rawget(self, key) or 0) + 1
+            rawset(self, key, value)
+            return value
+        end
+        ---@param key string
+        function Metrics:show(key)
+            ---@type integer?
+            local value = rawget(self, key)
+        end
+    "#;
+    for code in [
+        DiagnosticCode::ReturnTypeMismatch,
+        DiagnosticCode::AssignTypeMismatch,
+    ] {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(ws.has_no_diagnostic(code, source), "{code:?}");
+    }
+}
+
+#[test]
+fn rawget_dynamic_indexes_preserve_missing_values_and_key_domains() {
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def(
+        r#"
+        ---@class Dictionary<K,V>: table<K,V>
+        ---@class StringFields
+        ---@field [string] integer?
+        ---@class Cycle: Cycle
+        ---@alias StringKey string
+    "#,
+    );
+    for (base, key, expected) in [
+        ("table<string, integer>", "string", Some("integer?")),
+        ("integer[]", "integer", Some("integer?")),
+        ("Dictionary<string, boolean>", "StringKey", Some("boolean?")),
+        (
+            "{[string]: integer, [integer]: boolean}",
+            "integer",
+            Some("boolean?"),
+        ),
+        ("StringFields", "string", Some("integer?")),
+        ("table<string, integer>", "integer", None),
+        ("integer[]", "string", None),
+        ("Cycle", "string", None),
+    ] {
+        let base_ty = ws.ty(base);
+        let key_ty = ws.ty(key);
+        let expected = expected.map(|ty| ws.ty(ty));
+        let model = ws.analysis.semantic_model(file);
+        let result = eval_index_access(&model, &base_ty, &key_ty);
+        assert_eq!(result, expected, "{base}[{key}]");
     }
 }

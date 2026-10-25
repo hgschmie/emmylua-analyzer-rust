@@ -14,6 +14,8 @@ use tokio_util::sync::CancellationToken;
 pub enum CancelSource {
     /// Client `$/cancelRequest`, or a newer same-key request replacing the old one.
     Client,
+    /// A diagnostic computation was preempted by an analysis update.
+    DiagnosticRefresh,
 }
 
 /// Unified request result.
@@ -69,9 +71,7 @@ where
                 RequestOutcome::Missing
             }
         }
-        RequestOutcome::Cancelled(CancelSource::Client) => {
-            RequestOutcome::Cancelled(CancelSource::Client)
-        }
+        RequestOutcome::Cancelled(source) => RequestOutcome::Cancelled(source),
     }
 }
 
@@ -98,8 +98,6 @@ where
                 RequestOutcome::Missing
             }
         }
-        RequestOutcome::Cancelled(CancelSource::Client) => {
-            RequestOutcome::Cancelled(CancelSource::Client)
-        }
+        RequestOutcome::Cancelled(source) => RequestOutcome::Cancelled(source),
     }
 }

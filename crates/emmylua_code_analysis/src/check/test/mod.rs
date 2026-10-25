@@ -13,12 +13,16 @@ mod check_return_count_test;
 mod circle_doc_class_test;
 mod code_style;
 mod code_style_test;
+mod constructor_call_test;
+mod constructor_key_literals_test;
+mod dependent_call_test;
 mod deprecated_test;
 mod disable_line_test;
 mod duplicate_field_test;
 mod duplicate_index_test;
 mod duplicate_require_test;
 mod duplicate_type_test;
+mod enum_literal_compatibility_test;
 mod enum_value_mismatch_test;
 mod generic_constraint_mismatch_test;
 mod global_in_non_module_test;
@@ -26,10 +30,13 @@ mod incomplete_signature_doc_test;
 mod inject_field_test;
 mod length_operator_test;
 mod local_const_reassign_test;
+mod member_self_assignment_test;
 mod misc_checker_test;
 mod missing_fields_test;
 mod missing_parameter_test;
 mod need_check_nil_test;
+mod nested_member_contract_test;
+mod nullable_dictionary_arguments_test;
 mod param_count_test;
 mod param_type_check_test;
 mod readonly_test;
@@ -45,6 +52,7 @@ mod unbalanced_assignments_test;
 mod undefined_doc_param_test;
 mod undefined_field_test;
 mod undefined_global_test;
+mod union_member_argument_test;
 mod unknown_doc_tag_test;
 mod unnecessary_assert_test;
 mod unnecessary_if_test;
@@ -146,4 +154,40 @@ fn test_check_config_default_enable_rules() {
     let config = CheckConfig::new(&emmyrc);
     assert!(!config.is_code_enabled(&DiagnosticCode::SyntaxError));
     assert!(config.is_code_enabled(&DiagnosticCode::UnknownDocTag));
+}
+
+mod variadic_named_types_test;
+
+mod array_union_alias_test;
+
+mod nullable_required_arguments_test;
+
+#[test]
+fn cancelled_diagnostics_do_not_publish_partial_results_or_poison_later_checks() {
+    use tokio_util::sync::CancellationToken;
+    let mut ws = crate::VirtualWorkspace::new();
+    let source = (0..20000)
+        .map(|index| format!("local value{index} = missing{index}\n"))
+        .collect::<String>();
+    let file = ws.def(&source);
+    let token = CancellationToken::new();
+    let cancel = token.clone();
+    let worker = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        cancel.cancel();
+    });
+    assert!(ws.analysis.diagnose_file(file, token).is_none());
+    worker.join().unwrap();
+    let lifetime = ws.analysis.diagnostic_cancellation_token();
+    lifetime.cancel();
+    assert!(
+        ws.analysis
+            .diagnose_file(file, CancellationToken::new())
+            .is_none()
+    );
+    assert!(!ws.analysis.renew_diagnostic_cancellation().is_cancelled());
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::UndefinedGlobal,
+        "print(missing_after_cancel)"
+    ));
 }

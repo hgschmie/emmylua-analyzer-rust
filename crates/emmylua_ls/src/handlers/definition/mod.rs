@@ -3,8 +3,8 @@ mod goto_label;
 mod goto_module_file;
 mod goto_string;
 
-use emmylua_code_analysis::{EmmyLuaAnalysis, FileId};
-use emmylua_parser::{LuaAstNode, LuaAstToken, LuaStringToken, LuaTokenKind};
+use emmylua_code_analysis::{EmmyLuaAnalysis, FileId, SemanticId, SemanticModel};
+use emmylua_parser::{LuaAstNode, LuaAstToken, LuaStringToken, LuaSyntaxToken, LuaTokenKind};
 use lsp_types::{
     ClientCapabilities, GotoDefinitionParams, GotoDefinitionResponse, OneOf, Position,
     ServerCapabilities,
@@ -60,8 +60,33 @@ pub fn definition(
         }
     };
 
+    if let Some((read, write, assignment)) = super::common::directional_index_at(&model, &token)
+        && let Some(SemanticId::Member(key)) = if assignment { write.id } else { read.id }
+    {
+        let document = analysis.db.document(key.file_id)?;
+        return Some(GotoDefinitionResponse::Scalar(lsp_types::Location::new(
+            document.get_uri()?,
+            document.to_lsp_range(key.key_range)?,
+        )));
+    }
+
     // 1. Label definition (goto / label).
     if let Some(response) = goto_label::goto_label_definition(&model, &analysis.db, &token) {
+        return Some(response);
+    }
+
+    if model.find_decl(token.clone().into()).is_none()
+        && let Some(origin) = find_index_metamethod_definition(&model, &token)
+    {
+        return goto_def_definition::goto_def_definition(&model, &analysis.db, &origin, &token);
+    }
+
+    // Quoted constructor keys have the same declaration context as named keys.
+    if crate::handlers::common::table_context_type_for_token(&model, &token).is_some()
+        && let Some(decl) = model.find_decl(token.clone().into())
+        && let Some(response) =
+            goto_def_definition::goto_def_definition(&model, &analysis.db, &decl, &token)
+    {
         return Some(response);
     }
 
@@ -92,7 +117,9 @@ pub fn definition(
     }
 
     // 3. Semantic declarations (decl / member / typedef).
-    let decl = model.find_decl(token.clone().into())?;
+    let decl = model
+        .find_decl(token.clone().into())
+        .or_else(|| find_index_metamethod_definition(&model, &token))?;
     goto_def_definition::goto_def_definition(&model, &analysis.db, &decl, &token)
 }
 
@@ -102,4 +129,12 @@ impl RegisterCapabilities for DefinitionCapabilities {
     fn register_capabilities(server_capabilities: &mut ServerCapabilities, _: &ClientCapabilities) {
         server_capabilities.definition_provider = Some(OneOf::Left(true));
     }
+}
+
+fn find_index_metamethod_definition(
+    model: &SemanticModel,
+    token: &LuaSyntaxToken,
+) -> Option<SemanticId> {
+    let origin = super::common::find_index_metamethod_origin(model, token)?;
+    super::common::resolve_alias_origin(model, &origin).or(Some(origin))
 }

@@ -54,6 +54,10 @@ pub(super) struct TypeEvaluationScope<'a> {
 
 impl<'a> TypeEvaluationScope<'a> {
     pub(super) fn new(cache: &'a super::LazyCache) -> Option<Self> {
+        if cache.is_cancelled() {
+            cache.borrow().mark_incomplete();
+            return None;
+        }
         let query = QueryCacheScope::new(cache);
         let mut state = cache.borrow_mut();
         const MAX_EVALUATION_DEPTH: usize = 64;
@@ -78,6 +82,10 @@ impl<'a> TypeEvaluationScope<'a> {
         let mut pending = vec![ty];
         const MAX_TYPE_VISITS: usize = 1_000_000;
         while let Some(ty) = pending.pop() {
+            if self.query.cache.is_cancelled() {
+                cache.mark_incomplete();
+                return false;
+            }
             if cache.evaluation_exhausted || cache.evaluation_work >= MAX_TYPE_VISITS {
                 cache.exhaust_evaluation();
                 return false;
@@ -162,12 +170,8 @@ impl<T> CacheEntry<T> {
     }
 }
 
-/// Memo key for one declaration-trace state: `(file, declaration, flow node, options, mode)`.
-///
-/// The incoming path is deliberately absent. It is safe to omit only for flow
-/// graphs without loops, where every route to a flow node crosses the same
-/// guards, so the path is a function of the node. [`super::flow`] consults this
-/// memo only in that case and recomputes otherwise.
+/// Memo key for one declaration trace, including its incoming guard/cast context.
+/// Equivalent path operations are normalized before constructing this key.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct TraceStateKey {
     pub(crate) file_id: FileId,
@@ -177,6 +181,7 @@ pub(crate) struct TraceStateKey {
     pub(crate) casts: bool,
     pub(crate) assignments: bool,
     pub(crate) merge_branch: bool,
+    pub(crate) path: super::flow::PathState,
 }
 
 #[derive(Default)]
@@ -187,6 +192,9 @@ pub(crate) struct TypeDefCache {
 
 #[derive(Default)]
 pub(crate) struct SemanticLocalCache {
+    /// Unfiltered constructor failures shared by all diagnostic passes in this model.
+    pub(crate) constructor_diagnostics:
+        HashMap<(FileId, LuaSyntaxId, LuaType), Vec<crate::check::checker::Diagnostic>>,
     /// Changes whenever a query reads an unfinished dependency. Most queries
     /// use this to decide whether a result can be cached. Type comparisons
     /// track completeness in their result, including discarded alternatives.
@@ -199,6 +207,7 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) evaluation_errors: HashSet<Option<LuaTypeDeclId>>,
     /// Closure returns depend on the VM environment: track active queries only.
     pub(crate) closure_return_in_progress: HashSet<(FileId, LuaSyntaxId)>,
+    pub(crate) loop_carried: HashMap<(LuaSyntaxId, SemanticId), CacheEntry<Option<LuaType>>>,
     pub(crate) expr_type: HashMap<(FileId, LuaSyntaxId), CacheEntry<LuaType>>,
     pub(crate) decl_type: HashMap<(FileId, SemanticId), CacheEntry<Option<LuaType>>>,
     pub(crate) member_type: HashMap<(FileId, SemanticId), CacheEntry<Option<LuaType>>>,
@@ -210,11 +219,17 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) resolve_owner_set: HashMap<SemanticId, Vec<SemanticId>>,
     pub(crate) member_type_at: HashMap<(FileId, SemanticId, TextSize), LuaType>,
     pub(crate) flow_decl: HashMap<(FileId, SemanticId, FlowId), LuaType>,
+    /// Values a mutable captured local can hold when any of its closures runs.
+    pub(crate) captured_decl: HashMap<(FileId, SemanticId), CacheEntry<LuaType>>,
     /// Whole-function, syntax-only check for the local-table last-element proof.
     pub(crate) array_length_stable: HashMap<(FileId, SemanticId), bool>,
-    /// Memoized declaration-trace states for loop-free flow graphs. See
-    /// [`TraceStateKey`] for why the path may be omitted from the key.
+    /// Memoized declaration traces; incoming path facts are part of the key.
     pub(crate) trace_state: HashMap<TraceStateKey, CacheEntry<Option<LuaType>>>,
+    /// Member traces with an empty incoming guard/cast path on an acyclic graph.
+    /// Other paths and cyclic graphs must not share these results. File and
+    /// receiver syntax distinguish accesses to the same declared class member.
+    pub(crate) member_trace_state:
+        HashMap<(FileId, SemanticId, Option<LuaSyntaxId>, FlowId), CacheEntry<Option<LuaType>>>,
     /// Fast negative/positive cache for `---@return_cast` lookup by call syntax.
     /// Most calls do not have `return_cast`, so caching the `None` result avoids
     /// repeatedly resolving callees and scanning signatures for the same call.
@@ -224,6 +239,7 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) call_site: HashMap<(FileId, LuaSyntaxId), CallSiteAnalysis>,
     pub(crate) call_site_signatures:
         HashMap<(FileId, LuaSyntaxId), Vec<(LuaFunctionType, TplBindings)>>,
+    pub(crate) inherited_dictionaries: HashMap<LuaType, Vec<LuaType>>,
     pub(crate) member_infos: HashMap<(FileId, LuaType), Vec<MemberInfo>>,
     pub(crate) members_of_owner: HashMap<SemanticId, MemberList>,
     pub(crate) members_of_owner_named: HashMap<(SemanticId, SmolStr), MemberList>,
@@ -251,6 +267,9 @@ impl SemanticLocalCache {
         self.member_type.retain(|_, entry| entry.is_ready());
         self.expr_type_at.retain(|_, entry| entry.is_ready());
         self.trace_state.retain(|_, entry| entry.is_ready());
+        self.loop_carried.retain(|_, entry| entry.is_ready());
+        self.member_trace_state.retain(|_, entry| entry.is_ready());
+        self.captured_decl.retain(|_, entry| entry.is_ready());
         self.type_check.retain(|_, entry| entry.is_ready());
         self.alias_targets.retain(|_, entry| entry.is_ready());
         self.alias_heads.retain(|_, entry| entry.is_ready());

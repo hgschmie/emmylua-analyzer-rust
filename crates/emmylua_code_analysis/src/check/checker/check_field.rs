@@ -13,8 +13,8 @@ use crate::semantic_model::SemanticModel;
 use crate::semantic_model::type_eval::expand_alias_branches;
 use crate::{LuaMemberKey, LuaType, LuaTypeDeclId, LuaUnionType};
 
-use super::assign_type_mismatch::signature_matches_key;
-use super::param_type_check::callable_candidates;
+use super::assign_type_mismatch::{check_value_against, signature_matches_key};
+use super::param_type_check::table_argument_targets;
 use super::{CheckContext, Checker};
 use crate::semantic_model::render::humanize_type;
 
@@ -28,7 +28,11 @@ impl Checker for CheckFieldChecker {
             return;
         };
         let root = tree.get_red_root();
-        for node in root.descendants().filter_map(LuaAst::cast) {
+        for node in root
+            .descendants()
+            .take_while(|_| !semantic_model.is_cancelled())
+            .filter_map(LuaAst::cast)
+        {
             match node {
                 LuaAst::LuaLocalStat(local_stat) => {
                     check_local(context, semantic_model, &local_stat);
@@ -145,7 +149,12 @@ fn check_index_assign(
             || semantic_model
                 .members_of_owner(&target_id)
                 .iter()
-                .any(|member| member.name.starts_with('['))
+                .any(|member| {
+                    semantic_model
+                        .file_facts_of(member.file_id)
+                        .and_then(|facts| facts.member_by_id(&member.id))
+                        .is_some_and(|member| member.is_index_signature)
+                })
             || is_mapped_alias(semantic_model, &def)
         {
             continue;
@@ -169,7 +178,10 @@ fn check_index_assign(
 
 /// Follows alias definitions until a non-alias type is reached. Returns `None` when the
 /// input is not an alias (or an alias cycle/unresolved target prevents expansion).
-fn expand_alias_type(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> Option<LuaType> {
+pub(super) fn expand_alias_type(
+    semantic_model: &SemanticModel<'_>,
+    ty: &LuaType,
+) -> Option<LuaType> {
     let mut current = ty.clone();
     let mut visited = Vec::new();
     loop {
@@ -196,6 +208,12 @@ fn expand_alias_type(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> Option
         }
         visited.push(id.clone());
         current = semantic_model.alias_target(&def)?;
+        if def.generic_params.is_empty() && matches!(current, LuaType::Union(_)) {
+            // Preserve object fields inside unions; the shell projection can reduce
+            // an object alternative to `table`, which would accept any constructor.
+            // Leave mapped/generic alias projection with its existing resolver.
+            current = semantic_model.doc_type_lua_rich_in(def.file_id, def.alias_type?);
+        }
     }
 }
 
@@ -308,24 +326,8 @@ fn check_call_args(
     semantic_model: &SemanticModel<'_>,
     call_expr: &LuaCallExpr,
 ) {
-    let Some(callee) = call_expr.get_prefix_expr() else {
-        return;
-    };
-    let candidates = callable_candidates(semantic_model, &callee);
-    let Some(args) = call_expr.get_args_list() else {
-        return;
-    };
-    for candidate in &candidates {
-        let params = candidate.get_params();
-        for (index, arg) in args.get_args().enumerate() {
-            let LuaExpr::TableExpr(table) = arg else {
-                continue;
-            };
-            let Some((_, Some(param_ty))) = params.get(index) else {
-                continue;
-            };
-            check_against_type(context, semantic_model, param_ty, &table);
-        }
+    for (table, target) in table_argument_targets(semantic_model, call_expr) {
+        check_against_type(context, semantic_model, &target, &table);
     }
 }
 
@@ -349,7 +351,7 @@ fn check_against(
     check_against_type(context, semantic_model, &target, table);
 }
 
-fn check_against_type(
+pub(super) fn check_against_type(
     context: &mut CheckContext<'_>,
     semantic_model: &SemanticModel<'_>,
     target: &LuaType,
@@ -369,21 +371,13 @@ fn check_against_type(
             return;
         }
         LuaType::Union(union) => {
-            // Check the first named-class component; empty tables pass through the array component.
-            let fields_count = table.get_fields_with_keys().len();
-            for component in union.into_vec() {
-                let named = matches!(
-                    component,
-                    LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_)
-                );
-                if named && fields_count > 0 {
-                    check_against_type(context, semantic_model, &component, table);
-                    return;
-                }
-                if matches!(component, LuaType::Array(_)) && fields_count == 0 {
-                    return;
-                }
-            }
+            check_union_table_fields(
+                context,
+                semantic_model,
+                union,
+                table,
+                &[DiagnosticCode::MissingFields, DiagnosticCode::InjectField],
+            );
             return;
         }
         LuaType::Object(object) => {
@@ -506,6 +500,103 @@ fn check_against_type(
     }
 }
 
+/// A table constructor must satisfy one complete union alternative. Choose using
+/// both field presence and value checks so the two diagnostic passes cannot pick
+/// different alternatives and accidentally accept an invalid constructor.
+pub(super) fn check_union_table_fields(
+    context: &mut CheckContext<'_>,
+    semantic_model: &SemanticModel<'_>,
+    union: &LuaUnionType,
+    table: &LuaTableExpr,
+    codes: &[DiagnosticCode],
+) {
+    for diagnostic in table_union_diagnostics(semantic_model, union, table) {
+        if codes.contains(&diagnostic.code) {
+            context.add_diagnostic(diagnostic.code, diagnostic.range, diagnostic.message);
+        }
+    }
+}
+
+pub(super) fn table_union_diagnostics(
+    semantic_model: &SemanticModel<'_>,
+    union: &LuaUnionType,
+    table: &LuaTableExpr,
+) -> Vec<super::Diagnostic> {
+    semantic_model.constructor_diagnostics(
+        table.get_syntax_id(),
+        LuaType::Union(Rc::new(union.clone())),
+        || table_union_diagnostics_uncached(semantic_model, union, table),
+    )
+}
+
+fn table_union_diagnostics_uncached(
+    semantic_model: &SemanticModel<'_>,
+    union: &LuaUnionType,
+    table: &LuaTableExpr,
+) -> Vec<super::Diagnostic> {
+    fn collect_alternatives(
+        model: &SemanticModel<'_>,
+        ty: &LuaType,
+        active: &mut Vec<LuaType>,
+        out: &mut Vec<LuaType>,
+    ) {
+        if active.len() >= 100 || active.contains(ty) {
+            return;
+        }
+        active.push(ty.clone());
+        if let Some(expanded) = expand_alias_type(model, ty) {
+            collect_alternatives(model, &expanded, active, out);
+        } else if let LuaType::Union(union) = ty {
+            for component in union.iter() {
+                collect_alternatives(model, component, active, out);
+            }
+        } else {
+            out.push(ty.clone());
+        }
+        active.pop();
+    }
+
+    let mut alternatives = Vec::new();
+    for component in union.iter() {
+        collect_alternatives(
+            semantic_model,
+            component,
+            &mut Vec::new(),
+            &mut alternatives,
+        );
+    }
+    let value_expr = LuaExpr::TableExpr(table.clone());
+    let mut best: Option<Vec<super::Diagnostic>> = None;
+    for alternative in alternatives {
+        // A constructor with named keys is not the array alternative of `C|C[]`.
+        // Keep reporting the class's missing fields rather than an element error.
+        if matches!(alternative, LuaType::Array(_))
+            && table.get_fields_with_keys().iter().any(|(_, key)| {
+                matches!(
+                    static_member_key(semantic_model, key),
+                    Some(LuaMemberKey::Name(_))
+                )
+            })
+        {
+            continue;
+        }
+        let mut candidate = CheckContext::unfiltered(semantic_model);
+        check_against_type(&mut candidate, semantic_model, &alternative, table);
+        check_value_against(&mut candidate, semantic_model, &alternative, &value_expr);
+        let diagnostics = candidate.into_diagnostics();
+        if diagnostics.is_empty() {
+            return diagnostics;
+        }
+        if best
+            .as_ref()
+            .is_none_or(|current| diagnostics.len() < current.len())
+        {
+            best = Some(diagnostics);
+        }
+    }
+    best.unwrap_or_default()
+}
+
 /// Target type -> named type id (Ref/Def/Generic base class).
 fn resolve_target(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> Option<SemanticId> {
     match ty {
@@ -578,7 +669,7 @@ fn find_type_def(semantic_model: &SemanticModel<'_>, type_def_id: &SemanticId) -
 }
 
 /// Whether the field is optional (nullable / unknown).
-fn is_optional(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> bool {
+pub(super) fn is_optional(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> bool {
     let ty = expand_alias_branches(semantic_model, ty).unwrap_or_else(|| ty.clone());
     match &ty {
         LuaType::Any | LuaType::Unknown | LuaType::Nil => true,

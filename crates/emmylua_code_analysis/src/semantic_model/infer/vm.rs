@@ -24,7 +24,9 @@ use crate::semantic_db::def::{
 };
 use crate::semantic_db::types::PrimitiveType;
 use crate::semantic_model::flow::{ExprCastMode, type_of_expr_with_cast};
-use crate::semantic_model::member::{MemberInfo, table_const_class_type, table_metatable_type};
+use crate::semantic_model::member::{
+    MemberInfo, has_unrestricted_members, table_const_class_type, table_metatable_type,
+};
 use crate::semantic_model::type_eval::{
     class_generic_map, eval_conditionals, expand_alias_generic, expand_alias_head,
     sanitize_unresolved_generics, sanitize_unresolved_generics_with_model, substitute_named_refs,
@@ -356,8 +358,8 @@ fn compile_expr(expr: &LuaExpr, file_id: FileId, out: &mut Vec<Instr>, stack: &m
             table.get_range(),
         )))),
         LuaExpr::UnaryExpr(unary) => {
-            // M0: `not` -> Boolean; `-x`/`#x` -> operator overload (`---@operator unm/len`),
-            // falling back to the operand type when no overload exists.
+            // `not` -> Boolean; `-x`/`#x` check operator overloads (`---@operator unm/len`).
+            // Without an overload, `#x` returns Integer regardless of the operand type.
             let op = unary.get_op_token().map(|t| t.get_op());
             if op == Some(emmylua_parser::UnaryOperator::OpNot) {
                 out.push(Instr::PushPrimitive(PrimitiveType::Boolean));
@@ -486,7 +488,12 @@ impl<'a> InferVm<'a> {
                     "dynamic index needs an owner and key"
                 );
                 let mut key_value = self.stack.pop().unwrap_or(Value::plain(LuaType::Unknown));
-                let owner_value = self.stack.pop().unwrap_or(Value::plain(LuaType::Unknown));
+                let mut owner_value = self.stack.pop().unwrap_or(Value::plain(LuaType::Unknown));
+                if matches!(owner_value.ty, LuaType::TableConst(_))
+                    && let Some(ty) = super::computed_table::receiver_type_at(self.model, syntax)
+                {
+                    owner_value.ty = ty;
+                }
                 // Query the key subtree, not the enclosing index. Results are cached
                 // by syntax/offset; ordinary inference also guards dependency cycles.
                 let flow_ty = self
@@ -498,7 +505,16 @@ impl<'a> InferVm<'a> {
                     key_value.ty = flow_ty;
                 }
                 key_value.ty = key_value.ty.get_result_slot_type(0).unwrap_or(LuaType::Nil);
-                let value = self.index_member_dynamic(owner_value, key_value);
+                let mut value = self.index_member_dynamic(owner_value.clone(), key_value.clone());
+                if let Some(ty) = super::computed_table::read_type(
+                    self.model,
+                    &owner_value.ty,
+                    syntax,
+                    &key_value.ty,
+                    &value.ty,
+                ) {
+                    value.ty = ty;
+                }
                 self.stack.push(value);
             }
             Instr::IndexMember(IndexKey::Static(key)) => {
@@ -802,6 +818,18 @@ impl<'a> InferVm<'a> {
     }
 
     fn index_member_dynamic(&mut self, owner: Value, key: Value) -> Value {
+        if let Some(typ) = super::super::dictionary::lookup(self.model, &owner.ty, &key.ty, true) {
+            return Value::plain(typ);
+        }
+        // A bare table has no declared key/value restrictions, just like any.
+        if has_unrestricted_members(self.model, &owner.ty) {
+            return Value::plain(LuaType::Any);
+        }
+        if super::super::type_eval::member_key_from_literal(&key.ty).is_none()
+            && let Some(typ) = super::super::inherited_index::lookup(self.model, &owner.ty, &key.ty)
+        {
+            return Value::plain(typ);
+        }
         match &key.ty {
             LuaType::StringConst(s) | LuaType::DocStringConst(s) => {
                 self.index_member(owner, &LuaMemberKey::Name(SmolStr::new(s.as_str())))
@@ -1040,9 +1068,24 @@ impl<'a> InferVm<'a> {
     }
 
     fn index_member_impl(&mut self, mut owner: Value, key: &LuaMemberKey) -> Value {
+        let directional = self.model.directional_member(&owner.ty, key).or_else(|| {
+            let id = owner.owner.as_ref()?;
+            self.model
+                .directional_member(&self.model.type_of_decl(id)?, key)
+        });
+        if let Some((read, _)) = directional {
+            return Value::plain(read.typ);
+        }
+        if let Some(key_type) = super::super::dictionary::key_type(key)
+            && let Some(typ) =
+                super::super::dictionary::lookup(self.model, &owner.ty, &key_type, true)
+        {
+            return Value::plain(typ);
+        }
         let receiver_ty = Some(owner.ty.clone());
-        // On `any` (including alias cycles that converge to any), any field is still any.
-        if owner.ty.is_any() {
+        // A bare table does not acquire a closed shape from runtime writes.
+        // Handle it before owner lookup, which also collects later assignments.
+        if has_unrestricted_members(self.model, &owner.ty) {
             return Value::plain(LuaType::Any);
         }
         // Member access on generic param `T: Base`: use the constraint type as the
@@ -1219,13 +1262,30 @@ impl<'a> InferVm<'a> {
         // back so call inference can parse `---@return` from the member signature.
         // `Signature` also needs the member identity (especially stdlib `---@class mathlib`
         // + `math = {}` runtime tables associated with the class).
+        // A projected DocFunction can omit runtime overload/generic metadata.
+        // Recover runtime generics only for uninstantiated receivers. Generic
+        // receiver projections carry substitution and method-generic shadowing,
+        // so replacing those with the raw signature loses that context.
         let needs_method_owner = self
             .model
             .member_info(&owner.ty, &lua_key)
             .and_then(|info| info.id)
             .is_some()
             && (matches!(member_type_fallback, Some(LuaType::Signature(_)))
-                || (matches!(member_type_fallback, Some(LuaType::Function)) && !is_std_global));
+                || (matches!(member_type_fallback, Some(LuaType::Function)) && !is_std_global)
+                || (matches!(member_type_fallback, Some(LuaType::DocFunction(_)))
+                    && self
+                        .model
+                        .member_info(&owner.ty, &lua_key)
+                        .and_then(|info| info.id)
+                        .and_then(|id| self.signature_candidates(&id))
+                        .is_some_and(|candidates| {
+                            candidates.len() > 1
+                                || (!matches!(owner.ty, LuaType::Generic(_))
+                                    && candidates.iter().any(|candidate| {
+                                        !candidate.get_generic_params().is_empty()
+                                    }))
+                        })));
         if let Some(ty) = &member_type_fallback
             && !matches!(ty, LuaType::Unknown)
             && !needs_member_owner
@@ -1441,6 +1501,36 @@ impl<'a> InferVm<'a> {
             .or_else(|| self.callee_member_name(&callee));
         if let Some(name) = builtin_name {
             match name.as_str() {
+                "next" => {
+                    if let Some(Value {
+                        ty: LuaType::Object(object),
+                        ..
+                    }) = args.first()
+                        && !object.get_index_access().is_empty()
+                    {
+                        let mut keys: Vec<_> = object
+                            .get_index_access()
+                            .iter()
+                            .map(|(key, _)| key.clone())
+                            .collect();
+                        let mut values: Vec<_> = object
+                            .get_index_access()
+                            .iter()
+                            .map(|(_, value)| value.clone())
+                            .collect();
+                        for (key, value) in object.get_fields() {
+                            if let Some(key) = super::super::dictionary::key_type(key) {
+                                keys.push(key);
+                                values.push(value.clone());
+                            }
+                        }
+                        keys.push(LuaType::Nil);
+                        values.push(LuaType::Nil);
+                        return Value::plain(LuaType::Variadic(Rc::new(VariadicType::Multi(
+                            vec![LuaType::from_vec(keys), LuaType::from_vec(values)],
+                        ))));
+                    }
+                }
                 // setmetatable(t, mt) -> t; if mt.__index is a named type/class table, the
                 // instance directly takes that type.
                 "setmetatable" => {
@@ -1634,6 +1724,7 @@ impl<'a> InferVm<'a> {
             }
         }
 
+        let inferred_ids = bindings.keys().copied().collect::<Vec<_>>();
         // Fill unresolved function generics with defaults/constraints; class-method defaults
         // may reference class generics (`U = T`).
         let class_map = callee
@@ -1666,6 +1757,17 @@ impl<'a> InferVm<'a> {
                 if let Some(value) = bindings.get(&param.get_tpl_id()).cloned() {
                     let new_value = substitute_named_refs(&value, &name_bindings);
                     let new_value = unify::substitute(&new_value, &bindings);
+                    // Normalize computed defaults, preserving the identity of inferred/explicit aliases.
+                    let new_value = if inferred_ids.contains(&param.get_tpl_id()) {
+                        new_value
+                    } else {
+                        super::call_generics::instantiate(
+                            self.model,
+                            &new_value,
+                            callee_fun.get_generic_params(),
+                            &bindings,
+                        )
+                    };
                     if new_value != value {
                         changed = true;
                     }
@@ -2125,7 +2227,9 @@ impl<'a> InferVm<'a> {
             } else {
                 LuaType::Variadic(Rc::new(VariadicType::Multi(slots)))
             };
-            if !matches!(ty, LuaType::Unknown | LuaType::Any) && !types.contains(&ty) {
+            // An uncertain return is still a possible result. Dropping it would
+            // make a concrete sibling branch appear to be the entire contract.
+            if !types.contains(&ty) {
                 types.push(ty);
             }
         }
@@ -2357,18 +2461,28 @@ impl<'a> InferVm<'a> {
         callee_fun: &LuaFunctionType,
         bindings: &unify::TplBindings,
     ) -> LuaType {
-        let owner_info = callee.owner.as_ref().and_then(|owner| match owner {
-            SemanticId::Decl(key) => {
-                let facts = self.model.file_facts_of(key.file_id)?;
-                let decl = facts.decl_by_id(owner)?;
-                Some((key.file_id, decl.value_expr_syntax?))
-            }
-            SemanticId::Member(key) => {
-                let facts = self.model.file_facts_of(key.file_id)?;
-                let member = facts.member_by_id(owner)?;
-                Some((key.file_id, member.value_syntax?))
-            }
-            _ => None,
+        let signature_info = if let LuaType::Signature(id) = &callee.ty {
+            self.model
+                .file_facts_of(id.get_file_id())
+                .and_then(|facts| facts.signature_by_position(id.get_position()))
+                .map(|signature| (id.get_file_id(), signature.closure_syntax))
+        } else {
+            None
+        };
+        let owner_info = signature_info.or_else(|| {
+            callee.owner.as_ref().and_then(|owner| match owner {
+                SemanticId::Decl(key) => {
+                    let facts = self.model.file_facts_of(key.file_id)?;
+                    let decl = facts.decl_by_id(owner)?;
+                    Some((key.file_id, decl.value_expr_syntax?))
+                }
+                SemanticId::Member(key) => {
+                    let facts = self.model.file_facts_of(key.file_id)?;
+                    let member = facts.member_by_id(owner)?;
+                    Some((key.file_id, member.value_syntax?))
+                }
+                _ => None,
+            })
         });
         if let Some((file_id, value_syntax)) = owner_info {
             if let Some(facts) = self.model.file_facts_of(file_id)
@@ -2582,6 +2696,16 @@ impl<'a> InferVm<'a> {
                 }
                 (key.file_id, member.value_syntax?, overload_syntaxes)
             }
+            SemanticId::Signature(key) => {
+                let facts = self.model.file_facts_of(key.file_id)?;
+                let overloads = facts
+                    .signature_by_closure(key.closure_syntax)?
+                    .docs
+                    .as_ref()
+                    .map(|docs| docs.overloads.clone())
+                    .unwrap_or_default();
+                (key.file_id, key.closure_syntax, overloads)
+            }
             SemanticId::Name(name) => {
                 // Cross-file global overloads: a global call owns `Name("f")`, but
                 // every file may declare a same-named global function. Collect all
@@ -2602,12 +2726,12 @@ impl<'a> InferVm<'a> {
         };
         let facts = self.model.file_facts_of(file_id)?;
         let signature = facts.signature_by_closure(value_syntax)?;
-        // Runtime member methods without doc annotations: use signature projection (param
-        // names + inferred return + is_colon_define). Decls (plain functions) still prefer
+        // Runtime methods and captured signatures without docs use signature projection
+        // (param names + inferred return + is_colon_define). Decls still prefer
         // the existing `callee.ty` DocFunction (generic docs etc.) to avoid a no-doc body
         // projection overriding `---@type fun<T>...` declared types.
         if signature.docs.is_none() {
-            if matches!(owner, SemanticId::Member(_)) {
+            if matches!(owner, SemanticId::Member(_) | SemanticId::Signature(_)) {
                 let fun = self
                     .model
                     .type_of_signature_in_file(file_id, value_syntax)?;
@@ -3091,6 +3215,20 @@ impl<'a> InferVm<'a> {
     ) -> Vec<LuaFunctionType> {
         match ty {
             LuaType::DocFunction(fun) => vec![fun.as_ref().clone()],
+            LuaType::Signature(id) => {
+                let Some(signature) = self
+                    .model
+                    .file_facts_of(id.get_file_id())
+                    .and_then(|facts| facts.signature_by_position(id.get_position()))
+                else {
+                    return Vec::new();
+                };
+                self.signature_candidates_single(&SemanticId::signature(
+                    id.get_file_id(),
+                    signature.closure_syntax,
+                ))
+                .unwrap_or_default()
+            }
             LuaType::Union(union) => union
                 .into_vec()
                 .iter()
@@ -3649,6 +3787,15 @@ fn super_generic_type(
     arg_ty: &LuaType,
     target_base: &LuaTypeDeclId,
 ) -> Option<LuaType> {
+    super_generic_type_on_path(model, arg_ty, target_base, &mut HashSet::new())
+}
+
+fn super_generic_type_on_path(
+    model: &SemanticModel,
+    arg_ty: &LuaType,
+    target_base: &LuaTypeDeclId,
+    path: &mut HashSet<LuaTypeDeclId>,
+) -> Option<LuaType> {
     use LuaType::*;
     let (arg_id, arg_params): (&LuaTypeDeclId, Option<&[LuaType]>) = match arg_ty {
         Generic(arg_generic) => (
@@ -3659,33 +3806,43 @@ fn super_generic_type(
         _ => return None,
     };
 
-    let mut pending = model
-        .base_types(arg_id)
-        .into_iter()
-        .map(|ty| match arg_params {
-            Some(params) => model.substitute_generic_params(&ty, params),
-            None => ty,
-        })
-        .rev()
-        .collect::<Vec<_>>();
-    while let Some(super_ty) = pending.pop() {
-        let super_id = match &super_ty {
-            Ref(id) | Def(id) => id.clone(),
-            Generic(generic) => generic.get_base_type_id(),
-            Intersection(intersection) => {
-                pending.extend(intersection.get_types().iter().rev().cloned());
-                continue;
-            }
-            _ => continue,
-        };
-        if &super_id == target_base {
-            return Some(super_ty);
-        }
-        if let Some(recursive) = super_generic_type(model, &super_ty, target_base) {
-            return Some(recursive);
-        }
+    // Repeated class identities form an inheritance cycle even when generic
+    // arguments grow on each visit. Keep sibling paths independent.
+    if !path.insert(arg_id.clone()) {
+        return None;
     }
-    None
+    let result = (|| {
+        let mut pending = model
+            .base_types(arg_id)
+            .into_iter()
+            .map(|ty| match arg_params {
+                Some(params) => model.substitute_generic_params(&ty, params),
+                None => ty,
+            })
+            .rev()
+            .collect::<Vec<_>>();
+        while let Some(super_ty) = pending.pop() {
+            let super_id = match &super_ty {
+                Ref(id) | Def(id) => id.clone(),
+                Generic(generic) => generic.get_base_type_id(),
+                Intersection(intersection) => {
+                    pending.extend(intersection.get_types().iter().rev().cloned());
+                    continue;
+                }
+                _ => continue,
+            };
+            if &super_id == target_base {
+                return Some(super_ty);
+            }
+            if let Some(recursive) = super_generic_type_on_path(model, &super_ty, target_base, path)
+            {
+                return Some(recursive);
+            }
+        }
+        None
+    })();
+    path.remove(arg_id);
+    result
 }
 
 fn type_contains_any_tpl_id(ty: &LuaType, ids: &HashSet<GenericTplId>) -> bool {
@@ -3701,6 +3858,15 @@ pub(crate) fn unify_call_bindings(
     use LuaType::*;
     match param {
         Unknown | Any => true,
+        Ref(id) | Def(id)
+            if model
+                .type_def_of(id)
+                .is_some_and(|def| def.kind == TypeDefKind::Alias) =>
+        {
+            // Union members can still be named aliases (`uint32|string`).
+            // Reuse the cycle-safe alias-aware checker for these concrete types.
+            model.type_check_subtype(arg, param)
+        }
         TplRef(tpl) => {
             if let TplRef(arg_tpl) = arg
                 && arg_tpl.get_tpl_id() == tpl.get_tpl_id()
@@ -3825,6 +3991,26 @@ pub(crate) fn unify_call_bindings(
             }
         },
         Generic(param_generic) => {
+            // A union of collections still has a common table shape. Infer both
+            // key and value generics from every alternative, rather than trying
+            // to match the union itself to one nominal generic instance.
+            if param_generic.get_base_type_id().get_name() == "table"
+                && param_generic.get_params().len() == 2
+                && matches!(arg, Union(_))
+                && let Some((key, value)) = model.collection_key_value_types(arg)
+            {
+                let mut candidate = bindings.clone();
+                if param_generic
+                    .get_params()
+                    .iter()
+                    .zip([key, value])
+                    .all(|(param, arg)| unify_call_bindings(model, param, &arg, &mut candidate))
+                {
+                    *bindings = candidate;
+                    return true;
+                }
+                return false;
+            }
             if let Generic(arg_generic) = arg {
                 if param_generic.get_base_type_id() == arg_generic.get_base_type_id()
                     && param_generic.get_params().len() == arg_generic.get_params().len()
@@ -4008,6 +4194,23 @@ pub(crate) fn unify_call_bindings(
             }
         }
         Union(param_union) => {
+            if matches!(arg, Union(_)) {
+                // Collection signatures such as pairs(table<K,V> | V[])
+                // accept differently shaped collections in the same argument.
+                // Try the structural table alternative without leaking bindings
+                // from a failed attempt into the ordinary union matcher.
+                for param in param_union.iter().filter(|param| {
+                    matches!(param, Generic(generic)
+                        if generic.get_base_type_id().get_name() == "table")
+                        && param.contains_tpl_node()
+                }) {
+                    let mut candidate = bindings.clone();
+                    if unify_call_bindings(model, param, arg, &mut candidate) {
+                        *bindings = candidate;
+                        return true;
+                    }
+                }
+            }
             if let Union(arg_union) = arg {
                 let mut pv = param_union.into_vec();
                 let mut av = arg_union.into_vec();
@@ -4030,9 +4233,8 @@ pub(crate) fn unify_call_bindings(
                 }
             } else {
                 let pv = param_union.into_vec();
-                // A generic union like `` `T`|T `` allows T to be bound through any generic
-                // component; ordinary unions still require all non-nil components to be
-                // compatible (caller may pass any member).
+                // A single actual argument only needs to match one member of the
+                // parameter union. Preserve the preference for string templates.
                 if matches!(arg, Function | DocFunction(_) | Signature(_)) {
                     pv.iter()
                         .any(|p| unify_call_bindings(model, p, arg, bindings))
@@ -4048,12 +4250,40 @@ pub(crate) fn unify_call_bindings(
                 } else if pv.iter().any(|p| matches!(p, TplRef(_))) {
                     pv.iter()
                         .any(|p| unify_call_bindings(model, p, arg, bindings))
-                } else if pv.contains(&Nil) {
-                    pv.iter()
-                        .filter(|t| !matches!(t, Nil))
-                        .all(|p| unify_call_bindings(model, p, arg, bindings))
+                } else if pv.iter().any(LuaType::contains_tpl_node) {
+                    // A broad table alternative must not hide bindings available
+                    // from a typed collection alternative. Failed alternatives must
+                    // not leak partial bindings into the next attempt.
+                    let mut best: Option<unify::TplBindings> = None;
+                    for param in &pv {
+                        if matches!(param, Table) && !model.type_check_subtype(arg, param) {
+                            continue;
+                        }
+                        let mut candidate = bindings.clone();
+                        if unify_call_bindings(model, param, arg, &mut candidate)
+                            && best
+                                .as_ref()
+                                .is_none_or(|best| candidate.len() > best.len())
+                        {
+                            best = Some(candidate);
+                        }
+                    }
+                    if let Some(best) = best {
+                        *bindings = best;
+                        true
+                    } else {
+                        false
+                    }
                 } else {
-                    false
+                    pv.iter().any(|p| {
+                        let mut candidate_bindings = bindings.clone();
+                        if unify_call_bindings(model, p, arg, &mut candidate_bindings) {
+                            *bindings = candidate_bindings;
+                            true
+                        } else {
+                            false
+                        }
+                    })
                 }
             }
         }
@@ -4096,6 +4326,15 @@ pub(crate) fn unify_call_bindings(
                 || (matches!(param, Function) && matches!(arg, DocFunction(_) | Signature(_)))
             {
                 true
+            } else if matches!(arg, Ref(id) | Def(id)
+                if model.type_def_of(id).is_some_and(|def| def.kind == TypeDefKind::Alias))
+            {
+                // Named actual arguments keep their alias identity, while overload matching
+                // expands formal aliases. Check the alias target here instead of rejecting
+                // a compatible argument merely because its representation is still named.
+                // Assignment compatibility checks every union member and bounds recursive
+                // aliases; generic binding above must keep the original argument identity.
+                crate::semantic_model::type_check::is_compatible(model, arg, param)
             } else {
                 unify::unify_bindings(param, arg, bindings)
             }
@@ -4435,8 +4674,23 @@ fn falsy_components(ty: &LuaType) -> Vec<LuaType> {
             }
         }
         LuaType::Nil => vec![ty.clone()],
-        LuaType::Unknown | LuaType::Any => vec![ty.clone()],
+        // Even an unknown/dynamic value can short-circuit `and` only as nil or false.
+        LuaType::Unknown | LuaType::Any => vec![LuaType::Nil, LuaType::BooleanConst(false)],
         _ => Vec::new(),
+    }
+}
+
+/// Lua `and` returns the falsy left value or the right value. Unknown does not
+/// imply falsy: keep both outcomes, without leaking truthy left-hand values.
+pub(crate) fn logical_and_type(left: &LuaType, right: LuaType) -> LuaType {
+    if left.is_always_falsy() {
+        left.clone()
+    } else if left.is_always_truthy() {
+        right
+    } else {
+        let mut types = falsy_components(left);
+        types.push(right);
+        LuaType::from_vec(types)
     }
 }
 
@@ -4464,19 +4718,7 @@ pub(crate) fn binary_type(
     };
     match op {
         // Short-circuit evaluation: `a and b` = falsy(a) | b; `a or b` = truthy(a) | b.
-        OpAnd => {
-            if matches!(left, LuaType::Unknown) {
-                LuaType::Nil
-            } else if left.is_always_falsy() {
-                left.clone()
-            } else if left.is_always_truthy() {
-                right.clone()
-            } else {
-                let mut types = falsy_components(left);
-                types.push(right.clone());
-                LuaType::from_vec(types)
-            }
-        }
+        OpAnd => logical_and_type(left, right),
         OpOr => {
             if left.is_always_truthy() {
                 left.clone()
@@ -4545,7 +4787,9 @@ pub(crate) fn binary_type(
             }
             // Addition like `integer + 1` (one side is the integer base type, the other is an
             // integer literal) still stays integer.
-            if integer_operand(left) && integer_operand(&right) {
+            let left_is_integer = is_integer_operand(model, left, &mut Vec::new());
+            let right_is_integer = is_integer_operand(model, &right, &mut Vec::new());
+            if left_is_integer && right_is_integer {
                 LuaType::Integer
             } else {
                 LuaType::Number
@@ -4564,8 +4808,8 @@ pub(crate) fn binary_type(
                     .map(LuaType::IntegerConst)
                     .unwrap_or(LuaType::Number)
             } else if matches!(op, OpIDiv | OpMod)
-                && integer_operand(left)
-                && integer_operand(&right)
+                && is_integer_operand(model, left, &mut Vec::new())
+                && is_integer_operand(model, &right, &mut Vec::new())
             {
                 LuaType::Integer
             } else {
@@ -4585,8 +4829,18 @@ fn logical_left_nullable_extra(model: &SemanticModel, syntax: LuaSyntaxId) -> Op
     let LuaExpr::IndexExpr(index_expr) = LuaExpr::cast(node)? else {
         return None;
     };
-    let resolved = model.resolve_member(&index_expr)?;
-    let member_id = resolved.member_id?;
+    let member_id = model
+        .resolve_member(&index_expr)
+        .and_then(|resolved| resolved.member_id)
+        .or_else(|| {
+            let prefix = index_expr.get_prefix_expr()?;
+            let prefix_type = model.type_of_expr_at(prefix.get_syntax_id(), prefix.get_position());
+            let key = index_key_to_member_key(&index_expr.get_index_key()?)?;
+            model
+                .member_infos_with_key(&prefix_type, &key)
+                .into_iter()
+                .find_map(|info| info.id)
+        })?;
     let member_file = match &member_id {
         SemanticId::Member(key) => key.file_id,
         _ => model.file_id(),
@@ -4856,11 +5110,47 @@ fn integer_const_value(ty: &LuaType) -> Option<i64> {
     }
 }
 
-fn integer_operand(ty: &LuaType) -> bool {
-    match ty {
-        LuaType::Union(union) => union.iter().all(LuaType::is_integer),
-        _ => ty.is_integer(),
+/// Integer aliases and enums share built-in arithmetic and numeric-loop behavior.
+/// Nominal classes and nullable/mixed unions remain outside this classification;
+/// operator overloads have already been dispatched by `binary_type`.
+pub(crate) fn is_integer_operand(
+    model: &SemanticModel,
+    ty: &LuaType,
+    seen: &mut Vec<LuaType>,
+) -> bool {
+    fn visit(model: &SemanticModel, ty: &LuaType, seen: &mut Vec<LuaType>) -> bool {
+        let Some(evaluation) = crate::semantic_model::cache::TypeEvaluationScope::new(&model.cache)
+        else {
+            return false;
+        };
+        if seen.len() >= 32 || !evaluation.visit(ty) || seen.contains(ty) {
+            return false;
+        }
+        seen.push(ty.clone());
+        let revision = model.cache.borrow().revision();
+        let result =
+            super::super::type_eval::expand_alias_branches(model, ty).is_some_and(|expanded| {
+                if expanded.is_integer() {
+                    return true;
+                }
+                match &expanded {
+                    LuaType::Union(union) => {
+                        !union.into_vec().is_empty()
+                            && union.iter().all(|ty| visit(model, ty, seen))
+                    }
+                    LuaType::MultiLineUnion(union) => visit(model, &union.to_union(), seen),
+                    LuaType::Ref(id) | LuaType::Def(id) => model
+                        .type_def_of(id)
+                        .filter(|def| def.kind == TypeDefKind::Enum)
+                        .and_then(|def| super::super::type_check::enum_value_type(model, &def))
+                        .is_some_and(|values| visit(model, &values, seen)),
+                    _ => false,
+                }
+            });
+        seen.pop();
+        result && model.cache.borrow().is_complete(revision)
     }
+    visit(model, ty, seen)
 }
 
 fn is_enum_like_dynamic_key(model: &SemanticModel, ty: &LuaType) -> bool {
@@ -4920,7 +5210,11 @@ fn length_type(model: &SemanticModel, operand: &LuaType) -> Option<LuaType> {
     while let Some(ty) = pending.pop() {
         if let LuaType::Union(union) = ty {
             pending.extend(union.into_vec());
-        } else if ty.is_table() || ty.is_object() || ty.is_string() {
+        } else if ty.is_table()
+            || ty.is_object()
+            || ty.is_string()
+            || matches!(&ty, LuaType::Generic(generic) if generic.get_base_type_id().get_name() == "table")
+        {
             results.push(LuaType::Integer);
         } else {
             results.push(model.operator_type("len", &ty)?);
@@ -4999,4 +5293,46 @@ fn merge(a: LuaType, b: LuaType) -> LuaType {
         _ => types.push(b),
     }
     LuaType::Union(Rc::new(LuaUnionType::from_vec(types)))
+}
+
+#[cfg(test)]
+mod generic_superclass_cycle_tests {
+    use super::*;
+
+    #[test]
+    fn generic_superclass_lookup_stops_cyclic_inheritance() {
+        for definition in [
+            "---@class Child: Parent\n\n---@class Parent: Child",
+            "---@class Child<T>: Parent<Child<T>>\n\n---@class Parent<T>: Child<T>",
+        ] {
+            let mut ws = crate::VirtualWorkspace::new();
+            let file = ws.def(definition);
+            let model = ws.analysis.semantic_model(file);
+            assert!(
+                super_generic_type(
+                    &model,
+                    &LuaType::Ref(LuaTypeDeclId::global("Child")),
+                    &LuaTypeDeclId::global("table")
+                )
+                .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn generic_superclass_lookup_preserves_valid_base_after_cycle() {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def("---@class Child: Loop, Parent<integer>\n\n---@class Loop: Child\n\n---@class Parent<T>");
+        let model = ws.analysis.semantic_model(file);
+        let result = super_generic_type(
+            &model,
+            &LuaType::Ref(LuaTypeDeclId::global("Child")),
+            &LuaTypeDeclId::global("Parent"),
+        )
+        .unwrap();
+        let LuaType::Generic(generic) = result else {
+            panic!("expected generic parent")
+        };
+        assert_eq!(generic.get_params(), &vec![LuaType::Integer]);
+    }
 }

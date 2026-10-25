@@ -442,11 +442,41 @@ pub(crate) fn resolve_member_id(
     index_expr: &LuaIndexExpr,
 ) -> Option<SemanticId> {
     let (owner, name) = member_ref_from_index_expr(facts, index_expr)?;
+    let owner = implicit_self_reference_owner(facts, index_expr).unwrap_or(owner);
     for resolved in resolve_owner_set(db, owner) {
         for member in members_of_owner(db, resolved).iter().cloned() {
             if member.name == name {
                 return Some(member.id);
             }
+        }
+    }
+    None
+}
+
+/// Resolve the lexical receiver for direct `self.member` references without
+/// changing type inference's separate, flow-sensitive receiver resolution.
+fn implicit_self_reference_owner(
+    facts: &FileFacts,
+    index_expr: &LuaIndexExpr,
+) -> Option<SemanticId> {
+    let LuaExpr::NameExpr(prefix) = index_expr.get_prefix_expr()? else {
+        return None;
+    };
+    if prefix.get_name_text()? != "self" {
+        return None;
+    }
+    let decl = facts
+        .find_visible_decl_before_offset("self", prefix.get_position())
+        .filter(|decl| !matches!(decl.kind, DeclKind::Global));
+    // Nested closures capture the closest colon method's implicit self. A local
+    // or parameter declared inside that method shadows it.
+    for closure in prefix.ancestors::<LuaClosureExpr>() {
+        if let Some(member) = facts.member_by_value_syntax(closure.get_syntax_id())
+            && member.is_method
+        {
+            return decl
+                .is_none_or(|decl| decl.name_range.start() < closure.get_position())
+                .then(|| member.owner.clone());
         }
     }
     None
@@ -1777,6 +1807,20 @@ fn push_type_associated_owner_ids(
                 if let Some(decl_owner) = canonical_owner_id(db, &decl.id) {
                     push_unique_owner_id(out, decl_owner);
                 }
+                // Inline fields belong to the initializer table's identity,
+                // which can differ from the global declaration's identity.
+                if let Some(value) = decl.value_expr_syntax {
+                    let tree = syntax_tree(db, file_id);
+                    if value
+                        .to_node_from_root(&tree.get_red_root())
+                        .and_then(emmylua_parser::LuaTableExpr::cast)
+                        .is_some()
+                        && let Some(owner) =
+                            canonical_owner_id(db, &SemanticId::member(file_id, value.get_range()))
+                    {
+                        push_unique_owner_id(out, owner);
+                    }
+                }
             }
         }
         break;
@@ -1925,6 +1969,18 @@ pub(crate) fn decl_type(
         && let Some(module_file) = module_file_from(db, config, module_path.clone(), file)
     {
         return TypeShell::from_module_ref(module_file);
+    }
+
+    // Match semantic-model declaration inference: a class/enum annotation names
+    // its runtime table even when the local variable has a different name.
+    // Otherwise member values such as `M.__index = M` lose that identity and
+    // expand the initializer into a recursive anonymous table.
+    if let Some(owner_syntax) = decl.owner_syntax
+        && let Some(def) = facts
+            .type_def_by_owner_syntax(owner_syntax)
+            .filter(|def| matches!(def.kind, TypeDefKind::Class | TypeDefKind::Enum))
+    {
+        return TypeShell::from_name(&def.full_name);
     }
 
     // Parameter declaration: `---@param` annotation (belongs to the closure signature, matched by name).
@@ -2353,6 +2409,12 @@ pub(crate) fn member_type(
         && let Some(module_file) = module_file_from(db, config, module_path.clone(), file)
     {
         return TypeShell::from_module_ref(module_file);
+    }
+
+    // Runtime member annotations are contracts, just like annotations on locals.
+    // Keep the initializer syntax separate so diagnostics can still check it.
+    if let Some(syntax) = member.doc_type_syntax {
+        return lower_doc_type(db, file, syntax, &[]);
     }
 
     // Value: owner is `TypeDef` (@field) -> doc type node; otherwise -> expression.
@@ -2818,21 +2880,32 @@ pub(crate) fn module_export_type(
     match &facts.module_export {
         // `return M`: declaration identity table (TableConst members reachable) + name identity (Named -> decl owner reachable).
         ModuleExport::Decl { decl, name } => {
+            // Keep the declared class identity when its runtime table uses a
+            // different local name. A synthetic union with that variable name
+            // would lose member navigation through an exported factory.
+            if let Some(owner) = facts.decl_by_id(decl).and_then(|decl| decl.owner_syntax)
+                && let Some(def) = facts.type_def_by_owner_syntax(owner)
+                && matches!(def.kind, TypeDefKind::Class | TypeDefKind::Enum)
+            {
+                return TypeShell::from_name(def.full_name.as_str());
+            }
             let mut shell = decl_type(db, file, config, decl.clone());
             // A declaration annotated with `---@class Foo` (including nested
             // names such as `Foo.Bar`) already has the canonical named type.
             // Merging the runtime variable name (`Bar`) would produce an
             // unrelated union member and make `require("mod")` appear as
             // `(Bar|{...})` instead of `Foo.Bar`.
-            let declared_type_name = facts
-                .decl_by_id(decl)
+            let exported_decl = facts.decl_by_id(decl);
+            let declared_type_name = exported_decl
                 .and_then(|decl| decl.owner_syntax)
                 .and_then(|owner| facts.type_def_by_owner_syntax(owner))
                 .filter(|def| matches!(def.kind, TypeDefKind::Class | TypeDefKind::Enum))
                 .map(|def| def.full_name.clone());
             if let Some(type_name) = declared_type_name {
                 shell = TypeShell::from_name(type_name.as_str());
-            } else {
+            } else if exported_decl.is_none_or(|decl| decl.doc_type_syntax.is_none()) {
+                // An explicit @type is already the export contract. The local
+                // variable's name must not become another union alternative.
                 shell.merge(&TypeShell::from_name(name.as_str()));
             }
             shell

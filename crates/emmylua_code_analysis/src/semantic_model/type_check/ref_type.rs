@@ -2,7 +2,8 @@
 //!
 //! Parts still missing from semantic fall back: alias origin, enum field unions, call operator.
 
-use crate::{LuaGenericType, LuaType, LuaTypeDeclId, TypeDefKind};
+use crate::{InFiled, LuaGenericType, LuaType, LuaTypeDeclId, TypeDefKind};
+use emmylua_parser::{LuaAst, LuaAstNode, LuaExpr, LuaTableExpr, LuaTableField};
 
 use super::context::TypeCheckContext;
 use super::sub_type::{get_base_type_id, is_sub_type_of};
@@ -107,22 +108,19 @@ fn check_ref_class(
             if is_sub_type_of(context, id, source_id) || is_sub_type_of(context, source_id, id) {
                 return Ok(());
             }
-            // Extra handling for enum targets (semantic has no field union, so fall back to base type name).
-            if context.is_enum(id) {
-                if let Some(base_id) = get_base_type_id(&LuaType::Ref(source_id.clone()))
-                    && is_sub_type_of(context, id, &base_id)
-                {
-                    return Ok(());
-                }
+            // A class-valued enum member keeps its own nominal identity, but is
+            // also accepted wherever the containing enum is expected.
+            if context.is_enum(id) && enum_contains_class(context, id, source_id) {
+                return Ok(());
             }
             Err(context.mismatch(&LuaType::Ref(source_id.clone()), compact_type))
         }
-        LuaType::Array(array) => {
-            let value = context
-                .require_complete(|| context.model.infer_iter_from_type_def(source_id, 1))?
-                .ok_or_else(|| context.mismatch(&LuaType::Ref(source_id.clone()), compact_type))?;
-            check_general_type_compact(context, &value, array.get_base())
-        }
+        LuaType::Array(array) => check_class_array(
+            context,
+            &LuaType::Ref(source_id.clone()),
+            compact_type,
+            array.get_base(),
+        ),
         LuaType::Table => Ok(()),
         LuaType::Generic(generic) => {
             let base_type_id = generic.get_base_type_id();
@@ -186,4 +184,97 @@ fn check_ref_class(
             }
         }
     }
+}
+
+pub(super) fn enum_contains_class(
+    context: &TypeCheckContext,
+    enum_id: &LuaTypeDeclId,
+    class_id: &LuaTypeDeclId,
+) -> bool {
+    let Some(def) = context.model.type_def_of(enum_id) else {
+        return false;
+    };
+    let Some(class_def) = context.model.type_def_of(class_id) else {
+        return false;
+    };
+    let model = context.model.model_for(def.file_id);
+    let Some(tree) = model.syntax_tree() else {
+        return false;
+    };
+    let Some(owner) = def
+        .owner_syntax
+        .and_then(|syntax| syntax.to_node_from_root(&tree.get_red_root()))
+        .and_then(LuaAst::cast)
+    else {
+        return false;
+    };
+    let value = match owner {
+        LuaAst::LuaLocalStat(stat) => stat.get_value_exprs().next(),
+        LuaAst::LuaAssignStat(stat) => stat.get_var_and_expr_list().1.into_iter().next(),
+        LuaAst::LuaTableField(field) => field.get_value_expr(),
+        _ => None,
+    };
+    let Some(LuaExpr::TableExpr(table)) = value else {
+        return false;
+    };
+    let Some(facts) = model.file_facts() else {
+        return false;
+    };
+    let table_type = LuaType::TableConst(InFiled::new(def.file_id, table.get_range()));
+    model.member_infos(&table_type).into_iter().any(|info| {
+        // Inline class annotations belong to the field value, not to the
+        // surrounding enum. Ordinary member projection can lose that identity.
+        let annotated = info
+            .id
+            .as_ref()
+            .and_then(|id| facts.member_by_id(id))
+            .filter(|member| member.doc_type_syntax.is_none())
+            .and_then(|member| member.value_syntax)
+            .and_then(|syntax| syntax.to_node_from_root(&tree.get_red_root()))
+            .and_then(LuaTableExpr::cast)
+            .and_then(|value| value.get_parent::<LuaTableField>())
+            .and_then(|field| facts.type_def_by_owner_syntax(field.get_syntax_id()))
+            .filter(|def| def.kind == TypeDefKind::Class)
+            .map(|def| model.type_def_ref(def));
+        let member_type = annotated.unwrap_or_else(|| match &info.typ {
+            LuaType::TableConst(table) => {
+                super::super::member::table_const_class_type(&model, table).unwrap_or(info.typ)
+            }
+            _ => info.typ,
+        });
+        let (LuaType::Ref(member_id) | LuaType::Def(member_id)) = member_type else {
+            return false;
+        };
+        // Enum-valued or unresolved members must not create recursive or
+        // blanket compatibility with arbitrary classes.
+        model.type_def_of(&member_id).is_some_and(|member_def| {
+            member_def.kind == TypeDefKind::Class
+                && super::def_extends_ctx(context.model, &class_def, &member_def, &mut Vec::new())
+        })
+    })
+}
+
+/// A declared numeric index signature supplies the elements of an array even
+/// when the class has additional named fields. Static fields like `[1]` do not
+/// establish a signature for arbitrary integer indices.
+pub(super) fn check_class_array(
+    context: &mut TypeCheckContext,
+    source: &LuaType,
+    target: &LuaType,
+    element: &LuaType,
+) -> TypeCheckResult {
+    // Filter index signatures before selecting inherited overrides: an ordinary
+    // field named `integer` must not hide an inherited `[integer]` signature.
+    let members = context.require_complete(|| {
+        crate::semantic_model::member::member_infos_all(context.model, source)
+    })?;
+    for key in [LuaType::Integer, LuaType::Number] {
+        let value = members
+            .iter()
+            .find(|info| info.index_key_type.as_ref() == Some(&key));
+        if let Some(value) = value {
+            return check_general_type_compact(context, &value.typ, element);
+        }
+    }
+    Err(context.mismatch(source, target))
 }

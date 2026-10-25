@@ -4,6 +4,79 @@ mod tests {
     use crate::{DiagnosticCode, Emmyrc, VirtualWorkspace};
 
     #[test]
+    fn test_annotated_module_export_matches_field_contract() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def_file(
+            "settings.lua",
+            r#"
+            ---@alias ExportedSettings table<string, boolean>
+            ---@type ExportedSettings
+            local Settings = { enabled = false }
+            return Settings
+            "#,
+        );
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+            ---@class ConfiguredMod
+            ---@field settings ExportedSettings
+            local Mod = { settings = require("settings") }
+            ---@type ExportedSettings
+            local settings = require("settings")
+            "#,
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+            ---@type table<string, number>
+            local settings = require("settings")
+            "#,
+        ));
+    }
+
+    #[test]
+    fn test_annotated_module_export_ignores_unrelated_class_with_variable_name() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def_file("types.lua", "---@class Settings\n---@field count integer");
+        ws.def_file(
+            "settings.lua",
+            r#"
+            ---@alias SettingsValues table<string, boolean>
+            ---@type SettingsValues
+            local Settings = { enabled = false }
+            return Settings
+            "#,
+        );
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+            ---@type SettingsValues
+            local settings = require("settings")
+            "#,
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+            ---@type Settings
+            local settings = require("settings")
+            "#,
+        ));
+    }
+
+    #[test]
+    fn test_annotated_module_export_still_checks_initializer() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+            ---@type boolean
+            local Enabled = "wrong"
+            return Enabled
+            "#,
+        ));
+    }
+
+    #[test]
     fn test_numeric_member_guards_use_equivalent_integer_keys() {
         for (key, write, accepted) in [
             ("1.0", "", true),
@@ -725,6 +798,74 @@ mod tests {
                 "{parameter_type} = {value}: {diagnostics:#?}"
             );
         }
+    }
+
+    #[test]
+    fn test_class_member_identity_self_reference() {
+        for annotation in [
+            "---@class Metrics",
+            "---@class Metrics: { [string]: integer }",
+        ] {
+            let diagnostics = check_source(&format!(
+                r#"
+{annotation}
+local M = {{}}
+M.COUNTERS = {{"requests", "misses"}}
+M.__index = M
+M.self = (M)
+function M:get() return self end
+return M
+"#
+            ));
+            assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        }
+    }
+
+    #[test]
+    fn test_class_member_identity_rejects_incompatible_reassignment() {
+        for value in ["1", "Other"] {
+            let source = format!(
+                r#"
+---@class Other
+local Other = {{}}
+---@class Example
+local M = {{}}
+M.__index = M
+M.__index = {value}
+return M, Other
+"#
+            );
+            let diagnostics = check_source(&source);
+            let mismatches = diagnostics
+                .iter()
+                .filter(|d| d.code == DiagnosticCode::AssignTypeMismatch)
+                .collect::<Vec<_>>();
+            assert_eq!(mismatches.len(), 1, "{diagnostics:?}");
+            assert_eq!(
+                mismatches[0].range.start(),
+                rowan::TextSize::from(
+                    (source.rfind("M.__index = ").unwrap() + "M.__index = ".len()) as u32
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn test_class_member_identity_respects_declared_field_type() {
+        let diagnostics = check_source(
+            r#"
+---@class Example
+---@field self string
+local M = {}
+M.self = M
+return M
+"#,
+        );
+        assert_eq!(
+            diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+            vec![DiagnosticCode::AssignTypeMismatch],
+            "{diagnostics:?}"
+        );
     }
 
     #[test]
@@ -2819,5 +2960,303 @@ return t
             ],
             "{diagnostics:#?}"
         );
+    }
+
+    #[test]
+    fn inferred_literal_assignment_contracts_allow_new_values() {
+        for cast in ["", "---@cast flag boolean"] {
+            let source = format!(
+                r#"
+                ---@param count integer
+                ---@param flag boolean
+                local function update(count, flag)
+                    local stacks = 0
+                    local label = 'empty'
+                    local active = false
+                    {cast}
+                    if flag then
+                        stacks = count / 10
+                        label = 'full'
+                        active = true
+                    end
+                    return stacks, label, active
+                end
+            "#
+            );
+            assert!(
+                VirtualWorkspace::new()
+                    .has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn inferred_literal_assignment_contracts_keep_explicit_restrictions() {
+        use emmylua_parser::{LuaAstNode, LuaNameExpr};
+        for (declaration, expected) in [
+            ("---@type 0\nlocal value = 0", "0"),
+            ("local value = 0 --[[@as 0]]", "0"),
+            ("local value = 0\n---@cast value 0", "0"),
+            ("---@alias Zero 0\n---@type Zero\nlocal value = 0", "Zero"),
+        ] {
+            let source = format!("{declaration}\nvalue = 2");
+            let mut ws = VirtualWorkspace::new();
+            let file = ws.def(&source);
+            let model = ws.analysis.semantic_model(file);
+            let name = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaNameExpr>()
+                .find(|name| {
+                    name.get_position() == (source.rfind("value = 2").unwrap() as u32).into()
+                })
+                .unwrap();
+            let decl = model.resolve_name(name.get_position()).unwrap();
+            let target = model.type_of_decl_assign_target_at(&decl, name.get_position());
+            assert_eq!(ws.humanize_type(target), expected, "{source}");
+        }
+        assert!(!VirtualWorkspace::new().has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            "local value = 0\nvalue = 'wrong'"
+        ));
+    }
+
+    #[test]
+    fn inferred_literal_assignment_contracts_keep_read_precision() {
+        assert!(VirtualWorkspace::new().has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+                ---@param value 0
+                local function zero(value) end
+                local value = 0
+                zero(value)
+            "#
+        ));
+    }
+}
+
+#[test]
+fn test_length_result_initializes_unannotated_runtime_member() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for source in [
+        "local result = {}; local values = {}; result.count = #values",
+        "local result = {}; local values = {}; result.count = ((#values))",
+        r#"
+        ---@class Delivery
+        ---@field connections string[]
+        ---@param delivery Delivery
+        local function update(delivery)
+            local connections = {}
+            delivery.connections = connections
+            delivery.count = #connections
+        end
+        "#,
+        r#"
+        ---@class Collection
+        ---@operator len: string
+        local Collection = {}
+        ---@type Collection
+        local values
+        local result = {}
+        result.count = #values
+        "#,
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        assert!(
+            ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, source),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn test_length_runtime_member_preserves_declared_contract() {
+    use crate::DiagnosticCode;
+    use crate::check::test::{check_source, count_by_code};
+    for source in [
+        "local result = {}; local values = {};\n---@type string\nresult.count = #values",
+        r#"
+        ---@class Delivery
+        ---@field count string
+        ---@param delivery Delivery
+        local function update(delivery)
+            local values = {}
+            delivery.count = #values
+        end
+        "#,
+        "local result = {}; local values = {}; result.count = #values; result.count = 'bad'",
+    ] {
+        let diagnostics = check_source(source);
+        assert_eq!(
+            count_by_code(&diagnostics, DiagnosticCode::AssignTypeMismatch),
+            1,
+            "{source}: {diagnostics:#?}"
+        );
+    }
+}
+
+#[test]
+fn loop_generic_integer_assignment_preserves_integer() {
+    let mut ws = crate::VirtualWorkspace::new();
+    assert!(ws.has_no_diagnostic(
+        crate::DiagnosticCode::AssignTypeMismatch,
+        r#"
+        ---@generic T: number
+        ---@param x T
+        ---@param y integer
+        ---@return T
+        local function one_mod(x, y) return ((x - 1) % y) + 1 end
+        ---@param initial integer
+        ---@param size integer
+        local function update(initial, size)
+            local index = initial
+            for i = 1, size do
+                ---@cast i integer
+                index = one_mod(index + i, size)
+            end
+        end
+    "#
+    ));
+}
+
+#[test]
+fn loop_generic_integer_seed_does_not_hide_noninteger_writes() {
+    for rhs in ["identity(index + 0.5)", "identity(index)"] {
+        let mut ws = crate::VirtualWorkspace::new();
+        let other_write = if rhs == "identity(index)" {
+            "index = 0.5"
+        } else {
+            ""
+        };
+        assert!(
+            !ws.has_no_diagnostic(
+                crate::DiagnosticCode::AssignTypeMismatch,
+                &format!(
+                    r#"
+            ---@generic T
+            ---@param value T
+            ---@return T
+            local function identity(value) return value end
+            ---@param initial integer
+            ---@param items integer[]
+            local function update(initial, items)
+                local index = initial
+                for _, item in ipairs(items) do
+                    index = {rhs}
+                    {other_write}
+                end
+                ---@type integer
+                local result = index
+            end
+        "#
+                )
+            ),
+            "{rhs}"
+        );
+    }
+}
+#[test]
+fn generic_assignment_preserves_identity_before_constraint_projection() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for constraint in ["table<string, any>", "Animal", "string", "integer"] {
+        for target in ["T", "T?", "T|boolean"] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            ws.def("---@class Animal\n---@field name string");
+            assert!(ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &format!(
+                "---@generic T: {constraint}\n---@param value T\nlocal function copy(value)\n---@type {target}\nlocal result = value\nend"
+            )), "constraint={constraint}, target={target}");
+        }
+    }
+}
+
+#[test]
+fn generic_assignment_preserves_identity_call_result() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaCallExpr, LuaExpr};
+    for guard in ["", "if not value then error('missing') end"] {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def_file(
+            "copy.lua",
+            "---@generic U\n---@param value U\n---@return U\nfunction copy(value) end",
+        );
+        let param = if guard.is_empty() { "T" } else { "T?" };
+        let source = format!(
+            "---@generic T: table<string, any>\n---@param value {param}\nlocal function use(value)\n{guard}\n---@type T\nlocal result = copy(value)\nend"
+        );
+        assert!(
+            ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
+            "guard={guard}"
+        );
+        let file = ws.def(&source);
+        let model = ws.analysis.semantic_model(file);
+        let chunk = model.chunk().unwrap();
+        let call = chunk.descendants::<LuaCallExpr>().find(|call| {
+            matches!(call.get_prefix_expr(), Some(LuaExpr::NameExpr(name)) if name.get_name_text().as_deref() == Some("copy"))
+        }).unwrap();
+        assert_eq!(
+            model.type_of_expr_at(call.get_syntax_id(), call.get_position()),
+            ws.ty("T")
+        );
+    }
+}
+
+#[test]
+fn generic_assignment_does_not_replace_identity_with_constraint() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for value in ["broad", "other", "'not a table'"] {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(!ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &format!(
+            "---@generic T: table<string, any>, U: table<string, any>\n---@param broad table<string, any>\n---@param other U\nlocal function copy(broad, other)\n---@type T\nlocal result = {value}\nend"
+        )), "value={value}");
+    }
+}
+
+#[test]
+fn generic_assignment_keeps_constraint_compatibility() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for (target, accepted) in [("Animal", true), ("string", false), ("integer", false)] {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def("---@class Animal\n---@field name string");
+        assert_eq!(ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &format!(
+            "---@generic T: Animal\n---@param value T\nlocal function copy(value)\n---@type {target}\nlocal result = value\nend"
+        )), accepted, "target={target}");
+    }
+}
+
+#[test]
+fn generic_assignment_keeps_nullable_identity() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for (target, accepted) in [("T?", true), ("T", false)] {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert_eq!(ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &format!(
+            "---@generic T: table<string, any>\n---@param value T?\nlocal function copy(value)\n---@type {target}\nlocal result = value\nend"
+        )), accepted, "target={target}");
+    }
+}
+
+#[test]
+fn generic_assignment_keeps_nested_scope_boundaries() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for (inner_generic, value, accepted) in [
+        ("U", "outer", true),
+        ("T", "outer", false),
+        ("U", "inner", false),
+    ] {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert_eq!(ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &format!(
+            "---@generic T: table<string, any>\n---@param outer T\nlocal function outer_fn(outer)\n---@generic {inner_generic}: table<string, any>\n---@param inner {inner_generic}\nlocal function inner_fn(inner)\n---@type T\nlocal result = {value}\nend\nend"
+        )), accepted, "inner={inner_generic}, value={value}");
+    }
+}
+
+#[test]
+fn generic_assignment_distinguishes_sibling_and_unconstrained_parameters() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for constraint in ["", ": table<string, any>"] {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &format!(
+            "---@generic T: string\n---@param value T\nlocal function sibling(value) end\n---@generic T{constraint}\n---@param value T\nlocal function copy(value)\n---@type T\nlocal result = value\nend"
+        )), "constraint={constraint}");
     }
 }
