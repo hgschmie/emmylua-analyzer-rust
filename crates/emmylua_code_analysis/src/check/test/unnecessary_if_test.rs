@@ -530,3 +530,24 @@ fn multiple_result_conditions_keep_constant_first_results() {
         );
     }
 }
+
+#[test]
+fn probe_blueprint_map_inference() {
+    use emmylua_parser::{LuaAstNode, LuaIfStat, LuaIndexExpr};
+    let base = std::path::Path::new("/Users/henning/ai/fmtk/upstream/emmylua-analyzer-rust/build/investigations/blueprint-map-falsy-20261022/minimal");
+    for name in ["plain.lua", "annotated.lua", "unconditional.lua", "literal_key.lua", "plain_nonloop.lua", "reinitialized.lua", "numeric_for.lua", "while_loop.lua", "table_value.lua", "explicit_key.lua", "after_write.lua"] {
+        let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+        let src = std::fs::read_to_string(base.join(name)).unwrap();
+        let file = ws.def(&src);
+        let model = ws.analysis.semantic_model(file);
+        for stat in model.chunk().unwrap().descendants::<LuaIfStat>() {
+            let expr = stat.get_condition_expr().unwrap();
+            eprintln!("CASE {name}: {} inferred={:?} flow={:?}", expr.syntax().text(), model.type_of_expr(expr.get_syntax_id()), model.type_of_expr_at(expr.get_syntax_id(), expr.get_position()));
+        }
+        for index in model.chunk().unwrap().descendants::<LuaIndexExpr>() {
+            if index.syntax().text().to_string().starts_with("seen[") {
+                eprintln!("INDEX {name}: {} @{:?} resolved={:?}", index.syntax().text(), index.get_position(), model.resolve_member(&index));
+            }
+        }
+    }
+}
