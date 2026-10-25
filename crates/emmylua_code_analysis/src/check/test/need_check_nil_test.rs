@@ -591,7 +591,10 @@ fn test_computed_primitive_guards_keep_effect_boundaries() {
         ---@param rows (table|string|nil)[]
         ---@param key integer
         ---@param other integer
-        local function read(rows, key, other) {body} end
+        local function read(rows, key, other)
+            local function mutate() rows[key] = nil end
+            {body}
+        end
         "#
         );
         let mut ws = VirtualWorkspace::new_with_init_std_lib();
@@ -694,4 +697,43 @@ local function label(changing, key)
 end
 "#
     ));
+}
+
+#[test]
+fn test_computed_primitive_join_paths_keep_incoming_filters() {
+    use crate::{LuaType, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    for (body, expected) in [
+        (
+            "if flag then if type(rows[key]) ~= 'table' then return end else if type(rows[key]) == 'string' then return end; if not rows[key] then return end end; local observed = rows[key]",
+            LuaType::Table,
+        ),
+        (
+            "if flag then if type(rows[key]) ~= 'string' then return end else if type(rows[key]) ~= 'table' then return end end; local observed = rows[key]",
+            LuaType::from_vec(vec![LuaType::Table, LuaType::String]),
+        ),
+        (
+            "if flag then if type(rows[key]) ~= 'table' then return end end; local observed = rows[key]",
+            LuaType::from_vec(vec![LuaType::Table, LuaType::String, LuaType::Nil]),
+        ),
+    ] {
+        let source = format!(
+            "---@param rows (table|string|nil)[]\n---@param key integer\n---@param flag boolean\nlocal function read(rows, key, flag) {body} end"
+        );
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(&source);
+        let model = ws.analysis.semantic_model(file);
+        let offset = source.rfind("rows[key]").unwrap();
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .find(|index| u32::from(index.get_position()) as usize == offset)
+            .unwrap();
+        assert_eq!(
+            model.type_of_expr_at(index.get_syntax_id(), index.get_position()),
+            expected,
+            "{body}"
+        );
+    }
 }
