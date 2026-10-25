@@ -1,3 +1,37 @@
+# Reviewed upstream-source refresh — 2026-10-25
+
+Official upstream remains `56267eada8fdec8cbde0318a0afc1bb385ea66b0`; no upstream
+advance, new retirement or aggregate semantic change is claimed. All93 retained
+source branches were reviewed/validated, with exact heads, dependencies, original
+dates and historical/internal dispositions preserved in the reviewed manifest.
+The separate candidate reconstructs the exact accepted203 aggregate on that base,
+whole tree `2a6a66763b1580862e38c8b08e115315b38bfba1` before this documentation.
+Original history remains at `refs/refresh/20261025/integration/accepted203-analyzer`.
+Refreshed source series are audit provenance and are not replayed over the aggregate.
+
+Signed tested candidate `ef0c5ad4eb675e1e53c7958675af4a291ca71b0e` passes all
+**3,250 all-feature Rust tests**, zero failed/ignored/filtered, including the large
+linear stress test. Every accepted executed name and all3,074 source-regression
+mappings execute. Workspace/all-target/all-feature Clippy with warnings denied
+and rustfmt pass. This commit changes documentation only; code/Cargo objects
+remain identical to the tested candidate and accepted203.
+
+Preserve UP-019/020/021 internal contracts, UP-036/040/131 length/numeric adapters,
+UP-081 strict-dictionary iterator controls and the five explicitly mapped existing
+UP-078/074/088 composition policies. No controls or expectations are waived.
+Exact source series,241 prior nonmerge history entries and frozen-input hashes
+are recorded in `docs/integration-manifests/analyzer-refresh-20261025.json`.
+
+Emmy counter204 is reserved. Exact packaged203cases/255types/5navigation, UP-036
+59+3 controls, LTN37 and FDE20 native/API/cache gates remain required before
+publication. Toolkit1c1db13/API2.1.23, FDE0.9.4 ZIP and LSP15 remain retained inputs.
+Prior35 client tests are reused only with exact source/Gradle/routing equivalence.
+Custom analyzer applies to macOS arm64 only; no IDE installation.
+
+Reviewed manifest SHA-256:
+`684d773cbb49082f391ca8df1c471466975e2df8f187fbaadfe45a9c3e3b1813`.
+Workspace receipt: `memory/findings/F-20261025-003435-analyzer-upstream-refresh/`.
+
 # Corrected build203: generic assignment identity — 2026-10-23
 
 The first203 candidate52fdaaea exposed an existing assignment checker defect:
