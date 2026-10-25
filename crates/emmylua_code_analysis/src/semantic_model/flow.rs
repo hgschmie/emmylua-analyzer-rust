@@ -1045,6 +1045,17 @@ fn nonempty_array_length_index(
     {
         return false;
     }
+    // An explicitly supplied metatable can override the built-in length even
+    // when an annotation describes the value as an array.
+    if let Some(info) = model.file_facts().and_then(|facts| facts.decl_by_id(decl))
+        && let Some(value) = info.value_expr_syntax
+        && let Some(node) = model.syntax_tree().and_then(|tree| value.to_node_from_root(&tree.get_red_root()))
+        && node.descendants().filter_map(emmylua_parser::LuaCallExpr::cast).any(|call| {
+            matches!(call.get_prefix_expr(), Some(LuaExpr::NameExpr(name)) if name.get_name_text().as_deref() == Some("setmetatable"))
+        })
+    {
+        return false;
+    }
     // CFG bindings may point before the enclosing statement. Account for earlier
     // RHS/argument calls in that statement before trusting an older guard.
     if key_expr
@@ -1062,8 +1073,9 @@ fn nonempty_array_length_index(
     let Some(mut current) = tree.get_flow_id_at(offset) else {
         return false;
     };
+    let closure = LuaClosureId::from_node(key_expr.syntax());
     // This deliberately bounded, single-path check does not carry facts across
-    // merges, loops, writes or calls with visible mutation risks.
+    // closures, merges, loops, writes or calls with visible mutation risks.
     for _ in 0..128 {
         let Some(node) = tree.get_flow_node(current) else {
             return false;
@@ -1073,6 +1085,9 @@ fn nonempty_array_length_index(
                 let Some(cond) = flow_condition_expr(model, cond) else {
                     return false;
                 };
+                if LuaClosureId::from_node(cond.syntax()) != closure {
+                    return false;
+                }
                 let truthy = matches!(node.kind, FlowNodeKind::TrueCondition(_));
                 // array_len_condition currently assumes the length is the left operand.
                 // Do not infer a lower bound from a reversed upper-bound comparison.
