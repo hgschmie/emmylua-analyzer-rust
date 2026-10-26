@@ -562,9 +562,8 @@ impl<'db> SemanticModel<'db> {
         let Some(owner) = self.resolve_name(name_expr.get_position()) else {
             return Vec::new();
         };
-        // Only intervene for actual same-workspace global overloads. A single
-        // declaration keeps the legacy projection path, which preserves its
-        // generic/closure details.
+        // Preserve declared contracts and reassigned values. An unchanged local
+        // closure's projected function type omits its documented alternatives.
         let SemanticId::Decl(key) = &owner else {
             return Vec::new();
         };
@@ -575,7 +574,30 @@ impl<'db> SemanticModel<'db> {
             return Vec::new();
         };
         if !matches!(decl.kind, DeclKind::Global) {
-            return Vec::new();
+            let has_overloads = decl
+                .value_expr_syntax
+                .and_then(|syntax| facts.signature_by_closure(syntax))
+                .and_then(|signature| signature.docs.as_ref())
+                .is_some_and(|docs| !docs.overloads.is_empty());
+            if !matches!(decl.kind, DeclKind::Local { .. })
+                || decl.doc_type_syntax.is_some()
+                || !has_overloads
+                || self
+                    .flow_tree()
+                    .is_some_and(|flow| flow.has_decl_assignment(&owner))
+                || self.local_callable_has_explicit_cast(decl, callee)
+            {
+                return Vec::new();
+            }
+            let projected = self
+                .type_of_decl_signature(&owner)
+                .map(|function| LuaType::DocFunction(Rc::new(function)));
+            if projected.as_ref() != Some(&self.type_of_expr(callee.get_syntax_id())) {
+                return Vec::new();
+            }
+            return infer::vm::InferVm::new(self, &[])
+                .callable_candidates_for_owner_single(&owner)
+                .unwrap_or_default();
         }
         let decls = self.global_decls_named_for_file(key.file_id, decl.name.as_str());
         if decls.len() <= 1 {
@@ -599,6 +621,77 @@ impl<'db> SemanticModel<'db> {
             return Vec::new();
         }
         per_decl.into_iter().flatten().collect()
+    }
+
+    /// Explicit casts remain authoritative even when their shape equals the primary signature.
+    fn local_callable_has_explicit_cast(&self, decl: &Decl, callee: &LuaExpr) -> bool {
+        if !self.flow_tree().is_some_and(|flow| flow.has_tag_cast()) {
+            return false;
+        }
+        let file_id = self.file_id();
+        let cached = self
+            .cache
+            .borrow()
+            .local_callable_casts
+            .get(&file_id)
+            .cloned();
+        let casts = if let Some(cached) = cached {
+            cached
+        } else {
+            let Some(chunk) = self.chunk() else {
+                return false;
+            };
+            #[cfg(test)]
+            {
+                self.cache.borrow_mut().local_callable_cast_scans += 1;
+            }
+            let mut casts = cache::LocalCallableCasts::default();
+            for tag in chunk.syntax().descendants().filter_map(LuaDocTag::cast) {
+                match &tag {
+                    LuaDocTag::Cast(cast) => {
+                        if let Some(LuaExpr::NameExpr(name)) = cast.get_key_expr() {
+                            if let Some(owner) = self.resolve_name(name.get_position()) {
+                                let position = cast.get_position();
+                                casts
+                                    .first_cast
+                                    .entry(owner)
+                                    .and_modify(|first| *first = (*first).min(position))
+                                    .or_insert(position);
+                            }
+                            continue;
+                        }
+                    }
+                    LuaDocTag::As(_) => {
+                        // Inline assertions use the shared owner lookup below.
+                    }
+                    _ => continue,
+                }
+                if let Some(target) = tag
+                    .get_parent::<emmylua_parser::LuaComment>()
+                    .and_then(|comment| comment.get_owner())
+                    .and_then(|owner| {
+                        LuaExpr::cast(owner.syntax().clone())
+                            .or_else(|| owner.children::<LuaExpr>().last())
+                    })
+                {
+                    casts.asserted_exprs.insert(target.get_syntax_id());
+                }
+            }
+            let casts = Rc::new(casts);
+            self.cache
+                .borrow_mut()
+                .local_callable_casts
+                .insert(file_id, casts.clone());
+            casts
+        };
+        casts
+            .first_cast
+            .get(&decl.id)
+            .is_some_and(|position| *position < callee.get_position())
+            || casts.asserted_exprs.contains(&callee.get_syntax_id())
+            || decl
+                .value_expr_syntax
+                .is_some_and(|syntax| casts.asserted_exprs.contains(&syntax))
     }
 
     /// Public unified candidates for call rendering (signature help / completion / hover).
@@ -1219,5 +1312,61 @@ impl<'db> SemanticModel<'db> {
             }
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod local_overload_review_tests {
+    use super::*;
+    use crate::VirtualWorkspace;
+
+    #[test]
+    fn local_overload_review_cast_index_isolated_between_file_views() {
+        let mut workspace = VirtualWorkspace::new();
+        let declaration = "---@param value string\n---@overload fun(value: integer)\nlocal function accept(value) end\n";
+        let plain = workspace.def(&format!(
+            "{declaration}local other = 1\n---@cast other integer\naccept(1)"
+        ));
+        let asserted = workspace.def(&format!(
+            "{declaration}accept --[[@as fun(value: string)]] (1)"
+        ));
+        let model = workspace.analysis.semantic_model(plain);
+        for (file, expected) in [(plain, 2), (asserted, 1), (plain, 2), (asserted, 1)] {
+            let view = model.model_for(file);
+            let call = view
+                .chunk()
+                .unwrap()
+                .syntax()
+                .descendants()
+                .find_map(LuaCallExpr::cast)
+                .unwrap();
+            assert_eq!(view.call_site_analysis(&call).candidates.len(), expected);
+        }
+        assert_eq!(model.cache.borrow().local_callable_cast_scans, 2);
+    }
+
+    #[test]
+    fn local_overload_review_cast_scan_is_shared_by_distinct_calls() {
+        let mut workspace = VirtualWorkspace::new();
+        let mut source = String::from(
+            "---@param value string\n---@overload fun(value: integer)\nlocal function accept(value) end\nlocal other = 1\n---@cast other integer\n",
+        );
+        for _ in 0..32 {
+            source.push_str("accept(1)\n");
+        }
+        let file = workspace.def(&source);
+        let model = workspace.analysis.semantic_model(file);
+        let chunk = model.chunk().unwrap();
+        let mut calls = 0;
+        for call in chunk.syntax().descendants().filter_map(LuaCallExpr::cast) {
+            assert_eq!(model.call_site_analysis(&call).candidates.len(), 2);
+            calls += 1;
+        }
+        assert_eq!(calls, 32);
+        assert_eq!(
+            model.cache.borrow().local_callable_cast_scans,
+            1,
+            "distinct call sites must share the file's cast scan"
+        );
     }
 }
