@@ -20,7 +20,7 @@ use crate::{
 use super::SemanticDatabase;
 use super::def::{
     ConstructorAttribute, Decl, DocGenericParam, Member, MemberRef, ModuleExport, NameUse, OwnerId,
-    Scope, SemanticId, Signature, TypeDef, TypeScope,
+    Scope, SemanticId, Signature, TypeDef, TypeDefKind, TypeScope,
 };
 use super::exports::{FileExports, file_exports};
 use super::facts::FileFacts;
@@ -567,8 +567,29 @@ impl<'db> AnalysisView<'db> {
 
     /// Declared type projected to a concrete `LuaType` (consumed by semantic_model / diagnostics).
     pub fn decl_type_lua(&self, file_id: FileId, decl: SemanticId) -> Option<LuaType> {
-        let shell = self.decl_type(file_id, decl)?;
-        Some(self.project_shell(file_id, &shell))
+        let shell = self.decl_type(file_id, decl.clone())?;
+        let ty = self.project_shell(file_id, &shell);
+        // Initializer shells describe the complete call result. A declaration
+        // consumes its own slot even when rich expression inference falls back.
+        if !ty.is_unknown()
+            && let Some(facts) = self.file_facts(file_id)
+            && let Some(info) = facts.decl_by_id(&decl)
+            && info.doc_type_syntax.is_none()
+            && info.module_path.is_none()
+            && info
+                .owner_syntax
+                .and_then(|owner| facts.type_def_by_owner_syntax(owner))
+                .is_none_or(|def| !matches!(def.kind, TypeDefKind::Class | TypeDefKind::Enum))
+            && let Some(index) = info.multi_return_index
+        {
+            if let Some(slot) = ty.get_result_slot_type(index) {
+                return Some(slot);
+            }
+            if !ty.contain_multi_return() {
+                return Some(LuaType::Any);
+            }
+        }
+        Some(ty)
     }
 
     /// Project a `TypeShell` to a concrete `LuaType` (for semantic_model type checks).
