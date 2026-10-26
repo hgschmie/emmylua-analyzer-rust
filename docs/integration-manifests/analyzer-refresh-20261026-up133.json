@@ -1,0 +1,144 @@
+{
+  "schema": 1,
+  "state": "ready_for_integration",
+  "id": "UP-133",
+  "owner_task": "01a16502-8806-7a51-970a-3eb236271751",
+  "created": "2026-10-26 14:28:06",
+  "completed": "2026-10-26T14:52:49.154944-07:00",
+  "branch": "fix/local-documented-call-overloads",
+  "base": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+  "head": "f8bdea85cb3e616ed4905aa857b8628f022f7199",
+  "tree": "1cf3333199742f76c865b6c56a13cbad500f9b06",
+  "signature_verified": true,
+  "signature_trust_note": "Cryptographic verification succeeds with the workspace verification wrapper; local trust database reports untrusted user identity.",
+  "source_dependencies": [],
+  "source_files": {
+    "crates/emmylua_code_analysis/src/check/checker/check_field.rs": "7e02f79c4398d6b80c371ac5e5b341190e0d93cd43b903a0dadf8230a59ae9de",
+    "crates/emmylua_code_analysis/src/check/checker/param_type_check.rs": "cc95c25308cce1918dc8be9ebf438fbd091fe13a8c1869eaed96e3749042b334",
+    "crates/emmylua_code_analysis/src/check/test/mod.rs": "3f4ca999d889271edb952533acc55c18cc25894e0721bfb9630e69d67c3a3153",
+    "crates/emmylua_code_analysis/src/semantic_model/access.rs": "a6fc73a17bccfecf7706965d3dc1f4e81d5200fae05fcb95faf8b4bd65187eed",
+    "crates/emmylua_code_analysis/src/check/test/local_overload_test.rs": "f0aca5590e4e186c1a01263263d7a2da67e1b875aaf638331a251c90a6d40cc0"
+  },
+  "source_patch_sha256": "037440f9247f3c3269870b3bcb26a89fc2b864c4c874714046e7c63cb7739c7d",
+  "original_manifest": "/Users/henning/ai/fmtk/memory/findings/F-20261026-120748-analyzer-lsp-upstream-refresh/upstream-integration-manifest-20261026.json",
+  "original_manifest_sha256": "11d1db6bef60148e1d87d08984fcf9316dad4fd5c9428c67edbd6b00707a8cf9",
+  "paired_focused": {
+    "before_pass": 7,
+    "before_fail": 10,
+    "after_pass": 17,
+    "after_fail": 0
+  },
+  "source_full_tests": 2632,
+  "composed_full_tests": 3302,
+  "accepted_test_names_retained": 3250,
+  "original_upstream_bodies_exact_and_executed": 25,
+  "clippy_all_targets_all_features": "PASS",
+  "fmt": "PASS",
+  "composed_original_tree": "ac12a00262c28bc5db72a71e2906504cbbec63c1",
+  "composition_patch": "/Users/henning/ai/fmtk/upstream/emmylua-analyzer-rust/build/verification/refresh-20261026-fixes/overload-probe/portable-source-v3/composition.patch",
+  "composition_patch_sha256": "9a7394e389e04c30be83c373d10289195519fbb5c8f285edbf7b8920655ec6f5",
+  "additional_internal_semantic_adapter": false,
+  "composition_resolutions": [
+    "Retain existing union/object checks; insert the portable dictionary block before them.",
+    "Alias expansion visibility was already pub(super) in candidate; preserve its original body.",
+    "Use existing LuaTableExpr import spelling.",
+    "Merge source test registration and add13 composed contract groups."
+  ],
+  "retained_limitations": [
+    "User-defined class named table retains accepted204 AssignTypeMismatch169..173; no new ParamTypeMismatch.",
+    "Assigned declarations and earlier same-declaration casts use conservative existing candidate behavior; this is not general mutable-callable overload support.",
+    "Concrete dictionary constructors only; unresolved template targets retain existing binding behavior."
+  ],
+  "publication": "local signed source; Upstream requested to publish within existing authorization; no PR",
+  "pending": [
+    "Integration applies exact source/composition and validates its own candidate.",
+    "Original acceptance gates plus frozen4case protocol supplement on exact final packaged binary.",
+    "FDE development pin and native acceptance after final analyzer package."
+  ],
+  "records": [
+    {
+      "path": "/Users/henning/ai/fmtk/upstream/emmylua-analyzer-rust/build/checkouts/local-documented-call-overloads/build/logs/up133/review-v4/seal.json",
+      "sha256": "c745084831f4ee08b658df1a6bc8140671ac7035a9e5445fa2f84ba9739b5c24"
+    },
+    {
+      "path": "/Users/henning/ai/fmtk/upstream/emmylua-analyzer-rust/build/checkouts/local-documented-call-overloads/build/logs/up133/review-v4/source.patch",
+      "sha256": "037440f9247f3c3269870b3bcb26a89fc2b864c4c874714046e7c63cb7739c7d"
+    },
+    {
+      "path": "/Users/henning/ai/fmtk/upstream/emmylua-analyzer-rust/build/checkouts/local-documented-call-overloads/build/logs/up133/source-commit.patch",
+      "sha256": "c74eb6e1baedebe2354a2babe32520b7e3f74682b158151eef2101f56f7cecda"
+    },
+    {
+      "path": "/Users/henning/ai/fmtk/upstream/emmylua-analyzer-rust/build/checkouts/local-documented-call-overloads/build/logs/up133/source-checks-v4.json",
+      "sha256": "13e62a553130546bd9f331b8bb6a8dfb431a29257a94b5b806eff6c6071977b4"
+    },
+    {
+      "path": "/Users/henning/ai/fmtk/upstream/emmylua-analyzer-rust/build/checkouts/local-documented-call-overloads/build/logs/up133/source-final-test-execution.json",
+      "sha256": "d4ec0297c8c07c27daf91bf720ca30653479ababa87bf17c2d02bc9ffba6fbfb"
+    },
+    {
+      "path": "/Users/henning/ai/fmtk/upstream/emmylua-analyzer-rust/build/checkouts/local-documented-call-overloads/build/logs/up133/signature.log",
+      "sha256": "51fecd438f72e17d3442611edbddd13c3eab0d58343184cce3c918f749d0b64c"
+    },
+    {
+      "path": "/Users/henning/ai/fmtk/upstream/emmylua-analyzer-rust/build/verification/refresh-20261026-fixes/overload-probe/portable-source-v3/receipt.json",
+      "sha256": "1bd724b9f570a179764992bf1377c2af7c80516f9a7710b622e56955b90c2056"
+    },
+    {
+      "path": "/Users/henning/ai/fmtk/upstream/emmylua-analyzer-rust/build/verification/refresh-20261026-fixes/overload-probe/portable-source-v3/checks.json",
+      "sha256": "9a10dd5c1ace266aa17cca51f230837ace65732cf5477d649a7c8952f03c94f9"
+    },
+    {
+      "path": "/Users/henning/ai/fmtk/upstream/emmylua-analyzer-rust/build/verification/refresh-20261026-fixes/overload-probe/portable-source-v3/composition.patch",
+      "sha256": "9a7394e389e04c30be83c373d10289195519fbb5c8f285edbf7b8920655ec6f5"
+    },
+    {
+      "path": "/Users/henning/ai/fmtk/upstream/emmylua-analyzer-rust/build/verification/refresh-20261026-fixes/overload-probe/portable-source-v3/application.json",
+      "sha256": "dc121dd3464afb965d6960b1052a9851785599e1174c1c12788b11427e8685d8"
+    },
+    {
+      "path": "/Users/henning/ai/fmtk/memory/findings/F-20261026-142806-local-documented-overloads/validation-scope.md",
+      "sha256": "34e125a0a6592d8545b03ba65a980f850b4364e7b077919caf3c1be7c56c233c"
+    },
+    {
+      "path": "/Users/henning/ai/fmtk/memory/findings/F-20261026-142806-local-documented-overloads/investigations-source-review.md",
+      "sha256": "6fb595bd61c2c4981dd6044cf01716432577a686d69f6e31c1cae3705c0f33dd"
+    },
+    {
+      "path": "/Users/henning/ai/fmtk/memory/findings/F-20261026-120748-analyzer-lsp-upstream-refresh/investigations-up133-custom-table-baseline.md",
+      "sha256": "7567f4194b8c30245918df13239f7aae48f9420c17c0bbdbabac69bce0e1a8f0"
+    },
+    {
+      "path": "/Users/henning/ai/fmtk/upstream/emmylua-analyzer-rust/build/checkouts/local-documented-call-overloads/build/logs/up133/source-v4-before.log",
+      "sha256": "7ac944651e7e02b4dea36a3bbd93c91ad6375d0814a6894f2089ab6bb7bed04d"
+    },
+    {
+      "path": "/Users/henning/ai/fmtk/upstream/emmylua-analyzer-rust/build/checkouts/local-documented-call-overloads/build/logs/up133/source-v4-focused.log",
+      "sha256": "8683cc404c49adb95c30cc52c75fbfce4d8c9cc027bc746798ff332440b2c459"
+    },
+    {
+      "path": "/Users/henning/ai/fmtk/upstream/emmylua-analyzer-rust/build/checkouts/local-documented-call-overloads/build/logs/up133/source-v4-tests.log",
+      "sha256": "79ff32b204866962b70d0cc3ecc34e02405ff024030b668045e69847c754ea7d"
+    },
+    {
+      "path": "/Users/henning/ai/fmtk/upstream/emmylua-analyzer-rust/build/checkouts/local-documented-call-overloads/build/logs/up133/source-v4-clippy.log",
+      "sha256": "1b039434f2fa4942df63672e815b310f64efc0dafe239c53b846db5757b6f8a6"
+    },
+    {
+      "path": "/Users/henning/ai/fmtk/upstream/emmylua-analyzer-rust/build/checkouts/local-documented-call-overloads/build/logs/up133/source-v4-fmt.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Users/henning/ai/fmtk/upstream/emmylua-analyzer-rust/build/verification/refresh-20261026-fixes/overload-probe/portable-source-v3/tests.log",
+      "sha256": "b7d8843250f21bb0a9f3d7b9ac4cf8a2a0c29fe2bb457d5b2c82fc7785814f53"
+    },
+    {
+      "path": "/Users/henning/ai/fmtk/upstream/emmylua-analyzer-rust/build/verification/refresh-20261026-fixes/overload-probe/portable-source-v3/clippy.log",
+      "sha256": "20ffeebe60ec14820b1417211c74685d9eca0804ad2758355727781c4812450d"
+    },
+    {
+      "path": "/Users/henning/ai/fmtk/upstream/emmylua-analyzer-rust/build/verification/refresh-20261026-fixes/overload-probe/portable-source-v3/fmt.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}

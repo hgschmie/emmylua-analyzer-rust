@@ -1,3 +1,61 @@
+# Updated upstream and complete local overloads — 2026-10-26
+
+Build205 source combines frozen official upstream
+`a90273fc4d73dd6a37fcadfbef1de951a963a402` (six commits/19paths after56267),
+all93 reviewed retained sources, and independent UP-133
+`f8bdea85cb3e616ed4905aa857b8628f022f7199`. New-main reconstruction starts at
+a902 and reconciles the complete accepted204 aggregate,241 history entries and
+37 additional work-source locators. Source series are audit provenance and are
+not replayed over an already seeded aggregate. All94active source heads retain
+original dates; original204 aggregate1429 and original241-entry source history633
+are preserved on published archive branches.
+
+Signed tested code `e29c46ca6af030aee9b3af8c007cf7ad719543d6` has code tree
+`9dc07f31eac730325df29e0b79a24357f4994bcb`. Fresh **3,302 all-feature workspace
+Rust tests** pass, zero failed/ignored/filtered, including all3,250 accepted names,
+22 new upstream names,17 UP133 groups,13 composed groups and the large linear
+stress test. All25 incoming upstream test bodies, the five existing policy
+adaptations and48 extra strict-iterator lines remain exact. All-target/all-feature
+Clippy with warnings denied and rustfmt pass. This source freeze changes only
+documentation/manifests after the validated code.
+
+Upstream TraceSubject/shared memo lifecycle composes with retained UP082 real-cycle
+and UP094 normalized incoming-path identity; the obsolete separate member cache
+is removed. UP064 retains assignment completion and selected-file owner facts.
+Named-type lookup retains both upstream multi-location traversal and existing
+initializer-table owner identities. Preserve original internal019/020/021,
+length/numeric036/040/131, strict dictionaries, generic132-before-falsy130 and all
+later accepted integration amendments.
+
+UP133 fixes the independently reproduced bare-upstream local-overload collection
+gap and concrete dictionary constructor matching, including transparent parentheses
+and forwarded calls. Explicit types, reassignment and cast/assertion precedence,
+shadowed/unrelated/later casts, aliases, nil deletion, overwritten keys and final
+return slots have negative controls. Its portable checks compose with retained
+UP052/b046 dictionary validation without an extra internal semantic helper.
+The upstream code-count-only test originally passed at the wrong call; additional
+controls require both valid calls clean and the invalid call diagnosed in range.
+New source parameter-family tests and separate exact composed diagnostics preserve
+the accepted204 custom-class-named-table field warning; no whole-file cleanliness
+or general mutable-callable/template support is claimed.
+
+Reviewed source manifest SHA11d1db6b and UP133 addendum SHAc16102f1 are frozen in
+`docs/integration-manifests/analyzer-refresh-20261026.json` and
+`docs/integration-manifests/analyzer-refresh-20261026-up133.json`. Detailed command,
+source, signature, conflict and preservation evidence lives in the workspace
+`memory/findings/F-20261026-120748-analyzer-lsp-upstream-refresh/` receipt.
+
+Before publishing Emmy0.30.0-205, the exact packaged binary must pass original
+203cases/255types/5navigation,59length/3closure, unchangedLTN37/API/cache controls,
+UP064 supplemental pairing and four complete-overload protocol cases. Fresh
+Emmy35/client and FDE-owned exact205+16 native48/fullunit gates bind the same bytes.
+The accepted204 global-RHS supplemental failure remains explicitly classified,
+not relaxed. FDE0.9.4 ZIP, toolkit1c1db13/CLI419764/API2.1.23 and old ZIPs stay.
+LSP16 is separately validated/released with its documented41inherited assertions
+and3original skips. Custom analyzer patches apply only to macOS arm64. No IDE
+installation is authorized by this source update. Final archive/consumer status
+is recorded in the workspace receipt, not inferred from source checks.
+
 # Reviewed upstream-source refresh — 2026-10-25
 
 Official upstream remains `56267eada8fdec8cbde0318a0afc1bb385ea66b0`; no upstream
