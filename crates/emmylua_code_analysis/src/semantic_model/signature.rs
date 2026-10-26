@@ -1,4 +1,5 @@
 use crate::{MemberList, OperatorDef};
+use emmylua_parser::LuaIndexKey;
 
 use super::prelude::*;
 
@@ -10,6 +11,22 @@ fn needs_rich_doc_type(ty: &LuaType) -> bool {
             .iter()
             .all(|part| matches!(part, LuaType::Table | LuaType::Nil)),
         _ => false,
+    }
+}
+
+fn widen_inferred_return(ty: LuaType) -> LuaType {
+    match ty {
+        LuaType::Union(union) => {
+            LuaType::from_vec(union.iter().cloned().map(widen_inferred_return).collect())
+        }
+        LuaType::Variadic(variadic) => LuaType::Variadic(Rc::new(match variadic.as_ref() {
+            VariadicType::Multi(types) => {
+                VariadicType::Multi(types.iter().cloned().map(widen_inferred_return).collect())
+            }
+            VariadicType::Base(ty) => VariadicType::Base(widen_inferred_return(ty.clone())),
+            VariadicType::Repeat(ty) => VariadicType::Repeat(widen_inferred_return(ty.clone())),
+        })),
+        other => infer::vm::widen_variadic_const(&other),
     }
 }
 
@@ -125,6 +142,14 @@ impl<'db> SemanticModel<'db> {
         else {
             return LuaType::Unknown;
         };
+        // TypeShell erases anonymous functions to bare `function`. A module
+        // exporting a factory must retain its signature for require('init')().
+        if let Some(facts) = self.file_facts_of(module_file)
+            && let ModuleExport::Expr { value_syntax } = facts.module_export
+            && let Some(signature) = self.type_of_signature_in_file(module_file, value_syntax)
+        {
+            return LuaType::DocFunction(signature.into());
+        }
         let Some(shell) = self.analysis().module_export_type(module_file) else {
             return LuaType::Unknown;
         };
@@ -142,6 +167,10 @@ impl<'db> SemanticModel<'db> {
     }
     pub fn resolve_owner(&self, owner: &SemanticId) -> Option<SemanticId> {
         self.analysis().resolve_owner(owner.clone())
+    }
+    /// Canonical receiver identities, including associated runtime tables and module aliases.
+    pub fn resolve_owner_ids(&self, owner: &SemanticId) -> Vec<crate::OwnerId> {
+        self.analysis().resolve_owner_ids(owner)
     }
     pub(crate) fn resolve_owner_set(&self, owner: SemanticId) -> Vec<SemanticId> {
         if let Some(cached) = self.cache.borrow().resolve_owner_set.get(&owner) {
@@ -182,6 +211,9 @@ impl<'db> SemanticModel<'db> {
         expr_syntax: LuaSyntaxId,
         infer: impl FnOnce() -> LuaType,
     ) -> LuaType {
+        if self.is_cancelled() {
+            return LuaType::Unknown;
+        }
         let key = (self.view.file_id(), expr_syntax);
         {
             let cache = self.cache.borrow();
@@ -270,7 +302,7 @@ impl<'db> SemanticModel<'db> {
     ) -> Vec<(LuaType, rowan::TextRange)> {
         infer::infer_expr_list_types(self, exprs, var_count)
     }
-    /// Unified signature return type projection: TypeShell takes priority, with rich projection as fallback for Unknown.
+    /// Project explicit return contracts, or infer unannotated returns using flow at each return site.
     pub(crate) fn signature_return_type(
         &self,
         file_id: FileId,
@@ -278,6 +310,17 @@ impl<'db> SemanticModel<'db> {
         signature: &Signature,
         generic_names: &[SmolStr],
     ) -> LuaType {
+        if signature
+            .docs
+            .as_ref()
+            .is_none_or(|docs| docs.returns.is_empty() && docs.return_overload_rows.is_empty())
+        {
+            let model = self.model_for(file_id);
+            let inferred = infer::closure_return_lua(&model, closure_syntax);
+            if !matches!(inferred, LuaType::Unknown | LuaType::Any) {
+                return widen_inferred_return(inferred);
+            }
+        }
         let return_shells = self
             .analysis()
             .signature_returns(file_id, closure_syntax)
@@ -586,12 +629,41 @@ impl<'db> SemanticModel<'db> {
         closure_syntax: LuaSyntaxId,
         param_index: usize,
     ) -> Option<LuaType> {
+        let expected_signatures = self.expected_member_signatures_for_closure(closure_syntax)?;
+        // Explicit docs override an available contextual contract. Without such
+        // a contract, field-level annotations follow table_field_signature_override.
+        // Table-field docs are not necessarily attached to the closure's
+        // signature. Their explicit @param still takes precedence over context.
+        if let Some(signature) = self.file_facts()?.signature_by_closure(closure_syntax)
+            && let Some(name) = signature.param_names.get(param_index)
+            && let Some(node) =
+                closure_syntax.to_node_from_root(&self.syntax_tree()?.get_red_root())
+            && let Some(field) = node.parent().and_then(LuaTableField::cast)
+        {
+            for comment in field.get_comments() {
+                for tag in comment.get_doc_tags() {
+                    if let LuaDocTag::Param(param) = tag
+                        && param
+                            .get_name_token()
+                            .is_some_and(|token| token.get_name_text() == name)
+                        && let Some(doc_ty) = param.get_type()
+                    {
+                        let ty = self.doc_type_lua_rich(doc_ty.get_syntax_id());
+                        return Some(if param.is_nullable() {
+                            LuaType::from_vec(vec![ty, LuaType::Nil])
+                        } else {
+                            ty
+                        });
+                    }
+                }
+            }
+        }
         let is_method = self
             .file_facts()
             .and_then(|facts| facts.signature_by_closure(closure_syntax))
             .is_some_and(|sig| sig.is_method);
         let mut types = Vec::new();
-        for expected_fun in self.expected_member_signatures_for_closure(closure_syntax)? {
+        for expected_fun in expected_signatures {
             let has_self_in_expected = expected_fun
                 .get_params()
                 .first()
@@ -637,49 +709,26 @@ impl<'db> SemanticModel<'db> {
         closure_syntax: LuaSyntaxId,
     ) -> Option<Vec<LuaFunctionType>> {
         let facts = self.file_facts()?;
+        let member_file = self.view.file_id();
+        // An annotated function initializer has no member owner. Read its
+        // declared contract directly, without inferring the closure itself.
+        if let Some(decl) = facts.decl_by_value_syntax(closure_syntax)
+            && let Some(doc_syntax) = decl.doc_type_syntax
+        {
+            let ty = self.doc_type_lua_rich_in(member_file, doc_syntax);
+            let signatures = self.contextual_callback_signatures(&ty);
+            if !signatures.is_empty() {
+                return Some(signatures);
+            }
+        }
         let member = facts
             .members
             .iter()
             .find(|member| member.value_syntax == Some(closure_syntax))?;
-        let member_file = self.view.file_id();
         // 0. Inline `---@type` on a table field (`{ ---@type test A = function(a, b) ... }`) directly gives the function type.
         if let Some(doc_syntax) = member.doc_type_syntax {
-            let mut doc_ty = type_eval::expand_alias_generic(
-                self,
-                &self.doc_type_lua_rich_in(member_file, doc_syntax),
-            );
-            // When an inline field `---@type test` points to a plain alias, `expand_alias_generic` only expands
-            // the `Alias<...>` form; bare `Ref(test)` needs to continue along the alias chain to the function type.
-            let mut alias_visited = Vec::new();
-            while let LuaType::Ref(id) | LuaType::Def(id) = &doc_ty {
-                let alias_id = id.clone();
-                if alias_visited.contains(&alias_id) {
-                    break;
-                }
-                let Some(def) = self.type_def_of(&alias_id) else {
-                    break;
-                };
-                if def.kind != TypeDefKind::Alias {
-                    break;
-                }
-                let Some(target) = self.alias_target(&def) else {
-                    break;
-                };
-                alias_visited.push(alias_id);
-                doc_ty = type_eval::expand_alias_generic(self, &target);
-            }
-            let mut docs_out = Vec::new();
-            match &doc_ty {
-                LuaType::DocFunction(fun) => docs_out.push(fun.as_ref().clone()),
-                LuaType::Union(union) => {
-                    for ty in union.into_vec() {
-                        if let LuaType::DocFunction(fun) = ty {
-                            docs_out.push(fun.as_ref().clone());
-                        }
-                    }
-                }
-                _ => {}
-            }
+            let doc_ty = self.doc_type_lua_rich_in(member_file, doc_syntax);
+            let docs_out = self.contextual_callback_signatures(&doc_ty);
             if !docs_out.is_empty() {
                 return Some(docs_out);
             }
@@ -753,41 +802,38 @@ impl<'db> SemanticModel<'db> {
                 }
             }
             SemanticId::Member(table_key) => {
-                // Table-literal field (`---@type D31; local f = { func = function(...) end }`):
-                // the member owner is a synthetic table identity; go back to the declaration that initializes the table and use its declared type as the field type source.
-                let decl = facts.decl_by_value_range(table_key.key_range)?;
-                self.type_of_decl(&decl.id)?
+                let tree = self.syntax_tree_of(member_file)?;
+                let table = [
+                    LuaSyntaxKind::TableArrayExpr,
+                    LuaSyntaxKind::TableObjectExpr,
+                ]
+                .into_iter()
+                .find_map(|kind| {
+                    LuaSyntaxId::new(kind.into(), table_key.key_range)
+                        .to_node_from_root(&tree.get_red_root())
+                        .and_then(LuaTableExpr::cast)
+                })?;
+                self.contextual_constructor_type(&table)?
             }
+
             _ => return None,
         };
 
-        let infos = member::member_infos_with_key_all(self, &owner_ty, &key);
+        let infos = if let Some((_, write)) = self.directional_member(&owner_ty, &key) {
+            vec![write]
+        } else {
+            member::member_infos_with_key_all(self, &owner_ty, &key)
+        };
         let mut out = Vec::new();
         for info in &infos {
-            let typ = match &info.typ {
-                LuaType::Ref(id) | LuaType::Def(id)
-                    if self
-                        .type_def_of(id)
-                        .is_some_and(|def| def.kind == TypeDefKind::Alias) =>
-                {
-                    let def = self.type_def_of(id)?;
-                    self.alias_target(&def)
-                        .map(|target| type_eval::expand_alias_generic(self, &target))
-                        .unwrap_or_else(|| info.typ.clone())
-                }
-                _ => type_eval::expand_alias_generic(self, &info.typ),
-            };
-            match &typ {
-                LuaType::DocFunction(fun) => out.push(fun.as_ref().clone()),
-                LuaType::Union(union) => {
-                    for ty in union.into_vec() {
-                        if let LuaType::DocFunction(fun) = ty {
-                            out.push(fun.as_ref().clone());
-                        }
-                    }
-                }
-                _ => {}
-            }
+            out.extend(self.contextual_callback_signatures(&info.typ));
+        }
+        // A dictionary or array's value contract is not an enumerated named member.
+        // Use its declared value type, not an indexed read (which may add nil).
+        if out.is_empty()
+            && let Some(value) = self.contextual_table_value(&owner_ty, &key)
+        {
+            out.extend(self.contextual_callback_signatures(&value));
         }
         // Repeated `@field` non-overload: the last one overrides previous ones (expected by the third test case).
         if out.len() > 1 {
@@ -795,6 +841,160 @@ impl<'db> SemanticModel<'db> {
         }
         Some(out)
     }
+    /// Recover the value contract of a nested constructor without inferring its contents.
+    pub(crate) fn contextual_constructor_type(&self, table: &LuaTableExpr) -> Option<LuaType> {
+        let facts = self.file_facts()?;
+        if let Some(decl) = facts.decl_by_value_range(table.get_range()) {
+            return self.type_of_decl(&decl.id);
+        }
+        if let Some(doc) = facts
+            .member_by_value_syntax(table.get_syntax_id())
+            .and_then(|member| member.doc_type_syntax)
+        {
+            return Some(self.doc_type_lua_rich_in(self.view.file_id(), doc));
+        }
+        if let Some(assign) = table.get_parent::<LuaAssignStat>() {
+            let (targets, values) = assign.get_var_and_expr_list();
+            let position = values
+                .iter()
+                .position(|value| value.get_range() == table.get_range())?;
+            let typ = self.assignment_target_type(targets.get(position)?.to_expr());
+            return (!matches!(
+                typ,
+                LuaType::TableConst(_) | LuaType::Unknown | LuaType::Any
+            ))
+            .then_some(typ);
+        }
+        // Recursion always moves to an enclosing table, so it cannot cycle.
+        let field = table.get_parent::<LuaTableField>()?;
+        let outer = field.get_parent::<LuaTableExpr>()?;
+        let owner = self.contextual_constructor_type(&outer)?;
+        let key_type = match field.get_field_key()? {
+            LuaIndexKey::Name(name) => {
+                LuaType::StringConst(SmolStr::new(name.get_name_text()).into())
+            }
+            LuaIndexKey::String(value) => {
+                LuaType::StringConst(SmolStr::new(value.get_value()).into())
+            }
+            LuaIndexKey::Integer(value) => match value.get_number_value() {
+                NumberResult::Int(value) => LuaType::IntegerConst(value),
+                _ => return None,
+            },
+            LuaIndexKey::Idx(index) => LuaType::IntegerConst(index as i64),
+            LuaIndexKey::Expr(expr) => {
+                self.type_of_expr_at(expr.get_syntax_id(), expr.get_position())
+            }
+        };
+        let key = match &key_type {
+            LuaType::StringConst(value) | LuaType::DocStringConst(value) => {
+                Some(LuaMemberKey::Name(value.as_ref().clone()))
+            }
+            LuaType::IntegerConst(value) | LuaType::DocIntegerConst(value) => {
+                Some(LuaMemberKey::Integer(*value))
+            }
+            _ => None,
+        };
+        if let Some(key) = &key
+            && let Some((_, write)) = self.directional_member(&owner, key)
+        {
+            return Some(write.typ);
+        }
+        if let Some(key) = key
+            && let Some(typ) = self.member_type(&owner, &key)
+        {
+            return Some(typ);
+        }
+        self.contextual_table_value_by_key_type(&owner, &key_type)
+    }
+
+    /// Follow plain and generic aliases without recursing through cycles.
+    fn contextual_alias_target(&self, ty: &LuaType) -> LuaType {
+        let mut current = ty.clone();
+        let mut seen = Vec::new();
+        while seen.len() < 32 && !seen.contains(&current) {
+            seen.push(current.clone());
+            let expanded = type_eval::expand_alias_generic(self, &current);
+            if expanded != current {
+                current = expanded;
+                continue;
+            }
+            let (LuaType::Ref(id) | LuaType::Def(id)) = &current else {
+                break;
+            };
+            let Some(def) = self
+                .type_def_of(id)
+                .filter(|def| def.kind == TypeDefKind::Alias)
+            else {
+                break;
+            };
+            let Some(target) = self.alias_target(&def) else {
+                break;
+            };
+            current = target;
+        }
+        current
+    }
+
+    fn contextual_callback_signatures(&self, ty: &LuaType) -> Vec<LuaFunctionType> {
+        let ty = self.contextual_alias_target(ty);
+        let types = match ty {
+            LuaType::Union(union) => union.into_vec(),
+            ty => vec![ty],
+        };
+        types
+            .iter()
+            .filter_map(|ty| match self.contextual_alias_target(ty) {
+                LuaType::DocFunction(fun) => Some(fun.as_ref().clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn contextual_table_value(&self, owner: &LuaType, key: &LuaMemberKey) -> Option<LuaType> {
+        self.contextual_table_value_by_key_type(owner, &key.to_index_type()?)
+    }
+
+    fn contextual_table_value_by_key_type(
+        &self,
+        owner: &LuaType,
+        key: &LuaType,
+    ) -> Option<LuaType> {
+        // A nullable computed key still identifies the value contract on the
+        // non-nil path. Key validity is checked separately from callback context.
+        let key = match self.contextual_alias_target(key) {
+            LuaType::Nil => return None,
+            LuaType::Union(union) => {
+                let alternatives = union
+                    .iter()
+                    .filter(|ty| !ty.is_nil())
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if alternatives.is_empty() {
+                    return None;
+                }
+                LuaType::from_vec(alternatives)
+            }
+            key => key,
+        };
+        let owner = self.contextual_alias_target(owner);
+        let params = match &owner {
+            LuaType::Array(array) => {
+                return self
+                    .type_check(&key, &LuaType::Integer)
+                    .then(|| array.get_base().clone());
+            }
+            LuaType::TableGeneric(params) => params.as_ref(),
+            LuaType::Generic(generic) if generic.get_base_type_id().get_name() == "table" => {
+                generic.get_params()
+            }
+            _ => return None,
+        };
+        let [expected_key, value] = params.as_slice() else {
+            return None;
+        };
+        self.type_check(&key, expected_key).then(|| value.clone())
+    }
+
     /// `---@param` / `---@return` annotations on table-literal fields override the closure's bare signature.
     /// semantic currently does not merge these field-level docs into `Signature.docs`, but `setmetatable`'s
     /// `__call` / `__index` metamethod fields depend on them to preserve the function signature.

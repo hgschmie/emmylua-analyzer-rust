@@ -16,12 +16,25 @@ pub struct MemberRef {
     pub name: SmolStr,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum MemberAccess {
+    #[default]
+    ReadWrite,
+    Read,
+    Write,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Member {
-    /// Globally unique identity = declaration location (file + member-key token range).
+    pub access: MemberAccess,
+    /// Globally unique identity = file plus written key range, or value range for implicit list entries.
     pub id: SemanticId,
     /// File-independent lookup key: `Name("Field")` / `Integer(1)`.
     pub key: LuaMemberKey,
+    /// Implicit list-entry key: its identity spans the value, not a written declaration key.
+    pub is_implicit_key: bool,
+    /// Computed constructor keys contain expression uses, not declaration names.
+    pub is_computed_key: bool,
     /// Owner (resolved association): `Decl(local)` / `TypeDef(@field)` / `Name(global, resolved in phase 2)` / `Member(nested a.b.c)`.
     pub owner: SemanticId,
     /// Value: `TypeDef` members = doc type nodes; others = expressions.
@@ -54,8 +67,11 @@ impl Member {
         owner: SemanticId,
     ) -> Self {
         Member {
+            access: MemberAccess::ReadWrite,
             id: SemanticId::member(file_id, key_range),
             key,
+            is_implicit_key: false,
+            is_computed_key: false,
             owner,
             value_syntax: None,
             doc_type_syntax: None,

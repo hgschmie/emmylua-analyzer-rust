@@ -11,6 +11,8 @@ use crate::semantic_db::def::{LuaMemberKey, SemanticId};
 /// Effect summary carried on flow nodes (consumed by semantic_model/flow to avoid reparsing the AST during backtracking).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FlowEffect {
+    /// Loop entry: writes in the body may have happened in a previous iteration.
+    LoopEntry(emmylua_parser::LuaSyntaxId),
     /// Variable assignment: decl <- value expression.
     AssignDecl {
         decl: SemanticId,
@@ -60,6 +62,8 @@ pub struct FlowNode {
 pub enum FlowNodeKind {
     /// Entry point of the flow
     Start,
+    /// Entry to a closure whose captured locals may have changed since definition.
+    ClosureEntry(LuaClosureId),
     /// Unreachable code
     Unreachable,
     /// Label for branching (if/else, switch cases)

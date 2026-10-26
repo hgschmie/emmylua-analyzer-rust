@@ -1,9 +1,152 @@
 #[cfg(test)]
 mod test {
+    use googletest::prelude::*;
+
     use crate::{
         DiagnosticCode, VirtualWorkspace,
         check::test::{check_source, count_by_code},
     };
+
+    fn imported_functions_workspace() -> VirtualWorkspace {
+        let mut ws = VirtualWorkspace::new();
+        ws.def_file(
+            "tools.lua",
+            r#"
+                ---@class DuplicateField.Tools
+                local Tools = {}
+
+                ---@param item {name: string}
+                ---@return string
+                function Tools.identifier(item)
+                    return item.name
+                end
+
+                ---@return table<string, integer>
+                function Tools.getInventory()
+                    return {}
+                end
+
+                return Tools
+            "#,
+        );
+        ws
+    }
+
+    #[gtest]
+    fn imported_functions_read_inside_assignment_targets_are_not_redefined() {
+        for assignment in [
+            "inventory[tools.identifier(item)] = item",
+            "inventory[tools[\"identifier\"](item)] = item",
+            "inventory[tools.identifier] = item",
+            "tools.getInventory().value = 1",
+            "tools.getInventory()[tools.identifier(item)] = 1",
+            "other, inventory[tools.identifier(item)] = 0, item",
+            "inventory[tools.identifier(item)] = function() end",
+            "inventory[tools.identifier(item)] = tools.identifier",
+        ] {
+            let mut ws = imported_functions_workspace();
+            expect_that!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::DuplicateSetField,
+                    &format!(
+                        r#"
+                        local tools = require("tools")
+                        local inventory = {{}}
+                        local item = {{name = "iron-plate"}}
+                        local other
+                        {assignment}
+                        "#
+                    ),
+                ),
+                eq(true),
+                "{assignment}"
+            );
+        }
+    }
+
+    #[gtest]
+    fn imported_function_reassignments_are_still_reported() {
+        for assignment in [
+            "tools.identifier = function(item) return item.name end",
+            "tools[\"identifier\"] = function(item) return item.name end",
+            "other, tools.identifier = 0, function(item) return item.name end",
+            "function tools.identifier(item) return item.name end",
+            "function tools:identifier(item) return item.name end",
+        ] {
+            let mut ws = imported_functions_workspace();
+            expect_that!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::DuplicateSetField,
+                    &format!(
+                        r#"
+                        local tools = require("tools")
+                        local other
+                        {assignment}
+                        "#
+                    ),
+                ),
+                eq(false),
+                "{assignment}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cross_method_self_field_writes_are_not_duplicates() {
+        let diagnostics = check_source(
+            r#"
+                local M = {}
+                function M:init()
+                    self.run = function() end
+                end
+                function M:reset()
+                    self.run = function() end
+                end
+        "#,
+        );
+        assert_eq!(
+            count_by_code(&diagnostics, DiagnosticCode::DuplicateSetField),
+            0,
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn test_repeated_self_field_writes_are_reported() {
+        let diagnostics = check_source(
+            r#"
+                local M = {}
+                function M:init()
+                    self.run = function() end
+                    self.run = function() end
+                end
+        "#,
+        );
+        assert_eq!(
+            count_by_code(&diagnostics, DiagnosticCode::DuplicateSetField),
+            2,
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn test_self_field_write_does_not_mask_direct_duplicates() {
+        let diagnostics = check_source(
+            r#"
+                local M = {}
+                function M:init()
+                    self.run = function() end
+                end
+                function M.run() end
+                M.run = function() end
+        "#,
+        );
+        assert_eq!(
+            count_by_code(&diagnostics, DiagnosticCode::DuplicateSetField),
+            2,
+            "{diagnostics:?}"
+        );
+    }
 
     #[test]
     fn test_duplicate_field() {
@@ -212,62 +355,5 @@ mod test {
                 end
         "#
         ));
-    }
-
-    #[test]
-    fn test_self_field_write_does_not_mask_direct_duplicates() {
-        let diagnostics = check_source(
-            r#"
-                local M = {}
-                function M:init()
-                    self.run = function() end
-                end
-                function M.run() end
-                M.run = function() end
-        "#,
-        );
-        assert_eq!(
-            count_by_code(&diagnostics, DiagnosticCode::DuplicateSetField),
-            2,
-            "{diagnostics:?}"
-        );
-    }
-
-    #[test]
-    fn test_repeated_self_field_writes_are_reported() {
-        let diagnostics = check_source(
-            r#"
-                local M = {}
-                function M:init()
-                    self.run = function() end
-                    self.run = function() end
-                end
-        "#,
-        );
-        assert_eq!(
-            count_by_code(&diagnostics, DiagnosticCode::DuplicateSetField),
-            2,
-            "{diagnostics:?}"
-        );
-    }
-
-    #[test]
-    fn test_cross_method_self_field_writes_are_not_duplicates() {
-        let diagnostics = check_source(
-            r#"
-                local M = {}
-                function M:init()
-                    self.run = function() end
-                end
-                function M:reset()
-                    self.run = function() end
-                end
-        "#,
-        );
-        assert_eq!(
-            count_by_code(&diagnostics, DiagnosticCode::DuplicateSetField),
-            0,
-            "{diagnostics:?}"
-        );
     }
 }

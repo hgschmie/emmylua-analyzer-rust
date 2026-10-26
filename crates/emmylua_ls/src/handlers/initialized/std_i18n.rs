@@ -1,7 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::DefaultHasher};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
-use emmylua_code_analysis::{LuaFileInfo, get_best_resources_dir, get_locale_code};
+use emmylua_code_analysis::{
+    LuaFileInfo, get_locale_code, prepare_resources_dir, resource_cache_key,
+};
 use include_dir::{Dir, include_dir};
 
 static STD_I18N_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/std_i18n");
@@ -95,81 +99,66 @@ enum MetaKind {
     Tail,
 }
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Try to generate the translated std library.
-pub fn try_generate_translated_std() -> Option<()> {
+/// Prepare bundled resources before translations so extraction cannot overwrite them.
+pub fn try_generate_translated_std(resources_dir: &Path) -> Option<()> {
     let locale = get_locale_code(&rust_i18n::locale());
+    prepare_translated_std(resources_dir, &locale)
+}
+
+fn prepare_translated_std(resources_dir: &Path, locale: &str) -> Option<()> {
+    prepare_resources_dir(resources_dir)?;
     if locale == "en" {
         return Some(());
     }
 
-    // Check whether a translation file exists for the locale.
-    let first_sub_dir = STD_I18N_DIR
-        .entries()
-        .iter()
-        .filter_map(|e| e.as_dir())
-        .next()?;
-
-    let locale_yaml = format!("{}.yaml", locale);
-    let has_locale_file = first_sub_dir
-        .entries()
-        .iter()
-        .filter_map(|e| e.as_file())
-        .any(|f| {
-            f.path()
-                .file_name()
-                .is_some_and(|n| n == locale_yaml.as_str())
-        });
-    if !has_locale_file {
+    let first_sub_dir = STD_I18N_DIR.entries().iter().find_map(|e| e.as_dir())?;
+    let locale_yaml = format!("{locale}.yaml");
+    if !first_sub_dir.files().any(|f| {
+        f.path()
+            .file_name()
+            .is_some_and(|n| n == locale_yaml.as_str())
+    }) {
         return Some(());
     }
 
-    let resources_dir = get_best_resources_dir();
-    if !check_need_dump_std(&resources_dir, &locale) {
-        return None;
+    let marker = resources_dir.join(format!("std-{locale}")).join(".version");
+    let key = translation_cache_key(locale);
+    if std::fs::read_to_string(&marker).is_ok_and(|version| version.trim() == key) {
+        return Some(());
     }
-    // Use the best resources directory as the parent of the output directory.
-    generate(&locale, &resources_dir);
+    if marker.exists() {
+        std::fs::remove_file(&marker).ok()?;
+    }
+    generate(locale, resources_dir)?;
+    std::fs::write(marker, key).ok()?;
     Some(())
 }
 
-/// Check whether the translated std files need to be regenerated.
-fn check_need_dump_std(resources_dir: &Path, locale: &str) -> bool {
-    // Always regenerate in debug builds.
-    if cfg!(debug_assertions) {
-        return true;
-    }
-    // No translation file for the locale exists, so generate it.
-    let translated_std_dir = resources_dir.join(format!("std-{locale}"));
-    if !translated_std_dir.exists() {
-        return true;
-    }
-
-    let version_path = resources_dir.join("version");
-
-    // Version file is missing, so regenerate.
-    if !version_path.exists() {
-        return true;
-    }
-
-    // Failed to read the version file, so regenerate.
-    let Ok(content) = std::fs::read_to_string(&version_path) else {
-        return true;
-    };
-
-    // Version mismatch, so regenerate.
-    let version = content.trim();
-    if version != VERSION {
-        return true;
-    }
-    false
+fn translation_cache_key(locale: &str) -> String {
+    static META_KEY: OnceLock<u64> = OnceLock::new();
+    let meta_key = META_KEY.get_or_init(|| {
+        fn hash_dir(dir: &Dir, hash: &mut DefaultHasher) {
+            for entry in dir.entries() {
+                match entry {
+                    include_dir::DirEntry::File(file) => {
+                        file.path().hash(hash);
+                        file.contents().hash(hash);
+                    }
+                    include_dir::DirEntry::Dir(dir) => hash_dir(dir, hash),
+                }
+            }
+        }
+        let mut hash = DefaultHasher::new();
+        hash_dir(&STD_I18N_DIR, &mut hash);
+        hash.finish()
+    });
+    format!("{}:{locale}:{meta_key:016x}", resource_cache_key())
 }
 
 /// Params:
 /// - `locale` - language
 /// - `out_parent_dir` - parent of the output directory
-fn generate(locale: &str, out_parent_dir: &Path) -> Vec<LuaFileInfo> {
+fn generate(locale: &str, out_parent_dir: &Path) -> Option<Vec<LuaFileInfo>> {
     let origin_std_files = emmylua_code_analysis::load_resource_from_include_dir();
     let translate_std_root = out_parent_dir.join(format!("std-{locale}"));
     log::info!("Creating std-{locale} dir: {:?}", translate_std_root);
@@ -186,9 +175,9 @@ fn generate(locale: &str, out_parent_dir: &Path) -> Vec<LuaFileInfo> {
             translate_one_std_file(locale, &rel, &file.content).unwrap_or(file.content);
         let out_path = translate_std_root.join(&rel);
         if let Some(parent) = out_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent).ok()?;
         }
-        let _ = std::fs::write(&out_path, &translated);
+        std::fs::write(&out_path, &translated).ok()?;
 
         out_files.push(LuaFileInfo {
             path: out_path.to_string_lossy().to_string(),
@@ -196,7 +185,7 @@ fn generate(locale: &str, out_parent_dir: &Path) -> Vec<LuaFileInfo> {
         });
     }
 
-    out_files
+    Some(out_files)
 }
 
 fn translate_one_std_file(locale: &str, rel_lua_path: &Path, content: &str) -> Option<String> {
@@ -1059,23 +1048,85 @@ fn fnv1a64_hex(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use emmylua_code_analysis::{prepare_resources_dir, resource_cache_key};
     use std::collections::HashMap;
-    use std::path::Path;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::{
         MetaBlock, MetaEntry, MetaFile, MetaKind, STD_I18N_DIR, apply_meta_translations,
-        build_line_start_offsets, fnv1a64_hex, generate, range_to_offsets,
+        build_line_start_offsets, fnv1a64_hex, generate, prepare_translated_std, range_to_offsets,
+        translation_cache_key,
     };
+
+    struct TestDir(PathBuf);
+    impl TestDir {
+        fn new() -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("build/test-work/translations")
+                .join(format!(
+                    "{}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[test]
     fn test_generate_translated() {
-        let test_output_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("emmylua_code_analysis")
-            .join("resources");
-        let files = generate("zh_CN", &test_output_dir);
+        let dir = TestDir::new();
+        let files = generate("zh_CN", &dir.0).unwrap();
         assert!(!files.is_empty());
+    }
+
+    #[test]
+    fn translation_cache_refreshes_old_metadata_and_reuses_current_files() {
+        let dir = TestDir::new();
+        prepare_resources_dir(&dir.0).unwrap();
+        let global = dir.0.join("std-zh_CN/global.lua");
+        let marker = dir.0.join("std-zh_CN/.version");
+        std::fs::write(&global, "obsolete translation").unwrap();
+        std::fs::write(&marker, "obsolete metadata key").unwrap();
+        assert_eq!(prepare_translated_std(&dir.0, "zh_CN"), Some(()));
+        assert!(std::fs::read_to_string(&global).unwrap().contains("如果"));
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap(),
+            translation_cache_key("zh_CN")
+        );
+        std::fs::write(&global, "same-build translated edit").unwrap();
+        assert_eq!(prepare_translated_std(&dir.0, "zh_CN"), Some(()));
+        assert_eq!(
+            std::fs::read_to_string(&global).unwrap(),
+            "same-build translated edit"
+        );
+    }
+
+    #[test]
+    fn resource_upgrade_refreshes_translations_without_later_overwrite() {
+        let dir = TestDir::new();
+        prepare_translated_std(&dir.0, "zh_CN").unwrap();
+        let global = dir.0.join("std-zh_CN/global.lua");
+        std::fs::write(&global, "obsolete translation").unwrap();
+        std::fs::write(dir.0.join("version"), "0.30.0").unwrap();
+        assert_eq!(prepare_translated_std(&dir.0, "en"), Some(()));
+        assert!(!dir.0.join("std-zh_CN/.version").exists());
+        assert_eq!(prepare_translated_std(&dir.0, "zh_CN"), Some(()));
+        let translated = std::fs::read_to_string(&global).unwrap();
+        assert!(translated.contains("如果"));
+        assert_eq!(prepare_resources_dir(&dir.0), Some(false));
+        assert_eq!(std::fs::read_to_string(&global).unwrap(), translated);
+        assert_eq!(
+            std::fs::read_to_string(dir.0.join("version")).unwrap(),
+            resource_cache_key()
+        );
     }
 
     #[test]

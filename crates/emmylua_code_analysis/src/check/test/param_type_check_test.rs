@@ -1,4 +1,158 @@
 #[cfg(test)]
+mod inline_assertion_arguments {
+    use crate::DiagnosticCode;
+    use crate::check::test::check_source;
+
+    fn diagnostics(source: &str) -> Vec<crate::check::checker::Diagnostic> {
+        check_source(source)
+            .into_iter()
+            .filter(|d| {
+                matches!(
+                    d.code,
+                    DiagnosticCode::ParamTypeMismatch
+                        | DiagnosticCode::AssignTypeMismatch
+                        | DiagnosticCode::MissingFields
+                        | DiagnosticCode::InjectField
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_asserted_table_arguments_use_asserted_contract() {
+        let source = r#"
+        ---@class Message
+        ---@field text string
+        ---@param message Message
+        local function accept(message) end
+        ---@type string?
+        local maybe
+        accept({text = maybe} --[[@as Message]])
+        accept({unexpected = true} --[[@as Message]])
+        accept(({} --[[@as Message]]))
+        accept(({}) --[[@as Message]])
+        "#;
+        assert!(diagnostics(source).is_empty(), "{:#?}", diagnostics(source));
+    }
+
+    #[test]
+    fn test_assertions_do_not_hide_other_argument_errors() {
+        let source = r#"
+        ---@class Message
+        ---@field text string
+        ---@param message Message
+        ---@param count integer
+        local function accept(message, count) end
+        accept({} --[[@as Message]], 'wrong')
+        "#;
+        let result = diagnostics(source);
+        assert_eq!(result.len(), 1, "{result:#?}");
+        assert_eq!(result[0].code, DiagnosticCode::ParamTypeMismatch);
+        assert!(result[0].message.contains("integer"), "{result:#?}");
+    }
+
+    #[test]
+    fn test_asserted_argument_does_not_cast_siblings_or_nested_calls() {
+        for call in [
+            "accept({} --[[@as Message]], 'wrong')",
+            "accept({text = integer_only('wrong')} --[[@as Message]], {} --[[@as Message]])",
+            "integer_only({text = integer_only('wrong')} --[[@as integer]])",
+        ] {
+            let source = format!(
+                r#"
+            ---@class Message
+            ---@field text string
+            ---@param first Message
+            ---@param second Message
+            local function accept(first, second) end
+            ---@param n integer
+            local function integer_only(n) return n end
+            {call}
+            "#
+            );
+            let result = diagnostics(&source);
+            assert_eq!(result.len(), 1, "{call}: {result:#?}");
+            assert_eq!(result[0].code, DiagnosticCode::ParamTypeMismatch);
+        }
+    }
+
+    #[test]
+    fn test_incompatible_asserted_contract_is_still_rejected() {
+        let source = r#"
+        ---@class Message
+        ---@field text string
+        ---@param count integer
+        local function accept(count) end
+        accept({text = 'message'} --[[@as Message]])
+        "#;
+        let result = diagnostics(source);
+        assert_eq!(result.len(), 1, "{result:#?}");
+        assert_eq!(result[0].code, DiagnosticCode::ParamTypeMismatch);
+    }
+
+    #[test]
+    fn test_asserted_arguments_in_methods_generics_and_variadics() {
+        let source = r#"
+        ---@class Message
+        ---@field text string
+        local methods = {}
+        ---@param message Message
+        function methods:accept(message) end
+        ---@param ... Message
+        local function accept_many(...) end
+        ---@generic T
+        ---@param value T
+        ---@return T
+        local function identity(value) return value end
+        methods:accept({} --[[@as Message]])
+        accept_many({} --[[@as Message]], {} --[[@as Message]])
+        methods:accept(identity({} --[[@as Message]]))
+        "#;
+        assert!(diagnostics(source).is_empty(), "{:#?}", diagnostics(source));
+    }
+
+    #[test]
+    fn test_unasserted_and_incompatible_contracts_still_report_errors() {
+        for argument in ["{}", "{text = false}", "{} --[[@as integer]]"] {
+            let source = format!(
+                r#"
+            ---@class Message
+            ---@field text string
+            ---@param message Message
+            local function accept(message) end
+            accept({argument})
+            "#
+            );
+            assert!(!diagnostics(&source).is_empty(), "{argument}");
+        }
+    }
+
+    #[test]
+    fn test_asserted_argument_cache_preserves_nullable_contract() {
+        use emmylua_parser::{LuaAstNode, LuaCallExpr};
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def(
+            r#"
+            ---@class Message
+            ---@field text string
+            ---@param message Message?
+            local function accept(message) end
+            accept({} --[[@as Message?]])
+        "#,
+        );
+        let model = ws.analysis.semantic_model(file);
+        let call = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaCallExpr>()
+            .next()
+            .unwrap();
+        let analysis = model.call_site_analysis(&call);
+        assert_eq!(analysis.arg_types, vec![ws.ty("Message?")]);
+    }
+}
+
+#[cfg(test)]
 mod test {
     use std::{ops::Deref, sync::Arc};
 
@@ -25,6 +179,75 @@ mod test {
             .diagnose_file(file_id, CancellationToken::new())
             .unwrap();
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn test_function_argument_accepts_unknown_parameter() {
+        for target in ["unknown", "any", "function", "unknown|string"] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            assert!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::ParamTypeMismatch,
+                    &format!(
+                        r#"
+                    ---@param value {target}
+                    local function accept(value) return value end
+                    ---@param callback function
+                    local function run(callback) return accept(callback) end
+                "#
+                    ),
+                ),
+                "target: {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_guarded_function_argument_accepts_unannotated_helper() {
+        for expression in [
+            "accept(value)",
+            "type(value) == 'function' and accept(value) or value",
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            assert!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::ParamTypeMismatch,
+                    &format!(
+                        r#"
+                    local function accept(value) return value end
+                    ---@param value unknown
+                    local function run(value)
+                        if type(value) == 'function' then
+                            return {expression}
+                        end
+                    end
+                "#
+                    ),
+                ),
+                "expression: {expression}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_function_argument_to_unknown_keeps_scalar_rejections() {
+        for target in ["string", "number"] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            assert!(
+                !ws.has_no_diagnostic(
+                    DiagnosticCode::ParamTypeMismatch,
+                    &format!(
+                        r#"
+                    ---@param value {target}
+                    local function accept(value) return value end
+                    ---@param callback function
+                    local function run(callback) return accept(callback) end
+                "#
+                    ),
+                ),
+                "target: {target}"
+            );
+        }
     }
 
     #[test]
@@ -2365,5 +2588,1079 @@ mod test {
             "diagnostics: {:?}",
             diagnostics
         );
+    }
+}
+#[cfg(test)]
+mod nominal_enum_members {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    use googletest::prelude::*;
+
+    #[gtest]
+    fn enum_accepts_its_nominal_members() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def(
+            r#"
+            defines = {}
+            ---@enum defines.rail_direction
+            defines.rail_direction = {
+                ---@class defines.rail_direction.back
+                back = {},
+                ---@class defines.rail_direction.front
+                front = {},
+            }
+            ---@param direction defines.rail_direction
+            function use_direction(direction) end
+        "#,
+        );
+        assert_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::ParamTypeMismatch,
+                r#"
+            ---@type defines.rail_direction.front
+            local front
+            use_direction(front)
+            use_direction(defines.rail_direction.front)
+            use_direction(defines.rail_direction.back)
+        "#
+            ),
+            eq(true)
+        );
+    }
+
+    #[gtest]
+    fn enum_accepts_predeclared_class_value() {
+        let mut ws = VirtualWorkspace::new();
+        assert_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::ParamTypeMismatch,
+                r#"
+            ---@class Front
+            local front = {}
+            ---@enum Direction
+            local Direction = {front = front}
+            ---@param direction Direction
+            local function use_direction(direction) end
+            use_direction(front)
+        "#
+            ),
+            eq(true)
+        );
+    }
+
+    #[gtest]
+    fn enum_member_compatibility_preserves_rejections() {
+        let definitions = r#"
+            defines = {}
+            ---@enum Direction
+            defines.directions = {
+                ---@class Front
+                front = {},
+            }
+            ---@enum OtherDirection
+            defines.other = {
+                ---@class OtherFront
+                front = {},
+            }
+            ---@class Direction.unlisted
+            ---@class Unrelated
+            ---@param direction Direction
+            function use_direction(direction) end
+        "#;
+        for ty in [
+            "OtherFront",
+            "Direction.unlisted",
+            "Unrelated",
+            "nil",
+            "Front?",
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            ws.def(definitions);
+            assert_that!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::ParamTypeMismatch,
+                    &format!(
+                        r#"
+                ---@param value {ty}
+                local function call(value) use_direction(value) end
+            "#
+                    )
+                ),
+                eq(false),
+                "{ty}"
+            );
+        }
+    }
+
+    #[gtest]
+    fn enum_member_assignments_and_optional_parameters() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@class Front
+            front = {}
+            ---@class Back
+            back = {}
+            ---@class Other
+            other = {}
+            ---@enum Direction
+            directions = {front = front, back = back}
+            ---@param direction Direction?
+            function optional_direction(direction) end
+        "#,
+        );
+        assert_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::AssignTypeMismatch,
+                r#"
+            ---@type Direction
+            local direction = front
+            direction = back
+        "#
+            ),
+            eq(true)
+        );
+        assert_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::AssignTypeMismatch,
+                r#"
+            ---@type Direction
+            local direction = other
+        "#
+            ),
+            eq(false)
+        );
+        assert_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::ParamTypeMismatch,
+                r#"
+            optional_direction(front)
+            optional_direction(back)
+            optional_direction(nil)
+        "#
+            ),
+            eq(true)
+        );
+    }
+
+    #[gtest]
+    fn nested_enum_and_inherited_member() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            defines = {
+                ---@enum Direction
+                direction = {
+                    ---@class Front
+                    front = {},
+                },
+            }
+            ---@class DerivedFront: Front
+            derived_front = {}
+            ---@param direction Direction
+            function use_direction(direction) end
+        "#,
+        );
+        assert_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::ParamTypeMismatch,
+                r#"
+            use_direction(derived_front)
+        "#
+            ),
+            eq(true)
+        );
+    }
+
+    #[gtest]
+    fn recursive_enum_member_does_not_accept_unrelated_class() {
+        let mut ws = VirtualWorkspace::new();
+        assert_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::ParamTypeMismatch,
+                r#"
+            ---@class Other
+            local other = {}
+            ---@type Recursive
+            local recursive
+            ---@enum Recursive
+            local values = {self = recursive}
+            ---@param value Recursive
+            local function use(value) end
+            use(other)
+        "#
+            ),
+            eq(false)
+        );
+    }
+
+    #[gtest]
+    fn private_enum_member_does_not_match_another_files_class() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@class (private) Front
+            local front = {}
+            ---@enum Direction
+            local values = {front = front}
+            ---@param value Direction
+            function use_direction(value) end
+        "#,
+        );
+        assert_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::ParamTypeMismatch,
+                r#"
+            ---@class (private) Front
+            local front = {}
+            use_direction(front)
+        "#
+            ),
+            eq(false)
+        );
+    }
+}
+
+#[cfg(test)]
+mod callback_return_aliases {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    use googletest::prelude::*;
+
+    fn workspace() -> VirtualWorkspace {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def(
+            r#"
+            ---@alias Message [string, Message...]|number|boolean|string
+            ---@alias Callback fun():Message
+            ---@param callback Callback
+            function print_message(callback) end
+        "#,
+        );
+        ws
+    }
+
+    #[gtest]
+    fn accepts_alias_return_alternatives() {
+        for body in [
+            "return 'hello'",
+            "return 1",
+            "return true",
+            "return {'hello'}",
+            "return {'hello', 1, false, 'world', {'nested', 2}}",
+            "return {'hello'} --[[@as Message]]",
+            "local message = {'hello'}; return message",
+            "local message = {'hello', 1}; return message",
+        ] {
+            let mut ws = workspace();
+            expect_that!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::ParamTypeMismatch,
+                    &format!("print_message(function() {body}\nend)")
+                ),
+                eq(true),
+                "{body}"
+            );
+        }
+    }
+
+    #[gtest]
+    fn rejects_invalid_alias_returns() {
+        for body in [
+            "return nil",
+            "return function() end",
+            "return {}",
+            "return {42}",
+            "return {'hello', function() end}",
+            "return {'hello', 1, 2, function() end}",
+            "return {'hello', {'nested', function() end}}",
+        ] {
+            let mut ws = workspace();
+            expect_that!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::ParamTypeMismatch,
+                    &format!("print_message(function() {body}\nend)")
+                ),
+                eq(false),
+                "{body}"
+            );
+        }
+    }
+
+    #[gtest]
+    fn aliases_and_inline_unions_agree() {
+        for annotation in ["Scalar", "ScalarChain", "string|number"] {
+            for (body, valid) in [
+                ("return 'text'", true),
+                ("return 1", true),
+                ("return false", false),
+            ] {
+                let mut ws = VirtualWorkspace::new_with_init_std_lib();
+                ws.def(
+                    r#"
+                    ---@alias Scalar string|number
+                    ---@alias ScalarChain Scalar
+                "#,
+                );
+                let code = format!(
+                    "---@param callback fun():{annotation}\nlocal function use(callback) end\nuse(function() {body} end)"
+                );
+                expect_that!(
+                    ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, &code),
+                    eq(valid),
+                    "{annotation}: {body}"
+                );
+            }
+        }
+    }
+
+    #[gtest]
+    fn callback_parameter_aliases_preserve_contravariance() {
+        for (actual, expected, valid) in [
+            ("Scalar", "string", true),
+            ("string", "Scalar", false),
+            ("Scalar", "string|number", true),
+            ("string|number", "Scalar", true),
+            ("boolean", "Scalar", false),
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            ws.def(r#"---@alias Scalar string|number"#);
+            let crate::LuaType::DocFunction(actual_fn) = ws.ty(&format!("fun(value: {actual})"))
+            else {
+                panic!("function type");
+            };
+            let crate::LuaType::DocFunction(expected_fn) =
+                ws.ty(&format!("fun(value: {expected})"))
+            else {
+                panic!("function type");
+            };
+            let file = ws.def("");
+            let model = ws.analysis.semantic_model(file);
+            let result = crate::semantic_model::infer::function_solver::functions_compatible(
+                &model,
+                &actual_fn,
+                &expected_fn,
+                &Default::default(),
+            );
+            expect_that!(result, eq(valid), "{actual} -> {expected}");
+        }
+    }
+
+    #[gtest]
+    fn callback_return_unions_and_cycles() {
+        for (actual, expected, valid) in [
+            ("Scalar", "string|number", true),
+            ("string|number", "Scalar", true),
+            ("Scalar?", "Scalar", false),
+            ("Scalar", "Scalar?", true),
+            ("string|boolean", "Scalar", false),
+            ("Cycle", "string", false),
+            ("string", "Cycle", false),
+            ("string", "Recursive", true),
+            ("boolean", "Recursive", false),
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            ws.def(
+                r#"
+                ---@alias Scalar string|number
+                ---@alias Cycle Cycle
+                ---@alias Recursive Recursive|string
+            "#,
+            );
+            let crate::LuaType::DocFunction(actual_fn) = ws.ty(&format!("fun():{actual}")) else {
+                panic!("function type");
+            };
+            let crate::LuaType::DocFunction(expected_fn) = ws.ty(&format!("fun():{expected}"))
+            else {
+                panic!("function type");
+            };
+            let file = ws.def("");
+            let model = ws.analysis.semantic_model(file);
+            let result = crate::semantic_model::infer::function_solver::functions_compatible(
+                &model,
+                &actual_fn,
+                &expected_fn,
+                &Default::default(),
+            );
+            expect_that!(result, eq(valid), "{actual} -> {expected}");
+        }
+    }
+
+    #[gtest]
+    fn tuple_tails_check_every_present_element() {
+        for (value, valid) in [
+            ("{'head'}", true),
+            ("{'head', 1, 2, 3}", true),
+            ("{}", false),
+            ("{1}", false),
+            ("{'head', 'bad'}", false),
+            ("{'head', 1, 2, 'bad'}", false),
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            let code = format!(
+                r#"
+                ---@param callback fun():[string, number...]
+                local function use(callback) end
+                use(function() return {value} end)
+            "#
+            );
+            expect_that!(
+                ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, &code),
+                eq(valid),
+                "{value}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_builtin_length_argument_type() {
+    use crate::check::test::check_source;
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let check_source = |source: &str| {
+        check_source(source)
+            .into_iter()
+            .filter(|diagnostic| diagnostic.code == DiagnosticCode::ParamTypeMismatch)
+            .collect::<Vec<_>>()
+    };
+    let prelude = r#"
+        ---@class Train
+        ---@class Metrics
+        local Metrics = {}
+        ---@param key string
+        ---@param value integer
+        function Metrics:set(key, value) end
+        ---@type Train[]
+        local selected_trains = {}
+        ---@param value integer
+        local function integer_value(value) end
+        ---@param value Train[]
+        local function train_values(value) end
+        ---@param value string
+        local function string_value(value) end
+    "#;
+    for expression in [
+        "Metrics:set('match_count', #selected_trains)",
+        "integer_value(#selected_trains)",
+        "integer_value(#{})",
+        "integer_value(#'train')",
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        assert!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::ParamTypeMismatch,
+                &format!("{prelude}\n{expression}"),
+            ),
+            "{expression}"
+        );
+    }
+    for expression in [
+        "Metrics:set('match_count', selected_trains)",
+        "train_values(#selected_trains)",
+        "string_value(#'train')",
+    ] {
+        let diagnostics = check_source(&format!("{prelude}\n{expression}"));
+        assert_eq!(
+            diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+            vec![DiagnosticCode::ParamTypeMismatch],
+            "{expression}: {diagnostics:#?}"
+        );
+    }
+}
+
+#[test]
+fn test_length_argument_preserves_operator_overload() {
+    use crate::check::test::check_source;
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let check_source = |source: &str| {
+        check_source(source)
+            .into_iter()
+            .filter(|diagnostic| diagnostic.code == DiagnosticCode::ParamTypeMismatch)
+            .collect::<Vec<_>>()
+    };
+    let prelude = r#"
+        ---@class Collection
+        ---@operator len: string
+        local Collection = {}
+        ---@type Collection
+        local values
+        ---@param value string
+        local function string_value(value) end
+        ---@param value integer
+        local function integer_value(value) end
+    "#;
+    let mut ws = VirtualWorkspace::new();
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::ParamTypeMismatch,
+        &format!("{prelude}\nstring_value(#values)"),
+    ));
+    let diagnostics = check_source(&format!("{prelude}\ninteger_value(#values)"));
+    assert_eq!(
+        diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::ParamTypeMismatch],
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn test_length_argument_preserves_nullable_member_diagnostic() {
+    use crate::DiagnosticCode;
+    use crate::check::test::{check_source, count_by_code};
+    let diagnostics = check_source(
+        r#"
+        ---@class Container
+        ---@field values string[]
+        ---@param value integer
+        local function integer_value(value) return value end
+        ---@param container Container?
+        function length(container)
+            integer_value(#container.values)
+        end
+    "#,
+    );
+    assert_eq!(
+        count_by_code(&diagnostics, DiagnosticCode::NeedCheckNil),
+        1,
+        "{diagnostics:#?}"
+    );
+    assert_eq!(
+        count_by_code(&diagnostics, DiagnosticCode::ParamTypeMismatch),
+        0,
+        "{diagnostics:#?}"
+    );
+}
+
+#[cfg(test)]
+mod class_index_array_compatibility {
+    use crate::check::test::check_source;
+    use crate::{DiagnosticCode, VirtualWorkspace};
+
+    fn call_source(declaration: &str, source: &str, target: &str) -> String {
+        format!(
+            r#"
+            {declaration}
+            ---@param value {target}[]
+            local function accept(value) return value end
+            ---@type {source}
+            local value
+            accept(value)
+        "#
+        )
+    }
+
+    fn mismatch_count(declaration: &str, source: &str, target: &str) -> usize {
+        check_source(&call_source(declaration, source, target))
+            .into_iter()
+            .filter(|d| d.code == DiagnosticCode::ParamTypeMismatch)
+            .count()
+    }
+
+    #[test]
+    fn class_array_results_preserve_callback_parameter_compatibility() {
+        use crate::{LuaType, VariadicType, VirtualWorkspace};
+        use std::rc::Rc;
+
+        for (callback, expected) in [
+            ("fun(): boolean", true),
+            ("fun(value: boolean): boolean", false),
+            ("fun(): string", false),
+        ] {
+            for source in [
+                "CallbackList".to_string(),
+                format!("GenericList<{callback}>"),
+            ] {
+                let mut ws = VirtualWorkspace::new();
+                ws.def(&format!(
+                    r#"
+                    ---@class CallbackList
+                    ---@field [integer] {callback}
+                    local list = {{}}
+                    ---@class GenericList<T>
+                    ---@field [integer] T
+                    local generic_list = {{}}
+                "#
+                ));
+                let source_type = ws.ty(&source);
+                let target = ws.ty("(fun(value: string): boolean)[]");
+                for repeat in [false, true] {
+                    let sequence = |typ| {
+                        LuaType::Variadic(Rc::new(if repeat {
+                            VariadicType::Repeat(typ)
+                        } else {
+                            VariadicType::Base(typ)
+                        }))
+                    };
+                    assert_eq!(
+                        ws.check_type(&sequence(target.clone()), &sequence(source_type.clone())),
+                        expected,
+                        "{source}: {callback}, repeat={repeat}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn named_numeric_index_signature_is_an_array() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            &call_source(
+                r#"
+            ---@class StringList
+            ---@field [integer] string
+            ---@field data any
+            local list = {}
+        "#,
+                "StringList",
+                "string"
+            ),
+        ));
+    }
+
+    #[test]
+    fn numeric_signatures_support_inheritance_aliases_and_generics() {
+        for (declaration, source, target) in [
+            (
+                r#"
+                ---@class NumberKeys
+                ---@field [number] string
+                local list = {}
+            "#,
+                "NumberKeys",
+                "string",
+            ),
+            (
+                r#"
+                ---@class BaseList
+                ---@field [integer] string
+                local base = {}
+                ---@class DerivedList: BaseList
+                ---@field metadata boolean
+                local derived = {}
+                ---@alias ListAlias DerivedList
+            "#,
+                "ListAlias",
+                "string",
+            ),
+            (
+                r#"
+                ---@class GenericList<T>
+                ---@field [integer] T
+                local list = {}
+            "#,
+                "GenericList<string>",
+                "string",
+            ),
+            (
+                r#"
+                ---@class OptionalList
+                ---@field [integer] string?
+                local list = {}
+            "#,
+                "OptionalList",
+                "(string?)",
+            ),
+            (
+                r#"
+                ---@class IntegerList
+                ---@field [integer] integer
+                local list = {}
+            "#,
+                "IntegerList",
+                "number",
+            ),
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            assert!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::ParamTypeMismatch,
+                    &call_source(declaration, source, target),
+                ),
+                "{source} -> {target}[]"
+            );
+        }
+    }
+
+    #[test]
+    fn incompatible_or_absent_signatures_are_rejected() {
+        for (field, operator) in [
+            ("[integer] number", ""),
+            ("[integer] string?", ""),
+            ("[string] string", ""),
+            ("[1] string", ""),
+            ("[\"integer\"] string", ""),
+            ("data string", "---@operator len: integer"),
+        ] {
+            let declaration = format!(
+                r#"
+                ---@class NotAStringArray
+                ---@field {field}
+                {operator}
+                local list = {{}}
+            "#
+            );
+            assert_eq!(
+                mismatch_count(&declaration, "NotAStringArray", "string"),
+                1,
+                "{field}"
+            );
+        }
+        let generic = r#"
+            ---@class GenericList<T>
+            ---@field [integer] T
+            local list = {}
+        "#;
+        assert_eq!(mismatch_count(generic, "GenericList<number>", "string"), 1);
+    }
+
+    #[test]
+    fn specific_and_derived_signatures_take_precedence() {
+        let specific = r#"
+            ---@class Indexed
+            ---@field [integer] string
+            ---@field [number] boolean
+            local list = {}
+        "#;
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            &call_source(specific, "Indexed", "string"),
+        ));
+        assert_eq!(mismatch_count(specific, "Indexed", "boolean"), 1);
+        let inherited = r#"
+            ---@class ParentList
+            ---@field [integer] string
+            local parent = {}
+            ---@class ChildList: ParentList
+            ---@field [integer] number
+            local child = {}
+        "#;
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            &call_source(inherited, "ChildList", "number"),
+        ));
+        assert_eq!(mismatch_count(inherited, "ChildList", "string"), 1);
+    }
+}
+
+#[cfg(test)]
+mod combined_localised_constructor_tests {
+    use crate::DiagnosticCode;
+    use crate::check::test::check_source;
+
+    #[test]
+    fn union_constructor_checks_respect_assertions_and_other_arguments() {
+        let definitions = r#"
+            ---@class Unit
+            ---@field active boolean
+            ---@alias Message [string, Message...]|{x:number,y:number}|Unit|string|number|boolean
+            ---@param message Message
+            ---@param count integer
+            local function emit(message, count) end
+            ---@type string?
+            local maybe
+        "#;
+        for (call, expected) in [
+            ("emit({'hello', {'nested', 3}, true}, 1)", 0),
+            ("emit({'hello', maybe} --[[@as Message]], 1)", 0),
+            ("emit({'hello', maybe} --[[@as Message]], 'bad')", 1),
+        ] {
+            let diagnostics: Vec<_> = check_source(&format!("{definitions}\n{call}"))
+                .into_iter()
+                .filter(|d| {
+                    matches!(
+                        d.code,
+                        DiagnosticCode::ParamTypeMismatch
+                            | DiagnosticCode::AssignTypeMismatch
+                            | DiagnosticCode::InjectField
+                            | DiagnosticCode::MissingFields
+                    )
+                })
+                .collect();
+            assert_eq!(diagnostics.len(), expected, "{call}: {diagnostics:#?}");
+            if expected == 1 {
+                assert_eq!(diagnostics[0].code, DiagnosticCode::ParamTypeMismatch);
+                assert!(diagnostics[0].message.contains("integer"));
+            }
+        }
+        assert!(
+            check_source(&format!("{definitions}\nemit({{false}}, 1)"))
+                .iter()
+                .any(|d| d.code == DiagnosticCode::ParamTypeMismatch)
+        );
+    }
+}
+
+#[test]
+fn test_optional_union_alias_parameter_accepts_nullable_string() {
+    let source = r#"
+    ---@alias Filter string|{name:string}
+    ---@class Train
+    local Train = {
+        ---@param item? Filter
+        ---@return integer
+        get_count = function(item) end
+    }
+    ---@param train Train
+    ---@param item string?
+    local function test(train, item)
+        train.get_count(item)
+    end
+    "#;
+    let mut ws = crate::VirtualWorkspace::new();
+    assert!(ws.has_no_diagnostic(crate::DiagnosticCode::ParamTypeMismatch, source));
+}
+
+#[test]
+fn test_optional_alias_parameters_keep_valid_and_invalid_alternatives() {
+    for (parameter, argument, expected) in [
+        ("Filter?", "string?", 0),
+        ("Filter?", "nil", 0),
+        ("Filter?", "string|{name:string}|nil", 0),
+        ("Filter?", "boolean?", 1),
+        ("Filter?", "string|integer|nil", 1),
+        ("Filter", "string?", 1),
+        ("Filter", "nil", 1),
+        ("string?", "integer?", 1),
+        ("string?", "string|integer|nil", 1),
+        ("Filter?", "MaybeString", 0),
+    ] {
+        let source = format!(
+            r#"
+        ---@alias Filter string|{{name:string}}
+        ---@alias MaybeString string|nil
+        ---@param item {parameter}
+        local function accept(item) end
+        ---@param item {argument}
+        local function test(item) accept(item) end
+        "#
+        );
+        if expected == 0 {
+            let mut ws = crate::VirtualWorkspace::new();
+            assert!(
+                ws.has_no_diagnostic(crate::DiagnosticCode::ParamTypeMismatch, &source),
+                "{parameter} <- {argument}"
+            );
+            continue;
+        }
+        let mismatches: Vec<_> = super::check_source(&source)
+            .into_iter()
+            .filter(|d| d.code == crate::DiagnosticCode::ParamTypeMismatch)
+            .collect();
+        assert_eq!(
+            mismatches.len(),
+            expected,
+            "{parameter} <- {argument}: {mismatches:#?}"
+        );
+    }
+}
+
+#[test]
+fn test_optional_alias_parameter_preserves_generic_binding() {
+    let source = r#"
+    ---@class Box<T>
+    ---@field value T
+    ---@generic T
+    ---@param box Box<T>?
+    ---@param other T
+    local function accept(box, other) end
+    ---@param box Box<string>?
+    local function test(box)
+        accept--[[@<string>]](box, 'valid')
+        accept--[[@<string>]](box, 42)
+    end
+    "#;
+    let mismatches: Vec<_> = super::check_source(source)
+        .into_iter()
+        .filter(|d| d.code == crate::DiagnosticCode::ParamTypeMismatch)
+        .collect();
+    assert_eq!(mismatches.len(), 1, "{mismatches:#?}");
+}
+
+#[test]
+fn constructor_nullable_field_contracts() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for field in [
+        "elements table<string, integer>?",
+        "elements? table<string, integer>",
+        "elements OptionalElements",
+        "elements Optional<table<string, integer>>",
+        "elements integer|nil",
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        assert!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::ParamTypeMismatch,
+                &format!(
+                    r#"
+            ---@alias OptionalElements table<string, integer>?
+            ---@alias Optional<T> T|nil
+            ---@class Options
+            ---@field kind string
+            ---@field {field}
+            local Options = {{}}
+            ---@param options Options
+            local function create(options) end
+            create {{kind = "test"}}
+        "#
+                )
+            ),
+            "{field}"
+        );
+    }
+}
+
+#[test]
+fn constructor_required_field_contract_still_checked() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let mut ws = VirtualWorkspace::new();
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::ParamTypeMismatch,
+        r#"
+        ---@alias Elements table<string, integer>
+        ---@class Options
+        ---@field kind string
+        ---@field elements Elements
+        local Options = {}
+        ---@param options Options
+        local function create(options) end
+        create {kind = "test"}
+    "#
+    ));
+}
+
+#[test]
+fn test_nullable_union_projection_argument_contracts() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for (target, present, expected_ok) in [
+        ("integer?", "integer", true),
+        ("any", "integer", true),
+        ("integer", "integer", false),
+        ("integer?", "string", false),
+    ] {
+        for receiver in [
+            "ProjectionPresent|ProjectionAbsent",
+            "ProjectionAlias",
+            "ProjectionGeneric<ProjectionPresent>",
+        ] {
+            for argument in ["event.player_index", "(event.player_index)", "copy"] {
+                let source = format!(
+                    r#"
+                ---@class ProjectionPresent
+                ---@field player_index {present}
+                local Present = {{}}
+                ---@class ProjectionAbsent
+                local Absent = {{}}
+                ---@param index {target}
+                local function accept(index) end
+                ---@alias ProjectionAlias ProjectionPresent|ProjectionAbsent
+                ---@alias ProjectionGeneric<T> T|ProjectionAbsent
+                ---@param event {receiver}
+                local function handler(event)
+                    local copy = event.player_index
+                    accept({argument})
+                end
+            "#
+                );
+                let mut ws = VirtualWorkspace::new();
+                assert_eq!(
+                    ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, &source),
+                    expected_ok,
+                    "{source}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_nullable_union_projection_preserves_guarded_member() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let source = r#"
+        ---@class ProjectionGuardPresent
+        ---@field player_index integer
+        local Present = {}
+        ---@class ProjectionGuardAbsent
+        local Absent = {}
+        ---@param index integer
+        local function accept(index) end
+        ---@param event ProjectionGuardPresent|ProjectionGuardAbsent
+        local function handler(event)
+            if event.player_index then accept(event.player_index) end
+        end
+    "#;
+    let mut ws = VirtualWorkspace::new();
+    assert!(ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, source));
+    assert!(ws.has_no_diagnostic(DiagnosticCode::UnnecessaryIf, source));
+}
+
+#[test]
+fn test_nullable_union_projection_retains_integer_and_nil_in_type() {
+    use crate::{LuaType, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def(
+        r#"
+        ---@class ProjectionTypePresent
+        ---@field player_index integer
+        local Present = {}
+        ---@class ProjectionTypeAbsent
+        local Absent = {}
+        ---@param event ProjectionTypePresent|ProjectionTypeAbsent
+        local function handler(event) return event.player_index end
+    "#,
+    );
+    let model = ws.analysis.semantic_model(file);
+    let index = model
+        .chunk()
+        .unwrap()
+        .descendants::<LuaIndexExpr>()
+        .next()
+        .unwrap();
+    assert_eq!(
+        model.type_of_expr_at(index.get_syntax_id(), index.get_position()),
+        LuaType::from_vec(vec![LuaType::Integer, LuaType::Nil])
+    );
+}
+
+#[test]
+fn test_nullable_union_projection_named_aliases() {
+    use crate::{DiagnosticCode, LuaType, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    for annotation in [
+        "ProjectionEvent",
+        "ProjectionGeneric<ProjectionAliasPresent>",
+    ] {
+        let source = format!(
+            r#"
+        ---@class ProjectionAliasPresent
+        ---@field player_index integer
+        local Present = {{}}
+        ---@class ProjectionAliasAbsent
+        local Absent = {{}}
+        ---@alias ProjectionEvent ProjectionAliasPresent|ProjectionAliasAbsent
+        ---@alias ProjectionGeneric<T> T|ProjectionAliasAbsent
+        ---@param value integer
+        local function accept(value) end
+        ---@param event {annotation}
+        local function handler(event) accept(event.player_index) end
+        "#
+        );
+        let mut ws = VirtualWorkspace::new();
+        let accepts = ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, &source);
+        let file = ws.def(&source);
+        let model = ws.analysis.semantic_model(file);
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .next()
+            .unwrap();
+        assert_eq!(
+            model.type_of_expr_at(index.get_syntax_id(), index.get_position()),
+            LuaType::from_vec(vec![LuaType::Integer, LuaType::Nil]),
+            "{annotation}"
+        );
+        assert!(!accepts, "{annotation}");
     }
 }

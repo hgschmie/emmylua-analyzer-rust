@@ -1834,6 +1834,36 @@ fn test_operator_add() {
     );
 }
 
+#[test]
+fn test_unary_minus_numeric_constants() {
+    for (expression, expected) in [
+        ("-1", LuaType::IntegerConst(-1)),
+        ("-1.5", LuaType::FloatConst(-1.5)),
+        ("-0x10", LuaType::IntegerConst(-16)),
+        ("-(-1)", LuaType::IntegerConst(1)),
+        ("-(1 + 2)", LuaType::IntegerConst(-3)),
+        ("-0x8000000000000000", LuaType::Number),
+    ] {
+        let env = model_of(&format!("local result = {expression}"));
+        let model = env.model();
+        assert_eq!(
+            model.type_of_decl(&decl_of(&model, "result")),
+            Some(expected),
+            "{expression}"
+        );
+    }
+}
+
+#[test]
+fn test_unary_minus_documented_numeric_constant() {
+    let env = model_of("---@type 12\nlocal value\nlocal result = -value");
+    let model = env.model();
+    assert_eq!(
+        model.type_of_decl(&decl_of(&model, "result")),
+        Some(LuaType::IntegerConst(-12))
+    );
+}
+
 /// Unary `-a` (unm overload) -> Vector.
 #[test]
 fn test_operator_unm() {
@@ -1904,4 +1934,386 @@ fn expression_casts_use_the_current_file() {
             assert_eq!(actual, expected);
         }
     }
+}
+
+/// The built-in length operator returns an integer, not the operand's type.
+#[test]
+fn test_builtin_length_result() {
+    for (annotation, initializer) in [
+        ("string", "'trains'"),
+        ("string[]", "{}"),
+        ("table<integer, string>", "{}"),
+        ("table", "{}"),
+        ("[string, integer]", "{'train', 1}"),
+    ] {
+        let env = model_of(&format!(
+            "---@type {annotation}\nlocal values = {initializer}\nlocal size = #values"
+        ));
+        let model = env.model();
+        let size = decl_of(&model, "size");
+        assert_eq!(
+            model.type_of_decl(&size),
+            Some(LuaType::Integer),
+            "{annotation}"
+        );
+    }
+    for expression in ["#{}", "#{'train'}", "#'train'"] {
+        let env = model_of(&format!("local size = {expression}"));
+        let model = env.model();
+        assert_eq!(
+            model.type_of_decl(&decl_of(&model, "size")),
+            Some(LuaType::Integer),
+            "{expression}"
+        );
+    }
+}
+
+#[test]
+fn test_array_length_index_does_not_cross_earlier_rhs_call() {
+    use emmylua_parser::LuaIndexExpr;
+    for (assignment, expected_nullable) in [
+        ("s = a[#a]", false),
+        ("local ignored; ignored, s = mutate(a), a[#a]", true),
+        ("s = mutate(a) and a[#a]", true),
+    ] {
+        let source = format!(
+            r#"
+            ---@param a string[]
+            function example(a)
+                ---@type string
+                local s = ''
+                if not a[1] then return end
+                {assignment}
+            end
+        "#
+        );
+        let env = model_of(&source);
+        let model = env.model();
+        let tree = model.syntax_tree().unwrap();
+        let index = tree
+            .get_red_root()
+            .descendants()
+            .filter_map(LuaIndexExpr::cast)
+            .last()
+            .unwrap();
+        let ty = model.type_of_expr_at(index.get_syntax_id(), index.get_range().start());
+        assert_eq!(ty.is_nullable(), expected_nullable, "{source}: {ty:?}");
+    }
+}
+
+#[test]
+fn test_aliased_call_argument_preserves_return_type() {
+    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    ws.def(
+        r#"
+        ---@alias Identifier string
+        ---@alias ChainedIdentifier Identifier
+        ---@param identifier Identifier
+        ---@return integer
+        function parseIdentifier(identifier) end
+        ---@type Identifier
+        identifier = 'x'
+        ---@type ChainedIdentifier
+        chained_identifier = 'x'
+    "#,
+    );
+    assert_eq!(ws.expr_ty("parseIdentifier(identifier)"), LuaType::Integer);
+    assert_eq!(
+        ws.expr_ty("parseIdentifier(chained_identifier)"),
+        LuaType::Integer
+    );
+}
+
+#[test]
+fn test_aliased_call_argument_compatibility() {
+    use super::vm::unify_call_bindings;
+    let env = model_of(
+        r#"
+        ---@alias Identifier string
+        ---@alias Literals 'item'|'fluid'
+        ---@alias Wrong number
+        ---@alias Mixed string|number
+        ---@alias Optional string?
+        ---@alias CycleA CycleB
+        ---@alias CycleB CycleA
+        ---@class Nominal
+        ---@field value string
+        ---@class OtherNominal
+        ---@field value string
+        ---@alias AliasNominal Nominal
+        ---@alias AliasOther OtherNominal
+    "#,
+    );
+    let model = env.model();
+    for (alias, expected) in [
+        ("Identifier", true),
+        ("Literals", true),
+        ("Wrong", false),
+        ("Mixed", false),
+        ("Optional", false),
+        ("CycleA", false),
+        ("Nominal", false),
+    ] {
+        let arg = LuaType::Ref(LuaTypeDeclId::global(alias));
+        assert_eq!(
+            unify_call_bindings(&model, &LuaType::String, &arg, &mut TplBindings::new()),
+            expected,
+            "{alias}"
+        );
+    }
+    let nominal = LuaType::Ref(LuaTypeDeclId::global("Nominal"));
+    for (alias, expected) in [("AliasNominal", true), ("AliasOther", false)] {
+        assert_eq!(
+            unify_call_bindings(
+                &model,
+                &nominal,
+                &LuaType::Ref(LuaTypeDeclId::global(alias)),
+                &mut TplBindings::new()
+            ),
+            expected,
+            "{alias}"
+        );
+    }
+    assert!(unify_call_bindings(
+        &model,
+        &nominal,
+        &nominal,
+        &mut TplBindings::new()
+    ));
+    assert!(!unify_call_bindings(
+        &model,
+        &nominal,
+        &LuaType::Ref(LuaTypeDeclId::global("OtherNominal")),
+        &mut TplBindings::new()
+    ));
+}
+
+#[test]
+fn test_aliased_call_argument_keeps_generic_identity() {
+    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    ws.def(
+        r#"
+        ---@alias Identifier string
+        ---@type Identifier
+        identifier = 'x'
+        ---@generic T
+        ---@param value T
+        ---@return T
+        function identity(value) return value end
+    "#,
+    );
+    assert_eq!(ws.expr_ty("identity(identifier)"), ws.ty("Identifier"));
+}
+
+#[test]
+fn test_aliased_call_argument_keeps_mismatch_diagnostics() {
+    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    ws.def(
+        r#"
+        ---@alias Wrong number
+        ---@type Wrong
+        wrong = 1
+        ---@param value string
+        ---@return integer
+        function parseIdentifier(value) end
+    "#,
+    );
+    assert_eq!(ws.expr_ty("parseIdentifier(wrong)"), LuaType::Unknown);
+    assert!(!ws.has_no_diagnostic(
+        crate::DiagnosticCode::ParamTypeMismatch,
+        "parseIdentifier(wrong)"
+    ));
+}
+
+#[test]
+fn test_aliased_call_argument_imported_nullable_return() {
+    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    ws.def(
+        r#"
+        ---@alias Identifier string
+        ---@class Signal
+        ---@field name string
+        ---@type Identifier
+        identifier = 'x'
+    "#,
+    );
+    ws.def_file(
+        "tools.lua",
+        r#"
+        ---@class Tools
+        local Tools = {}
+        ---@param identifier Identifier
+        ---@return Signal?
+        function Tools.parseIdentifier(identifier) end
+        return Tools
+    "#,
+    );
+    ws.def("tools = require('tools')");
+    assert_eq!(
+        ws.expr_ty("tools.parseIdentifier(identifier)"),
+        ws.ty("Signal?")
+    );
+}
+
+fn logical_initializer_types(expression: &str, annotation: &str) -> [LuaType; 2] {
+    use emmylua_parser::LuaLocalStat;
+
+    let source =
+        format!("{annotation}\nlocal function run(value)\n local result = {expression}\nend");
+    let env = model_of(&source);
+    let model = env.model();
+    let root = model.syntax_tree().unwrap().get_red_root();
+    let expr = root
+        .descendants()
+        .filter_map(LuaLocalStat::cast)
+        .find_map(|stat| stat.get_value_exprs().next())
+        .expect("initializer");
+    [
+        model.type_of_expr(expr.get_syntax_id()),
+        model.type_of_expr_at(expr.get_syntax_id(), expr.get_range().start()),
+    ]
+}
+
+#[test]
+fn test_unknown_logical_and_preserves_possible_rhs() {
+    for annotation in ["", "---@param value unknown", "---@param value any"] {
+        for expression in ["value and true", "value and (value < '01.13.01')"] {
+            for ty in logical_initializer_types(expression, annotation) {
+                assert!(!ty.is_always_falsy(), "{expression}: {ty:?}");
+                assert!(!ty.is_always_truthy(), "{expression}: {ty:?}");
+                assert!(ty.is_nullable(), "{expression}: {ty:?}");
+                let LuaType::Union(parts) = ty else {
+                    panic!("expected alternatives")
+                };
+                assert!(
+                    parts
+                        .iter()
+                        .any(|part| matches!(part, LuaType::Boolean | LuaType::BooleanConst(true))),
+                    "missing right-hand value: {parts:?}"
+                );
+                assert!(
+                    !parts
+                        .iter()
+                        .any(|part| matches!(part, LuaType::Unknown | LuaType::Any)),
+                    "only falsy left-hand values can survive: {parts:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_unknown_logical_and_falsy_rhs_is_always_falsy() {
+    for annotation in ["", "---@param value unknown", "---@param value any"] {
+        for expression in ["value and false", "value and nil"] {
+            for ty in logical_initializer_types(expression, annotation) {
+                assert!(ty.is_always_falsy(), "{expression}: {ty:?}");
+                assert_eq!(
+                    ty,
+                    LuaType::from_vec(vec![LuaType::Nil, LuaType::BooleanConst(false)])
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_unknown_logical_and_tuple_rhs_is_preserved() {
+    for ty in logical_initializer_types("value and { 'value', 42 }", "") {
+        assert!(!ty.is_always_falsy(), "{ty:?}");
+        assert!(!ty.is_always_truthy(), "{ty:?}");
+        assert!(ty.is_nullable(), "{ty:?}");
+        let LuaType::Union(parts) = ty else {
+            panic!("expected alternatives")
+        };
+        assert!(parts.iter().any(LuaType::is_tuple), "{parts:?}");
+        assert!(parts.iter().any(|ty| ty == &LuaType::BooleanConst(false)));
+    }
+}
+
+#[test]
+fn test_unknown_logical_and_fallback_is_always_truthy() {
+    for ty in logical_initializer_types("value and true or 42", "") {
+        assert!(ty.is_always_truthy(), "{ty:?}");
+    }
+}
+
+#[test]
+fn test_unknown_logical_or_and_not_stay_indeterminate() {
+    for expression in ["value or false", "value or nil", "not value"] {
+        for ty in logical_initializer_types(expression, "") {
+            assert!(!ty.is_always_falsy(), "{expression}: {ty:?}");
+            assert!(!ty.is_always_truthy(), "{expression}: {ty:?}");
+        }
+    }
+}
+
+#[test]
+fn test_collection_union_binding_rollback_and_typed_match() {
+    let model = model_of("");
+    let model = model.model();
+    let generic = LuaType::TplRef(Rc::new(GenericTpl::new(
+        GenericTplId::Type(0),
+        "T".into(),
+        None,
+        None,
+        false,
+        None,
+    )));
+    let array = LuaType::Array(Rc::new(crate::LuaArrayType::from_base_type(
+        generic.clone(),
+    )));
+    let union = LuaType::from_vec(vec![LuaType::Table, array]);
+    let actual = LuaType::Array(Rc::new(crate::LuaArrayType::from_base_type(
+        LuaType::String,
+    )));
+    let mut bindings = TplBindings::new();
+    assert!(super::vm::unify_call_bindings(
+        &model,
+        &union,
+        &actual,
+        &mut bindings
+    ));
+    assert_eq!(bindings.get(&GenericTplId::Type(0)), Some(&LuaType::String));
+
+    let mut invalid_bindings = TplBindings::new();
+    assert!(!super::vm::unify_call_bindings(
+        &model,
+        &union,
+        &LuaType::Boolean,
+        &mut invalid_bindings,
+    ));
+    assert!(invalid_bindings.is_empty());
+
+    // A failed structural alternative may bind T before rejecting another slot.
+    let tuple = |items| {
+        LuaType::Tuple(Rc::new(crate::LuaTupleType::new(
+            items,
+            crate::LuaTupleStatus::InferResolve,
+        )))
+    };
+    let first = tuple(vec![generic.clone(), LuaType::String]);
+    let second = tuple(vec![LuaType::String, generic]);
+    let union = LuaType::from_vec(vec![first, second]);
+    let actual = tuple(vec![LuaType::String, LuaType::Integer]);
+    let mut bindings = TplBindings::new();
+    assert!(super::vm::unify_call_bindings(
+        &model,
+        &union,
+        &actual,
+        &mut bindings
+    ));
+    assert_eq!(
+        bindings.get(&GenericTplId::Type(0)),
+        Some(&LuaType::Integer)
+    );
+
+    let mut bindings = TplBindings::new();
+    assert!(!super::vm::unify_call_bindings(
+        &model,
+        &union,
+        &LuaType::Boolean,
+        &mut bindings
+    ));
+    assert!(bindings.is_empty());
 }

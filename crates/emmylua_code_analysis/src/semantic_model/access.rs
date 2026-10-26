@@ -4,6 +4,42 @@ use crate::check::checker::param_count::callable_functions;
 use crate::check::checker::param_type_check::callable_candidates_uncached;
 
 impl<'db> SemanticModel<'db> {
+    /// Reuse complete, unfiltered constructor checks within one semantic snapshot.
+    pub(crate) fn constructor_diagnostics(
+        &self,
+        table: LuaSyntaxId,
+        target: LuaType,
+        check: impl FnOnce() -> Vec<crate::check::checker::Diagnostic>,
+    ) -> Vec<crate::check::checker::Diagnostic> {
+        let key = (self.file_id(), table, target);
+        if let Some(result) = self.cache.borrow().constructor_diagnostics.get(&key) {
+            return result.clone();
+        }
+        let _query = cache::QueryCacheScope::new(&self.cache);
+        let revision = self.cache.borrow().revision();
+        let result = check();
+        self.cache.publish_if_complete(revision, |cache| {
+            cache.constructor_diagnostics.insert(key, result.clone());
+        });
+        result
+    }
+
+    pub(crate) fn with_cancellation(
+        mut self,
+        tokens: Vec<tokio_util::sync::CancellationToken>,
+    ) -> Self {
+        self.cache = Rc::new(super::LazyCache {
+            cancellation: tokens,
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Reports whether the owner has cancelled this model's diagnostic computation.
+    pub fn is_cancelled(&self) -> bool {
+        self.cache.is_cancelled()
+    }
+
     /// Currently configured runtime version (used for `---@version` visibility checks).
     pub fn lua_version(&self) -> Option<LuaVersionNumber> {
         self.db().lua_version()
@@ -27,6 +63,10 @@ impl<'db> SemanticModel<'db> {
     pub fn document_current(&self) -> Option<LuaDocument<'db>> {
         self.document(self.view.file_id())
     }
+    pub fn strict_table_index(&self) -> bool {
+        self.db().strict_table_index()
+    }
+
     pub fn strict_array_index(&self) -> bool {
         self.db().strict_array_index()
     }
@@ -306,8 +346,10 @@ impl<'db> SemanticModel<'db> {
         // 4. Index-expression member key (the `x` in `T.x` at use sites) -> Member (falls back to the expression type if not found).
         if kind == LuaSyntaxKind::IndexExpr
             && let Some(index_expr) = LuaIndexExpr::cast(parent.clone())
-            && let Some(resolved) = self.resolve_member(&index_expr)
-            && let Some(member_id) = resolved.member_id
+            && let Some(member_id) = self
+                .resolve_member(&index_expr)
+                .and_then(|resolved| resolved.member_id)
+                .or_else(|| self.nullable_member_identity(&index_expr))
         {
             // A generic instance prefix (`c.aaa` with `local c ---@type MyTable<int>` and `@field aaa T`)
             // must report the projected member type (`integer`), not the declaration-site `T`.
@@ -319,6 +361,16 @@ impl<'db> SemanticModel<'db> {
                 typ,
                 decl: Some(member_id),
             });
+        }
+
+        // A local may acquire its receiver type only through later assignments.
+        // Recover presentation identity from that type without making the member
+        // resolver flow-sensitive (which would recurse during flow inference).
+        if kind == LuaSyntaxKind::IndexExpr
+            && let Some(index_expr) = LuaIndexExpr::cast(parent.clone())
+            && let Some(info) = self.flow_receiver_member_info(&index_expr)
+        {
+            return Some(info);
         }
 
         // 5. Expression -> type and declaration identity for binding uses.
@@ -334,6 +386,55 @@ impl<'db> SemanticModel<'db> {
         }
         None
     }
+    /// Presentation can retain a member's documentation even when its receiver
+    /// is nullable. Keep this fallback out of flow resolution: declaration
+    /// identity must not change the analysis of optional-field guards.
+    fn nullable_member_identity(&self, index: &LuaIndexExpr) -> Option<SemanticId> {
+        let prefix = index.get_prefix_expr()?;
+        let LuaType::Union(union) = self.prefix_type_for_member_resolution(&prefix) else {
+            return None;
+        };
+        let mut alternatives = union.iter().filter(|ty| !ty.is_nil());
+        let receiver = alternatives.next()?;
+        if alternatives.next().is_some() {
+            return None;
+        }
+        let (_, name) = self
+            .analysis()
+            .member_ref_of_index(self.file_id(), index.get_syntax_id())?;
+        self.member_info(receiver, &LuaMemberKey::Name(name))?.id
+    }
+
+    fn flow_receiver_member_info(&self, index: &LuaIndexExpr) -> Option<SemanticInfo> {
+        let prefix = index.get_prefix_expr()?;
+        let prefix_type = self.type_of_expr(prefix.get_syntax_id());
+        let receiver = if let LuaType::Union(union) = &prefix_type {
+            let mut alternatives = union.iter().filter(|ty| !ty.is_nil());
+            let receiver = alternatives.next()?;
+            // Do not attach one class's documentation to an ambiguous receiver.
+            if alternatives.next().is_some() {
+                return None;
+            }
+            receiver
+        } else {
+            &prefix_type
+        };
+        if !matches!(
+            receiver,
+            LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_)
+        ) {
+            return None;
+        }
+        let (_, name) = self
+            .analysis()
+            .member_ref_of_index(self.file_id(), index.get_syntax_id())?;
+        let info = self.member_info(receiver, &LuaMemberKey::Name(name))?;
+        Some(SemanticInfo {
+            typ: info.typ,
+            decl: Some(info.id?),
+        })
+    }
+
     /// Hover type for assignment target `x = value`: when the right-hand type is known and non-nil,
     /// show the actual type after assignment (`x = create()` no longer shows the old `T?`).
     pub(crate) fn assignment_target_value_type(&self, expr: &LuaExpr) -> Option<LuaType> {
@@ -444,6 +545,21 @@ impl<'db> SemanticModel<'db> {
         owner: SemanticId,
         name: SmolStr,
     ) -> ResolvedMember {
+        let member_id = member_id.map(|id| {
+            if let Some(file) = file_id
+                && let Some(facts) = self.file_facts_of(file)
+                && let Some(member) = facts.member_by_id(&id)
+                && member.access == crate::MemberAccess::Write
+                && let Some(read) = facts.members.iter().find(|other| {
+                    other.owner == member.owner
+                        && other.key == member.key
+                        && other.access == crate::MemberAccess::Read
+                })
+            {
+                return read.id.clone();
+            }
+            id
+        });
         let mut member_type = None;
         let mut visibility = None;
         let mut is_method = false;
@@ -519,7 +635,10 @@ impl<'db> SemanticModel<'db> {
         let Some(prefix) = index_expr.get_prefix_expr() else {
             return false;
         };
-        let prefix_ty = self.prefix_type_for_member_resolution(&prefix);
+        // This argument-only check needs the owner after casts, guards and assignments.
+        // type_of_expr_at caches by syntax/offset. Do not skip declared non-unions:
+        // casts and assignments can widen them into unions with missing members.
+        let prefix_ty = self.type_of_expr_at(prefix.get_syntax_id(), index_expr.get_position());
         let LuaType::Union(union) = &prefix_ty else {
             return false;
         };
@@ -559,9 +678,8 @@ impl<'db> SemanticModel<'db> {
         let Some(owner) = self.resolve_name(name_expr.get_position()) else {
             return Vec::new();
         };
-        // Only intervene for actual same-workspace global overloads. A single
-        // declaration keeps the legacy projection path, which preserves its
-        // generic/closure details.
+        // Preserve declared contracts and reassigned values. An unchanged local
+        // closure's projected function type omits its documented alternatives.
         let SemanticId::Decl(key) = &owner else {
             return Vec::new();
         };
@@ -572,7 +690,30 @@ impl<'db> SemanticModel<'db> {
             return Vec::new();
         };
         if !matches!(decl.kind, DeclKind::Global) {
-            return Vec::new();
+            let has_overloads = decl
+                .value_expr_syntax
+                .and_then(|syntax| facts.signature_by_closure(syntax))
+                .and_then(|signature| signature.docs.as_ref())
+                .is_some_and(|docs| !docs.overloads.is_empty());
+            if !matches!(decl.kind, DeclKind::Local { .. })
+                || decl.doc_type_syntax.is_some()
+                || !has_overloads
+                || self
+                    .flow_tree()
+                    .is_some_and(|flow| flow.has_decl_assignment(&owner))
+                || self.local_callable_has_explicit_cast(decl, callee)
+            {
+                return Vec::new();
+            }
+            let projected = self
+                .type_of_decl_signature(&owner)
+                .map(|function| LuaType::DocFunction(Rc::new(function)));
+            if projected.as_ref() != Some(&self.type_of_expr(callee.get_syntax_id())) {
+                return Vec::new();
+            }
+            return infer::vm::InferVm::new(self, &[])
+                .callable_candidates_for_owner_single(&owner)
+                .unwrap_or_default();
         }
         let decls = self.global_decls_named_for_file(key.file_id, decl.name.as_str());
         if decls.len() <= 1 {
@@ -596,6 +737,43 @@ impl<'db> SemanticModel<'db> {
             return Vec::new();
         }
         per_decl.into_iter().flatten().collect()
+    }
+
+    /// Explicit casts remain authoritative even when their shape equals the primary signature.
+    fn local_callable_has_explicit_cast(&self, decl: &Decl, callee: &LuaExpr) -> bool {
+        if !self.flow_tree().is_some_and(|flow| flow.has_tag_cast()) {
+            return false;
+        }
+        let Some(chunk) = self.chunk() else {
+            return false;
+        };
+        chunk
+            .syntax()
+            .descendants()
+            .filter_map(LuaDocTag::cast)
+            .any(|tag| {
+                match &tag {
+                    LuaDocTag::Cast(cast) => {
+                        if let Some(LuaExpr::NameExpr(name)) = cast.get_key_expr() {
+                            return cast.get_position() < callee.get_position()
+                                && self.resolve_name(name.get_position()).as_ref()
+                                    == Some(&decl.id);
+                        }
+                    }
+                    LuaDocTag::As(_) => {}
+                    _ => return false,
+                }
+                tag.get_parent::<emmylua_parser::LuaComment>()
+                    .and_then(|comment| comment.get_owner())
+                    .and_then(|owner| {
+                        LuaExpr::cast(owner.syntax().clone())
+                            .or_else(|| owner.children::<LuaExpr>().last())
+                    })
+                    .is_some_and(|target| {
+                        target.get_syntax_id() == callee.get_syntax_id()
+                            || Some(target.get_syntax_id()) == decl.value_expr_syntax
+                    })
+            })
     }
 
     /// Public unified candidates for call rendering (signature help / completion / hover).
@@ -1216,5 +1394,57 @@ impl<'db> SemanticModel<'db> {
             }
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod constructor_cache_tests {
+    use crate::{LuaType, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaTableExpr};
+    use std::cell::Cell;
+
+    #[test]
+    fn constructor_cache_is_scoped_to_file_target_and_complete_queries() {
+        let mut ws = VirtualWorkspace::new();
+        let first = ws.def("local value = {}");
+        let second = ws.def("local value = {}");
+        let table = ws.get_node::<LuaTableExpr>(first).get_syntax_id();
+        let model = ws.analysis.semantic_model(first);
+        let calls = Cell::new(0);
+        let check = || {
+            calls.set(calls.get() + 1);
+            Vec::new()
+        };
+        model.constructor_diagnostics(table, LuaType::String, check);
+        model.constructor_diagnostics(table, LuaType::String, check);
+        assert_eq!(calls.get(), 1);
+        model.constructor_diagnostics(table, LuaType::Integer, check);
+        model
+            .model_for(second)
+            .constructor_diagnostics(table, LuaType::String, check);
+        assert_eq!(calls.get(), 3);
+        // A model for a newer semantic snapshot must recompute the result.
+        ws.analysis
+            .semantic_model(first)
+            .constructor_diagnostics(table, LuaType::String, check);
+        assert_eq!(calls.get(), 4);
+    }
+
+    #[test]
+    fn incomplete_constructor_checks_are_not_reused() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def("local value = {}");
+        let table = ws.get_node::<LuaTableExpr>(file).get_syntax_id();
+        let model = ws.analysis.semantic_model(file);
+        model.constructor_diagnostics(table, LuaType::String, || {
+            model.cache.borrow().mark_incomplete();
+            Vec::new()
+        });
+        let retried = Cell::new(false);
+        model.constructor_diagnostics(table, LuaType::String, || {
+            retried.set(true);
+            Vec::new()
+        });
+        assert!(retried.get());
     }
 }

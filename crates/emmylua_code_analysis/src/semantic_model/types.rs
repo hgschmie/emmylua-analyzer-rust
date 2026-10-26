@@ -115,6 +115,9 @@ impl<'db> SemanticModel<'db> {
     /// Type of a declaration: `---@type` annotation takes priority; closure -> `DocFunction` signature; otherwise VM infers the initializer
     /// (table identity / constants / setmetatable / require special cases); falls back to semantic shell projection when VM fails.
     pub fn type_of_decl(&self, decl: &SemanticId) -> Option<LuaType> {
+        if self.is_cancelled() {
+            return None;
+        }
         let cache_file = match decl {
             SemanticId::Decl(key) => key.file_id,
             SemanticId::Member(key) => key.file_id,
@@ -438,6 +441,24 @@ impl<'db> SemanticModel<'db> {
         let owner = decl.owner_syntax?;
         let tree = self.syntax_tree()?;
         let node = owner.to_node_from_root(&tree.get_red_root())?;
+        if let Some(stat) = emmylua_parser::LuaForStat::cast(node.clone()) {
+            let all_integer = stat
+                .get_iter_expr()
+                .enumerate()
+                .filter(|(index, _)| *index != 1)
+                .all(|(_, expr)| {
+                    infer::vm::is_integer_operand(
+                        self,
+                        &self.type_of_expr(expr.get_syntax_id()),
+                        &mut Vec::new(),
+                    )
+                });
+            return Some(if all_integer {
+                LuaType::Integer
+            } else {
+                LuaType::Number
+            });
+        }
         let stat = LuaForRangeStat::cast(node)?;
         let vars = stat.get_var_name_list().collect::<Vec<_>>();
         let index = vars
@@ -468,7 +489,18 @@ impl<'db> SemanticModel<'db> {
                 }
             }
             // 2. Standard global pairs/ipairs: bind K/V from the parameter structure, then take the return function slot.
-            return self.infer_standard_iter_slot(call.get_prefix_expr()?.clone(), &arg_ty, index);
+            let slot =
+                self.infer_standard_iter_slot(call.get_prefix_expr()?.clone(), &arg_ty, index)?;
+            // Standard table iteration yields existing entries only. A custom
+            // iterator may still yield a nil value alongside a non-nil key.
+            let standard = self.resolve_name(name_expr.get_position()).is_some_and(
+                |id| matches!(id, SemanticId::Decl(key) if self.is_std_file(key.file_id)),
+            );
+            return Some(if standard && index <= 1 {
+                remove_nil_from_type(slot)
+            } else {
+                slot
+            });
         }
 
         // Generic iterator functions: `for k in test()` / `for k in iter_fn`.
@@ -568,7 +600,11 @@ impl<'db> SemanticModel<'db> {
         let docs = signature.docs.as_ref()?;
         let generic_params = &docs.generic_params;
         let (key_id, value_id) = match generic_params.len() {
-            n if n >= 2 => (GenericTplId::Type(0), GenericTplId::Type(1)),
+            // ipairs has a fixed integer key and declares only its value generic.
+            1 if name.as_str() == "ipairs" && self.is_std_file(decl_file) => {
+                (None, GenericTplId::Type(0))
+            }
+            n if n >= 2 => (Some(GenericTplId::Type(0)), GenericTplId::Type(1)),
             _ => return None,
         };
         // alias expansion (`MatchersObject` -> object).
@@ -602,7 +638,95 @@ impl<'db> SemanticModel<'db> {
             };
             iter_arg = target;
         }
-        let (key_ty, value_ty) = match &iter_arg {
+        let (key_ty, value_ty) = self.collection_key_value_types(&iter_arg)?;
+        let mut bindings = infer::unify::TplBindings::new();
+        if let Some(key_id) = key_id {
+            bindings.insert(key_id, key_ty);
+        }
+        bindings.insert(value_id, value_ty);
+        // Resolves the inner return slots of `---@return fun(tbl:any):K, V`.
+        let return_syntax = docs.returns.first()?;
+        let tree = self.syntax_tree_of(decl_file)?;
+        let node = return_syntax.to_node_from_root(&tree.get_red_root())?;
+        let Some(LuaDocType::Func(func_doc)) = LuaDocType::cast(node) else {
+            return None;
+        };
+        let return_list = func_doc.get_return_type_list()?;
+        let mut slots = Vec::new();
+        for ret in return_list.get_return_type_list() {
+            if let (_, Some(ret_type)) = ret.get_name_and_type() {
+                slots.push(self.analysis().doc_type_lua(
+                    decl_file,
+                    ret_type.get_syntax_id(),
+                    &docs.generic_params,
+                ));
+            }
+        }
+        let slot = slots.get(index)?;
+        let substituted = infer::unify::substitute(slot, &bindings);
+        (!matches!(substituted, LuaType::Unknown)).then_some(substituted)
+    }
+    /// Structural key/value types shared by iterator inference and generic collection calls.
+    /// Every union alternative must provide a collection shape; unknown or invalid
+    /// alternatives must not silently leave only the known branch's element type.
+    pub(crate) fn collection_key_value_types(
+        &self,
+        arg_ty: &LuaType,
+    ) -> Option<(LuaType, LuaType)> {
+        self.collection_key_value_types_inner(arg_ty, &[])
+    }
+
+    fn collection_key_value_types_inner(
+        &self,
+        arg_ty: &LuaType,
+        path: &[LuaType],
+    ) -> Option<(LuaType, LuaType)> {
+        if path.contains(arg_ty) || path.len() >= 32 {
+            return None;
+        }
+        let mut path = path.to_vec();
+        path.push(arg_ty.clone());
+        let named = match arg_ty {
+            LuaType::Ref(id) | LuaType::Def(id) => Some((id, None)),
+            LuaType::Generic(generic) if generic.get_base_type_id().get_name() != "table" => {
+                Some((
+                    generic.get_base_type_id_ref(),
+                    Some(generic.get_params().as_slice()),
+                ))
+            }
+            _ => None,
+        };
+        if let Some((id, params)) = named {
+            let instantiate = |ty: LuaType| match params {
+                Some(params) => self.substitute_generic_params(&ty, params),
+                None => ty,
+            };
+            if let Some(def) = self.type_def_of(id)
+                && def.kind == TypeDefKind::Alias
+            {
+                return self.collection_key_value_types_inner(
+                    &instantiate(self.alias_target(&def)?),
+                    &path,
+                );
+            }
+            for base in self.base_types(id) {
+                if let Some(types) =
+                    self.collection_key_value_types_inner(&instantiate(base), &path)
+                {
+                    return Some(types);
+                }
+            }
+        }
+        Some(match arg_ty {
+            LuaType::Union(union) => {
+                let (keys, values): (Vec<_>, Vec<_>) = union
+                    .iter()
+                    .map(|component| self.collection_key_value_types_inner(component, &path))
+                    .collect::<Option<Vec<_>>>()?
+                    .into_iter()
+                    .unzip();
+                (LuaType::from_vec(keys), LuaType::from_vec(values))
+            }
             LuaType::Any => (LuaType::Any, LuaType::Any),
             LuaType::TableConst(table) => {
                 let owner = SemanticId::member(table.file_id, table.value);
@@ -718,6 +842,9 @@ impl<'db> SemanticModel<'db> {
                 (LuaType::String, value)
             }
             LuaType::Array(array) => (LuaType::Integer, array.get_base().clone()),
+            LuaType::TableGeneric(params) if params.len() == 2 => {
+                (params[0].clone(), params[1].clone())
+            }
             LuaType::Generic(generic) if generic.get_base_type_id().get_name() == "table" => {
                 let params = generic.get_params();
                 (
@@ -726,31 +853,7 @@ impl<'db> SemanticModel<'db> {
                 )
             }
             _ => return None,
-        };
-        let mut bindings = infer::unify::TplBindings::new();
-        bindings.insert(key_id, key_ty);
-        bindings.insert(value_id, value_ty);
-        // Resolves the inner return slots of `---@return fun(tbl:any):K, V`.
-        let return_syntax = docs.returns.first()?;
-        let tree = self.syntax_tree_of(decl_file)?;
-        let node = return_syntax.to_node_from_root(&tree.get_red_root())?;
-        let Some(LuaDocType::Func(func_doc)) = LuaDocType::cast(node) else {
-            return None;
-        };
-        let return_list = func_doc.get_return_type_list()?;
-        let mut slots = Vec::new();
-        for ret in return_list.get_return_type_list() {
-            if let (_, Some(ret_type)) = ret.get_name_and_type() {
-                slots.push(self.analysis().doc_type_lua(
-                    decl_file,
-                    ret_type.get_syntax_id(),
-                    &docs.generic_params,
-                ));
-            }
-        }
-        let slot = slots.get(index)?;
-        let substituted = infer::unify::substitute(slot, &bindings);
-        (!matches!(substituted, LuaType::Unknown)).then_some(substituted)
+        })
     }
     /// Infers `ipairs` slots from integer-index members, including inherited generic members.
     pub(crate) fn infer_iter_from_type_def(
@@ -837,6 +940,30 @@ impl<'db> SemanticModel<'db> {
         if let Some(enum_const) = self.enum_member_const(member_file, member) {
             return Some(enum_const);
         }
+        // An explicit member annotation takes precedence over its initializer.
+        // Rich projection retains anonymous object/index-signature contracts.
+        if let Some(facts) = self.file_facts_of(member_file)
+            && let Some(member_def) = facts.member_by_id(member)
+            && let Some(syntax) = member_def.doc_type_syntax
+        {
+            return Some(self.doc_type_lua_rich_in(member_file, syntax));
+        }
+        // A class annotated directly on a table field identifies that value,
+        // rather than inheriting the containing table's class identity.
+        if let Some(facts) = self.file_facts_of(member_file)
+            && let Some(field) = facts.member_by_id(member)
+            && field.doc_type_syntax.is_none()
+            && let Some(value) = field.value_syntax
+            && let Some(tree) = self.syntax_tree_of(member_file)
+            && let Some(table) = value
+                .to_node_from_root(&tree.get_red_root())
+                .and_then(LuaTableExpr::cast)
+            && let Some(field) = table.get_parent::<LuaTableField>()
+            && let Some(def) = facts.type_def_by_owner_syntax(field.get_syntax_id())
+            && matches!(def.kind, TypeDefKind::Class | TypeDefKind::Enum)
+        {
+            return Some(self.type_def_ref(def));
+        }
         // Runtime member assignments prefer VM projection: the TypeShell path does not perform higher-order generic call inference,
         // and would keep `E.foo_wrapped = wrap(function(a) ... end)` as `fun(...: T...)`.
         // Cycles/reentry are handled by `CacheEntry::InProgress` in the shared cache.
@@ -852,13 +979,24 @@ impl<'db> SemanticModel<'db> {
                 let tree = self.syntax_tree_of(member_file)?;
                 let node = value_syntax.to_node_from_root(&tree.get_red_root())?;
                 let expr = LuaExpr::cast(node)?;
+                let mut inner_expr = expr.clone();
+                while let LuaExpr::ParenExpr(paren) = inner_expr {
+                    inner_expr = paren.get_expr()?;
+                }
                 let eval = if self.is_initializer_table_field(member, &member_def) {
                     flow::type_of_expr_with_cast(
                         self,
                         expr.get_syntax_id(),
                         flow::ExprCastMode::AsOnly,
                     )
-                } else if matches!(expr, LuaExpr::CallExpr(_)) {
+                } else if matches!(expr, LuaExpr::CallExpr(_))
+                    || (member_def.doc_type_syntax.is_none()
+                        && matches!(&inner_expr, LuaExpr::UnaryExpr(unary)
+                            if unary.get_op_token().is_some_and(|op|
+                                op.get_op() == emmylua_parser::UnaryOperator::OpLen)))
+                {
+                    // Keep upstream inline assertions while projecting unannotated
+                    // length assignments through the VM's builtin/operator result.
                     flow::type_of_expr_with_cast(self, value_syntax, flow::ExprCastMode::AsOnly)
                 } else {
                     return None;
@@ -1066,6 +1204,17 @@ impl<'db> SemanticModel<'db> {
     }
     /// Callee function type at a call site (generic substitution inferred from arguments; member overloads are selected by arguments first).
     pub fn inferred_call_doc_function(&self, call_syntax: LuaSyntaxId) -> Option<LuaFunctionType> {
+        if let Some((fun, bindings)) = infer::infer_call_signature(self, call_syntax) {
+            let bindings = bindings
+                .into_iter()
+                .map(|(id, ty)| (id, Self::hover_widen_const(&ty)))
+                .collect();
+            if let LuaType::DocFunction(fun) =
+                infer::unify::substitute(&LuaType::DocFunction(Rc::new(fun)), &bindings)
+            {
+                return Some(fun.as_ref().clone());
+            }
+        }
         let tree = self.syntax_tree()?;
         let node = call_syntax.to_node_from_root(&tree.get_red_root())?;
         let call = LuaCallExpr::cast(node)?;
@@ -1328,7 +1477,10 @@ impl<'db> SemanticModel<'db> {
             .file_facts()
             .and_then(|facts| facts.decl_by_id(decl))
             .is_some_and(|decl| {
-                decl.doc_type_syntax.is_none() && !matches!(decl.kind, DeclKind::Param)
+                // Local assignment tracing already widens inferred initializers
+                // before applying explicit casts. Widening again loses those casts.
+                decl.doc_type_syntax.is_none()
+                    && !matches!(decl.kind, DeclKind::Param | DeclKind::Local { .. })
             });
         if inferred {
             widen_assignment_type(target)
@@ -1593,7 +1745,14 @@ fn project_base_type(model: &SemanticModel<'_>, def: &TypeDef, doc_type: LuaDocT
             _ => {}
         }
     }
-    model.doc_type_lua_in(def.file_id, doc_type.get_syntax_id(), &def.generic_params)
+    let ty = model.doc_type_lua_in(def.file_id, doc_type.get_syntax_id(), &def.generic_params);
+    if matches!(ty, LuaType::Table | LuaType::Unknown) {
+        let rich = model.doc_type_lua_rich_in(def.file_id, doc_type.get_syntax_id());
+        if !matches!(rich, LuaType::Unknown) {
+            return rich;
+        }
+    }
+    ty
 }
 
 fn widen_assignment_type(ty: LuaType) -> LuaType {
@@ -1614,6 +1773,7 @@ fn remove_nil_from_type(ty: LuaType) -> LuaType {
                 .into_vec()
                 .into_iter()
                 .filter(|t| !t.is_nil())
+                .map(remove_nil_from_type)
                 .collect();
             match types.len() {
                 0 => LuaType::Unknown,

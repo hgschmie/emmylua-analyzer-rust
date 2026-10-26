@@ -68,7 +68,7 @@ mod tests {
                 }
             "#,
             VirtualCompletionResolveItem {
-                detail: "(field) T.func(self: string)".to_string(),
+                detail: "(method) T:func()".to_string(),
                 documentation: Some("\n注释注释".to_string()),
             },
         ));

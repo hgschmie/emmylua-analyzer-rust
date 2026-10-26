@@ -7,7 +7,11 @@ pub mod type_check;
 pub mod type_eval;
 
 mod access;
+mod dictionary;
+mod directional;
 mod doc_types;
+mod index_function;
+pub(crate) mod inherited_index;
 mod prelude;
 mod signature;
 mod types;
@@ -33,9 +37,16 @@ use crate::{FileId, LuaFunctionType, LuaType};
 #[derive(Default)]
 struct LazyCache {
     inner: RefCell<Option<Box<cache::SemanticLocalCache>>>,
+    cancellation: Vec<tokio_util::sync::CancellationToken>,
 }
 
 impl LazyCache {
+    fn is_cancelled(&self) -> bool {
+        self.cancellation
+            .iter()
+            .any(tokio_util::sync::CancellationToken::is_cancelled)
+    }
+
     fn ensure(&self) {
         if self.inner.borrow().is_none() {
             *self.inner.borrow_mut() = Some(Box::new(cache::SemanticLocalCache::default()));

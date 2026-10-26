@@ -1187,6 +1187,83 @@ function KPlayer.GetPlayerObjById() end",
             "#
         ));
     }
+    #[test]
+    fn string_alias_keys_match_dictionary_and_class_indices() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def(
+            r#"
+            ---@alias Identifier string
+            ---@alias ChainedIdentifier Identifier
+            ---@alias OptionalIdentifier ChainedIdentifier|nil
+            ---@alias LiteralIdentifier 'item'|'fluid'
+            ---@class StringDictionary
+            ---@field [string] number
+        "#,
+        );
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            r#"
+            ---@param key ChainedIdentifier
+            ---@param optional OptionalIdentifier
+            ---@param literal LiteralIdentifier
+            ---@param mixed ChainedIdentifier|integer
+            ---@param map table<string, number>
+            ---@param object StringDictionary
+            local function update(key, optional, literal, mixed, map, object)
+                map[key] = (map[key] or 0) + 1
+                object[key] = map[literal]
+                if optional then map[optional] = object[literal] end
+                map[mixed] = 0
+            end
+        "#
+        ));
+    }
+
+    #[test]
+    fn string_alias_keys_keep_rejecting_incompatible_keys() {
+        let mut ws = VirtualWorkspace::new();
+        // The older work-branch member resolver accepts invalid dynamic keys on
+        // named classes before this checker runs. Keep the independent dictionary
+        // negative control here; the standalone upstream test also checks classes.
+        let source = r#"
+            ---@alias NumericKey integer
+            ---@param key NumericKey
+            ---@param map table<string, number>
+            local function update(key, map)
+                map[key] = 1
+            end
+        "#;
+        let diagnostics = crate::check::test::check_source(source);
+        let fields = diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::UndefinedField)
+            .collect::<Vec<_>>();
+        assert_eq!(fields.len(), 1, "{diagnostics:#?}");
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            r#"
+            ---@alias Identifier string
+            ---@param key Identifier
+            ---@param map table<integer, number>
+            local function update(key, map) map[key] = 1 end
+        "#
+        ));
+    }
+
+    #[test]
+    fn string_alias_keys_handle_cycles() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            r#"
+            ---@alias CycleA CycleB
+            ---@alias CycleB CycleA
+            ---@param key CycleA
+            ---@param map table<string, number>
+            local function update(key, map) map[key] = 1 end
+        "#
+        ));
+    }
 }
 
 #[googletest::gtest]
@@ -1301,4 +1378,228 @@ fn enum_runtime_cross_file_dynamic_and_conditional_keys() {
         ),
         eq(false)
     );
+}
+
+#[cfg(test)]
+mod unbound_tables {
+    use googletest::prelude::*;
+
+    use crate::{DiagnosticCode, VirtualWorkspace};
+
+    #[gtest]
+    fn unrelated_class_does_not_constrain_a_local_table() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        expect_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::UndefinedField,
+                r#"
+            ---@class RequestProcessor
+            local Processor = {}
+
+            ---@class uint32: integer
+            ---@class Train
+            ---@field id uint32
+            ---@param trains Train[]
+            local function remember(trains)
+                local seen_train = {}
+                for _, train in pairs(trains) do
+                    if not seen_train[train.id] then
+                        seen_train[train.id] = true
+                    end
+                end
+            end
+        "#
+            ),
+            eq(true)
+        );
+    }
+
+    #[gtest]
+    fn unrelated_types_do_not_bind_tables_by_position_or_name() {
+        for source in [
+            r#"
+                ---@enum Result
+                local Result = { SUCCESS = 1 }
+                local unrelated = {}
+                local value = unrelated.missing
+            "#,
+            r#"
+                ---@class Seen
+                ---@field declared boolean
+                local ClassValue = {}
+                local function remember()
+                    local Seen = {}
+                    local value = Seen.missing
+                end
+            "#,
+            r#"
+                ---@class Seen
+                ---@field declared boolean
+                local ClassValue = {}
+                local function remember()
+                    local seen = {}
+                    local value = seen.missing
+                end
+            "#,
+            r#"
+                ---@alias Alias { declared: boolean }
+                local placeholder = 1
+                local unrelated = {}
+                local value = unrelated.missing
+            "#,
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            expect_that!(
+                ws.has_no_diagnostic(DiagnosticCode::UndefinedField, source),
+                eq(true)
+            );
+        }
+    }
+
+    #[gtest]
+    fn attached_class_and_enum_still_check_missing_members() {
+        for source in [
+            r#"
+                ---@class NamedClass
+                ---@field declared boolean
+                local differently_named_value = {}
+                local value = differently_named_value.missing
+            "#,
+            r#"
+                ---@enum NamedEnum
+                local differently_named_value = { PRESENT = 1 }
+                local value = differently_named_value.MISSING
+            "#,
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            expect_that!(
+                ws.has_no_diagnostic(DiagnosticCode::UndefinedField, source),
+                eq(false)
+            );
+        }
+    }
+}
+
+#[test]
+fn test_dynamic_string_alias_member_keys() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let mut ws = VirtualWorkspace::new();
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::UndefinedField,
+        r#"
+        ---@class PrototypeMap
+        ---@field item string
+        ---@field fluid string
+        ---@alias Kind "item"|"fluid"
+        ---@alias KindAlias Kind
+        ---@class Signal
+        ---@field type KindAlias
+        ---@param prototypes PrototypeMap
+        ---@param signal Signal
+        local function lookup(prototypes, signal)
+            local direct = prototypes[signal.type]
+            return direct
+        end
+    "#
+    ));
+}
+
+#[test]
+fn test_dynamic_string_alias_key_negative_cases() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for key in ["false", "1"] {
+        let mut ws = VirtualWorkspace::new();
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            &format!(
+                r#"
+            ---@class PrototypeMap
+            ---@field item string
+            ---@alias Key {key}
+            ---@param prototypes PrototypeMap
+            ---@param key Key
+            local function lookup(prototypes, key) return prototypes[key] end
+        "#
+            )
+        ));
+    }
+}
+
+#[test]
+fn test_recursive_dynamic_string_alias_keys_terminate() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let mut ws = VirtualWorkspace::new();
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::UndefinedField,
+        r#"
+        ---@class Map
+        ---@field item string
+        ---@alias A B|false
+        ---@alias B A|1
+        ---@param map Map
+        ---@param key A
+        local function lookup(map, key) return map[key] end
+    "#
+    ));
+}
+
+#[cfg(test)]
+mod numeric_enum_indices {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    #[test]
+    fn numeric_enum_index_accepts_array_dictionary_and_class_keys() {
+        for owner in ["integer[]", "table<integer, integer>", "NumericIndex"] {
+            let mut ws = VirtualWorkspace::new();
+            assert!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::UndefinedField,
+                    &format!(
+                        r#"
+                ---@enum Limit
+                local Limit = {{ all = 1, ten = 2, twentyfive = 3 }}
+                ---@alias LimitAlias Limit
+
+                ---@class State
+                ---@field limit LimitAlias
+
+                ---@class NumericIndex
+                ---@field [integer] integer
+
+                ---@param values {owner}
+                ---@param state State?
+                local function read(values, state)
+                    ---@cast state -?
+                    return values[state.limit]
+                end
+            "#
+                    )
+                ),
+                "owner: {owner}"
+            );
+        }
+    }
+
+    #[test]
+    fn numeric_enum_index_rejects_nonnumeric_values() {
+        for values in ["name = 'name'", "one = 1, name = 'name'", "flag = true"] {
+            let mut ws = VirtualWorkspace::new();
+            assert!(
+                !ws.has_no_diagnostic(
+                    DiagnosticCode::UndefinedField,
+                    &format!(
+                        r#"
+                ---@enum InvalidIndex
+                local InvalidIndex = {{ {values} }}
+                ---@param values integer[]
+                ---@param key InvalidIndex
+                local function read(values, key)
+                    return values[key]
+                end
+            "#
+                    )
+                ),
+                "enum: {values}"
+            );
+        }
+    }
 }

@@ -6,14 +6,16 @@ use emmylua_code_analysis::{
 };
 use emmylua_parser::{
     LuaAssignStat, LuaAstNode, LuaCallExpr, LuaDocAttributeUse, LuaDocDescriptionOwner, LuaDocType,
-    LuaExpr, LuaIndexExpr, LuaLocalStat, LuaSyntaxToken, LuaTableExpr, LuaTableField,
+    LuaExpr, LuaIndexExpr, LuaSyntaxToken, LuaTableExpr, LuaTableField,
 };
 use hashbrown::HashMap;
 use lsp_types::{Hover, HoverContents, MarkupContent};
 use rowan::TextRange;
 
-use crate::handlers::common::{resolve_alias_origin, semantic_id_file};
-use crate::handlers::completion::providers::callable_candidates;
+use crate::handlers::common::{
+    constructor_field_infos, resolve_alias_origin, semantic_id_file, strip_nullable,
+    table_context_type_for_expr, table_context_type_for_token,
+};
 use crate::handlers::hover::desc::HoverDescription;
 
 use super::desc::{
@@ -30,38 +32,41 @@ struct MemberContextInfo {
     show_unknown: bool,
 }
 
-// Whether the first parameter should not be treated as `self`
-fn first_param_may_not_self(typ: &LuaType) -> bool {
-    if typ.is_table()
-        || matches!(
-            typ,
-            LuaType::TplRef(_) | LuaType::StrTplRef(_) | LuaType::Any | LuaType::Unknown
-        )
-    {
-        return true;
-    }
-
-    if let LuaType::Union(u) = typ {
-        return u.into_vec().iter().any(first_param_may_not_self);
-    }
-    false
-}
-
 pub fn build_semantic_info_hover(
     model: &SemanticModel<'_>,
     db: &SemanticDatabase,
     token: LuaSyntaxToken,
     range: TextRange,
 ) -> Option<Hover> {
-    let info = model.semantic_info(token.clone().into())?;
-    let member_call_typ = if matches!(info.decl, Some(SemanticId::Member(_))) {
+    let mut info = model.semantic_info(token.clone().into())?;
+    if let Some(table) = token.parent().and_then(LuaTableExpr::cast)
+        && let Some(context) = table_context_type_for_expr(model, &table)
+    {
+        info.typ = context;
+    }
+    let assignment_context_infos = info
+        .decl
+        .as_ref()
+        .map(|decl| member_assignment_context_infos(model, decl, &token))
+        .unwrap_or_default();
+    let member_read_typ = info
+        .decl
+        .as_ref()
+        .filter(|decl| assignment_context_infos.is_empty() && matches!(decl, SemanticId::Member(_)))
+        .and_then(|member| {
+            member_read_type_at_token(model, &token)
+                .filter(|ty| ty != &info.typ || member_is_nullable(model, member))
+        });
+    let member_call_typ = if assignment_context_infos.is_empty()
+        && matches!(info.decl, Some(SemanticId::Member(_)))
+    {
         let in_call = token
             .parent_ancestors()
             .any(|node| LuaCallExpr::cast(node).is_some());
         let call_typ = in_call
             .then(|| member_type_at_token(model, &token))
             .flatten();
-        call_typ.or_else(|| {
+        call_typ.or_else(|| member_read_typ.clone()).or_else(|| {
             // Non-function member of an instantiated generic (`c.aaa` with `local c ---@type MyTable<int>`
             // and `---@field aaa T`): `info.typ` already carries the prefix projection (`integer`) and must
             // win over the declaration-site member type (`T`) that `build_member_hover` would otherwise use.
@@ -98,11 +103,14 @@ pub fn build_semantic_info_hover(
     } else {
         None
     };
-    let member_context_infos = info
-        .decl
-        .as_ref()
-        .map(|decl| member_context_infos(model, decl, &token))
-        .unwrap_or_default();
+    let member_context_infos = if assignment_context_infos.is_empty() {
+        info.decl
+            .as_ref()
+            .map(|decl| member_context_infos(model, decl, &token))
+            .unwrap_or_default()
+    } else {
+        assignment_context_infos
+    };
     let (mut code, description) = if let Some(decl) = info.decl.as_ref() {
         // Alias tracing: `local f = t.func` / `local a = b` show the signature and comments of the real function definition.
         let origin = resolve_alias_origin(model, decl).unwrap_or_else(|| decl.clone());
@@ -118,10 +126,20 @@ pub fn build_semantic_info_hover(
             } else {
                 false
             };
-            let hover_typ = if &origin == decl || origin_is_param {
+            let origin_typ = semantic_type_of(&origin_model, &origin);
+            // Data aliases retain the value projected at the use site. Following the
+            // declaration for documentation must not discard absent union alternatives.
+            let projected_member = matches!(decl, SemanticId::Decl(_))
+                && matches!(origin, SemanticId::Member(_))
+                && !matches!(
+                    &origin_typ,
+                    LuaType::Function | LuaType::DocFunction(_) | LuaType::Signature(_)
+                )
+                && !matches!(&info.typ, LuaType::Unknown | LuaType::Any);
+            let hover_typ = if &origin == decl || origin_is_param || projected_member {
                 info.typ.clone()
             } else {
-                semantic_type_of(&origin_model, &origin)
+                origin_typ
             };
             match &origin {
                 SemanticId::Decl(_) => build_decl_hover(
@@ -136,6 +154,8 @@ pub fn build_semantic_info_hover(
                     member_call_typ.as_ref().unwrap_or(&hover_typ),
                     &origin,
                     member_call_typ.is_some(),
+                    member_read_typ.is_some(),
+                    projected_member,
                     member_context_infos.as_slice(),
                 ),
                 SemanticId::TypeDef(_) => {
@@ -157,6 +177,8 @@ pub fn build_semantic_info_hover(
                     member_call_typ.as_ref().unwrap_or(&info.typ),
                     decl,
                     member_call_typ.is_some(),
+                    member_read_typ.is_some(),
+                    false,
                     member_context_infos.as_slice(),
                 ),
                 SemanticId::TypeDef(_) => build_type_hover(model, &info.typ, decl, &token),
@@ -164,7 +186,8 @@ pub fn build_semantic_info_hover(
             }
         }
     } else {
-        (humanize(model, &info.typ), None)
+        let read_typ = member_read_type_at_token(model, &token).unwrap_or(info.typ);
+        (humanize(model, &read_typ), None)
     };
 
     // `pcall(foo)` synthesizes the full display from the call-site callback signature (covering std's anonymous `...` signature).
@@ -248,6 +271,37 @@ pub fn build_semantic_info_hover(
     })
 }
 
+/// An index read should display the type at the cursor, retaining any member's
+/// declaration identity for documentation. Assignment targets still describe
+/// their writable contract, and callable members keep signature rendering.
+fn member_read_type_at_token(model: &SemanticModel, token: &LuaSyntaxToken) -> Option<LuaType> {
+    let index = LuaIndexExpr::cast(token.parent()?)?;
+    if index
+        .ancestors::<LuaAssignStat>()
+        .next()
+        .is_some_and(|assign| {
+            assign
+                .get_var_and_expr_list()
+                .0
+                .iter()
+                .any(|var| var.to_expr().syntax() == index.syntax())
+        })
+    {
+        return None;
+    }
+    // The work branch's path-aware flow query already restores optional field
+    // contracts and applies casts/guards for this exact receiver. A second
+    // declaration-member flow query would discard those refinements.
+    let ty = model.type_of_expr_at(index.get_syntax_id(), index.get_position());
+    if matches!(
+        strip_nullable(&ty),
+        LuaType::Unknown | LuaType::Function | LuaType::Signature(_) | LuaType::DocFunction(_)
+    ) {
+        return None;
+    }
+    Some(ty)
+}
+
 /// Whether the token is exactly the call callee's bare function name (`f(...)`), not a method-call receiver/argument.
 fn token_is_direct_call_callee(token: &LuaSyntaxToken, call: &LuaCallExpr) -> bool {
     let Some(prefix) = call.get_prefix_expr() else {
@@ -266,6 +320,77 @@ fn semantic_type_of(model: &SemanticModel<'_>, id: &SemanticId) -> LuaType {
         SemanticId::TypeDef(_) => LuaType::Unknown,
         _ => LuaType::Unknown,
     }
+}
+
+/// An assignment target displays its declared field contract, with the assigned
+/// literal shown separately by build_member_hover. Resolve through the prefix at
+/// the use site: global/nested owners need not have a declaration-backed member ID.
+fn member_assignment_context_infos(
+    model: &SemanticModel<'_>,
+    decl: &SemanticId,
+    token: &LuaSyntaxToken,
+) -> Vec<MemberContextInfo> {
+    let SemanticId::Member(key) = decl else {
+        return Vec::new();
+    };
+    let Some(index) = token.parent_ancestors().find_map(LuaIndexExpr::cast) else {
+        return Vec::new();
+    };
+    let Some(assign) = index.get_parent::<LuaAssignStat>() else {
+        return Vec::new();
+    };
+    if !assign
+        .get_var_and_expr_list()
+        .0
+        .iter()
+        .any(|var| var.to_expr().get_syntax_id() == index.get_syntax_id())
+    {
+        return Vec::new();
+    }
+    let Some(member) = model
+        .file_facts_of(key.file_id)
+        .and_then(|facts| facts.member_by_id(decl))
+    else {
+        return Vec::new();
+    };
+    // Keep explicit implementation types and function/method signatures intact.
+    if member.doc_type_syntax.is_some()
+        || member.is_method
+        || member_signature(model, &member).is_some()
+    {
+        return Vec::new();
+    }
+    let Some(prefix) = index.get_prefix_expr() else {
+        return Vec::new();
+    };
+    let inferred_prefix = model.type_of_expr_at(prefix.get_syntax_id(), index.get_position());
+    let prefix_ty = if matches!(inferred_prefix, LuaType::TableConst(_) | LuaType::Unknown)
+        && let LuaExpr::NameExpr(name) = &prefix
+        && let Some(decl) = model.resolve_name(name.get_position())
+    {
+        // A global's initializer may project to its anonymous table. The
+        // assignment-target query retains an explicit declaration contract.
+        model.type_of_decl_assign_target_at(&decl, index.get_position())
+    } else {
+        inferred_prefix
+    };
+    model
+        .member_infos_with_key_all(&prefix_ty, &member.key)
+        .into_iter()
+        .filter(|info| {
+            let Some(SemanticId::Member(id)) = &info.id else {
+                return false;
+            };
+            model
+                .file_facts_of(id.file_id)
+                .and_then(|facts| facts.member_by_id(&SemanticId::Member(id.clone())))
+                .is_some_and(|member| matches!(member.owner, SemanticId::TypeDef(_)))
+        })
+        .map(|info| MemberContextInfo {
+            info,
+            show_unknown: false,
+        })
+        .collect()
 }
 
 /// Context projection for member hover: value aliases like `local x = obj.field` or table field
@@ -322,15 +447,38 @@ fn member_context_infos(
         let Some(member) = facts.member_by_id(decl) else {
             return Vec::new();
         };
+        // An explicit field annotation overrides the enclosing constructor contract.
+        if member.doc_type_syntax.is_some() {
+            return Vec::new();
+        }
         if let Some(context_ty) = table_context_type_for_token(model, token) {
-            let mut infos = model
-                .member_infos_with_key_all(&context_ty, &member.key)
+            let Some(field) = token.parent_ancestors().find_map(LuaTableField::cast) else {
+                return Vec::new();
+            };
+            let mut infos = constructor_field_infos(model, &context_ty, &field)
                 .into_iter()
                 .map(|info| MemberContextInfo {
                     info,
                     show_unknown: false,
                 })
                 .collect::<Vec<_>>();
+            // An unmatched key has no contract. Keep its initializer's type
+            // instead of borrowing a same-named field from an array element.
+            if infos.is_empty()
+                && let Some(value) = field.get_value_expr()
+            {
+                infos.push(MemberContextInfo {
+                    info: MemberInfo {
+                        key: member.key.clone(),
+                        typ: model.type_of_expr(value.get_syntax_id()),
+                        index_key_type: None,
+                        id: None,
+                        file_id: None,
+                        is_method: false,
+                    },
+                    show_unknown: false,
+                });
+            }
             if context_ty.contain_tpl() {
                 // When the generic context cannot be inferred from the call site, bind generics in the
                 // type-surface member using the field value's own `---@param` signatures
@@ -448,99 +596,6 @@ fn substitute_class_generics_to_unknown(
     let params = vec![LuaType::Unknown; names.len()];
     let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
     model.substitute_generic_params_named_str(&ty, &params, &name_refs)
-}
-
-fn table_context_type_for_token(
-    model: &SemanticModel<'_>,
-    token: &LuaSyntaxToken,
-) -> Option<LuaType> {
-    let field = token.parent_ancestors().find_map(LuaTableField::cast)?;
-    let table_expr = field.ancestors::<LuaTableExpr>().next()?;
-    table_context_type_for_expr(model, &table_expr)
-}
-
-fn table_context_type_for_expr(
-    model: &SemanticModel<'_>,
-    table_expr: &LuaTableExpr,
-) -> Option<LuaType> {
-    let syntax_id = table_expr.get_syntax_id();
-
-    // `---@type T local t = { ... }`: type from the local declaration.
-    if let Some(local) = table_expr.ancestors::<LuaLocalStat>().next() {
-        if local
-            .get_value_exprs()
-            .any(|expr| expr.get_syntax_id() == syntax_id)
-            && let Some(name) = local.get_local_name_list().next()
-            && let Some(decl) = model.decl_by_offset(name.get_position())
-        {
-            if let Some(ty) = model.type_of_decl(&decl)
-                && !matches!(ty, LuaType::Unknown)
-            {
-                return Some(ty);
-            }
-        }
-    }
-
-    // `x = { ... }`: type of the assignment target.
-    if let Some(assign) = table_expr.ancestors::<LuaAssignStat>().next() {
-        let (vars, values) = assign.get_var_and_expr_list();
-        if values.iter().any(|expr| expr.get_syntax_id() == syntax_id)
-            && let Some(var) = vars.first()
-        {
-            let ty = model.type_of_expr(var.to_expr().get_syntax_id());
-            if !matches!(ty, LuaType::Unknown) {
-                return Some(ty);
-            }
-        }
-    }
-
-    // Call argument: `observe({ ... })` -> parameter type.
-    if let Some(call) = table_expr.ancestors::<LuaCallExpr>().next() {
-        let arg_idx = call
-            .get_args_list()?
-            .get_args()
-            .enumerate()
-            .find(|(_, arg)| arg.get_syntax_id() == syntax_id)
-            .map(|(idx, _)| idx)?;
-        // Prefer call-site generic projection when available (`observe("x", { ... })` with `T -> string`).
-        if let Some(fun) = model.inferred_call_doc_function(call.get_syntax_id()) {
-            let mut param_idx = arg_idx;
-            if call.is_colon_call() && !fun.is_colon_define() {
-                param_idx += 1;
-            }
-            if let Some(ty) = fun
-                .get_params()
-                .get(param_idx)
-                .and_then(|(_, ty)| ty.clone())
-                && !matches!(ty, LuaType::Unknown)
-            {
-                return Some(ty);
-            }
-        }
-        let prefix = call.get_prefix_expr()?;
-        let mut types = Vec::new();
-        for func in callable_candidates(model, &prefix) {
-            let mut param_idx = arg_idx;
-            if call.is_colon_call() && !func.is_colon_define() {
-                param_idx += 1;
-            }
-            if let Some(ty) = func
-                .get_params()
-                .get(param_idx)
-                .and_then(|(_, ty)| ty.clone())
-            {
-                if !types.contains(&ty) {
-                    types.push(ty);
-                }
-            }
-        }
-        if let Some(ty) = types.into_iter().next() {
-            return Some(ty);
-        }
-    }
-
-    let ty = model.type_of_expr(syntax_id);
-    (!matches!(ty, LuaType::Unknown)).then_some(ty)
 }
 
 /// Whether the member access (`x.foo` / `x:foo`) containing the current token is applied to an
@@ -876,40 +931,14 @@ fn member_owner_type_and_name(
     }
 }
 
-/// Old humanize semantics: `fun(self: Owner, ...)` is displayed as a method, `fun(self: string, ...)` as a field.
-fn display_as_method(
-    model: &SemanticModel<'_>,
-    func: &LuaFunctionType,
-    owner_ty: Option<&LuaType>,
-) -> bool {
-    if func.is_colon_define() {
-        return true;
-    }
-    let Some((name, ty)) = func.get_params().first() else {
-        return false;
-    };
-    match ty {
-        Some(ty) => {
-            if ty.is_self_infer() {
-                return true;
-            }
-            match owner_ty {
-                Some(owner_ty) => {
-                    if matches!(owner_ty, LuaType::Ref(_) | LuaType::Def(_))
-                        && first_param_may_not_self(ty)
-                    {
-                        return false;
-                    }
-                    if model.type_check(owner_ty, ty) {
-                        return true;
-                    }
-                    name == "self" && model.type_check(ty, owner_ty)
-                }
-                None => name == "self",
-            }
-        }
-        None => name == "self",
-    }
+/// Only explicit receiver syntax/names make a function a method. A parameter
+/// accepting another instance of the owning class is not an implicit receiver.
+fn display_as_method(func: &LuaFunctionType) -> bool {
+    func.is_colon_define()
+        || func
+            .get_params()
+            .first()
+            .is_some_and(|(name, _)| matches!(name.as_str(), "self" | "_self"))
 }
 
 /// Number of other member declarations with the same key (shown as `(+N overloads)` for `---@field` overloads).
@@ -1050,6 +1079,28 @@ fn build_decl_hover(
     }
 
     let description = decl_description(model, decl);
+    // An open global table keeps its broad contract, but its hover can still
+    // show fields assigned by the workspace (for example Factorio's storage).
+    if matches!(typ, LuaType::Table) && matches!(decl_info.kind, DeclKind::Global) {
+        let fields = model
+            .members_of_owner(&SemanticId::name(decl_info.name.clone()))
+            .iter()
+            .filter_map(|member| {
+                let ty = model.type_of_member(&member.id)?;
+                Some((member.name.to_string(), humanize(model, &ty)))
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        if !fields.is_empty() {
+            let lines = fields
+                .iter()
+                .map(|(name, ty)| format!("    {name}: {ty},"))
+                .collect::<Vec<_>>();
+            return (
+                format!("{prefix}{name}: table {{\n{}\n}}", lines.join("\n")),
+                Some(description),
+            );
+        }
+    }
     // Named type declaration -> expand class member list (`local node: Node { ... }`).
     if let Some(class_lines) = class_member_lines(model, typ)
         && !class_lines.is_empty()
@@ -1223,9 +1274,11 @@ fn class_member_lines(model: &SemanticModel<'_>, ty: &LuaType) -> Option<Vec<Str
                     _ => return None,
                 },
             };
+            let typ = class_member_hover_type(model, &info);
             let rendered = match &info.typ {
+                LuaType::DocFunction(_) if typ.is_nullable() => "function?".to_string(),
                 LuaType::DocFunction(_) => "function".to_string(),
-                ty => render_member_typ_with_default(model, ty),
+                _ => render_member_typ_with_default(model, &typ),
             };
             Some(format!("    {}: {},", name, rendered))
         })
@@ -1252,6 +1305,21 @@ fn member_class_key_display(model: &SemanticModel<'_>, info: &MemberInfo) -> Opt
     ))
 }
 
+/// Member projection can keep `@field name? Type` optionality in declaration
+/// metadata rather than in the projected type. Class summaries need both.
+fn class_member_hover_type(model: &SemanticModel<'_>, info: &MemberInfo) -> LuaType {
+    if !info.typ.is_nullable()
+        && info
+            .id
+            .as_ref()
+            .is_some_and(|id| member_is_nullable(model, id))
+    {
+        LuaType::from_vec(vec![info.typ.clone(), LuaType::Nil])
+    } else {
+        info.typ.clone()
+    }
+}
+
 fn member_is_nullable(model: &SemanticModel<'_>, id: &SemanticId) -> bool {
     let SemanticId::Member(key) = id else {
         return false;
@@ -1276,19 +1344,6 @@ fn render_member_typ_with_default(model: &SemanticModel<'_>, ty: &LuaType) -> St
     match base {
         Some(base) => format!("{} = {}", base, value),
         None => value,
-    }
-}
-
-/// Remove `nil` from nullable types (`T | nil` / `T?`) for display when the current assignment is non-nil.
-fn strip_nullable(ty: &LuaType) -> LuaType {
-    match ty {
-        LuaType::Union(union) => {
-            let mut types = union.into_vec();
-            types.retain(|t| !matches!(t, LuaType::Nil));
-            LuaType::from_vec(types)
-        }
-        LuaType::MultiLineUnion(union) => strip_nullable(&union.to_union()),
-        _ => ty.clone(),
     }
 }
 
@@ -1509,6 +1564,8 @@ fn build_member_hover(
     typ: &LuaType,
     member: &SemanticId,
     call_site_substituted: bool,
+    use_site_read: bool,
+    projected_value: bool,
     context_infos: &[MemberContextInfo],
 ) -> (String, Option<HoverDescription>) {
     let Some(members) = model.members() else {
@@ -1538,6 +1595,12 @@ fn build_member_hover(
     let show_unknown = context_infos.iter().any(|ctx| ctx.show_unknown);
     if !call_site_substituted && !context_infos.is_empty() {
         let first = &context_infos[0];
+        effective_typ_override = Some(LuaType::from_vec(
+            context_infos
+                .iter()
+                .map(|ctx| ctx.info.typ.clone())
+                .collect(),
+        ));
         if let (Some(id), Some(file_id)) = (&first.info.id, first.info.file_id)
             && let Some(facts) = model.file_facts_of(file_id)
             && let Some(context_member) = facts.member_by_id(id)
@@ -1680,7 +1743,9 @@ fn build_member_hover(
     } else {
         None
     };
-    let effective_typ = if let Some(override_ty) = effective_typ_override {
+    let effective_typ = if projected_value {
+        typ.clone()
+    } else if let Some(override_ty) = effective_typ_override {
         override_ty
     } else if call_site_substituted && !matches!(typ, LuaType::Unknown) {
         typ.clone()
@@ -1732,7 +1797,7 @@ fn build_member_hover(
         && let Some(runtime_ty) = &runtime_non_nil_ty
     {
         runtime_ty.clone()
-    } else if runtime_non_nil_ty.is_some() && effective_typ.is_nullable() {
+    } else if !projected_value && runtime_non_nil_ty.is_some() && effective_typ.is_nullable() {
         strip_nullable(&effective_typ)
     } else {
         effective_typ
@@ -1750,7 +1815,7 @@ fn build_member_hover(
         if let (Some(owner_ty), Some(owner_name)) =
             member_owner_type_and_name(model, &member_info.owner)
         {
-            let is_method = display_as_method(model, fun, Some(&owner_ty));
+            let is_method = display_as_method(fun);
             let has_named_returns = !call_site_substituted
                 && signature_has_named_returns(model, member_info.value_syntax);
             let (params, _) =
@@ -1785,7 +1850,6 @@ fn build_member_hover(
             render_member_overload_blocks(
                 model,
                 &member_info,
-                &owner_ty,
                 &overload_types,
                 &overload_ids,
                 typed_member.is_some(),
@@ -1800,7 +1864,7 @@ fn build_member_hover(
                 Some(description),
             );
         } else if let Some(owner_name) = member_owner_display_name(model, &member_info.owner) {
-            let is_method = fun.is_colon_define() || member_info.is_method;
+            let is_method = display_as_method(fun) || member_info.is_method;
             let has_named_returns = !call_site_substituted
                 && signature_has_named_returns(model, member_info.value_syntax);
             let (params, _) =
@@ -1833,9 +1897,14 @@ fn build_member_hover(
 
         let has_named_returns =
             !call_site_substituted && signature_has_named_returns(model, member_info.value_syntax);
-        let (params, _) =
+        let (params, ret) =
             render_function_params_and_ret_mode(model, fun, false, has_named_returns, show_unknown);
-        let code = format!("(field) {}({})", member_name, params);
+        let ret = if has_named_returns {
+            render_named_returns(model, member_info.value_syntax)
+        } else {
+            ret
+        };
+        let code = format!("(field) {}({}){}", member_name, params, ret);
         return (code, Some(description));
     }
 
@@ -1843,7 +1912,7 @@ fn build_member_hover(
     // so re-render using the member closure signature; after `---@version` filtering, this is already a visible definition.
     if let Some(fun) = member_signature(model, member_info) {
         let (owner_ty, owner_name) = member_owner_type_and_name(model, &member_info.owner);
-        let is_method = member_info.is_method || display_as_method(model, &fun, owner_ty.as_ref());
+        let is_method = member_info.is_method || display_as_method(&fun);
         let has_named_returns =
             !call_site_substituted && signature_has_named_returns(model, member_info.value_syntax);
         let (params, _) =
@@ -1873,7 +1942,6 @@ fn build_member_hover(
             render_member_overload_blocks(
                 model,
                 &member_info,
-                &owner_ty,
                 &overload_types,
                 &overload_ids,
                 typed_member.is_some(),
@@ -1900,7 +1968,9 @@ fn build_member_hover(
         return (code, Some(description));
     }
     let mut rendered_typ = render_member_typ_with_default(model, &effective_typ);
-    if runtime_literal_ty.is_none()
+    if !projected_value
+        && runtime_literal_ty.is_none()
+        && !use_site_read
         && member_is_nullable(model, &display_member_id)
         && !rendered_typ.ends_with('?')
     {
@@ -1929,7 +1999,6 @@ fn build_member_hover(
 fn render_member_overload_blocks(
     model: &SemanticModel<'_>,
     member_info: &Member,
-    owner_ty: &LuaType,
     overload_types: &[LuaType],
     overload_ids: &[Option<SemanticId>],
     skip_first: bool,
@@ -1946,7 +2015,7 @@ fn render_member_overload_blocks(
         let LuaType::DocFunction(fun) = typ else {
             continue;
         };
-        let overload_is_method = display_as_method(model, fun, Some(owner_ty));
+        let overload_is_method = display_as_method(fun);
         let (params, ret) =
             render_function_params_and_ret_mode(model, fun, overload_is_method, false, false);
         let separator = if overload_is_method { ":" } else { "." };
@@ -2239,7 +2308,7 @@ fn build_type_hover(
             Some(format!(
                 "    {}: {},",
                 name,
-                render_member_typ_with_default(model, &info.typ)
+                render_member_typ_with_default(model, &class_member_hover_type(model, &info))
             ))
         })
         .collect::<Vec<_>>();

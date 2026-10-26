@@ -4,7 +4,7 @@ use lsp_types::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::context::{RequestOutcome, ServerContextSnapshot, analysis_query};
+use crate::context::{CancelSource, RequestOutcome, ServerContextSnapshot, analysis_query};
 
 pub async fn on_pull_document_diagnostic(
     context: ServerContextSnapshot,
@@ -14,25 +14,38 @@ pub async fn on_pull_document_diagnostic(
     let uri = params.text_document.uri;
     let cache_key = format!("diagnostic:{}", uri.as_str());
 
-    analysis_query(
+    let request_token = token.clone();
+    let result = analysis_query(
         context.analysis(),
         context.request_manager(),
         &cache_key,
         Some(token.clone()),
         move |analysis| {
             let file_id = analysis.get_file_id(&uri)?;
-            analysis.diagnose_file(file_id, token.clone())
+            Some(analysis.diagnose_file(file_id, token.clone()))
         },
     )
     .await
     .map(|diagnostics| {
-        DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
-            related_documents: None,
-            full_document_diagnostic_report: FullDocumentDiagnosticReport {
-                result_id: None,
-                items: diagnostics,
-            },
+        diagnostics.map(|diagnostics| {
+            DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
+                related_documents: None,
+                full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                    result_id: None,
+                    items: diagnostics,
+                },
+            })
+            .into()
         })
-        .into()
-    })
+    });
+    match result {
+        RequestOutcome::Ready(Some(report)) => RequestOutcome::Ready(report),
+        RequestOutcome::Ready(None) => RequestOutcome::Cancelled(if request_token.is_cancelled() {
+            CancelSource::Client
+        } else {
+            CancelSource::DiagnosticRefresh
+        }),
+        RequestOutcome::Cancelled(source) => RequestOutcome::Cancelled(source),
+        RequestOutcome::Missing => RequestOutcome::Missing,
+    }
 }

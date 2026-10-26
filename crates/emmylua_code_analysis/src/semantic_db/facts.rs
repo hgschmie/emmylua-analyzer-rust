@@ -125,7 +125,7 @@ pub struct FileFacts {
     decls_by_owner_syntax: HashMap<LuaSyntaxId, Vec<usize>>,
     signature_by_closure: HashMap<LuaSyntaxId, usize>,
     signature_by_position: HashMap<TextSize, usize>,
-    /// `setmetatable(table, meta)` calls in declaration or member initializers:
+    /// `setmetatable(table, meta)` calls throughout this file:
     /// `(first-arg range, first-arg syntax, metatable-value syntax)`.
     setmetatable_calls: Vec<(TextRange, LuaSyntaxId, LuaSyntaxId)>,
     operator_by_owner_name: HashMap<(SemanticId, SmolStr), usize>,
@@ -183,7 +183,7 @@ impl FileFacts {
         None
     }
 
-    /// Finds the member whose key range contains `offset`.
+    /// Finds a declaration key at `offset`, excluding list values and computed key expressions.
     pub fn member_at_offset(&self, offset: TextSize) -> Option<&Member> {
         let idx = self
             .member_by_range_start
@@ -411,7 +411,7 @@ impl FileFacts {
             })
     }
 
-    /// `setmetatable(table, meta)` calls in declaration or member initializers.
+    /// `setmetatable(table, meta)` calls throughout this file.
     pub fn setmetatable_calls(&self) -> &[(TextRange, LuaSyntaxId, LuaSyntaxId)] {
         &self.setmetatable_calls
     }
@@ -563,7 +563,7 @@ pub struct FactsBuilder {
     module_version_conds: Vec<LuaVersionCondition>,
     /// Doc annotation usage errors (`@field` must be under a `@class`, etc.).
     annotation_errors: Vec<AnnotationError>,
-    /// `setmetatable(table, meta)` calls in declaration or member initializers.
+    /// `setmetatable(table, meta)` calls throughout this file.
     setmetatable_calls: Vec<(TextRange, LuaSyntaxId, LuaSyntaxId)>,
 }
 
@@ -878,6 +878,9 @@ impl FactsBuilder {
             .members
             .iter()
             .enumerate()
+            // List entries retain their full value range as a stable identity,
+            // but expressions within that range are not member declarations.
+            .filter(|(_, member)| !member.is_implicit_key && !member.is_computed_key)
             .filter_map(|(i, member)| member.id.member_key_range().map(|range| (range.start(), i)))
             .collect::<Vec<_>>();
         member_by_range_start.sort_by_key(|(start, _)| *start);
@@ -1352,7 +1355,11 @@ impl FactsBuilder {
                                 owner.get_kind(),
                                 LuaSyntaxKind::FuncStat | LuaSyntaxKind::LocalFuncStat
                             )
-                        });
+                        }) || comment
+                            .get_owner()
+                            .and_then(|owner| LuaTableField::cast(owner.syntax().clone()))
+                            .and_then(|field| field.get_value_expr())
+                            .is_some_and(|value| matches!(value, LuaExpr::ClosureExpr(_)));
                         if !owner_is_function
                             && let Some(type_def_id) = self.current_class.clone()
                             && let Some(def) =
@@ -1550,6 +1557,33 @@ impl FactsBuilder {
         let Some(key) = field_tag.get_field_key() else {
             return;
         };
+        let mut access = crate::MemberAccess::ReadWrite;
+        if let Some(flags) = field_tag.get_type_flag() {
+            for flag in flags.get_attrib_tokens() {
+                let direction = match flag.get_name_text() {
+                    "read" => crate::MemberAccess::Read,
+                    "write" => crate::MemberAccess::Write,
+                    _ => continue,
+                };
+                if access != crate::MemberAccess::ReadWrite {
+                    self.annotation_errors.push(AnnotationError {
+                        range: field_tag.get_range(),
+                        message: "A field may specify only one of (read) or (write)".into(),
+                    });
+                    return;
+                }
+                access = direction;
+            }
+        }
+        if access != crate::MemberAccess::ReadWrite && matches!(key, LuaDocFieldKey::Type(_)) {
+            self.annotation_errors.push(AnnotationError {
+                range: field_tag.get_range(),
+                message:
+                    "Directional fields require a named, string-literal, or integer-literal key"
+                        .into(),
+            });
+            return;
+        }
         // Integer keys in `@field [1]` are encoded as `LuaMemberKey::Integer` (matching index expression keys).
         let member_key = match &key {
             LuaDocFieldKey::Integer(token) => match token.get_number_value() {
@@ -1566,6 +1600,7 @@ impl FactsBuilder {
             member_key,
             type_def_id,
         );
+        member.access = access;
         member.is_index_signature = matches!(key, LuaDocFieldKey::Type(_));
         member.is_nullable = field_tag.is_nullable();
         member.value_syntax = field_tag
@@ -1620,6 +1655,7 @@ impl FactsBuilder {
             }
             LuaAst::LuaForStat(stat) => {
                 self.push_scope(stat.get_range(), ScopeKind::ForStat);
+                self.current_owner_syntax = Some(stat.get_syntax_id());
                 if let Some(var) = stat.get_var_name() {
                     self.add_decl(
                         var.get_name_text().into(),
@@ -1995,6 +2031,8 @@ impl FactsBuilder {
     /// Direct fields of `{ foo = 1, ... }` → owner = the local declaring the table (`Decl`).
     fn collect_table_fields(&mut self, table: &LuaTableExpr, owner: SemanticId) {
         for (field, key) in table.get_fields_with_keys() {
+            let is_implicit_key = matches!(key, LuaIndexKey::Idx(_));
+            let is_computed_key = matches!(key, LuaIndexKey::Expr(_));
             let path_part = SmolStr::new(key.get_path_part());
             let member_key =
                 member_key_from_index_key(key).unwrap_or(LuaMemberKey::Name(path_part));
@@ -2005,6 +2043,8 @@ impl FactsBuilder {
                 owner.clone(),
             );
             member.value_syntax = field.get_value_expr().map(|expr| expr.get_syntax_id());
+            member.is_implicit_key = is_implicit_key;
+            member.is_computed_key = is_computed_key;
             self.mark_member(&mut member);
             self.members.push(member);
         }
@@ -2096,6 +2136,12 @@ impl FactsBuilder {
             self.add_implicit_self_decl(SmolStr::new("self"), self_range);
         }
 
+        // A closure stored in a table field owns that field's annotations,
+        // including overloads, not the enclosing table assignment's comment.
+        let doc_owner = closure
+            .get_parent::<LuaTableField>()
+            .map(|field| field.get_syntax_id())
+            .or(doc_owner);
         let mut docs = doc_owner.and_then(|owner| self.signature_doc_map.remove(&owner));
         if docs.is_none() && doc_owner.is_some_and(|owner| self.doc_comment_owners.contains(&owner))
         {
@@ -2207,10 +2253,15 @@ impl FactsBuilder {
         };
 
         // `---@type T` above `xx.aaa = value`: the owner is the assignment
-        // statement, so resolve the LHS IndexExpr range explicitly.
+        // statement. Match only its LHS key, or a table field's own key;
+        // the whole field range also contains nested fields and callback bodies.
         let target_ranges = |owner: &LuaSyntaxId| -> Vec<TextRange> {
             match owner.get_kind() {
-                LuaSyntaxKind::TableFieldAssign => vec![owner.get_range()],
+                LuaSyntaxKind::TableFieldAssign => owner
+                    .to_node_from_root(&root)
+                    .and_then(LuaTableField::cast)
+                    .map(|field| vec![field_key_range(&field)])
+                    .unwrap_or_default(),
                 LuaSyntaxKind::AssignStat => {
                     let Some(node) = owner.to_node_from_root(&root) else {
                         return Vec::new();
@@ -2223,7 +2274,7 @@ impl FactsBuilder {
                         .0
                         .iter()
                         .filter_map(|var| match var {
-                            LuaVarExpr::IndexExpr(index_expr) => Some(index_expr.get_range()),
+                            LuaVarExpr::IndexExpr(index_expr) => Some(member_key_range(index_expr)),
                             _ => None,
                         })
                         .collect()
@@ -2251,7 +2302,7 @@ impl FactsBuilder {
                     let Some(key_range) = member.id.member_key_range() else {
                         continue;
                     };
-                    if !owner_range.contains_range(key_range) {
+                    if owner_range != key_range {
                         continue;
                     }
                     if let Some(type_syntax) = type_syntaxes.first().copied() {
@@ -2276,7 +2327,7 @@ impl FactsBuilder {
                     let Some(key_range) = member.id.member_key_range() else {
                         continue;
                     };
-                    if !owner_range.contains_range(key_range) {
+                    if owner_range != key_range {
                         continue;
                     }
                     module_assignments.push((index, module_path.clone()));
@@ -2312,25 +2363,10 @@ impl FactsBuilder {
         // assigning by member id's key_range here is not feasible, so it is set at the collection point).
     }
 
-    /// Top-level `return X` → module export target (the last top-level return wins).
-    /// Indexes `setmetatable(table, meta)` calls that initialize a declaration or member.
-    ///
-    /// Table member lookup otherwise has to scan every declaration to find the
-    /// matching `setmetatable` call for a table literal.
+    /// Index all setmetatable calls, including declaration/member initializers
+    /// and standalone calls on local tables.
     fn collect_setmetatable_calls(&mut self, chunk: &LuaChunk) {
-        let root = chunk.get_root();
-        let values = self
-            .decls
-            .iter()
-            .filter_map(|decl| decl.value_expr_syntax)
-            .chain(self.members.iter().filter_map(|member| member.value_syntax));
-        for value_syntax in values {
-            let Some(node) = value_syntax.to_node_from_root(&root) else {
-                continue;
-            };
-            let Some(call) = LuaCallExpr::cast(node) else {
-                continue;
-            };
+        for call in chunk.descendants::<LuaCallExpr>() {
             let is_setmetatable = match call.get_prefix_expr() {
                 Some(LuaExpr::NameExpr(name_expr)) => {
                     name_expr.get_name_text().as_deref() == Some("setmetatable")

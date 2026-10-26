@@ -21,6 +21,7 @@ use super::infer::unify;
 use super::type_check::{RequiredChecks, TypeCheckFailReason, TypeCheckResult, check_all};
 
 mod alias_expansion;
+mod index_access;
 use alias_expansion::AliasPath;
 pub(crate) use alias_expansion::{expand_alias_branches, expand_alias_head, with_expanded_alias};
 
@@ -191,6 +192,15 @@ pub fn eval_index_access(model: &SemanticModel, base: &LuaType, key: &LuaType) -
         keys.push(key);
     }
     // Key expansion is complete. Base lookup follows an independent alias path.
+    let mut types = Vec::new();
+    for key in &keys {
+        if literal_keys(key).is_empty()
+            && !matches!(key, LuaType::Call(_) | LuaType::TplRef(_))
+            && let Some(ty) = index_access::dynamic_index_type(model, base, key)
+        {
+            types.push(ty);
+        }
+    }
     let keys = keys.iter().flat_map(|key| match key {
         LuaType::Call(call) if call.get_call_kind() == LuaAliasCallKind::KeyOf => call
             .get_operands()
@@ -199,7 +209,6 @@ pub fn eval_index_access(model: &SemanticModel, base: &LuaType, key: &LuaType) -
             .unwrap_or_default(),
         _ => literal_keys(key),
     });
-    let mut types = Vec::new();
     for (key, _) in keys {
         let ty = match (base, &key) {
             (LuaType::Tuple(tuple), LuaMemberKey::Integer(i)) => {

@@ -76,6 +76,9 @@ pub trait Checker {
 /// If all codes for this check are disabled in config, skip the whole check.
 /// A file-level `---@diagnostic enable: code` can force it on (mirrors legacy `is_checker_enable_by_code`).
 fn run_check<T: Checker>(context: &mut CheckContext<'_>, semantic_model: &SemanticModel<'_>) {
+    if semantic_model.is_cancelled() {
+        return;
+    }
     let file_enabled = semantic_model
         .file_facts()
         .map(|facts| &facts.file_diagnostic_enabled);
@@ -92,6 +95,7 @@ pub struct CheckContext<'a> {
     pub semantic_model: &'a SemanticModel<'a>,
     pub(crate) config: Arc<CheckConfig>,
     diagnostics: Vec<Diagnostic>,
+    filter_diagnostics: bool,
 }
 
 impl<'a> CheckContext<'a> {
@@ -100,6 +104,17 @@ impl<'a> CheckContext<'a> {
             semantic_model,
             config,
             diagnostics: Vec::new(),
+            filter_diagnostics: true,
+        }
+    }
+
+    /// Collect structural failures independently of user-facing diagnostic filters.
+    pub(super) fn unfiltered(semantic_model: &'a SemanticModel<'a>) -> Self {
+        Self {
+            semantic_model,
+            config: Arc::new(CheckConfig::default()),
+            diagnostics: Vec::new(),
+            filter_diagnostics: false,
         }
     }
 
@@ -117,6 +132,7 @@ impl<'a> CheckContext<'a> {
     }
 
     /// Collects a diagnostic with extra data (consumed by code actions etc.).
+    /// `unused-self` also respects suppression of its parent category, `unused`.
     pub fn add_diagnostic_with_data(
         &mut self,
         code: DiagnosticCode,
@@ -124,20 +140,11 @@ impl<'a> CheckContext<'a> {
         message: String,
         data: Option<serde_json::Value>,
     ) {
-        if let Some(facts) = self.semantic_model.file_facts() {
-            let force_enable = facts.file_diagnostic_enabled.contains(&code);
-            if !force_enable {
-                if !self.config.is_code_enabled(&code) {
-                    return;
-                }
-                if facts.file_diagnostic_disabled.contains(&code) {
-                    return;
-                }
-            }
-            if facts.is_range_diagnostic_disabled(&code, &range) {
-                return;
-            }
-        } else if !self.config.is_code_enabled(&code) {
+        if self.filter_diagnostics
+            && (!self.is_diagnostic_enabled(code, range)
+                || (code == DiagnosticCode::UnusedSelf
+                    && !self.is_diagnostic_enabled(DiagnosticCode::Unused, range)))
+        {
             return;
         }
         let severity = self.config.severity_of(&code);
@@ -150,6 +157,27 @@ impl<'a> CheckContext<'a> {
             tags,
             data,
         });
+    }
+
+    /// Applies configuration and annotation filters to one diagnostic code.
+    fn is_diagnostic_enabled(&self, code: DiagnosticCode, range: TextRange) -> bool {
+        if let Some(facts) = self.semantic_model.file_facts() {
+            let force_enable = facts.file_diagnostic_enabled.contains(&code);
+            if !force_enable {
+                if !self.config.is_code_enabled(&code) {
+                    return false;
+                }
+                if facts.file_diagnostic_disabled.contains(&code) {
+                    return false;
+                }
+            }
+            if facts.is_range_diagnostic_disabled(&code, &range) {
+                return false;
+            }
+        } else if !self.config.is_code_enabled(&code) {
+            return false;
+        }
+        true
     }
 
     /// Whether the name is in the `emmyrc.diagnostics.globals` / `globals_regex` allowlist.
@@ -283,7 +311,7 @@ pub fn check_file(semantic_model: &SemanticModel<'_>, config: Arc<CheckConfig>) 
 
 fn default_tags(code: &DiagnosticCode) -> Option<Vec<DiagnosticTag>> {
     match code {
-        DiagnosticCode::Unused | DiagnosticCode::UnreachableCode => {
+        DiagnosticCode::Unused | DiagnosticCode::UnusedSelf | DiagnosticCode::UnreachableCode => {
             Some(vec![DiagnosticTag::UNNECESSARY])
         }
         DiagnosticCode::Deprecated => Some(vec![DiagnosticTag::DEPRECATED]),

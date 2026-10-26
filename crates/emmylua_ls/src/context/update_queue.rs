@@ -9,9 +9,9 @@ use std::sync::Arc;
 
 use lsp_types::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, RenameFilesParams,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, RenameFilesParams,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::handlers;
 
@@ -21,8 +21,11 @@ pub enum UpdateEvent {
     DidOpen(DidOpenTextDocumentParams),
     DidChange(DidChangeTextDocumentParams),
     DidClose(DidCloseTextDocumentParams),
+    DidSave(DidSaveTextDocumentParams),
     DidChangeWatchedFiles(DidChangeWatchedFilesParams),
     DidRenameFiles(RenameFilesParams),
+    /// Acknowledge preceding updates without running the request on this worker.
+    Barrier(oneshot::Sender<()>),
     Shutdown,
 }
 
@@ -31,7 +34,15 @@ pub fn spawn_update_queue(
     mut rx: mpsc::UnboundedReceiver<UpdateEvent>,
 ) {
     tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
+        loop {
+            let event = tokio::select! {
+                biased;
+                _ = inner.shutdown.cancelled() => break,
+                event = rx.recv() => match event {
+                    Some(event) => event,
+                    None => break,
+                },
+            };
             let snapshot = ServerContextSnapshot::new(inner.clone());
             match event {
                 UpdateEvent::DidOpen(params) => {
@@ -39,6 +50,9 @@ pub fn spawn_update_queue(
                 }
                 UpdateEvent::DidChange(params) => {
                     handlers::process_did_change_text_document(snapshot, params).await;
+                }
+                UpdateEvent::DidSave(params) => {
+                    handlers::process_did_save_text_document(snapshot, params).await;
                 }
                 UpdateEvent::DidClose(params) => {
                     handlers::process_did_close_document(snapshot, params).await;
@@ -48,6 +62,10 @@ pub fn spawn_update_queue(
                 }
                 UpdateEvent::DidRenameFiles(params) => {
                     handlers::process_did_rename_files_handler(snapshot, params).await;
+                }
+                UpdateEvent::Barrier(ready) => {
+                    // The requester may already have been cancelled.
+                    let _ = ready.send(());
                 }
                 UpdateEvent::Shutdown => {
                     break;

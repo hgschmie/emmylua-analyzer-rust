@@ -34,6 +34,8 @@ pub struct FlowTree {
     decl_positions: Vec<(TextSize, FlowId)>,
     /// Sorted `(condition position, flow id)` for true/false condition nodes.
     condition_nodes: Vec<(TextSize, FlowId)>,
+    /// Closure boundaries block definition-time constant propagation.
+    closure_entries: Vec<(TextSize, FlowId)>,
     /// Sorted `(cast position, flow id)` for `---@cast` / `--[[@as]]` nodes.
     cast_nodes: Vec<(TextSize, FlowId)>,
     /// Sorted `(position, flow id)` for nodes with a merge (`Multiple`) antecedent.
@@ -49,6 +51,8 @@ pub struct FlowTree {
     /// nodes). Unmarked nodes can memoize trace states even when another function
     /// in the same file has loops.
     loop_reachable: Vec<bool>,
+    /// Per node: a real cycle is reachable by following its antecedents.
+    cycle_reachable: Vec<bool>,
 }
 
 impl FlowTree {
@@ -66,6 +70,7 @@ impl FlowTree {
         let mut assignments = Vec::new();
         let mut decl_positions: Vec<(TextSize, FlowId)> = Vec::new();
         let mut condition_nodes: Vec<(TextSize, FlowId)> = Vec::new();
+        let mut closure_entries = Vec::new();
         let mut cast_nodes: Vec<(TextSize, FlowId)> = Vec::new();
         let mut branch_nodes: Vec<(TextSize, FlowId)> = Vec::new();
         let mut unpositioned_branch = false;
@@ -120,6 +125,9 @@ impl FlowTree {
                     }
                 }
                 FlowNodeKind::DeclPosition(pos) => decl_positions.push((*pos, flow_id)),
+                FlowNodeKind::ClosureEntry(closure) => {
+                    closure_entries.push((closure.get_position(), flow_id));
+                }
                 FlowNodeKind::TrueCondition(cond) | FlowNodeKind::FalseCondition(cond) => {
                     condition_nodes.push((cond.get_syntax_id().get_range().start(), flow_id));
                 }
@@ -141,6 +149,7 @@ impl FlowTree {
         assignments.sort_by_key(|(range, _)| range.start());
         decl_positions.sort_by_key(|(pos, _)| *pos);
         condition_nodes.sort_by_key(|(pos, _)| *pos);
+        closure_entries.sort_by_key(|(pos, _)| *pos);
         cast_nodes.sort_by_key(|(pos, _)| *pos);
         branch_nodes.sort_by_key(|(pos, _)| *pos);
         let has_tag_cast = !cast_nodes.is_empty();
@@ -153,7 +162,9 @@ impl FlowTree {
         for (range, flow_id) in &binding_ranges {
             binding_starts.entry(range.start()).or_insert(*flow_id);
         }
+        let cycle_reachable = cycle_reachable_nodes(&flow_nodes, &multiple_antecedents);
         Self {
+            cycle_reachable,
             decl_bind_expr_ref,
             decl_multi_return_ref,
             flow_nodes,
@@ -168,6 +179,7 @@ impl FlowTree {
             assignments,
             decl_positions,
             condition_nodes,
+            closure_entries,
             cast_nodes,
             branch_nodes,
             unpositioned_branch,
@@ -348,6 +360,7 @@ impl FlowTree {
             return true;
         }
         has_node_between(&self.condition_nodes, start, end, include_start)
+            || has_node_between(&self.closure_entries, start, end, include_start)
             || has_node_between(&self.cast_nodes, start, end, include_start)
             || has_node_between(&self.branch_nodes, start, end, include_start)
     }
@@ -357,12 +370,28 @@ impl FlowTree {
         self.decl_assignments.contains_key(decl)
     }
 
+    /// All assignments to a declaration, including writes in sibling closures.
+    pub fn decl_assignments(&self, decl: &SemanticId) -> &[(TextSize, FlowId)] {
+        self.decl_assignments
+            .get(decl)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
     /// Whether any assignment to `member` occurs in the flow tree.
     pub fn has_member_assignment(&self, member: &SemanticId) -> bool {
         self.member_assignments.contains_key(member)
     }
 
-    /// Whether loops / labels / break / continue may create non-monotonic flow edges.
+    /// Whether this node can reach a real back edge through its antecedents.
+    pub fn is_cycle_reachable(&self, flow_id: FlowId) -> bool {
+        self.cycle_reachable
+            .get(flow_id.0 as usize)
+            .copied()
+            .unwrap_or(true)
+    }
+
+    /// Whether syntactic loop/label control disables position-based shortcuts.
     pub fn has_complex_control(&self) -> bool {
         self.has_complex_control
     }
@@ -648,6 +677,40 @@ impl FlowTree {
     }
 }
 
+/// Iterative topological elimination keeps cycle detection linear and stack-safe.
+/// Loop summaries can be DAGs; goto/continue back edges must keep uncached tracing.
+fn cycle_reachable_nodes(nodes: &[FlowNode], multiple: &[Vec<FlowId>]) -> Vec<bool> {
+    let mut remaining = vec![0usize; nodes.len()];
+    let mut successors = vec![Vec::new(); nodes.len()];
+    for node in nodes {
+        let predecessors: &[FlowId] = match &node.antecedent {
+            None => &[],
+            Some(FlowAntecedent::Single(id)) => std::slice::from_ref(id),
+            Some(FlowAntecedent::Multiple(id)) => &multiple[*id as usize],
+        };
+        remaining[node.id.0 as usize] = predecessors.len();
+        for previous in predecessors {
+            successors[previous.0 as usize].push(node.id.0 as usize);
+        }
+    }
+    let mut ready: Vec<_> = remaining
+        .iter()
+        .enumerate()
+        .filter_map(|(index, count)| (*count == 0).then_some(index))
+        .collect();
+    while let Some(index) = ready.pop() {
+        for &next in &successors[index] {
+            remaining[next] -= 1;
+            if remaining[next] == 0 {
+                ready.push(next);
+            }
+        }
+    }
+    // Only cycles and their forward descendants survive elimination. A cycle
+    // in another function must not disable caching of an acyclic loop summary.
+    remaining.into_iter().map(|count| count != 0).collect()
+}
+
 /// Best-effort AST position for a flow node kind; `None` for label/terminal nodes.
 fn flow_node_position(kind: &FlowNodeKind) -> Option<TextSize> {
     match kind {
@@ -660,6 +723,7 @@ fn flow_node_position(kind: &FlowNodeKind) -> Option<TextSize> {
         | FlowNodeKind::Continue
         | FlowNodeKind::Return => None,
         FlowNodeKind::DeclPosition(pos) => Some(*pos),
+        FlowNodeKind::ClosureEntry(closure) => Some(closure.get_position()),
         FlowNodeKind::Assignment(ptr) => Some(ptr.get_syntax_id().get_range().start()),
         FlowNodeKind::CallExprStat(ptr) => Some(ptr.get_syntax_id().get_range().start()),
         FlowNodeKind::TrueCondition(ptr) | FlowNodeKind::FalseCondition(ptr) => {
@@ -704,4 +768,46 @@ pub struct DeclMultiReturnRefAt {
     pub position: TextSize,
     pub flow_id: FlowId,
     pub reference: Option<DeclMultiReturnRef>,
+}
+
+#[cfg(test)]
+mod cycle_tests {
+    use super::*;
+    #[test]
+    fn distinguishes_shared_predecessors_from_back_edges() {
+        let mut nodes = vec![
+            FlowNode {
+                id: FlowId(0),
+                kind: FlowNodeKind::Start,
+                antecedent: None,
+            },
+            FlowNode {
+                id: FlowId(1),
+                kind: FlowNodeKind::LoopLabel,
+                antecedent: Some(FlowAntecedent::Single(FlowId(0))),
+            },
+            FlowNode {
+                id: FlowId(2),
+                kind: FlowNodeKind::BranchLabel,
+                antecedent: Some(FlowAntecedent::Single(FlowId(0))),
+            },
+            FlowNode {
+                id: FlowId(3),
+                kind: FlowNodeKind::BranchLabel,
+                antecedent: Some(FlowAntecedent::Multiple(0)),
+            },
+        ];
+        let multiple = vec![vec![FlowId(1), FlowId(2)]];
+        assert_eq!(cycle_reachable_nodes(&nodes, &multiple), vec![false; 4]);
+        nodes[1].antecedent = Some(FlowAntecedent::Single(FlowId(3)));
+        assert_eq!(
+            cycle_reachable_nodes(&nodes, &multiple),
+            vec![false, true, false, true]
+        );
+        nodes[1].antecedent = Some(FlowAntecedent::Single(FlowId(1)));
+        assert_eq!(
+            cycle_reachable_nodes(&nodes, &multiple),
+            vec![false, true, false, true]
+        );
+    }
 }

@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod request_ordering_tests;
+
 mod analysis_state;
 mod client;
 mod client_id;
@@ -52,14 +55,11 @@ impl ServerContext {
             status_bar.clone(),
             client.clone(),
         ));
-        let workspace_manager = Arc::new(Mutex::new(WorkspaceManager::new(
-            client.clone(),
-            file_diagnostic.clone(),
-            lsp_features.clone(),
-        )));
+        let workspace_manager = Arc::new(Mutex::new(WorkspaceManager::new()));
 
         let (update_tx, update_rx) = tokio::sync::mpsc::unbounded_channel();
         let inner = Arc::new(ServerContextInner {
+            shutdown: CancellationToken::new(),
             analysis,
             client,
             file_diagnostic,
@@ -101,16 +101,42 @@ impl ServerContext {
         let client = self.inner.client.clone();
         let cancellations = self.cancellations.clone();
 
+        // Capture the boundary while dispatching, before the next notification
+        // can be queued. Wait in the request task, not in the message loop or
+        // update worker: cancellation, responses and later edits must keep flowing.
+        let (ready, updates_applied) = tokio::sync::oneshot::channel();
+        let _ = self.inner.update_tx.send(UpdateEvent::Barrier(ready));
+
         tokio::spawn(async move {
             // Catch panics so every request still gets a response.
-            let res = catch_unwind(exec(cancel_token.clone())).await;
+            let res = catch_unwind(async {
+                let ready = tokio::select! {
+                    biased;
+                    _ = cancel_token.cancelled() => false,
+                    result = updates_applied => result.is_ok(),
+                };
+                if !ready {
+                    // A stopped worker cannot guarantee a fresh analysis either.
+                    return RequestOutcome::Cancelled(CancelSource::Client);
+                }
+                exec(cancel_token.clone()).await
+            })
+            .await;
 
             let response = match res {
                 Ok(RequestOutcome::Ready(value)) => Response::new_ok(req_id.clone(), value),
                 Ok(RequestOutcome::Missing) => {
                     Response::new_ok(req_id.clone(), serde_json::Value::Null)
                 }
-                Ok(RequestOutcome::Cancelled(_)) => Response::new_err(
+                Ok(RequestOutcome::Cancelled(CancelSource::DiagnosticRefresh)) => Response {
+                    id: req_id.clone(),
+                    response_result: Err(lsp_server::ResponseError {
+                        code: ErrorCode::ServerCancelled as i32,
+                        message: "diagnostics preempted by an update".to_string(),
+                        data: Some(serde_json::json!({"retriggerRequest": true})),
+                    }),
+                },
+                Ok(RequestOutcome::Cancelled(CancelSource::Client)) => Response::new_err(
                     req_id.clone(),
                     ErrorCode::RequestCanceled as i32,
                     "cancel".to_string(),
@@ -136,6 +162,15 @@ impl ServerContext {
     }
 
     pub async fn close(&self) {
+        self.inner.shutdown.cancel();
+        for token in self.cancellations.lock().await.values() {
+            token.cancel();
+        }
+        self.inner
+            .file_diagnostic
+            .cancel_workspace_diagnostic()
+            .await;
+        self.inner.file_diagnostic.cancel_all().await;
         {
             let mut workspace_manager = self.inner.workspace_manager.lock().await;
             workspace_manager.watcher = None;
@@ -145,5 +180,38 @@ impl ServerContext {
 
     pub async fn send_response(&self, response: Response) {
         self.inner.client.on_response(response).await;
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_cancellation_response_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn preempted_diagnostic_requests_request_a_retry() {
+        let (server, client) = Connection::memory();
+        let context = ServerContext::new(Arc::new(server), ClientCapabilities::default());
+        context
+            .task::<(), _, _>(RequestId::from(1), |_| async {
+                RequestOutcome::Cancelled(CancelSource::DiagnosticRefresh)
+            })
+            .await;
+        let response = tokio::task::spawn_blocking(move || {
+            client
+                .receiver
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        let lsp_server::Message::Response(response) = response else {
+            panic!("expected response")
+        };
+        let error = response.response_result.unwrap_err();
+        assert_eq!(error.code, -32802);
+        assert_eq!(
+            error.data,
+            Some(serde_json::json!({"retriggerRequest": true}))
+        );
     }
 }

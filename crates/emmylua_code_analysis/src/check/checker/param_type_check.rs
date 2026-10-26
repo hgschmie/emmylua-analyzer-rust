@@ -7,11 +7,12 @@
 use std::rc::Rc;
 
 use emmylua_parser::{
-    LuaAst, LuaAstNode, LuaCallExpr, LuaExpr, LuaIndexExpr, LuaSyntaxId, LuaTokenKind,
+    LuaAst, LuaAstNode, LuaCallExpr, LuaExpr, LuaIndexExpr, LuaSyntaxId, LuaTableExpr, LuaTokenKind,
 };
 
 use crate::semantic_model::infer::callable::CallableCandidateSet;
 use crate::semantic_model::infer::function_solver::functions_compatible;
+use crate::semantic_model::infer::overload::{CallArg, match_call_candidate};
 use crate::semantic_model::infer::unify;
 use crate::semantic_model::infer::vm::unify_call_bindings;
 use crate::semantic_model::render::humanize_type;
@@ -35,7 +36,11 @@ impl Checker for ParamTypeChecker {
             return;
         };
         let root = tree.get_red_root();
-        for node in root.descendants().filter_map(LuaAst::cast) {
+        for node in root
+            .descendants()
+            .take_while(|_| !semantic_model.is_cancelled())
+            .filter_map(LuaAst::cast)
+        {
             let LuaAst::LuaCallExpr(call_expr) = node else {
                 continue;
             };
@@ -309,6 +314,166 @@ fn check_call(
     }
 }
 
+/// Table constructors must use one overload and the same receiver alignment as
+/// other call checks. Checking every overload treats alternatives as simultaneous
+/// contracts (and a colon-call table argument as the receiver).
+pub(super) fn table_argument_targets(
+    semantic_model: &SemanticModel<'_>,
+    call: &LuaCallExpr,
+) -> Vec<(LuaTableExpr, LuaType)> {
+    let args = call
+        .get_args_list()
+        .map(|list| list.get_args().collect::<Vec<_>>())
+        .unwrap_or_default();
+    if !args.iter().any(|arg| matches!(arg, LuaExpr::TableExpr(_))) {
+        return Vec::new();
+    }
+    let analysis = semantic_model.call_site_analysis(call);
+    let call_args: Vec<_> = analysis
+        .arg_types
+        .iter()
+        .zip(&args)
+        .map(|(ty, arg)| CallArg {
+            ty: ty.clone(),
+            closure_syntax: matches!(arg, LuaExpr::ClosureExpr(_)).then(|| arg.get_syntax_id()),
+        })
+        .collect();
+    // Parameter compatibility alone allows multiple structural alternatives
+    // (notably classes with only optional fields). Include both constructor checks
+    // when choosing an overload, rather than letting the two passes pick different
+    // contracts. Diagnostic suppression must not affect this choice.
+    let mut best: Option<((usize, usize, usize), Vec<(LuaTableExpr, LuaType)>)> = None;
+    for candidate in &analysis.candidates {
+        let arity_mismatch = usize::from(!super::param_count::accepts_call_argument_count(
+            semantic_model,
+            candidate,
+            &args,
+            analysis.colon_call,
+        ));
+        let mismatches = if analysis.candidates.len() == 1 {
+            0
+        } else {
+            check_candidate(
+                semantic_model,
+                candidate,
+                &args,
+                analysis.colon_call,
+                &analysis.receiver_ty,
+                &analysis.explicit_generics,
+                Some(&analysis.arg_types),
+            )
+            .len()
+        };
+        if best
+            .as_ref()
+            .is_some_and(|(score, _)| (arity_mismatch, mismatches) > (score.0, score.1))
+        {
+            continue;
+        }
+        let mut bindings = match_call_candidate(
+            semantic_model,
+            candidate,
+            &call_args,
+            analysis.colon_call,
+            Some(&analysis.receiver_ty),
+        )
+        .map(|(bindings, _)| bindings)
+        .unwrap_or_default();
+        let targets = candidate_table_argument_targets(
+            semantic_model,
+            &analysis,
+            candidate,
+            &args,
+            &mut bindings,
+        );
+        if analysis.candidates.len() == 1 {
+            return targets;
+        }
+        let mut context = CheckContext::unfiltered(semantic_model);
+        for (table, target) in &targets {
+            super::check_field::check_against_type(&mut context, semantic_model, target, table);
+            super::assign_type_mismatch::check_table_fields(
+                &mut context,
+                semantic_model,
+                target,
+                table,
+            );
+        }
+        let score = (arity_mismatch, mismatches, context.into_diagnostics().len());
+        if score == (0, 0, 0) {
+            return targets;
+        }
+        if best.as_ref().is_none_or(|(current, _)| score < *current) {
+            best = Some((score, targets));
+        }
+    }
+    best.map(|(_, targets)| targets).unwrap_or_default()
+}
+
+fn candidate_table_argument_targets(
+    semantic_model: &SemanticModel<'_>,
+    analysis: &crate::semantic_model::CallSiteAnalysis,
+    candidate: &LuaFunctionType,
+    args: &[LuaExpr],
+    bindings: &mut unify::TplBindings,
+) -> Vec<(LuaTableExpr, LuaType)> {
+    for (syntax, generic) in analysis
+        .explicit_generics
+        .iter()
+        .zip(candidate.get_generic_params())
+    {
+        bindings.insert(
+            generic.get_tpl_id(),
+            semantic_model.doc_type_lua_in(semantic_model.file_id(), *syntax, &[]),
+        );
+    }
+    let self_param = first_param_is_self(candidate);
+    let param_start =
+        usize::from(analysis.colon_call && (self_param || !candidate.is_colon_define()));
+    let arg_start = usize::from(!analysis.colon_call && !self_param && candidate.is_colon_define());
+    let params = candidate.get_params();
+    if param_start > 0
+        && let Some((_, Some(param_ty))) = params.first()
+    {
+        let _ = unify_call_bindings(semantic_model, param_ty, &analysis.receiver_ty, bindings);
+    }
+    let mut targets = Vec::new();
+    for (index, arg) in args.iter().enumerate().skip(arg_start) {
+        let param_index = param_start + index - arg_start;
+        let param = params.get(param_index).or_else(|| {
+            params
+                .last()
+                .filter(|(name, ty)| name == "..." || matches!(ty, Some(LuaType::Variadic(_))))
+        });
+        let Some((_, Some(param_ty))) = param else {
+            continue;
+        };
+        let param_ty = match param_ty {
+            LuaType::Variadic(variadic) => match variadic.as_ref() {
+                VariadicType::Base(base) | VariadicType::Repeat(base) => base,
+                VariadicType::Multi(_) => continue,
+            },
+            _ => param_ty,
+        };
+        if let Some(arg_ty) = analysis.arg_types.get(index) {
+            let _ = unify_call_bindings(semantic_model, param_ty, arg_ty, bindings);
+        }
+        if let LuaExpr::TableExpr(table) = arg {
+            // UP-038: an inline assertion replaces the raw constructor contract.
+            // Parameter checks validate the asserted type separately.
+            if analysis
+                .arg_types
+                .get(index)
+                .is_some_and(|ty| !matches!(ty, LuaType::TableConst(_)))
+            {
+                continue;
+            }
+            targets.push((table.clone(), unify::substitute(param_ty, bindings)));
+        }
+    }
+    targets
+}
+
 /// String literal overload names for a local `---@type fun(name: "A") | fun(name: "B")`.
 fn doc_overload_literal_names(semantic_model: &SemanticModel<'_>, callee: &LuaExpr) -> Vec<String> {
     let LuaExpr::NameExpr(name_expr) = callee else {
@@ -354,7 +519,7 @@ fn has_table_literal_shape(ty: &LuaType) -> bool {
 fn table_literal_mismatch(
     semantic_model: &SemanticModel<'_>,
     param_ty: &LuaType,
-    table: &emmylua_parser::LuaTableExpr,
+    table: &LuaTableExpr,
 ) -> Option<Mismatch> {
     match param_ty {
         LuaType::Object(object) => {
@@ -395,6 +560,89 @@ fn table_literal_mismatch(
         }
         _ => None,
     }
+}
+
+/// Check dictionary argument entries without erasing their constructor keys and values.
+fn dictionary_literal_mismatch(
+    semantic_model: &SemanticModel<'_>,
+    key_type: &LuaType,
+    value_type: &LuaType,
+    table: &LuaTableExpr,
+) -> Option<Mismatch> {
+    let fields = table.get_fields_with_keys();
+    let last = fields.len().saturating_sub(1);
+    let mut overwritten = std::collections::HashSet::new();
+    let value_or_absent = LuaType::from_vec(vec![value_type.clone(), LuaType::Nil]);
+    for (index, (field, key)) in fields.into_iter().enumerate().rev() {
+        let static_key = super::check_field::static_member_key(semantic_model, &key);
+        if let Some(key) = &static_key
+            && !overwritten.insert(key.clone())
+        {
+            continue;
+        }
+        let Some(value) = field.get_value_expr() else {
+            continue;
+        };
+        let inferred = semantic_model.type_of_expr_at(value.get_syntax_id(), value.get_position());
+        let values = match &inferred {
+            LuaType::Variadic(variadic) if index == last && field.is_value_field() => {
+                match variadic.as_ref() {
+                    VariadicType::Multi(values) => values.clone(),
+                    VariadicType::Base(value) | VariadicType::Repeat(value) => vec![value.clone()],
+                }
+            }
+            _ => vec![inferred.get_result_slot_type(0).unwrap_or(LuaType::Nil)],
+        };
+        if index == last
+            && field.is_value_field()
+            && let Some(LuaMemberKey::Integer(start)) = &static_key
+        {
+            for offset in 1..values.len() {
+                if let Some(key) = start.checked_add(offset as i64) {
+                    overwritten.insert(LuaMemberKey::Integer(key));
+                }
+            }
+        }
+        let actual_key = static_key
+            .and_then(|key| key.to_index_type())
+            .unwrap_or_else(|| match &key {
+                emmylua_parser::LuaIndexKey::Expr(expr) => {
+                    semantic_model.type_of_expr_at(expr.get_syntax_id(), expr.get_position())
+                }
+                emmylua_parser::LuaIndexKey::Integer(_) => LuaType::Number,
+                _ => LuaType::Unknown,
+            });
+        for (offset, actual_value) in values.into_iter().enumerate() {
+            if actual_value.is_nil() {
+                continue;
+            }
+            let entry_key = if index == last
+                && field.is_value_field()
+                && let LuaType::IntegerConst(start) = &actual_key
+            {
+                start
+                    .checked_add(offset as i64)
+                    .map(LuaType::IntegerConst)
+                    .unwrap_or(LuaType::Integer)
+            } else {
+                actual_key.clone()
+            };
+            let mismatch = if !is_compatible(semantic_model, &entry_key, key_type) {
+                Some((&entry_key, key_type))
+            } else if !is_compatible(semantic_model, &actual_value, &value_or_absent) {
+                Some((&actual_value, value_type))
+            } else {
+                None
+            };
+            if let Some((actual, expected)) = mismatch {
+                return Some(Mismatch {
+                    range: table.get_range(),
+                    message: mismatch_message(semantic_model, actual, expected, ""),
+                });
+            }
+        }
+    }
+    None
 }
 
 /// A cheap literal/scalar-shape score used only to order call candidates.
@@ -540,7 +788,7 @@ fn check_candidate(
             semantic_model,
             remainder_params,
             args,
-            func.is_variadic(),
+            func,
             &mut bindings,
             arg_types,
         ));
@@ -558,7 +806,7 @@ fn check_candidate(
         semantic_model,
         &params[param_start..],
         &args[arg_offset..],
-        func.is_variadic(),
+        func,
         &mut bindings,
         dot_arg_types,
     )
@@ -598,7 +846,13 @@ fn cached_arg_type(
         return ty.clone();
     }
     args.get(index)
-        .map(|arg| semantic_model.type_of_expr(arg.get_syntax_id()))
+        .map(|arg| {
+            crate::semantic_model::flow::type_of_expr_with_cast(
+                semantic_model,
+                arg.get_syntax_id(),
+                crate::semantic_model::flow::ExprCastMode::AsOnly,
+            )
+        })
         .unwrap_or(LuaType::Unknown)
 }
 
@@ -606,13 +860,13 @@ fn check_arg_pairs(
     semantic_model: &SemanticModel<'_>,
     params: &[(String, Option<LuaType>)],
     args: &[LuaExpr],
-    is_variadic: bool,
+    func: &LuaFunctionType,
     bindings: &mut unify::TplBindings,
     arg_types: Option<&[LuaType]>,
 ) -> Vec<Mismatch> {
     let mut out = Vec::new();
     for (index, (name, param_ty)) in params.iter().enumerate() {
-        let is_vararg_slot = is_variadic && index + 1 == params.len();
+        let is_vararg_slot = func.is_variadic() && index + 1 == params.len();
         if is_vararg_slot {
             // A call may pass fewer arguments than the variadic slot position
             // (`function f(a, b, ...)` called as `f(1)`), in which case the variadic
@@ -621,7 +875,12 @@ fn check_arg_pairs(
             let rest_start = index.min(args.len());
             let rest_args = &args[rest_start..];
             if let Some(param_ty) = param_ty {
-                let param_ty = unify::substitute(param_ty, bindings);
+                let param_ty = crate::semantic_model::infer::call_generics::parameter_type(
+                    semantic_model,
+                    param_ty,
+                    func,
+                    bindings,
+                );
                 let param_ty = type_eval::expand_alias_generic(semantic_model, &param_ty);
                 let param_ty = type_eval::eval_conditionals(semantic_model, &param_ty);
                 if let LuaType::Variadic(variadic) = &param_ty {
@@ -735,22 +994,81 @@ fn check_arg_pairs(
         let arg_ty = normalize_arg_for_check(semantic_model, &arg_ty);
         let call_arg_ty = call_argument_type(semantic_model, arg, &arg_ty);
         let call_arg_ty = normalize_arg_for_check(semantic_model, &call_arg_ty);
-        let param_ty = unify::substitute(param_ty, bindings);
+        let param_ty = crate::semantic_model::infer::call_generics::parameter_type(
+            semantic_model,
+            param_ty,
+            func,
+            bindings,
+        );
         let param_ty = type_eval::expand_alias_generic(semantic_model, &param_ty);
         let param_ty = type_eval::eval_conditionals(semantic_model, &param_ty);
-        // Missing union member: when only A in `A|C` has `handle`, accessing `target.handle`
-        // should report ParamTypeMismatch even if the type face happens to be string (missing members count as nil).
-        if let LuaExpr::IndexExpr(index_expr) = arg
-            && semantic_model.member_missing_in_union(index_expr)
-        {
-            out.push(Mismatch {
-                range: arg.get_range(),
-                message: mismatch_message(semantic_model, &LuaType::Nil, &param_ty, name),
-            });
-            continue;
+        let mut dictionary_arg = arg.clone();
+        while let LuaExpr::ParenExpr(paren) = &dictionary_arg {
+            let Some(inner) = paren.get_expr() else {
+                break;
+            };
+            if paren
+                .children::<emmylua_parser::LuaComment>()
+                .any(|comment| {
+                    comment
+                        .get_owner()
+                        .is_some_and(|owner| owner.get_syntax_id() == inner.get_syntax_id())
+                        && comment
+                            .get_doc_tags()
+                            .any(|tag| matches!(tag, emmylua_parser::LuaDocTag::As(_)))
+                })
+            {
+                break;
+            }
+            dictionary_arg = inner;
+        }
+        if let LuaExpr::TableExpr(table) = &dictionary_arg {
+            let dictionary_target =
+                super::check_field::expand_alias_type(semantic_model, &param_ty)
+                    .unwrap_or_else(|| param_ty.clone());
+            let dictionary_types = match &dictionary_target {
+                LuaType::TableGeneric(types) => Some(types.as_slice()),
+                LuaType::Generic(generic)
+                    if generic.get_base_type_id() == crate::LuaTypeDeclId::global("table")
+                        && semantic_model
+                            .type_def_of(generic.get_base_type_id_ref())
+                            .is_none_or(|def| semantic_model.is_std_file(def.file_id)) =>
+                {
+                    Some(generic.get_params().as_slice())
+                }
+                _ => None,
+            };
+            if matches!(arg_ty, LuaType::TableConst(_))
+                && let Some([key_type, value_type]) = dictionary_types
+                && !dictionary_target.contains_tpl_node()
+            {
+                if let Some(mismatch) =
+                    dictionary_literal_mismatch(semantic_model, key_type, value_type, table)
+                {
+                    out.push(mismatch);
+                }
+                continue;
+            }
         }
         // Table literals targeting object / intersection: check field by field and then fully take over.
-        if let LuaExpr::TableExpr(table) = arg {
+        if let LuaExpr::TableExpr(table) = arg
+            && matches!(arg_ty, LuaType::TableConst(_))
+        {
+            let table_target = super::check_field::expand_alias_type(semantic_model, &param_ty)
+                .unwrap_or_else(|| param_ty.clone());
+            if let LuaType::Union(union) = &table_target
+                && !table_target.contains_tpl_node()
+            {
+                if !super::check_field::table_union_diagnostics(semantic_model, union, table)
+                    .is_empty()
+                {
+                    out.push(Mismatch {
+                        range: table.get_range(),
+                        message: mismatch_message(semantic_model, &call_arg_ty, &param_ty, name),
+                    });
+                }
+                continue;
+            }
             if has_table_literal_shape(&param_ty) {
                 if let Some(mismatch) = table_literal_mismatch(semantic_model, &param_ty, table) {
                     out.push(mismatch);
@@ -835,7 +1153,7 @@ fn check_arg_pairs(
             continue;
         }
         let leaf_compat = (!matches!(call_arg_ty, LuaType::Function)
-            || matches!(param_ty, LuaType::Any))
+            || matches!(param_ty, LuaType::Any | LuaType::Unknown))
             && param_generic_base_match(semantic_model, &call_arg_ty, &param_ty);
         if leaf_compat || enum_name_compatible(semantic_model, &call_arg_ty, &param_ty) {
             continue;
@@ -851,7 +1169,7 @@ fn check_arg_pairs(
 fn generic_table_required_mismatch(
     semantic_model: &SemanticModel<'_>,
     param_ty: &LuaType,
-    table: &emmylua_parser::LuaTableExpr,
+    table: &LuaTableExpr,
 ) -> Option<Mismatch> {
     let id = match param_ty {
         LuaType::Generic(generic) => generic.get_base_type_id().clone(),
@@ -891,6 +1209,10 @@ fn generic_table_required_mismatch(
             let expected = semantic_model
                 .type_of_member(&member_ref.id)
                 .unwrap_or(LuaType::Unknown);
+            // Type-side nil and aliases permit omission just like `field?`.
+            if super::check_field::is_optional(semantic_model, &expected) {
+                continue;
+            }
             return Some(Mismatch {
                 range: table.get_range(),
                 message: mismatch_message(

@@ -4,13 +4,16 @@
 //! not on the old `DbIndex` internals, so they can run directly in the new semantic system.
 
 mod and_or_test;
+mod annotated_runtime_member_test;
 mod annotation_test;
 mod array_test;
 mod attribute_test;
+mod bare_table_test;
 mod callable_return_infer_test;
 mod closure_generic;
 mod closure_param_infer_test;
 mod closure_return_test;
+mod copied_member_calls;
 mod decl_test;
 mod diagnostic_disable_test;
 mod flow;
@@ -18,14 +21,18 @@ mod flow_contract;
 mod for_range_var_infer_test;
 mod generic_infer_test;
 mod generic_test;
+mod index_metamethod_test;
 mod infer_str_tpl_test;
 mod inherit_type;
+mod inline_as_scope;
 mod mathlib_test;
 mod member_infer_test;
 mod metatable_test;
 mod module_test;
 mod multi_return;
 mod named_cast_scope;
+mod numeric_alias_arithmetic;
+mod optional_dictionary_keys;
 mod out_of_order;
 mod overload_field;
 mod overload_test;
@@ -37,6 +44,20 @@ mod semantic_generic_test;
 mod semantic_infer_test;
 mod static_cal_cmp;
 mod syntax_error_test;
+mod table_index_test;
 mod tuple_test;
 mod type_check_test;
 mod unpack_test;
+
+mod asymmetric_fields;
+mod contextual_callback_test;
+
+mod table_literal_call_matching;
+
+mod iterator_non_nil_values;
+
+mod cast_guarded_member_path;
+
+mod member_truthiness;
+
+mod integer_enum_arithmetic;

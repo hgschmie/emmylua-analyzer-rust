@@ -1,11 +1,15 @@
 use std::rc::Rc;
 
-use emmylua_parser::{LuaAstNode, LuaDocFieldKey, LuaDocTagField, LuaTableExpr, LuaTableField};
+use emmylua_parser::{
+    LuaAssignStat, LuaAstNode, LuaDocFieldKey, LuaDocTagField, LuaExpr, LuaTableExpr, LuaTableField,
+};
 use hashbrown::HashMap;
 
 use crate::semantic_db::def::{DeclKind, MemberRef, SemanticId, TypeDef, TypeDefKind};
 use crate::semantic_model::infer::unify::{self, TplBindings};
-use crate::semantic_model::type_eval::{map_type, substitute_named_refs, with_expanded_alias};
+use crate::semantic_model::type_eval::{
+    expand_alias_generic, map_type, substitute_named_refs, with_expanded_alias,
+};
 use crate::{FileId, GenericTplId, InFiled, LuaMemberKey, LuaType};
 use crate::{Member, semantic_db::facts::FileFacts};
 use smol_str::SmolStr;
@@ -19,6 +23,39 @@ use crate::VariadicType;
 /// Normal class hierarchies are shallow. This cap prevents pathological/recursive parent
 /// chains from making `member_info` / `resolve_member` slow-path expansion unbounded.
 const MAX_MEMBER_INHERITANCE_DEPTH: usize = 16;
+
+/// Whether arbitrary member reads have no declared key/value contract.
+pub(crate) fn has_unrestricted_members(model: &SemanticModel, ty: &LuaType) -> bool {
+    let mut current = ty.clone();
+    // Follow aliases without turning named classes or table literals into
+    // unrestricted tables. Bound traversal for recursive alias definitions.
+    for _ in 0..32 {
+        match &current {
+            LuaType::Table | LuaType::Any => return true,
+            LuaType::Ref(id) | LuaType::Def(id) => {
+                let Some(def) = model.type_def_of(id) else {
+                    return false;
+                };
+                if def.kind != TypeDefKind::Alias {
+                    return false;
+                }
+                let Some(target) = model.alias_target(&def) else {
+                    return false;
+                };
+                current = target;
+            }
+            LuaType::Generic(_) => {
+                let expanded = expand_alias_generic(model, &current);
+                if expanded == current {
+                    return false;
+                }
+                current = expanded;
+            }
+            _ => return false,
+        }
+    }
+    false
+}
 
 /// Member information (an entry from a prefix-type query).
 #[derive(Debug, Clone, PartialEq)]
@@ -87,7 +124,6 @@ fn find_member_in_owner(
                 }
             }
         }
-        return None;
     }
     for member_ref in model.members_of_owner(owner).iter() {
         if member_ref_matches_key(model, &member_ref, key) {
@@ -183,6 +219,18 @@ fn direct_member_info(
     prefix_type: &LuaType,
     key: &LuaMemberKey,
 ) -> Option<MemberInfo> {
+    if let Some(key_type) = super::dictionary::key_type(key)
+        && let Some(typ) = super::dictionary::lookup(model, prefix_type, &key_type, true)
+    {
+        return Some(MemberInfo {
+            key: key.clone(),
+            typ,
+            id: None,
+            file_id: None,
+            is_method: false,
+            index_key_type: None,
+        });
+    }
     match prefix_type {
         LuaType::Ref(id) | LuaType::Def(id) => {
             let def = model.type_def_of(id)?;
@@ -305,6 +353,21 @@ pub(crate) fn member_info_impl(
     prefix_type: &LuaType,
     key: &LuaMemberKey,
 ) -> Option<MemberInfo> {
+    // Alias expansion must use the complete projection, including missing union alternatives.
+    let alias_id = match prefix_type {
+        LuaType::Ref(id) | LuaType::Def(id) => Some(id.clone()),
+        LuaType::Generic(generic) => Some(generic.get_base_type_id()),
+        _ => None,
+    };
+    if alias_id
+        .and_then(|id| model.type_def_of(&id))
+        .is_some_and(|def| def.kind == TypeDefKind::Alias)
+    {
+        return with_expanded_alias(model, prefix_type, |expanded| {
+            member_info(model, expanded, key)
+        })
+        .flatten();
+    }
     // Single-key direct lookup avoids collecting every member of a type when only one key is needed.
     if let Some(info) = direct_member_info(model, prefix_type, key) {
         return Some(info);
@@ -340,22 +403,109 @@ pub(crate) fn member_info_impl(
             is_method: first.as_ref().is_some_and(|info| info.is_method),
         });
     }
-    if let Some(info) = member_infos_with_key(model, prefix_type, key)
+    if let Some(mut info) = member_infos_with_key(model, prefix_type, key)
         .into_iter()
         .find(|info| &info.key == key)
     {
+        if let LuaType::Union(union) = prefix_type
+            && union.iter().any(|component| {
+                if component.is_nil() {
+                    return false;
+                }
+                // An unresolved name (including a synthetic module name) does not prove absence.
+                let unresolved_nominal = match component {
+                    LuaType::Ref(id) | LuaType::Def(id) => model.type_def_of(id).is_none(),
+                    LuaType::Generic(generic) => {
+                        model.type_def_of(&generic.get_base_type_id()).is_none()
+                    }
+                    _ => false,
+                };
+                if unresolved_nominal {
+                    return false;
+                }
+                let revision = model.cache.borrow().revision();
+                let component_info = member_info(model, component, key);
+                let optional = component_info.as_ref().is_some_and(|info| {
+                    let Some(member_id @ SemanticId::Member(key)) = info.id.as_ref() else {
+                        return false;
+                    };
+                    model
+                        .file_facts_of(key.file_id)
+                        .and_then(|facts| facts.member_by_id(member_id))
+                        .is_some_and(|member| member.is_nullable)
+                });
+                // A cycle-limited query is unresolved, not evidence of an absent field.
+                optional || (component_info.is_none() && model.cache.borrow().is_complete(revision))
+            })
+        {
+            // Preserve overload/member merging, while accounting for absent or optional fields.
+            info.typ = LuaType::from_vec(vec![info.typ, LuaType::Nil]);
+        }
         return Some(info);
+    }
+    // An index signature is a fallback: explicit inherited and runtime members
+    // must take precedence over a broad key domain such as `[string]`.
+    if matches!(
+        prefix_type,
+        LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_)
+    ) && let Some(key_type) = key.to_index_type()
+        && let Some(info) = member_infos_all(model, prefix_type)
+            .into_iter()
+            .find(|info| {
+                info.index_key_type.as_ref().is_some_and(|domain| {
+                    super::type_check::is_compatible(model, &key_type, domain)
+                })
+            })
+    {
+        return Some(info);
+    }
+    // Module exports can retain both their symbolic owner and literal identity.
+    // Include metatable-provided fields when the ordinary union members are absent.
+    if let LuaType::Union(union) = prefix_type {
+        let types: Vec<_> = union
+            .into_vec()
+            .iter()
+            .filter_map(|ty| member_info(model, ty, key).map(|info| info.typ))
+            .collect();
+        if !types.is_empty() {
+            return Some(MemberInfo {
+                index_key_type: None,
+                key: key.clone(),
+                typ: LuaType::from_vec(types),
+                id: None,
+                file_id: None,
+                is_method: false,
+            });
+        }
+    }
+    if let Some(key_type) = key.to_index_type()
+        && let Some(typ) = super::inherited_index::lookup(model, prefix_type, &key_type)
+    {
+        return Some(MemberInfo {
+            index_key_type: None,
+            key: key.clone(),
+            typ,
+            id: None,
+            file_id: None,
+            is_method: false,
+        });
     }
     // An anonymous table literal can supply missing members through the
     // `__index` function in `setmetatable(t, { __index = function ... end })`:
     // Lua passes the access key to that function, and its return type is the member type.
     if let LuaType::TableConst(table) = prefix_type
         && let Some(index_info) = table_metatable_index_info(model, table)
-        && let Some(ret) = match &index_info.typ {
-            LuaType::DocFunction(fun) => Some(fun.get_ret().clone()),
-            LuaType::Function | LuaType::Signature(_) => None,
-            _ => None,
-        }
+        && let Some(ret) = super::index_function::infer(model, &index_info, key).or_else(|| {
+            match &index_info.typ {
+                LuaType::Any => Some(LuaType::Any),
+                LuaType::DocFunction(fun) => Some(fun.get_ret().clone()),
+                LuaType::Signature(id) => model
+                    .function_type_by_signature_id(id)
+                    .map(|fun| fun.get_ret().clone()),
+                LuaType::Function => None,
+                _ => member_info(model, &index_info.typ, key).map(|info| info.typ),
+            }
+        })
     {
         return Some(MemberInfo {
             key: key.clone(),
@@ -434,17 +584,55 @@ pub(crate) fn table_metatable_type(
         return table_metatable_type(&foreign, table);
     }
     let facts = model.file_facts_of(table.file_id)?;
-    for &(first_range, first_syntax, metatable_syntax) in facts.setmetatable_calls() {
+    for &(first_range, first_syntax, metatable_syntax) in facts.setmetatable_calls().iter().rev() {
         let first_matches = first_range == table.value
-            || matches!(
-                model.type_of_expr(first_syntax),
-                LuaType::TableConst(ft) if ft.file_id == table.file_id && ft.value == table.value
-            );
+            || model
+                .chunk()
+                .and_then(|root| {
+                    let expr = LuaExpr::cast(first_syntax.to_node_from_root(root.syntax())?)?;
+                    stable_local_table(model, expr).map(|expr| expr.get_range() == table.value)
+                })
+                .unwrap_or(false);
         if first_matches {
             return Some(model.type_of_expr(metatable_syntax));
         }
     }
     None
+}
+
+/// Resolve immutable local bindings and aliases to their literal constructor.
+/// Reassigned bindings can retain an old inferred table identity, so inspect
+/// declaration references rather than relying on their inferred type here.
+pub(crate) fn stable_local_table(model: &SemanticModel, mut expr: LuaExpr) -> Option<LuaTableExpr> {
+    let root = model.chunk()?;
+    let facts = model.file_facts()?;
+    let mut visited = hashbrown::HashSet::new();
+    loop {
+        match expr {
+            LuaExpr::TableExpr(table) => return Some(table),
+            LuaExpr::NameExpr(name) => {
+                let id = model.resolve_name(name.get_position())?;
+                if !visited.insert(id.clone()) {
+                    return None;
+                }
+                let decl = facts.decl_by_id(&id)?;
+                if !matches!(decl.kind, DeclKind::Local { .. }) {
+                    return None;
+                }
+                for assign in root.descendants::<LuaAssignStat>() {
+                    for variable in assign.get_var_and_expr_list().0 {
+                        if let emmylua_parser::LuaVarExpr::NameExpr(name) = variable
+                            && model.resolve_name(name.get_position()).as_ref() == Some(&id)
+                        {
+                            return None;
+                        }
+                    }
+                }
+                expr = LuaExpr::cast(decl.value_expr_syntax?.to_node_from_root(root.syntax())?)?;
+            }
+            _ => return None,
+        }
+    }
 }
 
 /// If a table literal is the runtime class table for a `---@class Foo` annotation, returns that class's Ref/Def.
@@ -469,6 +657,23 @@ pub(crate) fn table_metatable_index_info(
 ) -> Option<MemberInfo> {
     let metatable_ty = table_metatable_type(model, table)?;
     let key = LuaMemberKey::Name(SmolStr::new("__index"));
+    if let LuaType::TableConst(meta) = &metatable_ty
+        && let Some(facts) = model.file_facts_of(meta.file_id)
+        && let Some(member_ref) = facts
+            .members_of_owner_named(&SemanticId::member(meta.file_id, meta.value), "__index")
+            .next()
+        && let Some(member) = facts.member_by_id(&member_ref.id)
+        && super::index_function::oversized(model, member, meta.file_id)
+    {
+        return Some(MemberInfo {
+            index_key_type: None,
+            key,
+            typ: LuaType::Any,
+            id: Some(member.id.clone()),
+            file_id: Some(meta.file_id),
+            is_method: false,
+        });
+    }
     member_info(model, &metatable_ty, &key)
 }
 
@@ -1019,12 +1224,40 @@ fn member_info_of(
     bindings: Option<&TplBindings>,
     name_bindings: Option<&HashMap<String, LuaType>>,
 ) -> Option<MemberInfo> {
+    if model.is_cancelled() {
+        return None;
+    }
     let facts = model.file_facts_of(member_ref.file_id)?;
     let member = facts.member_by_id(&member_ref.id)?;
+    if member.access == crate::MemberAccess::Write
+        && let Some(read) = facts.members.iter().find(|other| {
+            other.owner == member.owner
+                && other.key == member.key
+                && other.access == crate::MemberAccess::Read
+        })
+    {
+        return member_info_of(
+            model,
+            &MemberRef {
+                file_id: member_ref.file_id,
+                id: read.id.clone(),
+                name: read.key.to_path().into(),
+            },
+            bindings,
+            name_bindings,
+        );
+    }
     if !member_version_visible(model, facts, &member) {
         return None;
     }
-    let mut typ = model.type_of_member(&member_ref.id)?;
+    let mut typ = if member.access != crate::MemberAccess::ReadWrite {
+        member
+            .value_syntax
+            .map(|syntax| model.doc_type_lua_rich_in(member_ref.file_id, syntax))
+            .or_else(|| model.type_of_member(&member_ref.id))?
+    } else {
+        model.type_of_member(&member_ref.id)?
+    };
     let mut index_key_type = member.is_index_signature.then(|| {
         (|| {
             let tree = model.syntax_tree_of(member_ref.file_id)?;
@@ -1046,6 +1279,17 @@ fn member_info_of(
             LuaType::Unknown
         })
     });
+    // A shell `table` argument may stand for an object annotation, not the
+    // unrestricted primitive. Preserve its fields before generic substitution
+    // so later indexing does not treat `Wrapper<{foo: T}>` as `Wrapper<table>`.
+    if matches!(&typ, LuaType::Generic(generic) if generic.get_params().iter().any(|param| matches!(param, LuaType::Table)))
+        && matches!(member.owner, SemanticId::TypeDef(_))
+        && let Some(syntax) = member.value_syntax
+        && let LuaType::Generic(rich) = model.doc_type_lua_rich_in(member_ref.file_id, syntax)
+    {
+        typ = LuaType::Generic(rich);
+    }
+
     // Cross-file projection of runtime function members: `type_of_member` often returns a wide Function,
     // so look up the real signature in the member's declaring file to let `require(...).module.fn()` keep inferring.
     // Standard library members keep the wide Function behavior to avoid disturbing parameter checks / math library overloads.
@@ -1074,15 +1318,16 @@ fn member_info_of(
     // Generic aliases stay lazy and can resolve to primitives, so they retain nil.
     if member.is_nullable
         && !typ.is_nullable()
-        && !matches!(
-            typ,
-            LuaType::Function
-                | LuaType::DocFunction(_)
-                | LuaType::Ref(_)
-                | LuaType::Def(_)
-                | LuaType::Array(_)
-                | LuaType::Object(_)
-        )
+        && (member.access != crate::MemberAccess::ReadWrite
+            || !matches!(
+                typ,
+                LuaType::Function
+                    | LuaType::DocFunction(_)
+                    | LuaType::Ref(_)
+                    | LuaType::Def(_)
+                    | LuaType::Array(_)
+                    | LuaType::Object(_)
+            ))
     {
         typ = LuaType::from_vec(vec![typ, LuaType::Nil]);
     }
@@ -1325,5 +1570,229 @@ mod tests {
         let map = member_map(&infos);
         assert_eq!(map.get("x"), Some(&LuaType::Number));
         assert_eq!(map.get("y"), Some(&LuaType::String));
+    }
+}
+
+#[cfg(test)]
+mod union_callable_projection {
+    use crate::{DiagnosticCode, LuaType, VirtualWorkspace};
+
+    #[test]
+    fn union_callable_projection_keeps_imported_closure_identity() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def_file("lib.lua", "local lib = {}\n---@param value number\n---@return integer\nfunction lib.round(value) return 1 end\nreturn lib");
+        let file = ws.def("local lib = require('lib')\nlocal alias = lib.round\nlocal result = alias(2.5)\nlocal count = result + 1");
+        let model = ws.analysis.semantic_model(file);
+        for name in ["result", "count"] {
+            let result = model
+                .decls()
+                .unwrap()
+                .iter()
+                .find(|decl| decl.name == name)
+                .unwrap();
+            assert_eq!(
+                model.type_of_decl(&result.id),
+                Some(LuaType::Integer),
+                "{name}"
+            );
+        }
+        let alias = model
+            .decls()
+            .unwrap()
+            .iter()
+            .find(|decl| decl.name == "alias")
+            .unwrap();
+        let ty = model.type_of_decl(&alias.id).unwrap();
+        assert!(!ty.is_nullable(), "{ty:?}");
+        let functions = model.callable_functions_cached(&ty);
+        assert!(
+            !functions.is_empty(),
+            "imported callable lost its signature: {ty:?}"
+        );
+        assert!(
+            functions
+                .iter()
+                .all(|function| function.get_ret() == &LuaType::Integer),
+            "{functions:?}"
+        );
+    }
+
+    #[test]
+    fn union_callable_projection_keeps_typed_alternatives_and_absence() {
+        for (other, nullable, returns) in [
+            ("Second", false, vec![LuaType::Integer, LuaType::String]),
+            ("Empty", true, vec![LuaType::Integer]),
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            let file = ws.def(&format!(
+                r#"
+                ---@class First
+                ---@field round fun(): integer
+                ---@class Second
+                ---@field round fun(): string
+                ---@class Empty
+                local Empty = {{}}
+                ---@param source First|{other}
+                local function run(source)
+                    local alias = source.round
+                    return alias
+                end
+            "#
+            ));
+            let model = ws.analysis.semantic_model(file);
+            let alias = model
+                .decls()
+                .unwrap()
+                .iter()
+                .find(|decl| decl.name == "alias")
+                .unwrap();
+            let ty = model.type_of_decl(&alias.id).unwrap();
+            assert_eq!(ty.is_nullable(), nullable, "{other}: {ty:?}");
+            let functions = model.callable_functions_cached(&ty);
+            for expected in returns {
+                assert!(
+                    functions
+                        .iter()
+                        .any(|function| function.get_ret() == &expected),
+                    "{other}: expected {expected:?}, {ty:?}, {functions:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn union_callable_projection_keeps_explicit_broad_contract() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(
+            r#"
+            ---@class Broad
+            ---@field round function
+            local Broad = {}
+            ---@return integer
+            function Broad.round() return 1 end
+            ---@class Empty
+            local Empty = {}
+            ---@param source Broad|Empty
+            local function run(source)
+                local alias = source.round
+                return alias
+            end
+        "#,
+        );
+        let model = ws.analysis.semantic_model(file);
+        let alias = model
+            .decls()
+            .unwrap()
+            .iter()
+            .find(|decl| decl.name == "alias")
+            .unwrap();
+        let ty = model.type_of_decl(&alias.id).unwrap();
+        assert!(ty.is_nullable(), "{ty:?}");
+        assert!(
+            model.callable_functions_cached(&ty).is_empty(),
+            "explicit broad contract was specialized: {ty:?}"
+        );
+    }
+
+    #[test]
+    fn union_callable_projection_keeps_optional_generic_and_unresolved_alternatives() {
+        for (source_type, nullable, expected_return) in [
+            ("Maybe|Required", true, LuaType::Integer),
+            ("Required|Maybe", true, LuaType::Integer),
+            ("Nullable|Required", true, LuaType::Integer),
+            ("Generic<string>|Empty", true, LuaType::String),
+            ("Unresolved|Required", false, LuaType::Integer),
+            ("Unresolved|Required|Empty", true, LuaType::Integer),
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            let file = ws.def(&format!(
+                r#"
+                ---@class Maybe
+                ---@field round? fun(): integer
+                ---@class Required
+                ---@field round fun(): integer
+                ---@class Nullable
+                ---@field round (fun(): integer)?
+                ---@class Generic<T>
+                ---@field round fun(): T
+                ---@class Empty
+                ---@param source {source_type}
+                local function run(source)
+                    local alias = source.round
+                    return alias
+                end
+            "#
+            ));
+            let model = ws.analysis.semantic_model(file);
+            let alias = model
+                .decls()
+                .unwrap()
+                .iter()
+                .find(|decl| decl.name == "alias")
+                .unwrap();
+            let ty = model.type_of_decl(&alias.id).unwrap();
+            assert_eq!(ty.is_nullable(), nullable, "{source_type}: {ty:?}");
+            let functions = model.callable_functions_cached(&ty);
+            assert!(!functions.is_empty(), "{source_type}: {ty:?}");
+            assert!(
+                functions
+                    .iter()
+                    .all(|function| function.get_ret() == &expected_return),
+                "{source_type}: {functions:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn union_callable_projection_keeps_declared_optional_marker_over_implementation() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(
+            r#"
+            ---@class OptionalImpl
+            ---@field round? fun(): integer
+            local OptionalImpl = {}
+            ---@return integer
+            function OptionalImpl.round() return 1 end
+            ---@class RequiredImpl
+            ---@field round fun(): integer
+            ---@param source RequiredImpl|OptionalImpl
+            local function run(source)
+                local alias = source.round
+                return alias
+            end
+        "#,
+        );
+        let model = ws.analysis.semantic_model(file);
+        let alias = model
+            .decls()
+            .unwrap()
+            .iter()
+            .find(|decl| decl.name == "alias")
+            .unwrap();
+        let ty = model.type_of_decl(&alias.id).unwrap();
+        assert!(
+            ty.is_nullable(),
+            "implementation erased optional declaration: {ty:?}"
+        );
+    }
+
+    #[test]
+    fn union_callable_projection_keeps_argument_diagnostics() {
+        for (argument, valid) in [("2.5", true), ("'invalid'", false)] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            ws.def_file("lib.lua", "local lib = {}\n---@param value number\n---@return integer\nfunction lib.round(value) return 1 end\nreturn lib");
+            let source = format!(
+                "local lib = require('lib')\nlocal alias = lib.round\nlocal result = alias({argument})"
+            );
+            assert_eq!(
+                ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, &source),
+                valid,
+                "{argument}"
+            );
+            assert!(
+                ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+                "false missing member: {argument}"
+            );
+        }
     }
 }

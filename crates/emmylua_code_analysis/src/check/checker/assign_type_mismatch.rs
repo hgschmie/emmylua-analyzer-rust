@@ -1,3 +1,4 @@
+use super::param_type_check;
 use std::rc::Rc;
 
 use std::collections::{HashMap, HashSet};
@@ -25,7 +26,11 @@ impl Checker for AssignTypeMismatchChecker {
             return;
         };
         let root = tree.get_red_root();
-        for node in root.descendants().filter_map(LuaAst::cast) {
+        for node in root
+            .descendants()
+            .take_while(|_| !semantic_model.is_cancelled())
+            .filter_map(LuaAst::cast)
+        {
             match node {
                 LuaAst::LuaLocalStat(stat) => check_local(context, semantic_model, &stat),
                 LuaAst::LuaAssignStat(stat) => check_assign(context, semantic_model, &stat),
@@ -138,32 +143,9 @@ fn check_call_args(
     semantic_model: &SemanticModel<'_>,
     call: &LuaCallExpr,
 ) {
-    if call.get_prefix_expr().is_none() {
-        return;
-    }
-    let analysis = semantic_model.call_site_analysis(call);
-    let candidates = analysis.candidates;
-    if candidates.is_empty() {
-        return;
-    }
-    let Some(args) = call.get_args_list() else {
-        return;
-    };
-    for candidate in &candidates {
-        let params = candidate.get_params();
-        for (index, arg) in args.get_args().enumerate() {
-            let Some((_, Some(param_ty))) = params.get(index) else {
-                break;
-            };
-            if !matches!(arg, LuaExpr::TableExpr(_)) {
-                continue;
-            }
-            let LuaExpr::TableExpr(table) = arg else {
-                continue;
-            };
-            if is_structured_table_target(semantic_model, param_ty) {
-                check_table_fields(context, semantic_model, param_ty, &table);
-            }
+    for (table, target) in param_type_check::table_argument_targets(semantic_model, call) {
+        if is_structured_table_target(semantic_model, &target) {
+            check_table_fields(context, semantic_model, &target, &table);
         }
     }
 }
@@ -291,6 +273,38 @@ fn check_assign(
                 );
             }
             LuaVarExpr::IndexExpr(index_expr) => {
+                if let Some((_, write)) = semantic_model.directional_index(index_expr) {
+                    check_value_against(context, semantic_model, &write.typ, &expr);
+                    continue;
+                }
+                if let Some(target) = semantic_model.dictionary_index_write_type(index_expr) {
+                    if !matches!(
+                        semantic_model.type_of_expr(expr.get_syntax_id()),
+                        LuaType::Nil
+                    ) {
+                        check_value_against(context, semantic_model, &target, &expr);
+                    }
+                    continue;
+                }
+                if let Some(prefix @ LuaExpr::IndexExpr(_)) = index_expr.get_prefix_expr()
+                    && let Some(key) = index_expr
+                        .get_index_key()
+                        .and_then(|key| index_key_to_member_key(semantic_model, &key))
+                {
+                    let prefix_type = semantic_model
+                        .type_of_expr_at(prefix.get_syntax_id(), prefix.get_position());
+                    if let Some(info) = semantic_model.member_info(&prefix_type, &key)
+                        && info.id.is_some()
+                    {
+                        if !matches!(
+                            semantic_model.type_of_expr(expr.get_syntax_id()),
+                            LuaType::Nil
+                        ) {
+                            check_value_against(context, semantic_model, &info.typ, &expr);
+                        }
+                        continue;
+                    }
+                }
                 let Some(resolved) = semantic_model.resolve_member(index_expr) else {
                     check_self_member_assign(context, semantic_model, index_expr, &expr);
                     continue;
@@ -454,36 +468,53 @@ fn check_value_against_target(
 }
 
 fn is_structured_table_target(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> bool {
-    match ty {
-        LuaType::Array(_) | LuaType::Object(_) => true,
+    is_structured_table_target_inner(semantic_model, ty, &mut Vec::new())
+}
+
+fn is_structured_table_target_inner(
+    semantic_model: &SemanticModel<'_>,
+    ty: &LuaType,
+    active: &mut Vec<LuaType>,
+) -> bool {
+    if active.len() >= 100 || active.contains(ty) {
+        return false;
+    }
+    active.push(ty.clone());
+    let structured = match ty {
+        LuaType::Array(_) | LuaType::Object(_) | LuaType::TableGeneric(_) => true,
         LuaType::Union(union) => union
             .into_vec()
             .iter()
-            .any(|component| is_structured_table_target(semantic_model, component)),
+            .any(|component| is_structured_table_target_inner(semantic_model, component, active)),
         LuaType::Generic(generic) => {
-            generic.get_base_type_id().get_name() == "array"
-                || is_structured_table_target(
+            matches!(generic.get_base_type_id().get_name(), "array" | "table")
+                || is_structured_table_target_inner(
                     semantic_model,
                     &LuaType::Ref(generic.get_base_type_id()),
+                    active,
                 )
         }
         LuaType::Ref(_) | LuaType::Def(_) => {
             let Some(def) = named_def(semantic_model, ty) else {
+                active.pop();
                 return false;
             };
             match def.kind {
                 TypeDefKind::Class => true,
-                TypeDefKind::Alias => semantic_model
-                    .alias_target(&def)
-                    .is_some_and(|target| is_structured_table_target(semantic_model, &target)),
+                TypeDefKind::Alias => super::check_field::expand_alias_type(semantic_model, ty)
+                    .is_some_and(|target| {
+                        is_structured_table_target_inner(semantic_model, &target, active)
+                    }),
                 TypeDefKind::Enum => false,
             }
         }
         _ => false,
-    }
+    };
+    active.pop();
+    structured
 }
 
-fn check_value_against(
+pub(super) fn check_value_against(
     context: &mut CheckContext<'_>,
     semantic_model: &SemanticModel<'_>,
     target: &LuaType,
@@ -491,15 +522,7 @@ fn check_value_against(
 ) {
     if let LuaExpr::TableExpr(table) = value_expr {
         // Plain table target without a declared type: keep old behavior — don't check each field or report a type mismatch (same table identity).
-        if matches!(
-            target,
-            LuaType::Table | LuaType::TableConst(_) | LuaType::TableGeneric(_)
-        ) {
-            return;
-        }
-        if let LuaType::Generic(generic) = target
-            && generic.get_base_type_id().get_name() == "table"
-        {
+        if matches!(target, LuaType::Table | LuaType::TableConst(_)) {
             return;
         }
         if is_structured_table_target(semantic_model, target) {
@@ -522,6 +545,13 @@ fn check_value_against(
         return;
     }
     let value_ty = assignment_value_type(semantic_model, value_expr);
+    // A generic's constraint is a wider type, not a replacement for its identity.
+    if has_unique_generic_binding(semantic_model, value_expr, &value_ty)
+        && is_compatible(semantic_model, &value_ty, target)
+    {
+        return;
+    }
+    let value_ty = resolve_unbound_generic(semantic_model, value_ty);
     if matches!(value_ty, LuaType::Unknown | LuaType::Any | LuaType::Never)
         || is_compatible(semantic_model, &value_ty, target)
     {
@@ -541,7 +571,33 @@ fn assignment_value_type(semantic_model: &SemanticModel<'_>, value_expr: &LuaExp
     {
         return LuaType::DocFunction(Rc::new(fun));
     }
-    resolve_unbound_generic(semantic_model, ty)
+    ty
+}
+
+/// Bare generic references retain identity only when enclosing declarations are unambiguous.
+fn has_unique_generic_binding(
+    semantic_model: &SemanticModel<'_>,
+    value_expr: &LuaExpr,
+    ty: &LuaType,
+) -> bool {
+    let (LuaType::Ref(id) | LuaType::Def(id)) = ty else {
+        return false;
+    };
+    if semantic_model.type_def_of(id).is_some() {
+        return false;
+    }
+    let Some(facts) = semantic_model.file_facts() else {
+        return false;
+    };
+    value_expr
+        .ancestors::<LuaClosureExpr>()
+        .filter_map(|closure| facts.signature_by_closure(closure.get_syntax_id()))
+        .filter_map(|signature| signature.docs.as_ref())
+        .flat_map(|docs| docs.generic_params.iter())
+        .filter(|param| param.name.as_str() == id.get_name())
+        .take(2)
+        .count()
+        == 1
 }
 
 /// `Ref("T")` with a signature declaring `---@generic T: Animal` -> check against the constraint Animal.
@@ -575,20 +631,35 @@ fn resolve_unbound_generic(semantic_model: &SemanticModel<'_>, ty: LuaType) -> L
     ty
 }
 
-fn check_table_fields(
+pub(super) fn check_table_fields(
     context: &mut CheckContext<'_>,
     semantic_model: &SemanticModel<'_>,
     target: &LuaType,
     table: &LuaTableExpr,
 ) {
-    // Union target: use the first structured component to check the table literal (`Callback | Callback[]` scenario).
     if let LuaType::Union(union) = target {
-        for component in union.into_vec().iter() {
-            if is_structured_table_target(semantic_model, component) {
-                check_table_fields(context, semantic_model, component, table);
-                return;
+        super::check_field::check_union_table_fields(
+            context,
+            semantic_model,
+            union,
+            table,
+            &[DiagnosticCode::AssignTypeMismatch],
+        );
+        return;
+    }
+    if matches!(target, LuaType::TableGeneric(_))
+        || matches!(target, LuaType::Generic(generic) if generic.get_base_type_id().get_name() == "table")
+    {
+        for (field, key) in table.get_fields_with_keys() {
+            let Some(value) = field.get_value_expr() else {
+                continue;
+            };
+            let key = index_key_type(semantic_model, &key);
+            if let Some(expected) = semantic_model.dictionary_field_type(target, &key) {
+                check_table_value(context, semantic_model, &value, &expected);
             }
         }
+        return;
     }
     // Array target: check every table-literal element against the element type.
     if let LuaType::Array(array) = target {
@@ -644,7 +715,7 @@ fn check_table_fields(
     if let LuaType::Ref(_) | LuaType::Def(_) = target
         && let Some(def) = named_def(semantic_model, target)
         && def.kind == TypeDefKind::Alias
-        && let Some(alias_target) = semantic_model.alias_target(&def)
+        && let Some(alias_target) = super::check_field::expand_alias_type(semantic_model, target)
         && is_structured_table_target(semantic_model, &alias_target)
     {
         check_table_fields(context, semantic_model, &alias_target, table);
@@ -751,10 +822,23 @@ fn check_table_value(
 }
 
 fn index_key_type(semantic_model: &SemanticModel<'_>, key: &LuaIndexKey) -> LuaType {
+    // Preserve exact keys when selecting a finite index signature or dictionary
+    // contract. Widening `startup` to string loses its enum/union membership.
+    if let Some(key) = static_member_key(semantic_model, key) {
+        match key {
+            LuaMemberKey::Name(name) => return LuaType::StringConst(name.into()),
+            LuaMemberKey::Integer(value) => return LuaType::IntegerConst(value),
+            _ => {}
+        }
+    }
     match key {
-        LuaIndexKey::Name(_) | LuaIndexKey::String(_) => LuaType::String,
-        LuaIndexKey::Integer(_) | LuaIndexKey::Idx(_) => LuaType::Integer,
+        LuaIndexKey::Integer(number) => match number.get_number_value() {
+            NumberResult::Uint(value) => LuaType::IntegerConst(value as i64),
+            NumberResult::Float(value) => LuaType::FloatConst(value),
+            _ => LuaType::Number,
+        },
         LuaIndexKey::Expr(expr) => semantic_model.type_of_expr(expr.get_syntax_id()),
+        _ => LuaType::Unknown,
     }
 }
 
