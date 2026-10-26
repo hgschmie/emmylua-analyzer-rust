@@ -39,4 +39,5 @@ mod static_cal_cmp;
 mod syntax_error_test;
 mod tuple_test;
 mod type_check_test;
+mod unknown_assignment_flow;
 mod unpack_test;

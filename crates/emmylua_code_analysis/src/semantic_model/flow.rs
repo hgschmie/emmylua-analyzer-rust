@@ -29,7 +29,7 @@ use rowan::TextSize;
 
 use ExprCastMode::{All, AsOnly};
 
-use crate::semantic_db::def::{SemanticId, Signature};
+use crate::semantic_db::def::{DeclKind, SemanticId, Signature};
 use crate::semantic_db::flow::{
     FlowAntecedent, FlowEffect, FlowId, FlowNodeKind, FlowTree, LuaClosureId,
 };
@@ -328,7 +328,7 @@ fn unchanged_local_call_return_type(
     }
     let facts = model.file_facts()?;
     let decl = facts.decl_by_id(&owner)?;
-    if !matches!(decl.kind, crate::DeclKind::Local { .. }) {
+    if !matches!(decl.kind, DeclKind::Local { .. }) {
         return None;
     }
     let original = decl.value_expr_syntax?;
@@ -1865,7 +1865,7 @@ fn local_alias_path(
         }
         if !matches!(
             info.kind,
-            crate::DeclKind::Local { is_iter: false, .. } | crate::DeclKind::Param
+            DeclKind::Local { is_iter: false, .. } | DeclKind::Param
         ) || flow.latest_decl_assignment(&decl, context.at).is_some()
             || (all_writes && flow.has_decl_assignment(&decl))
             || info.multi_return_index.is_some_and(|index| index > 0)
@@ -2017,12 +2017,12 @@ fn apply_decl_assignment(
         &narrowed_before,
         &frame.base_before,
     );
-    let value_ty =
-        if value_ty.is_unknown() && !matches!(narrowed_before, LuaType::Unknown | LuaType::Any) {
-            widen_const_type(narrowed_before.clone())
-        } else {
-            value_ty
-        };
+    let value_ty = if value_ty.is_unknown() {
+        // The new value invalidates previous guards, so use the base contract.
+        unknown_assignment_fallback(model, decl, &frame.base_before)
+    } else {
+        value_ty
+    };
     let assign_result = finalize(model, value_ty, &frame.assign_path);
     // When branch-merge backtracking reaches an assignment node, the assignment may itself be in an unreachable branch
     // (e.g. `if always_false() then x = 1 end`). In that case the assignment does not participate in merging;
@@ -3240,6 +3240,30 @@ fn index_expr_type_from_initializer(
         LuaType::TableGeneric(params) if params.len() == 2 => Some(params[1].clone()),
         _ => None,
     }
+}
+
+/// Unknown writes discard preceding flow facts while retaining the base contract.
+/// Inferred nil initializers on locals and globals become Unknown, leaving later truthiness guards undecided.
+/// An unknown value does not override an explicit annotation, including a nil-only contract.
+fn unknown_assignment_fallback(
+    model: &SemanticModel,
+    decl: &SemanticId,
+    base_before: &LuaType,
+) -> LuaType {
+    if let SemanticId::Decl(key) = decl
+        && let Some(facts) = model.file_facts_of(key.file_id)
+        && let Some(def) = facts.decl_by_id(decl)
+    {
+        // Parameters obtain their contracts from signatures, not inferred initializers.
+        if def.doc_type_syntax.is_some() || matches!(def.kind, DeclKind::Param) {
+            return base_before.clone();
+        }
+        if base_before.is_nil() && matches!(def.kind, DeclKind::Local { .. } | DeclKind::Global) {
+            // An inferred nil initializer is a placeholder, not an explicit nil-only contract.
+            return LuaType::Unknown;
+        }
+    }
+    widen_const_type(base_before.clone())
 }
 
 fn coerce_table_assign_to_narrowed(
