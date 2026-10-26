@@ -28,10 +28,13 @@ pub(crate) struct ConstructorValue<'a> {
 
 impl TableConstructor {
     pub(crate) fn new(model: &SemanticModel, table: &LuaTableExpr) -> Self {
+        // Only the syntactic final field expands. A trailing unfinished entry
+        // still makes an earlier call supply exactly one result.
         let last_field = table.get_fields().last();
         let fields: Vec<_> = table
             .get_fields_with_keys()
             .into_iter()
+            .filter(|(field, _)| field.get_value_expr().is_some())
             .map(|(field, key)| ConstructorField {
                 expands: matches!(key, LuaIndexKey::Idx(_)) && last_field.as_ref() == Some(&field),
                 key: key_type(model, key),
@@ -97,21 +100,48 @@ impl TableConstructor {
     ) -> impl Iterator<Item = Result<Vec<(LuaType, ConstructorValue<'_>)>, TypeCheckFailReason>> + '_
     {
         let mut seen = HashSet::new();
-        self.fields
-            .iter()
-            .rev()
-            .filter(move |field| match &field.key {
-                // A known key replaces the earlier entry, including with nil.
-                Ok(
-                    key @ (LuaType::StringConst(_)
-                    | LuaType::IntegerConst(_)
-                    | LuaType::FloatConst(_)
-                    | LuaType::BooleanConst(_)),
-                ) => seen.insert(key.clone()),
-                _ => true,
-            })
-            .map(ConstructorField::entries)
+        self.fields.iter().rev().map(move |field| {
+            let key = field.key.as_ref().map_err(Clone::clone)?;
+            if !field.expands {
+                if is_literal_key(key) && !seen.insert(key.clone()) {
+                    return Ok(Vec::new());
+                }
+                return field.entries();
+            }
+            // Only the final field can expand, so it is visited first. Mask
+            // earlier integer keys only for slots supplied by every alternative.
+            if let LuaType::IntegerConst(start) = key {
+                let value = field.value.as_ref().map_err(Clone::clone)?;
+                for offset in 0..minimum_expanded_slots(value) {
+                    seen.insert(LuaType::IntegerConst(start + offset as i64));
+                }
+            }
+            field.entries()
+        })
     }
+}
+
+/// Count only slots supplied by every possible return pack.
+fn minimum_expanded_slots(ty: &LuaType) -> usize {
+    match ty {
+        LuaType::Variadic(pack) => pack.get_min_len().unwrap_or(0),
+        LuaType::Union(branches) => branches
+            .iter()
+            .map(minimum_expanded_slots)
+            .min()
+            .unwrap_or(0),
+        _ => 1,
+    }
+}
+
+fn is_literal_key(key: &LuaType) -> bool {
+    matches!(
+        key,
+        LuaType::StringConst(_)
+            | LuaType::IntegerConst(_)
+            | LuaType::FloatConst(_)
+            | LuaType::BooleanConst(_)
+    )
 }
 
 /// Keep absent slots out of the member set, and include nil when only some

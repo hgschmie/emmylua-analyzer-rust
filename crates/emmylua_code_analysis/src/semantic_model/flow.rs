@@ -1685,20 +1685,9 @@ fn apply_expr_casts_to_node(
                         }
                     }
                 }
-                FlowEffect::AsCast(as_ptr) => {
-                    let Some(chunk) = model.chunk() else {
-                        continue;
-                    };
-                    let Some(as_tag) = as_ptr.to_node(&chunk) else {
-                        continue;
-                    };
-                    if inline_cast_target(&as_tag)
-                        .is_none_or(|expr| expr.get_syntax_id() != expr_syntax)
-                    {
-                        continue;
-                    }
-                    if let Some(doc_type) = as_tag.get_type() {
-                        ty = model.doc_type_lua(doc_type.get_syntax_id());
+                FlowEffect::AsCast(ptr) => {
+                    if let Some(asserted) = asserted_type_for_target(model, ptr, expr_syntax) {
+                        ty = asserted;
                     }
                 }
                 _ => {}
@@ -1706,6 +1695,37 @@ fn apply_expr_casts_to_node(
         }
     }
     ty
+}
+
+fn asserted_type_for_target(
+    model: &SemanticModel,
+    ptr: &emmylua_parser::LuaAstPtr<emmylua_parser::LuaDocTagAs>,
+    syntax: emmylua_parser::LuaSyntaxId,
+) -> Option<LuaType> {
+    let tag = ptr.to_node(&model.chunk()?)?;
+    if inline_cast_target(&tag)?.get_syntax_id() != syntax {
+        return None;
+    }
+    Some(model.doc_type_lua(tag.get_type()?.get_syntax_id()))
+}
+
+/// An inline assertion can explicitly resolve to unknown.
+pub(crate) fn inline_asserted_type(model: &SemanticModel, expr: &LuaExpr) -> Option<LuaType> {
+    let tree = model.flow_tree().filter(|tree| tree.has_tag_cast())?;
+    let flows = expr_cast_flows(model, expr.syntax(), &tree);
+    // Forward evaluation overwrites the type at each matching assertion.
+    // Search backward to return that same final assertion.
+    flows.iter().rev().find_map(|id| {
+        tree.get_flow_effects(*id)
+            .iter()
+            .rev()
+            .find_map(|effect| match effect {
+                FlowEffect::AsCast(ptr) => {
+                    asserted_type_for_target(model, ptr, expr.get_syntax_id())
+                }
+                _ => None,
+            })
+    })
 }
 
 fn ambiguous_cast_target_matches(
