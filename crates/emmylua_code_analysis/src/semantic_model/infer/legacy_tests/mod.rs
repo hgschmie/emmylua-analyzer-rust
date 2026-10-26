@@ -12,6 +12,7 @@ mod closure_generic;
 mod closure_param_infer_test;
 mod closure_return_test;
 mod decl_test;
+mod declaration_result_slots;
 mod diagnostic_disable_test;
 mod flow;
 mod flow_contract;
