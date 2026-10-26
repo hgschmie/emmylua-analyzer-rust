@@ -1758,7 +1758,7 @@ fn finish_decl_frames(
         let value_ty = if value_ty.is_unknown()
             && !matches!(narrowed_before, LuaType::Unknown | LuaType::Any)
         {
-            widen_const_type(narrowed_before.clone())
+            unknown_assignment_fallback(model, decl, &frame.base_before)
         } else {
             value_ty
         };
@@ -1938,7 +1938,7 @@ fn trace_decl_uncached(
                             let value_ty = if value_ty.is_unknown()
                                 && !matches!(narrowed_before, LuaType::Unknown | LuaType::Any)
                             {
-                                widen_const_type(narrowed_before.clone())
+                                unknown_assignment_fallback(model, decl, &base_before)
                             } else {
                                 value_ty
                             };
@@ -2867,6 +2867,25 @@ fn index_expr_type_from_initializer(
         LuaType::TableGeneric(params) if params.len() == 2 => Some(params[1].clone()),
         _ => None,
     }
+}
+
+/// Unknown writes retain the declaration contract, not facts about the preceding value.
+fn unknown_assignment_fallback(
+    model: &SemanticModel,
+    decl: &SemanticId,
+    base_before: &LuaType,
+) -> LuaType {
+    if base_before.is_nil()
+        && let SemanticId::Decl(key) = decl
+        && let Some(facts) = model.file_facts_of(key.file_id)
+        && let Some(def) = facts.decl_by_id(decl)
+        && matches!(def.kind, crate::semantic_db::def::DeclKind::Local { .. })
+        && def.doc_type_syntax.is_none()
+    {
+        // An inferred nil initializer is a placeholder, not an explicit nil-only contract.
+        return LuaType::Unknown;
+    }
+    widen_const_type(base_before.clone())
 }
 
 fn coerce_table_assign_to_narrowed(
