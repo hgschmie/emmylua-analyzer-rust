@@ -33,6 +33,7 @@ mod pcall_test;
 mod return_overload_flow_test;
 mod return_overload_generic_test;
 mod return_unwrap_test;
+mod runtime_member_closure_scope;
 mod semantic_generic_test;
 mod semantic_infer_test;
 mod static_cal_cmp;
