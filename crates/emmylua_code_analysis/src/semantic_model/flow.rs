@@ -438,6 +438,36 @@ pub fn type_of_member_before_at(
     .unwrap_or_else(fallback)
 }
 
+/// A runtime definition can affect reads in its enclosing scope, but not sibling closures.
+fn runtime_member_scope_contains(
+    model: &SemanticModel,
+    member: &crate::semantic_db::def::Member,
+    access: &emmylua_parser::LuaIndexExpr,
+) -> bool {
+    let SemanticId::Member(key) = &member.id else {
+        return false;
+    };
+    if key.file_id != model.file_id() {
+        return false;
+    }
+    let Some(root) = model.syntax_tree().map(|tree| tree.get_red_root()) else {
+        return false;
+    };
+    let Some(value) = member
+        .value_syntax
+        .and_then(|syntax| syntax.to_node_from_root(&root))
+    else {
+        return false;
+    };
+    // A function-valued assignment executes in its parent's scope, not in the new function body.
+    let Some(owner) = value.parent() else {
+        return false;
+    };
+    LuaClosureId::from_node(&owner)
+        .get_range()
+        .contains_range(access.get_range())
+}
+
 /// Evaluate one flow expression after its operands and prefix are cached.
 pub(crate) fn type_of_expr_at_node(
     model: &SemanticModel,
@@ -584,7 +614,10 @@ pub(crate) fn type_of_expr_at_node(
                     if let Some(facts) = runtime_owner_facts
                         && let Some(runtime_member) = facts
                             .members_of_owner(&resolved.owner)
-                            .find(|m| m.key.name() == Some(resolved.name.as_str()))
+                            .find(|m| {
+                                m.key.name() == Some(resolved.name.as_str())
+                                    && runtime_member_scope_contains(model, m, index_expr)
+                            })
                         && runtime_member
                                 .id
                                 .member_key_range()
