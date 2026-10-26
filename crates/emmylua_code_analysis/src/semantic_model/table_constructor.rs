@@ -32,6 +32,7 @@ impl TableConstructor {
         let fields: Vec<_> = table
             .get_fields_with_keys()
             .into_iter()
+            .filter(|(field, _)| field.get_value_expr().is_some())
             .map(|(field, key)| ConstructorField {
                 expands: matches!(key, LuaIndexKey::Idx(_)) && last_field.as_ref() == Some(&field),
                 key: key_type(model, key),
@@ -97,21 +98,45 @@ impl TableConstructor {
     ) -> impl Iterator<Item = Result<Vec<(LuaType, ConstructorValue<'_>)>, TypeCheckFailReason>> + '_
     {
         let mut seen = HashSet::new();
-        self.fields
-            .iter()
-            .rev()
-            .filter(move |field| match &field.key {
-                // A known key replaces the earlier entry, including with nil.
-                Ok(
-                    key @ (LuaType::StringConst(_)
-                    | LuaType::IntegerConst(_)
-                    | LuaType::FloatConst(_)
-                    | LuaType::BooleanConst(_)),
-                ) => seen.insert(key.clone()),
-                _ => true,
-            })
-            .map(ConstructorField::entries)
+        self.fields.iter().rev().map(move |field| {
+            let mut entries = field.entries()?;
+            entries.retain(|(key, _)| !seen.contains(key));
+            // Keep all alternatives in this field; mask earlier writes only for
+            // result slots that every return alternative actually supplies.
+            let key = field.key.as_ref().map_err(Clone::clone)?;
+            if is_literal_key(key) {
+                if field.expands
+                    && let LuaType::IntegerConst(start) = key
+                {
+                    let value = field.value.as_ref().map_err(Clone::clone)?;
+                    for offset in 0..minimum_result_count(value) {
+                        seen.insert(LuaType::IntegerConst(start + offset as i64));
+                    }
+                } else {
+                    seen.insert(key.clone());
+                }
+            }
+            Ok(entries)
+        })
     }
+}
+
+fn minimum_result_count(ty: &LuaType) -> usize {
+    match ty {
+        LuaType::Variadic(pack) => pack.get_min_len().unwrap_or(0),
+        LuaType::Union(branches) => branches.iter().map(minimum_result_count).min().unwrap_or(0),
+        _ => 1,
+    }
+}
+
+fn is_literal_key(key: &LuaType) -> bool {
+    matches!(
+        key,
+        LuaType::StringConst(_)
+            | LuaType::IntegerConst(_)
+            | LuaType::FloatConst(_)
+            | LuaType::BooleanConst(_)
+    )
 }
 
 /// Keep absent slots out of the member set, and include nil when only some
