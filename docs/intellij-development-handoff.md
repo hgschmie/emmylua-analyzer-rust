@@ -1,3 +1,59 @@
+# Build 206 source — declaration and member-flow repairs (2026-10-26)
+
+Signed tested code `bb60528e07892dd9ada965280c68ccb707940687` has tree
+`c314f5e842c18861dfb3a84be4f5b5999365f163`. Fresh **3,345 full workspace/all-feature
+Rust tests** pass with zero failures, ignored or filtered tests. Every previous
+3,302 name remains executed, including all 3,250 accepted names; the 43 new controls
+cover UP-134 return slots (13), UP-135 unknown assignments (17), and UP-136 runtime
+member closure scope (13). All 25 incoming upstream test files retain their
+previously verified bodies. All-target/all-feature Clippy with warnings denied
+and rustfmt pass. The following source freeze changes only documentation and
+manifests; crates/Cargo remain byte-identical to this tested code.
+
+All 97 active source heads are published and independently matched to actual origin:
+the original 93 under frozen upstream a902, plus independent UP-133 f8bdea85,
+UP-134 49311e95, UP-135 4e5e49e0 and UP-136 fc7fb521. Original 11d1db6b and c16102f1
+manifests remain unchanged; new immutable addenda acee407e and 2b417137 preserve
+original dates, source prerequisites and the distinction between source and
+consumer dependencies. UP-134 needs UP-135 for GUI consumer acceptance; neither
+source branch inherits the other. No active source was retired.
+
+UP-134 projects individual initializer return slots while preserving higher-priority
+annotations/module/class/enum providers. UP-135 discards stale narrowing after an
+unknown write, using the declaration contract and preserving an inferred-nil
+placeholder distinction. UP-136 excludes sibling-closure runtime member writes;
+its exact predicate is conjoined with the complete existing UP-064 assignment-
+completion guard. This is lexical visibility, not complete CFG or interprocedural
+execution analysis. Existing modules and all prior source/glue remain intact;
+the only spelling adapter shortens a redundant DeclKind qualification.
+
+Private source protocol replay preserves all eight reduced LTN cases, all 37 full
+LTN diagnostic responses/six hovers and full GUI diagnostics exactly against 204.
+Only twelve named gui-full hover queries at six sites have a reviewed scalar/
+guard precision improvement under Management decision a91b4f26. All other
+responses/ranges remain exact; the tag-map RHS remains unknown. There is no
+general unknown/nil/display normalization or diagnostic waiver.
+
+Build 205 is a retained failed private candidate, never a published release:
+ZIP 67779fea / server 7eb81886 exposed the original GUI and LTN regressions. Its
+source, producer/main archives and raw results remain immutable. Accepted 204
+work 1429, its archive 2a4243d3 and the original 633 source history remain preserved.
+The repaired archive uses the distinct unused counter 206.
+
+Before release, exact packaged 206 must pass 203 cases / 255 types / 5 navigation,
+59 length / 3 closure, UP-064 13 cases / 15 hovers, four complete-overload cases, LTN 37 and
+all eight global-member cases, plus the exact approved twelve GUI observations.
+Fresh 35 Emmy client tests and FDE-owned exact 206 + LSP16 full 48 native / full unit / API / cache
+checks must bind the same immutable bytes. FDE 0.9.4 version/ZIP, toolkit 1c1db13 /
+CLI 419764 / API 2.1.23 and released LSP16 remain unchanged; LSP's inherited 41 assertion
+failures/three source skips remain disclosed. Only macOS arm64 receives the custom
+analyzer; other platform binaries and the running IDE profile are unchanged.
+
+The immutable new records are in `docs/integration-manifests/` as
+`analyzer-refresh-20261026-up134-up135.json`, `analyzer-refresh-20261026-final97.json`
+and `analyzer-refresh-20261026-gui-precision.json`. Current artifact/acceptance
+receipts live in workspace `memory/findings/F-20261026-120748-analyzer-lsp-upstream-refresh/`.
+
 # Updated upstream and complete local overloads — 2026-10-26
 
 Build205 source combines frozen official upstream

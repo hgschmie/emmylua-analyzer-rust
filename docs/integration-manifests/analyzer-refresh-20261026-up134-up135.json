@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "state": "Immutable reviewed published134135source addendum;136/206pending",
+  "frozen_at": "2026-10-26T23:11:45.672780+00:00",
+  "original93_manifest_sha256": "11d1db6bef60148e1d87d08984fcf9316dad4fd5c9428c67edbd6b00707a8cf9",
+  "prior133_addendum_sha256": "c16102f1dd2ec0d6f1fe6d1257889c58fd1db5ac78a5277793380d4be80c0250",
+  "official_source_base": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+  "sources_in_consumer_integration_order": [
+    {
+      "id": "UP-135",
+      "branch": "fix/unknown-assignment-flow",
+      "head": "4e5e49e06d7fba6fc60388d57dee4c0eeddd762d",
+      "tree": "5aba0ba506e8916ef66015113537b7bf95de308f",
+      "source_base": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "consumer_dependencies": [],
+      "publication_receipt": "memory/findings/F-20261026-154547-unknown-assignment-flow/upstream-publication.json",
+      "publication_receipt_sha256": "9426eb385949274306003f75224e96ac0a00aac45c297221efb7a0d7262fe998"
+    },
+    {
+      "id": "UP-134",
+      "branch": "fix/declaration-result-slots",
+      "head": "49311e95ecf2decf0d54134ba6b802b08852dbe5",
+      "tree": "3b377a79dcbbf13f81f0a7dc164d59ee1522b584",
+      "source_base": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "consumer_dependencies": [
+        "UP-135"
+      ],
+      "publication_receipt": "memory/findings/F-20261026-152630-declaration-result-slots/upstream-publication.json",
+      "publication_receipt_sha256": "dd402009d1f0ff52e900681da17211e88e86b5eb23009a7939ed79019f6a5c32"
+    }
+  ],
+  "source_ancestry_policy": "Both independent direct-a902 one-commit sources;134consumer acceptance requires135, not a source ancestry edge. Publish135 verified before134.",
+  "owned_composed_base": "a35b72a8ba90bb1d48a119e846140ba5e6721ec1",
+  "composition_adapters": [
+    "Both additive test-module registrations preserve all previous module lines",
+    "UP135 new helper uses already imported DeclKind instead of its fully qualified name; same type, no semantic adapter"
+  ],
+  "composition_proof": "All942baseGitblobs independently compared: onlyflow/facade/modchanged;2newtests exact reviewed hashes. Flow exactlytwo reviewed fallback replacements+helper with only DeclKind qualification adapter.",
+  "source_validation": {
+    "UP134": "2628sourcefull/static,13focused and13ownedcomposed,original25wholefiles+executednames preserved",
+    "UP135": "2632full atreviewv2; finalv4 test-only refinement17source/static,17ownedflow+13slots; NOTfinalv4fullrerun claim;production unchanged from preserved7a81"
+  },
+  "final_private_composed_binary_sha256": "ddc728f05bf3c32ba1941309adfacddecc45ab6c717188b7736831bacd1c2539",
+  "finalGUI_protocol_seal": "7eed2840c58c4db9a39aa1dc3125ddd7d9a5a88bd1a6cddbf01af85e6480c914",
+  "final_sourceGUI_binding_seal": "34c7cbfd5333432b63094b84b848c7b42ee7b68350fb37c484807e22713b17cf",
+  "GUI_precision_policy": "Onlyexact12completegui-full responses underManagerdecisiona91b4f26; entirediagnostics exact204, allotherhovers exact; no unknown/nil/display normalization",
+  "required_evidence": [
+    {
+      "path": "memory/findings/F-20261026-154547-unknown-assignment-flow/upstream-final-gui-precision-binding.json",
+      "sha256": "35b0acd95d47c865ecad03e62b7157b6c550a4da162f10e8b44afcc5e112f959"
+    },
+    {
+      "path": "memory/findings/F-20261026-154547-unknown-assignment-flow/upstream-signed-final-composition-binding.json",
+      "sha256": "b53fcae8e012679eaf0da4af0566e908111ba851f6d7194ece44a6a46bebe34c"
+    },
+    {
+      "path": "memory/findings/F-20261026-154547-unknown-assignment-flow/management-precision-decision-v1.json",
+      "sha256": "a91b4f2679eabc400828346ae7fea10aa840a93a3be545e66133647873b6b80a"
+    },
+    {
+      "path": "memory/findings/F-20261026-152630-declaration-result-slots/upstream-signed-source-binding.json",
+      "sha256": "bee5aafb74d9a6ae668b417ae096a53b3c46b17755d0bfaf0af90a2e7dd3adb9"
+    },
+    {
+      "path": "memory/findings/F-20261026-152630-declaration-result-slots/upstream-final-composition-binding.json",
+      "sha256": "9ff3c9125f4ee642477b0d3ea8b0d16f84882e69a18ebed6a173e69832d23719"
+    }
+  ],
+  "remaining_gates": [
+    "Reviewed independentUP136repair source handoff",
+    "Fresh combined full/static retaining allold3250executed names and25exact upstream bodies plusnew declared tests",
+    "Exact206packaged203cases/255types/5navigation+59length/3closure+13foreignoffset/15hover+4overloads+LTN37/new8globalcases",
+    "Exact12approvedGUIprecision andallotheroriginalobservations unchanged",
+    "FDE owner exact206+LSP16native48/fullunit/privatepin validation"
+  ],
+  "boundaries": "No contribution PR, candidate/work promotion, package/FDE write or206release acceptance by this addendum. Original11d/c161files unchanged."
+}

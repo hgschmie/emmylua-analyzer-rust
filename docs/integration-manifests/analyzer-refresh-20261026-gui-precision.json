@@ -1,0 +1,501 @@
+{
+  "approved_at": "2026-10-26T23:01:30.156226+00:00",
+  "owner": "Management / 01a0f523-8f46-7343-a1ec-30ab22f37678",
+  "decision": "Approve ONLY exact twelve-query scalar/guard precision delta as an intentional UP134+UP135 improvement; final source binding and206acceptance still required.",
+  "precision_record_sha256": "d89ef1ea2f20d831f5aae6758b3d9cd259d9b377a71798f7e455412d903c4b7a",
+  "source_sha256": "049db4e961c3fb75ad2dd6fcf8ebca7a35fa6c4ff9733011c60be8e353de185c",
+  "source_file": "/Users/henning/ai/fmtk/upstream/emmylua-analyzer-rust/build/investigations/gui-handler-type-guard-20261022/actual-mod/framework/gui_manager.lua",
+  "draft_binary": "955e70926034072b48223f383364790a856d78105bca581a5b07bb5c03ec0a07",
+  "source_code_origins": {
+    "UP134": "49311e95ecf2decf0d54134ba6b802b08852dbe5",
+    "UP135": "7a81f48ad11bf923400285bf0e6fd0a5b5f3fb40"
+  },
+  "approved_case": "gui-full",
+  "approved_exact_query_results": {
+    "174:handler:9": "string?",
+    "174:handler_id:9": "string?",
+    "175:handler:12": "string?",
+    "175:handler_id:12": "string?",
+    "177:handler:43": "string",
+    "177:handler_id:43": "string",
+    "182:handler:13": "nil",
+    "182:handler_id:13": "nil",
+    "183:handler:16": "string?",
+    "183:handler_id:16": "string?",
+    "184:handler:47": "string",
+    "184:handler_id:47": "string"
+  },
+  "basis": {
+    "174_175": "Declared scalar optional string return at source134 and corrected individual-slot projection; current read before guard.",
+    "177": "Truthiness guard175 removes nil.",
+    "182": "Assignment LHS pre-write state in false branch175 is nil; RHS type remains unknown and is not being declared known.",
+    "183": "Explicit unknown write discards stale nil narrowing and restores declaration base under reviewed local-variable fallback contract; no runtime guarantee about arbitrary tag values is invented.",
+    "184": "Truthiness guard183 removes nil."
+  },
+  "conditions": [
+    "Final source test-only amendment must preserve reviewed production code or trigger renewed review.",
+    "Source134/135 standalone and composed regression/static proof and exact final packaged206binding required.",
+    "Final fullGUI diagnostics must equal204 exactly, with no diagnostic waiver.",
+    "All other original GUI hover responses/ranges and all other original203cases/255types/navigation observations remain exact except separately pre-existing approved exceptions.",
+    "No global unknown/nil/display normalization; preserve all old/raw snapshots and record before/after results for these exactkeys.",
+    "RealLTN37+8global cases,13offset15hover,59+3,new4overload andnative48/fullunit gates remain required."
+  ],
+  "comparison": [
+    {
+      "query_key": "174:handler:9",
+      "before": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\nlocal handler_id: unknown\n```\n\n---\n\ncheck if it is a custom input event"
+        },
+        "range": {
+          "end": {
+            "character": 18,
+            "line": 173
+          },
+          "start": {
+            "character": 8,
+            "line": 173
+          }
+        }
+      },
+      "after": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\nlocal handler_id: string?\n```\n\n---\n\ncheck if it is a custom input event"
+        },
+        "range": {
+          "end": {
+            "character": 18,
+            "line": 173
+          },
+          "start": {
+            "character": 8,
+            "line": 173
+          }
+        }
+      },
+      "basis": [
+        "documented returns93-94/134; scalar slot projection134"
+      ]
+    },
+    {
+      "query_key": "174:handler_id:9",
+      "before": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\nlocal handler_id: unknown\n```\n\n---\n\ncheck if it is a custom input event"
+        },
+        "range": {
+          "end": {
+            "character": 18,
+            "line": 173
+          },
+          "start": {
+            "character": 8,
+            "line": 173
+          }
+        }
+      },
+      "after": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\nlocal handler_id: string?\n```\n\n---\n\ncheck if it is a custom input event"
+        },
+        "range": {
+          "end": {
+            "character": 18,
+            "line": 173
+          },
+          "start": {
+            "character": 8,
+            "line": 173
+          }
+        }
+      },
+      "basis": [
+        "documented returns93-94/134; scalar slot projection134"
+      ]
+    },
+    {
+      "query_key": "175:handler:12",
+      "before": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\nlocal handler_id: unknown\n```\n\n---\n\ncheck if it is a custom input event"
+        },
+        "range": {
+          "end": {
+            "character": 21,
+            "line": 174
+          },
+          "start": {
+            "character": 11,
+            "line": 174
+          }
+        }
+      },
+      "after": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\nlocal handler_id: string?\n```\n\n---\n\ncheck if it is a custom input event"
+        },
+        "range": {
+          "end": {
+            "character": 21,
+            "line": 174
+          },
+          "start": {
+            "character": 11,
+            "line": 174
+          }
+        }
+      },
+      "basis": [
+        "same scalar slot before condition"
+      ]
+    },
+    {
+      "query_key": "175:handler_id:12",
+      "before": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\nlocal handler_id: unknown\n```\n\n---\n\ncheck if it is a custom input event"
+        },
+        "range": {
+          "end": {
+            "character": 21,
+            "line": 174
+          },
+          "start": {
+            "character": 11,
+            "line": 174
+          }
+        }
+      },
+      "after": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\nlocal handler_id: string?\n```\n\n---\n\ncheck if it is a custom input event"
+        },
+        "range": {
+          "end": {
+            "character": 21,
+            "line": 174
+          },
+          "start": {
+            "character": 11,
+            "line": 174
+          }
+        }
+      },
+      "basis": [
+        "same scalar slot before condition"
+      ]
+    },
+    {
+      "query_key": "177:handler:43",
+      "before": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\nlocal handler_id: unknown\n```\n\n---\n\ncheck if it is a custom input event"
+        },
+        "range": {
+          "end": {
+            "character": 52,
+            "line": 176
+          },
+          "start": {
+            "character": 42,
+            "line": 176
+          }
+        }
+      },
+      "after": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\nlocal handler_id: string\n```\n\n---\n\ncheck if it is a custom input event"
+        },
+        "range": {
+          "end": {
+            "character": 52,
+            "line": 176
+          },
+          "start": {
+            "character": 42,
+            "line": 176
+          }
+        }
+      },
+      "basis": [
+        "string? narrowed by truthiness guard175"
+      ]
+    },
+    {
+      "query_key": "177:handler_id:43",
+      "before": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\nlocal handler_id: unknown\n```\n\n---\n\ncheck if it is a custom input event"
+        },
+        "range": {
+          "end": {
+            "character": 52,
+            "line": 176
+          },
+          "start": {
+            "character": 42,
+            "line": 176
+          }
+        }
+      },
+      "after": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\nlocal handler_id: string\n```\n\n---\n\ncheck if it is a custom input event"
+        },
+        "range": {
+          "end": {
+            "character": 52,
+            "line": 176
+          },
+          "start": {
+            "character": 42,
+            "line": 176
+          }
+        }
+      },
+      "basis": [
+        "string? narrowed by truthiness guard175"
+      ]
+    },
+    {
+      "query_key": "182:handler:13",
+      "before": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\nlocal handler_id: unknown\n```\n\n---\n\ncheck if it is a custom input event"
+        },
+        "range": {
+          "end": {
+            "character": 22,
+            "line": 181
+          },
+          "start": {
+            "character": 12,
+            "line": 181
+          }
+        }
+      },
+      "after": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\nlocal handler_id: nil\n```\n\n---\n\ncheck if it is a custom input event"
+        },
+        "range": {
+          "end": {
+            "character": 22,
+            "line": 181
+          },
+          "start": {
+            "character": 12,
+            "line": 181
+          }
+        }
+      },
+      "basis": [
+        "assignment target shows pre-write nil in false branch of175; string? has only nil as falsy alternative"
+      ]
+    },
+    {
+      "query_key": "182:handler_id:13",
+      "before": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\nlocal handler_id: unknown\n```\n\n---\n\ncheck if it is a custom input event"
+        },
+        "range": {
+          "end": {
+            "character": 22,
+            "line": 181
+          },
+          "start": {
+            "character": 12,
+            "line": 181
+          }
+        }
+      },
+      "after": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\nlocal handler_id: nil\n```\n\n---\n\ncheck if it is a custom input event"
+        },
+        "range": {
+          "end": {
+            "character": 22,
+            "line": 181
+          },
+          "start": {
+            "character": 12,
+            "line": 181
+          }
+        }
+      },
+      "basis": [
+        "assignment target shows pre-write nil in false branch of175; string? has only nil as falsy alternative"
+      ]
+    },
+    {
+      "query_key": "183:handler:16",
+      "before": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\nlocal handler_id: unknown\n```\n\n---\n\ncheck if it is a custom input event"
+        },
+        "range": {
+          "end": {
+            "character": 25,
+            "line": 182
+          },
+          "start": {
+            "character": 15,
+            "line": 182
+          }
+        }
+      },
+      "after": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\nlocal handler_id: string?\n```\n\n---\n\ncheck if it is a custom input event"
+        },
+        "range": {
+          "end": {
+            "character": 25,
+            "line": 182
+          },
+          "start": {
+            "character": 15,
+            "line": 182
+          }
+        }
+      },
+      "basis": [
+        "unknown RHS invalidates prior nil fact and restores declaration base string? via135; no new RHS type inference claimed"
+      ]
+    },
+    {
+      "query_key": "183:handler_id:16",
+      "before": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\nlocal handler_id: unknown\n```\n\n---\n\ncheck if it is a custom input event"
+        },
+        "range": {
+          "end": {
+            "character": 25,
+            "line": 182
+          },
+          "start": {
+            "character": 15,
+            "line": 182
+          }
+        }
+      },
+      "after": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\nlocal handler_id: string?\n```\n\n---\n\ncheck if it is a custom input event"
+        },
+        "range": {
+          "end": {
+            "character": 25,
+            "line": 182
+          },
+          "start": {
+            "character": 15,
+            "line": 182
+          }
+        }
+      },
+      "basis": [
+        "unknown RHS invalidates prior nil fact and restores declaration base string? via135; no new RHS type inference claimed"
+      ]
+    },
+    {
+      "query_key": "184:handler:47",
+      "before": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\nlocal handler_id: unknown\n```\n\n---\n\ncheck if it is a custom input event"
+        },
+        "range": {
+          "end": {
+            "character": 56,
+            "line": 183
+          },
+          "start": {
+            "character": 46,
+            "line": 183
+          }
+        }
+      },
+      "after": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\nlocal handler_id: string\n```\n\n---\n\ncheck if it is a custom input event"
+        },
+        "range": {
+          "end": {
+            "character": 56,
+            "line": 183
+          },
+          "start": {
+            "character": 46,
+            "line": 183
+          }
+        }
+      },
+      "basis": [
+        "post-write string? narrowed by guard183"
+      ]
+    },
+    {
+      "query_key": "184:handler_id:47",
+      "before": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\nlocal handler_id: unknown\n```\n\n---\n\ncheck if it is a custom input event"
+        },
+        "range": {
+          "end": {
+            "character": 56,
+            "line": 183
+          },
+          "start": {
+            "character": 46,
+            "line": 183
+          }
+        }
+      },
+      "after": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\nlocal handler_id: string\n```\n\n---\n\ncheck if it is a custom input event"
+        },
+        "range": {
+          "end": {
+            "character": 56,
+            "line": 183
+          },
+          "start": {
+            "character": 46,
+            "line": 183
+          }
+        }
+      },
+      "basis": [
+        "post-write string? narrowed by guard183"
+      ]
+    }
+  ]
+}
