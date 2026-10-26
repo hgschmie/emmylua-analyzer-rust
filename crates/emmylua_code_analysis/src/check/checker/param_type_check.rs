@@ -422,6 +422,90 @@ fn table_literal_mismatch(
     }
 }
 
+/// Check dictionary argument entries without erasing their constructor keys and values.
+fn dictionary_literal_mismatch(
+    semantic_model: &SemanticModel<'_>,
+    key_type: &LuaType,
+    value_type: &LuaType,
+    table: &emmylua_parser::LuaTableExpr,
+) -> Option<Mismatch> {
+    let fields = table.get_fields_with_keys();
+    let last = fields.len().saturating_sub(1);
+    let mut overwritten = std::collections::HashSet::new();
+    let value_or_absent = LuaType::from_vec(vec![value_type.clone(), LuaType::Nil]);
+    for (index, (field, key)) in fields.into_iter().enumerate().rev() {
+        let static_key = super::check_field::static_member_key(semantic_model, &key);
+        if let Some(key) = &static_key
+            && !overwritten.insert(key.clone())
+        {
+            continue;
+        }
+        let Some(value) = field.get_value_expr() else {
+            continue;
+        };
+        let inferred = semantic_model.type_of_expr_at(value.get_syntax_id(), value.get_position());
+        let values = match &inferred {
+            LuaType::Variadic(variadic) if index == last && field.is_value_field() => {
+                match variadic.as_ref() {
+                    VariadicType::Multi(values) => values.clone(),
+                    VariadicType::Base(value) | VariadicType::Repeat(value) => vec![value.clone()],
+                }
+            }
+            _ => vec![inferred.get_result_slot_type(0).unwrap_or(LuaType::Nil)],
+        };
+        if index == last
+            && field.is_value_field()
+            && let Some(LuaMemberKey::Integer(start)) = &static_key
+        {
+            for offset in 1..values.len() {
+                if let Some(key) = start.checked_add(offset as i64) {
+                    overwritten.insert(LuaMemberKey::Integer(key));
+                }
+            }
+        }
+        let actual_key = static_key
+            .and_then(|key| key.to_index_type())
+            .unwrap_or_else(|| match &key {
+                emmylua_parser::LuaIndexKey::Expr(expr) => {
+                    semantic_model.type_of_expr_at(expr.get_syntax_id(), expr.get_position())
+                }
+                emmylua_parser::LuaIndexKey::Integer(_) => LuaType::Number,
+                _ => LuaType::Unknown,
+            });
+        for (offset, actual_value) in values.into_iter().enumerate() {
+            if actual_value.is_nil() {
+                continue;
+            }
+            let entry_key = if index == last
+                && field.is_value_field()
+                && let LuaType::IntegerConst(start) = &actual_key
+            {
+                start
+                    .checked_add(offset as i64)
+                    .map(LuaType::IntegerConst)
+                    .unwrap_or(LuaType::Integer)
+            } else {
+                actual_key.clone()
+            };
+            let mismatch = if !is_compatible(semantic_model, &entry_key, key_type) {
+                Some((&entry_key, key_type))
+            } else if !is_compatible(semantic_model, &actual_value, &value_or_absent) {
+                Some((&actual_value, value_type))
+            } else {
+                None
+            };
+            if let Some((actual, expected)) = mismatch {
+                return Some(Mismatch {
+                    code: DiagnosticCode::ParamTypeMismatch,
+                    range: table.get_range(),
+                    message: mismatch_message(semantic_model, actual, expected, ""),
+                });
+            }
+        }
+    }
+    None
+}
+
 /// A cheap literal/scalar-shape score used only to order call candidates.
 /// It does not replace the real compatibility check; it only avoids running
 /// the expensive type-check path on obviously wrong overloads first.
@@ -800,6 +884,54 @@ fn check_arg_pairs(
                 message: mismatch_message(semantic_model, &LuaType::Nil, &param_ty, name),
             });
             continue;
+        }
+        let mut dictionary_arg = arg.clone();
+        while let LuaExpr::ParenExpr(paren) = &dictionary_arg {
+            let Some(inner) = paren.get_expr() else {
+                break;
+            };
+            if paren
+                .children::<emmylua_parser::LuaComment>()
+                .any(|comment| {
+                    comment
+                        .get_owner()
+                        .is_some_and(|owner| owner.get_syntax_id() == inner.get_syntax_id())
+                        && comment
+                            .get_doc_tags()
+                            .any(|tag| matches!(tag, emmylua_parser::LuaDocTag::As(_)))
+                })
+            {
+                break;
+            }
+            dictionary_arg = inner;
+        }
+        if let LuaExpr::TableExpr(table) = &dictionary_arg {
+            let dictionary_target =
+                super::check_field::expand_alias_type(semantic_model, &param_ty)
+                    .unwrap_or_else(|| param_ty.clone());
+            let dictionary_types = match &dictionary_target {
+                LuaType::TableGeneric(types) => Some(types.as_slice()),
+                LuaType::Generic(generic)
+                    if generic.get_base_type_id() == crate::LuaTypeDeclId::global("table")
+                        && semantic_model
+                            .type_def_of(generic.get_base_type_id_ref())
+                            .is_none_or(|def| semantic_model.is_std_file(def.file_id)) =>
+                {
+                    Some(generic.get_params().as_slice())
+                }
+                _ => None,
+            };
+            if matches!(arg_ty, LuaType::TableConst(_))
+                && let Some([key_type, value_type]) = dictionary_types
+                && !dictionary_target.contains_tpl_node()
+            {
+                if let Some(mismatch) =
+                    dictionary_literal_mismatch(semantic_model, key_type, value_type, table)
+                {
+                    out.push(mismatch);
+                }
+                continue;
+            }
         }
         // Table literals targeting object / intersection: check field by field and then fully take over.
         if let LuaExpr::TableExpr(table) = arg {

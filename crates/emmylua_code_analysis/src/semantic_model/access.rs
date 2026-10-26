@@ -562,9 +562,8 @@ impl<'db> SemanticModel<'db> {
         let Some(owner) = self.resolve_name(name_expr.get_position()) else {
             return Vec::new();
         };
-        // Only intervene for actual same-workspace global overloads. A single
-        // declaration keeps the legacy projection path, which preserves its
-        // generic/closure details.
+        // Preserve declared contracts and reassigned values. An unchanged local
+        // closure's projected function type omits its documented alternatives.
         let SemanticId::Decl(key) = &owner else {
             return Vec::new();
         };
@@ -575,7 +574,30 @@ impl<'db> SemanticModel<'db> {
             return Vec::new();
         };
         if !matches!(decl.kind, DeclKind::Global) {
-            return Vec::new();
+            let has_overloads = decl
+                .value_expr_syntax
+                .and_then(|syntax| facts.signature_by_closure(syntax))
+                .and_then(|signature| signature.docs.as_ref())
+                .is_some_and(|docs| !docs.overloads.is_empty());
+            if !matches!(decl.kind, DeclKind::Local { .. })
+                || decl.doc_type_syntax.is_some()
+                || !has_overloads
+                || self
+                    .flow_tree()
+                    .is_some_and(|flow| flow.has_decl_assignment(&owner))
+                || self.local_callable_has_explicit_cast(decl, callee)
+            {
+                return Vec::new();
+            }
+            let projected = self
+                .type_of_decl_signature(&owner)
+                .map(|function| LuaType::DocFunction(Rc::new(function)));
+            if projected.as_ref() != Some(&self.type_of_expr(callee.get_syntax_id())) {
+                return Vec::new();
+            }
+            return infer::vm::InferVm::new(self, &[])
+                .callable_candidates_for_owner_single(&owner)
+                .unwrap_or_default();
         }
         let decls = self.global_decls_named_for_file(key.file_id, decl.name.as_str());
         if decls.len() <= 1 {
@@ -599,6 +621,43 @@ impl<'db> SemanticModel<'db> {
             return Vec::new();
         }
         per_decl.into_iter().flatten().collect()
+    }
+
+    /// Explicit casts remain authoritative even when their shape equals the primary signature.
+    fn local_callable_has_explicit_cast(&self, decl: &Decl, callee: &LuaExpr) -> bool {
+        if !self.flow_tree().is_some_and(|flow| flow.has_tag_cast()) {
+            return false;
+        }
+        let Some(chunk) = self.chunk() else {
+            return false;
+        };
+        chunk
+            .syntax()
+            .descendants()
+            .filter_map(LuaDocTag::cast)
+            .any(|tag| {
+                match &tag {
+                    LuaDocTag::Cast(cast) => {
+                        if let Some(LuaExpr::NameExpr(name)) = cast.get_key_expr() {
+                            return cast.get_position() < callee.get_position()
+                                && self.resolve_name(name.get_position()).as_ref()
+                                    == Some(&decl.id);
+                        }
+                    }
+                    LuaDocTag::As(_) => {}
+                    _ => return false,
+                }
+                tag.get_parent::<emmylua_parser::LuaComment>()
+                    .and_then(|comment| comment.get_owner())
+                    .and_then(|owner| {
+                        LuaExpr::cast(owner.syntax().clone())
+                            .or_else(|| owner.children::<LuaExpr>().last())
+                    })
+                    .is_some_and(|target| {
+                        target.get_syntax_id() == callee.get_syntax_id()
+                            || Some(target.get_syntax_id()) == decl.value_expr_syntax
+                    })
+            })
     }
 
     /// Public unified candidates for call rendering (signature help / completion / hover).
