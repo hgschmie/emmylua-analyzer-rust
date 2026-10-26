@@ -496,6 +496,36 @@ pub fn type_of_member_before_at(
     .unwrap_or_else(fallback)
 }
 
+/// A runtime definition can affect reads in its enclosing scope, but not sibling closures.
+fn runtime_member_scope_contains(
+    model: &SemanticModel,
+    member: &crate::semantic_db::def::Member,
+    access: &emmylua_parser::LuaIndexExpr,
+) -> bool {
+    let SemanticId::Member(key) = &member.id else {
+        return false;
+    };
+    if key.file_id != model.file_id() {
+        return false;
+    }
+    let Some(root) = model.syntax_tree().map(|tree| tree.get_red_root()) else {
+        return false;
+    };
+    let Some(value) = member
+        .value_syntax
+        .and_then(|syntax| syntax.to_node_from_root(&root))
+    else {
+        return false;
+    };
+    // A function-valued assignment executes in its parent's scope, not in the new function body.
+    let Some(owner) = value.parent() else {
+        return false;
+    };
+    LuaClosureId::from_node(&owner)
+        .get_range()
+        .contains_range(access.get_range())
+}
+
 /// Evaluate one flow expression after its operands and prefix are cached.
 pub(crate) fn type_of_expr_at_node(
     model: &SemanticModel,
@@ -728,6 +758,7 @@ pub(crate) fn type_of_expr_at_node(
                             .members_of_owner(&resolved.owner)
                             .find(|m| {
                                 m.key.name() == Some(resolved.name.as_str())
+                                    && runtime_member_scope_contains(model, m, index_expr)
                                     // Before a write completes, its value cannot override
                                     // the declared field (including reads in its own RHS).
                                     && (facts.file_id != model.file_id()
@@ -2181,7 +2212,7 @@ fn finish_decl_frames(
         let value_ty = if value_ty.is_unknown()
             && !matches!(narrowed_before, LuaType::Unknown | LuaType::Any)
         {
-            widen_const_type(narrowed_before.clone())
+            unknown_assignment_fallback(model, decl, &frame.base_before)
         } else {
             value_ty
         };
@@ -2382,7 +2413,7 @@ fn trace_decl_uncached(
                             let value_ty = if value_ty.is_unknown()
                                 && !matches!(narrowed_before, LuaType::Unknown | LuaType::Any)
                             {
-                                widen_const_type(narrowed_before.clone())
+                                unknown_assignment_fallback(model, decl, &base_before)
                             } else {
                                 value_ty
                             };
@@ -3325,6 +3356,25 @@ fn index_expr_type_from_initializer(
         LuaType::TableGeneric(params) if params.len() == 2 => Some(params[1].clone()),
         _ => None,
     }
+}
+
+/// Unknown writes retain the declaration contract, not facts about the preceding value.
+fn unknown_assignment_fallback(
+    model: &SemanticModel,
+    decl: &SemanticId,
+    base_before: &LuaType,
+) -> LuaType {
+    if base_before.is_nil()
+        && let SemanticId::Decl(key) = decl
+        && let Some(facts) = model.file_facts_of(key.file_id)
+        && let Some(def) = facts.decl_by_id(decl)
+        && matches!(def.kind, DeclKind::Local { .. })
+        && def.doc_type_syntax.is_none()
+    {
+        // An inferred nil initializer is a placeholder, not an explicit nil-only contract.
+        return LuaType::Unknown;
+    }
+    widen_const_type(base_before.clone())
 }
 
 fn coerce_table_assign_to_narrowed(
