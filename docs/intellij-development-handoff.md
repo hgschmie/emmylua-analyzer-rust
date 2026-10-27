@@ -1,3 +1,57 @@
+# Build 207 source — visible call writes and primitive guards (2026-10-26)
+
+Signed tested code `93ec820bee93a71df7920a6e8bb516acbc2eb0f0` has tree `bd00748d3bf191bd0e2575ea90414aa9a680391a`.
+Fresh **3,389 full workspace/all-feature tests** pass with zero failed, ignored
+or filtered tests, including the long linear-assignment stress test. Every one
+of the previous 3,345 names executes, with 44 new UP-124 call-effect groups.
+All 25 protected incoming-upstream test bodies (in 11 files), the original UP-124
+nil-check regression file and all 13 UP-136 tests remain unchanged. All-target/
+all-feature Clippy with warnings denied and rustfmt pass. This following freeze
+changes only documentation/manifests; crates/Cargo stay identical to tested code.
+
+The exact 97-source freeze dc764761 replaces UP-124 be028 with signed549279eb
+and maps its eight validated dependent branches to published replacements.
+All 97 actual origin/local heads, 39 replacement signatures/authors/dates and nine
+old remote archives/durable refs are independently verified. All eight descendant
+own additions/removals remain identical; four aggregate patch IDs change only
+because of adjacent module context. The original11d/c161/acee/2b417 manifests
+remain immutable. No ID, source relationship or original creation date changes.
+
+Only four files change from held206: the visible-write helper and 44-test module,
+registration, and the scoped flow adapter. All 847 compilation inputs equal the
+reviewed v6 composition; all other 948 previously tracked files are retained.
+The adapter preserves UP-122 ordered guard/cast operations, UP-082 cycle checks,
+UP-016 indexed policy, UP-064 completion and unchanged UP-136 fc7 scope filtering.
+Possible same receiver/path writes through visible callees invalidate older
+primitive narrowing; opaque, read-only and other-receiver calls preserve it.
+Conditional receiver/callee rebinding and later guards are covered. No definite
+callee value propagation or blanket call barrier is introduced.
+
+Private source binary3afae58e passes the strict original13 jobs,203 cases/255type
+observations/five navigation and38 complete-response comparisons, plus59length/
+three closure, LTN37/six hovers, eight global-member cases, UP-06413/15 and four
+UP-133 overload cases. Only the separate exact12GUI and two supplemental hover
+responses under Management decisions a91b4f26 and1f26f94e may differ from204.
+The exact called-writer need-check-nil warning remains mandatory. All16,336 old
+inputs are unchanged; no broad nil/optional/unknown normalization or waiver.
+These private-source passes do not replace exact packaged207 acceptance.
+
+Failed private205/sourcea35/ZIP67779fea and206/source00b/ZIP21c06b92 remain
+immutable and unpublished. Accepted204/source1429/ZIP2a4243d3 remains rollback
+until final207 package, original protocol, fresh35 client and FDE-owned native48/
+87unit checks plus one existing opt-in skip pass on current FDE0.9.5. FDE retains
+its version/ZIP for this analyzer-only update. Released LSP16 stays unchanged,
+including its disclosed41 inherited assertions and three original source skips.
+Toolkit1c1db13/CLI419764/API2.1.23 stays unchanged. Only macOS arm64 receives the
+custom analyzer. Archive/source/consumer receipts live in workspace findings;
+no running IDE installation is included.
+
+The new immutable records are `analyzer-refresh-20261026-up124-final97.json`,
+`analyzer-refresh-20261026-up124-composition.json` and
+`analyzer-refresh-20261026-up124-precision.json` in `docs/integration-manifests/`.
+Earlier build sections below retain their historical source-stage claims;
+builds205 and206 ultimately failed package protocol acceptance and are held.
+
 # Build 206 source — declaration and member-flow repairs (2026-10-26)
 
 Signed tested code `bb60528e07892dd9ada965280c68ccb707940687` has tree

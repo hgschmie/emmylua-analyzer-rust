@@ -1,0 +1,25 @@
+{
+  "applied": "2026-10-27T01:17:59.776052+00:00",
+  "state": "PASS exact revised97 reconstruction staged; freshfull/static next",
+  "staged_tree": "bd00748d3bf191bd0e2575ea90414aa9a680391a",
+  "old206_source": "00b73eacd55aebd4bb8679e51adbd2ee5365bccb",
+  "new124_source": "549279ebf61b48e81f9e183aef49b5efc2936621",
+  "source_manifest_sha256": "dc764761c0d36e86f5c665b9d2b46e0e3b9b61cc08ac196db5f4d63dbf4c644d",
+  "amendment_delta_sha256": "a3a5d09506154439b39d77aca4835d9587c1f96651760acf6f37696416773ec4",
+  "composition_adapter_patch_sha256": "0fceac7d5995c1d2d13bf63b8b94c76e8b73ffa9c5d4268ce402fdcfae44643a",
+  "changed_files": [
+    "crates/emmylua_code_analysis/src/semantic_model/flow.rs",
+    "crates/emmylua_code_analysis/src/semantic_model/flow/member_call_effects.rs",
+    "crates/emmylua_code_analysis/src/semantic_model/infer/legacy_tests/mod.rs",
+    "crates/emmylua_code_analysis/src/semantic_model/infer/legacy_tests/primitive_guard_call_effects.rs"
+  ],
+  "old_tracked_files_compared": 948,
+  "all_other_tracked_files_byte_identical_to206": true,
+  "reviewed_composition_compilation_files_matched": 847,
+  "source_helper_and44_tests_exact549": true,
+  "all_original_module_registration_bytes_retained": true,
+  "dependent39_mapping": "New549 replaces oldbe028; the38 rebased dependent own changes independently match prior added/removed lines, retain already integrated implementations and original adapters without duplicate replay. Exact old/new39 mappings in frozen source manifest.",
+  "conflict_resolution": "PathState operations, UP082 cycle checks and UP122 ordered guard/cast operations preserved; add primitive_unstable reset/clone/cache bypass and visible-conflict filters only, exactly reviewed private v6 composition. Preserve all module registrations and append only new test module.",
+  "UP016_and_UP136": "unchanged byte-for-byte outside scoped flow additions; source policies unchanged",
+  "accepted_work": "1429 retained; no promotion or package yet"
+}

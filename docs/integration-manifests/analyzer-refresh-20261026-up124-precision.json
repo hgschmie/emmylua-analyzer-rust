@@ -1,0 +1,112 @@
+{
+  "approved_at": "2026-10-27T00:37:15.862894+00:00",
+  "owner": "Management / 01a0f523-8f46-7343-a1ec-30ab22f37678",
+  "decision": "Approve ONLY these two complete supplemental hover responses as safe declared-contract views; not source readiness or release clearance.",
+  "precision_artifact_sha256": "8c266d9acdaa3182d85248b042b4ac213e5bb4c74714818e4ec743dcc4db9ad6",
+  "source_sha256": "1921e0ada98fb4fc1e4dd85d19f17f79e2761b290a7cf8eb2bd117aaf116469a",
+  "source_file": "/Users/henning/ai/fmtk/upstream/emmylua-analyzer-rust/build/investigations/five-finding-acceptance-20261023/supplemental/gui_called_nil_writer.lua",
+  "reviewed_draft_binary": "abf5b5bb0ca16c84de53436d62e308febfbf157e941ccb616a353fb3c7570291",
+  "exact_changes": [
+    {
+      "job": "five-finding-acceptance-20261023/supplemental",
+      "path": "/gui_called_nil_writer.lua/hovers",
+      "query_key": "10:handler:18",
+      "before": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\n(field) handler: nil\n```"
+        },
+        "range": {
+          "end": {
+            "character": 24,
+            "line": 9
+          },
+          "start": {
+            "character": 17,
+            "line": 9
+          }
+        }
+      },
+      "after": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\n(field) handler: AcceptanceCallHandler?\n```"
+        },
+        "range": {
+          "end": {
+            "character": 24,
+            "line": 9
+          },
+          "start": {
+            "character": 17,
+            "line": 9
+          }
+        }
+      }
+    },
+    {
+      "job": "five-finding-acceptance-20261023/supplemental",
+      "path": "/gui_called_nil_writer.lua/hovers",
+      "query_key": "12:handler:21",
+      "before": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\n(field) handler: nil\n```"
+        },
+        "range": {
+          "end": {
+            "character": 27,
+            "line": 11
+          },
+          "start": {
+            "character": 20,
+            "line": 11
+          }
+        }
+      },
+      "after": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```lua\n(field) handler: AcceptanceCallHandler?\n```"
+        },
+        "range": {
+          "end": {
+            "character": 27,
+            "line": 11
+          },
+          "start": {
+            "character": 20,
+            "line": 11
+          }
+        }
+      }
+    }
+  ],
+  "basis": {
+    "10:handler:18": "Before the call, defining clear() has not executed its write. The annotated field is AcceptanceCallHandler?; prior Nil contamination was unsound.",
+    "12:handler:21": "The visible conflicting call invalidates the table/nonnil narrowing. Restoring the declared optional contract is a safe approximation; no definite callee-value inference is claimed."
+  },
+  "mandatory_warning": {
+    "code": "need-check-nil",
+    "message": "elem.handler may be nil",
+    "severity": 2,
+    "range": {
+      "start": {
+        "line": 11,
+        "character": 15
+      },
+      "end": {
+        "line": 11,
+        "character": 27
+      }
+    }
+  },
+  "conditions": [
+    "Final receiver/callable alias and binding fixes plus independent source review required; v4 concerns are not waived.",
+    "Final source/binary binding and exact207 full replay must reproduce both complete contents and unchanged ranges, with the mandatory warning above.",
+    "All other original diagnostics/navigation/observations remain exact except the separately approved twelve specific GUI query results and pre-existing two Boolean display equivalences.",
+    "No original source/expected snapshot rewrite, blanket nil/optional/unknown normalization, or diagnostic exemption.",
+    "All source/descendant/combined/static/package/client/native207 gates remain required."
+  ],
+  "scope": "Only frozen supplemental/gui_called_nil_writer.lua at the two query keys; no general claim that Nil equals Handler?."
+}
