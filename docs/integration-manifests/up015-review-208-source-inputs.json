@@ -1,0 +1,842 @@
+{
+  "schema": 1,
+  "frozen": "2026-10-27T04:22:32.925106+00:00",
+  "state": "Exact208 inputs frozen; combined/package/native validation separate",
+  "accepted207": "ce1164dde2450d2d6ab778da086244e6e859a8d3",
+  "source_base": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+  "prior97_manifest_sha256": "dc764761c0d36e86f5c665b9d2b46e0e3b9b61cc08ac196db5f4d63dbf4c644d",
+  "source_count": 97,
+  "all97actualorigin_and_local_heads_verified": true,
+  "only_source_head_change": "UP-015 ea46e7c8 ->7704989b; append-only delta",
+  "integration_delta": [
+    "7704989bcdaf0823094f25c6126b18d2d6f65ee5"
+  ],
+  "sources": [
+    {
+      "id": "UP-010",
+      "branch": "fix/local-table-metatable-association",
+      "head": "441add364b9105bbc13647a6e216f937c9a44b99",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-011",
+      "branch": "fix/key-aware-index-metamethods",
+      "head": "2b257d7cb326f4b568f505acf85384da887c2560",
+      "source_prerequisite": "441add364b9105bbc13647a6e216f937c9a44b99",
+      "source_dependencies": [
+        "UP-010"
+      ],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-012",
+      "branch": "fix/index-metamethod-definition",
+      "head": "934def3b027355da45c3e40fe2278916dad9d1a1",
+      "source_prerequisite": "2b257d7cb326f4b568f505acf85384da887c2560",
+      "source_dependencies": [
+        "UP-011"
+      ],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-013",
+      "branch": "fix/index-metamethod-presentation",
+      "head": "2f062cbe4333e1b592e05f0d248608190dcfbb45",
+      "source_prerequisite": "934def3b027355da45c3e40fe2278916dad9d1a1",
+      "source_dependencies": [
+        "UP-012"
+      ],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-015",
+      "branch": "fix/asymmetric-field-types",
+      "head": "7704989bcdaf0823094f25c6126b18d2d6f65ee5",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "Original two commits retained plus appended signed PR1345 review amendment; exactdelta770 aboveaccepted207."
+    },
+    {
+      "id": "UP-016",
+      "branch": "fix/nullable-table-index",
+      "head": "08ab1c5b745db6a0c37381f6456a5a98edde983a",
+      "source_prerequisite": "549279ebf61b48e81f9e183aef49b5efc2936621",
+      "source_dependencies": [
+        "UP-124"
+      ],
+      "provenance": "UP124 visible-write amendment and validated dependent replay; old immutable freezes and published archives retained"
+    },
+    {
+      "id": "UP-017",
+      "branch": "fix/optional-dictionary-keys",
+      "head": "65d9e5dcb916b8041f619a68ee6268b4ff322e78",
+      "source_prerequisite": "08ab1c5b745db6a0c37381f6456a5a98edde983a",
+      "source_dependencies": [
+        "UP-016"
+      ],
+      "provenance": "UP124 visible-write amendment and validated dependent replay; old immutable freezes and published archives retained"
+    },
+    {
+      "id": "UP-018",
+      "branch": "fix/duplicate-field-index-calls",
+      "head": "15f7f1b4e81124d0263998d204c78ffc127f15e0",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-023",
+      "branch": "fix/flow-aware-union-member-arguments",
+      "head": "5629649b9f1dd54e0f2e208e20519ab0b790548d",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-029",
+      "branch": "fix/computed-index-assignment-flow",
+      "head": "392bc4c7092d82d0bf86825b18a9c572863e6d9c",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-030",
+      "branch": "fix/unbound-table-field-diagnostics",
+      "head": "fae2db7a4a16a6f403537623c36d43dc313c85e3",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-031",
+      "branch": "fix/nominal-enum-member-compatibility",
+      "head": "fea44ab8e31c606fc59c87ffd08f89e596120574",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-032",
+      "branch": "fix/callback-return-type",
+      "head": "f283a85ba0250efdf519d003ef58b0d24065525b",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-033",
+      "branch": "fix/computed-index-guards",
+      "head": "ba78995ca6982555324fd05e5aa5f2c457a311ae",
+      "source_prerequisite": "549279ebf61b48e81f9e183aef49b5efc2936621",
+      "source_dependencies": [
+        "UP-124"
+      ],
+      "provenance": "UP124 visible-write amendment and validated dependent replay; old immutable freezes and published archives retained"
+    },
+    {
+      "id": "UP-034",
+      "branch": "fix/aliased-member-discriminants",
+      "head": "541830262d51c2993983e59147fa1c457de572e3",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-035",
+      "branch": "fix/union-table-constructor-checks",
+      "head": "a816c633411a5beedff7a52c449a17cf053c4d31",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-036",
+      "branch": "fix/builtin-length-result",
+      "head": "124f8a841df4589db9399589bd6e6ca9618f6a36",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-037",
+      "branch": "fix/class-index-array-compatibility",
+      "head": "603ebdc9a62564e63be2522b2c9e236e0a76e56f",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-038",
+      "branch": "fix/inline-assertion-arguments",
+      "head": "90cf9677f0783786d7553d003dd27ab9b380b002",
+      "source_prerequisite": "603ebdc9a62564e63be2522b2c9e236e0a76e56f",
+      "source_dependencies": [
+        "UP-037"
+      ],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-039",
+      "branch": "fix/aliased-call-arguments",
+      "head": "6bab718e24c2ae9915f69893a4bd10a762522381",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-040",
+      "branch": "fix/numeric-alias-arithmetic",
+      "head": "cabeaf215eaa170b23ff344f4d608166d5ce3f14",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-042",
+      "branch": "fix/aliased-dynamic-member-keys",
+      "head": "acc3048fbc39296f12928e43aa2894cfd5680d8e",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-045",
+      "branch": "fix/workspace-diagnostic-scheduling",
+      "head": "14de0340c5f04d2670a37e7370631eb63b577214",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-048",
+      "branch": "fix/mixed-config-key-merging",
+      "head": "71c96780edda878e4c4119130549a64cb1c69c2b",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-049",
+      "branch": "fix/bare-table-member-inference",
+      "head": "90328f5cf4505e9d0156ac273344221dacb1773b",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-051",
+      "branch": "fix/callable-class-overloads",
+      "head": "a389b54bb57ed155acc9398fb6f98a6e4711745a",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-052",
+      "branch": "fix/constructor-call-argument-alignment",
+      "head": "591369cb255a5616baa3c70c8b1f14ed7b3459d6",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-053",
+      "branch": "fix/doc-type-completion",
+      "head": "d133490f187a970fb705a512cd93fe5e71f498d9",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-054",
+      "branch": "fix/request-update-ordering",
+      "head": "460c90c7567b6363d4951c040fd2ae42ff965873",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-057",
+      "branch": "fix/class-member-value-identity",
+      "head": "0082e3cb08cb4cd5d52762eb3e969318a05d1236",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-058",
+      "branch": "fix/enum-cast-compatibility",
+      "head": "e69e6202c1b6f0432a42fce734e7089e726867da",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-059",
+      "branch": "fix/inherited-dictionary-index",
+      "head": "7ed97a05ba158e594fef419acd0c25b1f7218b1a",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-060",
+      "branch": "fix/stable-global-index-guards",
+      "head": "4dda02cc4540d5e7705f3d71fb990380ab36d977",
+      "source_prerequisite": "ba78995ca6982555324fd05e5aa5f2c457a311ae",
+      "source_dependencies": [
+        "UP-033",
+        "UP-059"
+      ],
+      "provenance": "UP124 visible-write amendment and validated dependent replay; old immutable freezes and published archives retained"
+    },
+    {
+      "id": "UP-061",
+      "branch": "fix/loop-carried-literal-types",
+      "head": "f8f897026bd7ca415036170ec024d44bb3e85b83",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-062",
+      "branch": "fix/enum-literal-compatibility",
+      "head": "b6e4a6853a90aa1ab9e27431bdf9b035d6e133a1",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-063",
+      "branch": "fix/declared-field-hover",
+      "head": "189e915a42075bfb38dd5ca8617b285dea57dc85",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-064",
+      "branch": "fix/member-self-assignment-types",
+      "head": "dd9fec500819f91527c8bab823de4749f2b833f6",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-065",
+      "branch": "fix/unknown-logical-and",
+      "head": "9eab2fafb14924a1dc59f46de2c6eb7b58676201",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-066",
+      "branch": "fix/dependent-generic-call-constraints",
+      "head": "f86b7378b7e9d3f6990c2ab132f5e771dae993a5",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-071",
+      "branch": "fix/stable-index-assignment-flow",
+      "head": "95ca751f1666bacc72dcc9d2fc3a7ed8eaab311a",
+      "source_prerequisite": "4dda02cc4540d5e7705f3d71fb990380ab36d977",
+      "source_dependencies": [
+        "UP-029",
+        "UP-060"
+      ],
+      "provenance": "UP124 visible-write amendment and validated dependent replay; old immutable freezes and published archives retained"
+    },
+    {
+      "id": "UP-072",
+      "branch": "fix/computed-class-field-guards",
+      "head": "53fb74effd65387fe73fea60cc84bf4eb9c184f1",
+      "source_prerequisite": "4dda02cc4540d5e7705f3d71fb990380ab36d977",
+      "source_dependencies": [
+        "UP-060"
+      ],
+      "provenance": "UP124 visible-write amendment and validated dependent replay; old immutable freezes and published archives retained"
+    },
+    {
+      "id": "UP-073",
+      "branch": "fix/optional-field-condition-diagnostics",
+      "head": "f407b9b127a23668dfd0f56967d47f54d2965da2",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-074",
+      "branch": "fix/loop-exit-assignment-flow",
+      "head": "345032a0009036f6bdee76f3ac0303870954e651",
+      "source_prerequisite": "bf533b397603da1f22de204355505746f4d46150",
+      "source_dependencies": [
+        "UP-094"
+      ],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-075",
+      "branch": "fix/string-alias-index-keys",
+      "head": "35ed492996afdaf7dda65778c64450461fb289a0",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-076",
+      "branch": "fix/inferred-literal-assignment-contracts",
+      "head": "786dcc74b7fac93c244c9bbfe652aad25c13e770",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-078",
+      "branch": "fix/computed-guard-effect-boundaries",
+      "head": "ef855f67c86fcc41ea4ee8986749182e01fb8d25",
+      "source_prerequisite": "95ca751f1666bacc72dcc9d2fc3a7ed8eaab311a",
+      "source_dependencies": [
+        "UP-071",
+        "UP-072",
+        "UP-061"
+      ],
+      "provenance": "UP124 visible-write amendment and validated dependent replay; old immutable freezes and published archives retained"
+    },
+    {
+      "id": "UP-080",
+      "branch": "fix/member-use-site-hover",
+      "head": "018b777ae1994794b7c357d2f405aefbe1c3d0e9",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-081",
+      "branch": "fix/iterator-entry-guards",
+      "head": "f2a44672e7fe0b32e9566df5ff2cff73fa98eb26",
+      "source_prerequisite": "ef855f67c86fcc41ea4ee8986749182e01fb8d25",
+      "source_dependencies": [
+        "UP-078"
+      ],
+      "provenance": "UP124 visible-write amendment and validated dependent replay; old immutable freezes and published archives retained"
+    },
+    {
+      "id": "UP-082",
+      "branch": "fix/member-flow-trace-memoization",
+      "head": "99e450187845e24882a8c1efced3df4299dca0cb",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-083",
+      "branch": "fix/nested-member-field-contracts",
+      "head": "b508d1df4e237bf4e59ac08dd7049cc9065b874c",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-084",
+      "branch": "fix/flow-receiver-hover",
+      "head": "40d8fe271cf0f84354890ee1b7b73f82ba5ca0e5",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-085",
+      "branch": "fix/explicit-method-hover",
+      "head": "e2d0e97c3027d606369671a760cfd007c71aefd7",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-087",
+      "branch": "fix/optional-class-hover-fields",
+      "head": "3dc53765d7b98afa7e6c530943c7a699a500eef3",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-088",
+      "branch": "fix/contextual-callback-parameters",
+      "head": "67f7a93001401c34a0b2632bdc2c0b50c48a4755",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-089",
+      "branch": "fix/table-field-hover-context",
+      "head": "8ee1d7ba9408a908b70f6cf1b85712ca559720ff",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-090",
+      "branch": "fix/negative-literal-hover",
+      "head": "d796e070143950688089aa25341c2dfba70dfd6d",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-091",
+      "branch": "fix/ipairs-array-inference",
+      "head": "05c0d25a0b8d751d7992098e3ef1affeefeb8059",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-092",
+      "branch": "fix/call-site-collection-generics",
+      "head": "e4acb797610338e0063cca8b40dff68a4c52f6c7",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-093",
+      "branch": "fix/std-resource-cache-fingerprint",
+      "head": "0134d27d2277698c7b78de64a37a0301b58db7da",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-094",
+      "branch": "fix/path-aware-declaration-trace-cache",
+      "head": "bf533b397603da1f22de204355505746f4d46150",
+      "source_prerequisite": "faef00decc9285a5965b648fdadabc5780c4f655",
+      "source_dependencies": [
+        "UP-122"
+      ],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-095",
+      "branch": "fix/equality-narrowing-nullability",
+      "head": "cb523eb1a2fa94b6e97d9540cb9e21ae0e92a7d6",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-096",
+      "branch": "fix/union-table-field-completion",
+      "head": "85ac8a7448249c343c5d14c6293e89ab628aed3b",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-097",
+      "branch": "fix/union-iterator-inference",
+      "head": "c46b8bd3fb932493520b0fb0ba2d91c5a34b961a",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-099",
+      "branch": "fix/member-prefix-completion",
+      "head": "c46958ddd7d60e6b647d5cec3df54e3763009a46",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-101",
+      "branch": "fix/table-literal-call-matching",
+      "head": "d64ec845e7109053bc71818e7ab10517d091e3a8",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-102",
+      "branch": "fix/iterator-non-nil-values",
+      "head": "7eec378bdf426ad8dee60dd302e5a803fda90823",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-103",
+      "branch": "fix/cast-guarded-member-path",
+      "head": "569991d1e796377dd89cc184c4fbc3a654f64fb8",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-105",
+      "branch": "fix/rawget-broad-index-types",
+      "head": "e9d79b905b5caef2ee8c6234dd999d3f45cf19de",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-106",
+      "branch": "fix/truthy-short-circuit-flow",
+      "head": "c43ac69792c935951722d01bea1f178db2f4e161",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-107",
+      "branch": "fix/member-navigation-identity",
+      "head": "700c03f59810bbdc32d2f0284823e1eb47c38bd0",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-108",
+      "branch": "feat/unused-self-diagnostic",
+      "head": "1294aff87cb360132adb19b356b5ac09a2c7e678",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-109",
+      "branch": "fix/annotated-runtime-member-types",
+      "head": "2ce6c3f944e0ceaa68f0f9478e4d988f17f93a92",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-110",
+      "branch": "fix/typed-module-export-fields",
+      "head": "dd52d34b0e57ed00339626f161715f1ca5bd8302",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-111",
+      "branch": "fix/annotated-module-export-types",
+      "head": "1eba25465133aebc645967141f5e6622f9b2d2f7",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-112",
+      "branch": "fix/mutable-captured-variable-flow",
+      "head": "310e101f1df9161865c6a6ccd18de49fe80b40d3",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-113",
+      "branch": "fix/nullable-constructor-fields",
+      "head": "8fea9fc895aeed21a7e13f144633e26f634a2603",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-114",
+      "branch": "fix/inherited-dictionary-compatibility",
+      "head": "1f3abc68fa594c61ce778a49119f872d1d852ca4",
+      "source_prerequisite": "7ed97a05ba158e594fef419acd0c25b1f7218b1a",
+      "source_dependencies": [
+        "UP-059"
+      ],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-116",
+      "branch": "fix/cancellable-diagnostics",
+      "head": "1e6aac8f377daac6f7ade94c5b551bfdc0614619",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-117",
+      "branch": "fix/enum-index-diagnostics",
+      "head": "7a27f645084590e247b9c39448050981d56d56a6",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-118",
+      "branch": "fix/reload-closed-documents",
+      "head": "6812f93ceaf9fc487dbb074528c3130af73206db",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-119",
+      "branch": "fix/cyclic-generic-inheritance",
+      "head": "eb02f783bbfed9693060aeb15c0f80d007cd170a",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-120",
+      "branch": "fix/async-native-file-watcher",
+      "head": "9ca8bb1bcac93d8f189610f17ce507785fbfaf33",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-121",
+      "branch": "fix/flow-aware-inferred-signature-returns",
+      "head": "1f500d2f06b5cdcc1ea0c89314c03e8be32d018b",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-122",
+      "branch": "fix/ordered-cast-guard-flow",
+      "head": "faef00decc9285a5965b648fdadabc5780c4f655",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-123",
+      "branch": "fix/nullable-union-member-projection",
+      "head": "062faa048bf7c8b9cbc03dba02477b04086ff228",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-124",
+      "branch": "fix/member-primitive-type-guards",
+      "head": "549279ebf61b48e81f9e183aef49b5efc2936621",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "UP124 visible-write amendment and validated dependent replay; old immutable freezes and published archives retained"
+    },
+    {
+      "id": "UP-125",
+      "branch": "fix/copied-member-alias-hover-types",
+      "head": "2aea4e8a6f5a5ffae6ee5adc7e3570bf99461c05",
+      "source_prerequisite": "062faa048bf7c8b9cbc03dba02477b04086ff228",
+      "source_dependencies": [
+        "UP-123"
+      ],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-126",
+      "branch": "fix/inferred-computed-table-writes",
+      "head": "c48ecca2818cc7f82dfb0f72eddf15b6418d6ec7",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-127",
+      "branch": "fix/broad-function-unknown-arguments",
+      "head": "7b0e0c59f473dadae249c3fc2e473cdb41af8d17",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-128",
+      "branch": "fix/copied-member-call-signatures",
+      "head": "5795a2c8335a98d854c6c2e4330e2983ccdded6f",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-130",
+      "branch": "fix/falsy-member-receiver-flow",
+      "head": "ed86aedcf03262e8139496cd697df69d367add51",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-131",
+      "branch": "fix/integer-enum-arithmetic",
+      "head": "e5dd7e9abdd4c766e64bbf0c0d7a8d61af04082e",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-132",
+      "branch": "fix/generic-assignment-identity",
+      "head": "7bee24d9643ac6271348cab4db7ea070cdb3d21b",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "provenance": "original immutable11d93-source freeze"
+    },
+    {
+      "id": "UP-133",
+      "branch": "fix/local-documented-call-overloads",
+      "head": "f8bdea85cb3e616ed4905aa857b8628f022f7199",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "consumer_dependencies": [],
+      "publication_receipt": "memory/findings/F-20261026-142806-local-documented-overloads/upstream-publication.json",
+      "publication_receipt_sha256": "c0715223466e9723e73841c46217b713609fb35f7fe9e1cbe926d8471e7d9d55"
+    },
+    {
+      "id": "UP-134",
+      "branch": "fix/declaration-result-slots",
+      "head": "49311e95ecf2decf0d54134ba6b802b08852dbe5",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "consumer_dependencies": [
+        "UP-135"
+      ],
+      "publication_receipt": "memory/findings/F-20261026-152630-declaration-result-slots/upstream-publication.json",
+      "publication_receipt_sha256": "dd402009d1f0ff52e900681da17211e88e86b5eb23009a7939ed79019f6a5c32"
+    },
+    {
+      "id": "UP-135",
+      "branch": "fix/unknown-assignment-flow",
+      "head": "4e5e49e06d7fba6fc60388d57dee4c0eeddd762d",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "consumer_dependencies": [],
+      "publication_receipt": "memory/findings/F-20261026-154547-unknown-assignment-flow/upstream-publication.json",
+      "publication_receipt_sha256": "9426eb385949274306003f75224e96ac0a00aac45c297221efb7a0d7262fe998"
+    },
+    {
+      "id": "UP-136",
+      "branch": "fix/runtime-member-closure-scope",
+      "head": "fc7fb521563032445a985bb7e8f1aa7e28bc9f54",
+      "source_prerequisite": "a90273fc4d73dd6a37fcadfbef1de951a963a402",
+      "source_dependencies": [],
+      "consumer_dependencies": [],
+      "publication_receipt": "memory/findings/F-20261026-153106-global-member-closure-contamination/upstream-publication.json",
+      "publication_receipt_sha256": "98c098deaa72170e541d49d344fd3f905a35f4fda565adb0c4e5f35460d7867b"
+    }
+  ],
+  "source_dependencies_unchanged": true,
+  "LSP16_and_Toolkit": "Retained; no source/base refresh",
+  "accepted207_manifest_and_all75archives": "Preserved; new208 onlyaftervalidation",
+  "user_authorization": "2026-10-26 update worktree and rebuild plugins; analyzer-only build208, FDEpin/native ownerhandoff"
+}

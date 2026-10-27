@@ -1,0 +1,38 @@
+{
+  "timestamp": "2026-10-27T04:21:48.247501+00:00",
+  "task": "01a16502-8806-7a51-970a-3eb236271751",
+  "role": "Fixes",
+  "mode": "read-only source composition review; no builds/tests/Git mutations",
+  "result": "No semantic discrepancy found in the mechanical adapter",
+  "accepted207": "ce1164dde2450d2d6ab778da086244e6e859a8d3",
+  "source_amendment": "7704989bcdaf0823094f25c6126b18d2d6f65ee5",
+  "source_parent": "ea46e7c809eec52856a6ba35995471ba325c3a76",
+  "worktree": "/Users/henning/ai/fmtk/upstream/emmylua-analyzer-rust/build/checkouts/up015-integration-208",
+  "checks": {
+    "crates/emmylua_code_analysis/src/semantic_model/infer/legacy_tests/asymmetric_fields.rs": {
+      "accepted207_prefix_exact": true,
+      "new_source_suffix_exact": true,
+      "accepted_prefix_sha256": "3ab2ac00ed25a31b7bc4ca9a5c69804d7bce8e0969c379088e0d1edd02cee031"
+    },
+    "crates/emmylua_ls/src/handlers/test/asymmetric_fields_test.rs": {
+      "accepted207_prefix_exact": true,
+      "new_source_suffix_exact": true,
+      "accepted_prefix_sha256": "132c5c8ddb99e0a45e2ab6a5fe9f3812bdfaea86a71d07191fb8fe9b832220d7"
+    },
+    "crates/emmylua_ls/src/handlers/hover/directional.rs": "exact published770 file",
+    "crates/emmylua_ls/src/handlers/hover/desc.rs": "accepted207 plus exact published770 helper",
+    "crates/emmylua_code_analysis/src/semantic_model/signature.rs": "accepted207 plus exact published770 callback-query change",
+    "crates/emmylua_code_analysis/src/semantic_model/directional.rs": "exact770 plus accepted207 per-writer projection and entire directional_index body"
+  },
+  "staged_changed_files_exact_six": true,
+  "reviewed_bytes_stable_and_equal_index": true,
+  "file_sha256": {
+    "crates/emmylua_code_analysis/src/semantic_model/directional.rs": "dde17bd7902696da68a6abcab2e413bcb62dcb80cb4d5fee03f150c6c05dbce2",
+    "crates/emmylua_code_analysis/src/semantic_model/infer/legacy_tests/asymmetric_fields.rs": "39a3e7e05fd41c6835706a31953cfd3fdbfdc7a92a8983dec1db8da14c8a6930",
+    "crates/emmylua_code_analysis/src/semantic_model/signature.rs": "e98de2f7dae97f9cbb149c229fac5e6b1b9195f86943b73e374eacc1ca747304",
+    "crates/emmylua_ls/src/handlers/hover/desc.rs": "0373f8f23d5c8099d1bb12316eb5252058cdb9d510c0150ff706bca308447e1b",
+    "crates/emmylua_ls/src/handlers/hover/directional.rs": "a37d784da68bb6d81c73c66748c56f439d90af17019ef3032a2de868b7370515",
+    "crates/emmylua_ls/src/handlers/test/asymmetric_fields_test.rs": "cee26d69dac688fa693601ba6fac5c9de0550d5204da00af3eeda0909c64f033"
+  },
+  "limits": "This is source review, not combined test/protocol/package/native acceptance. Integration and Investigations retain those gates. Bind these hashes to the final tested/signed tree; re-review if source changes."
+}

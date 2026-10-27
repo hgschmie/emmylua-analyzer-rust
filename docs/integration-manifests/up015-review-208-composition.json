@@ -1,0 +1,35 @@
+{
+  "applied": "2026-10-27T04:19:09.742370+00:00",
+  "state": "staged exact770 delta with retained existing integration adaptations; fresh validation next",
+  "accepted207": "ce1164dde2450d2d6ab778da086244e6e859a8d3",
+  "source_delta": "7704989bcdaf0823094f25c6126b18d2d6f65ee5",
+  "tree": "34219b6a4ad58d4600fd3a86bb0075b011fb0720",
+  "changed_files": [
+    "crates/emmylua_code_analysis/src/semantic_model/directional.rs",
+    "crates/emmylua_code_analysis/src/semantic_model/infer/legacy_tests/asymmetric_fields.rs",
+    "crates/emmylua_code_analysis/src/semantic_model/signature.rs",
+    "crates/emmylua_ls/src/handlers/hover/desc.rs",
+    "crates/emmylua_ls/src/handlers/hover/directional.rs",
+    "crates/emmylua_ls/src/handlers/test/asymmetric_fields_test.rs"
+  ],
+  "test_prefixes_preserved": {
+    "crates/emmylua_code_analysis/src/semantic_model/infer/legacy_tests/asymmetric_fields.rs": "3ab2ac00ed25a31b7bc4ca9a5c69804d7bce8e0969c379088e0d1edd02cee031",
+    "crates/emmylua_ls/src/handlers/test/asymmetric_fields_test.rs": "132c5c8ddb99e0a45e2ab6a5fe9f3812bdfaea86a71d07191fb8fe9b832220d7"
+  },
+  "new_tests": [
+    "asymmetric_fields_review_repeated_direction_flags",
+    "asymmetric_fields_review_nullable_contracts",
+    "asymmetric_fields_review_branch_guard_merge",
+    "asymmetric_fields_review_repeated_callback_writer_context",
+    "asymmetric_fields_review_repeated_callback_writer_generics",
+    "asymmetric_fields_review_hover_paragraphs",
+    "asymmetric_fields_review_hover_comment_without_space",
+    "asymmetric_fields_review_hover_does_not_borrow_another_field_description",
+    "asymmetric_fields_review_hover_unicode_inline_and_prefix",
+    "asymmetric_fields_review_assignment_completion_controls"
+  ],
+  "composition": "Retain per-writer value_syntax/doc_type_lua_rich_in fallback and existing directional_index flow/decl fallback; source all-writer collection/callback API intact. Append source test additions after complete existing work tests.",
+  "initial_check_correction": "Oldwork analysis tests include earlier import/compatibility changes; wholefile need not begin with standalone source. Sourceold\u2192new prefix7353 exact, and all existing workfile bytes retained as prefix.",
+  "all_other_tracked_regular_files_exact207": true,
+  "tracked_regular_files_compared": 953
+}

@@ -1,3 +1,42 @@
+# Build 208 source — UP-015 callback and hover review repairs (2026-10-26)
+
+Signed tested code `544a45f86f28361ca45396881714a14cc3e21af7` / tree `34219b6a4ad58d4600fd3a86bb0075b011fb0720`
+passes **3,399 full workspace/all-feature tests**, zero failed, ignored or filtered.
+All3,389 accepted207 names execute plus10new callback/hover controls; both old
+work testfiles remain complete byte prefixes, including dictionary integration
+coverage. Full all-target/all-feature Clippy with warnings denied and fmt pass.
+No generated resources changed. The following freeze adds only documentation/
+manifests; crates/Cargo remain identical to tested code.
+
+Accepted207 ce1164dd is the base. Exact appended signed source7704989b follows
+original UP015 a6e39a06/ea46e7c8 on a90273fc. All97 actual source heads are frozen;
+only UP015 changes, with no source prerequisites or known source dependents.
+Toolkit014 annotations stay unchanged. Original97 manifestdc764761, source history,
+dates and all75 published ZIPs remain preserved. No unrelated upstream refresh.
+
+All setter candidates now reach existing contextual callback selection, preserving
+ordinary first-writer behavior for regular member queries and generic substitution.
+The work adapter retains rich documented dictionary types per writer and the old
+flow/declaration index fallback. Fixes independently cleared the six-file composition.
+Hover uses parser-attached field prose, preserving paragraph separators/no-space
+comments without borrowing another field's inline documentation. Exact focused
+source regressions and boundary controls remain; their type checks do not imply
+zero diagnostics for every new protocol fixture.
+
+Package208 must pass original strict203/255/5 and38fullsets,59length/3closure,
+LTN37/6, eightglobal cases, GUI/UP064/UP133 supplements under only exact separate
+12GUI+2supplemental approvals, with mandatory nil warning unchanged. New UP015
+callback/generic and paragraph/no-space/boundary/Unicode/completion protocol cases
+must confirm the amended behavior. Fresh35exactclient and FDE-owned current095
+48native/87unit+one existing opt-in skip must bind the same immutable archive.
+
+Only macOS arm64 server is custom. LSP16, toolkit1c1db13/CLI419764/API2.1.23 and
+FDE095 version/ZIP stay; analyzer-only dependency integration updates its pin and
+owner acceptance evidence. Accepted207 ZIP00762d43/sourcece116 remains rollback
+until208 final gates. Failed205/206 and old archives remain immutable. No IDE
+installation is included. Current artifact/consumer outcomes live in workspace
+memory/findings/F-20261026-211533-up015-analyzer208/.
+
 # Build 207 source — visible call writes and primitive guards (2026-10-26)
 
 Signed tested code `93ec820bee93a71df7920a6e8bb516acbc2eb0f0` has tree `bd00748d3bf191bd0e2575ea90414aa9a680391a`.
