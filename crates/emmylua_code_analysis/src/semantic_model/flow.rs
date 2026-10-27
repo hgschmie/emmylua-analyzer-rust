@@ -21,6 +21,7 @@ mod loop_carried;
 use loop_carried::loop_carried_type;
 mod array;
 mod guards;
+mod member_call_effects;
 
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -2090,6 +2091,8 @@ enum PathOp {
 pub(crate) struct PathState {
     /// Operations in reverse execution order, as visited while backtracking.
     operations: Vec<PathOp>,
+    /// A visible conflicting call write prevents reuse of older primitive member guards.
+    primitive_unstable: bool,
 }
 
 impl PathState {
@@ -2348,6 +2351,7 @@ fn trace_decl_uncached(
                                 .and_then(|at| at.reference.as_ref())
                                 .is_some();
                             let assign_path = PathState {
+                                primitive_unstable: false,
                                 operations: path
                                     .operations
                                     .iter()
@@ -2617,7 +2621,7 @@ fn trace_member(
     path: &mut PathState,
 ) -> Option<LuaType> {
     // A loop summary can be acyclic; real back edges must retain the visited walk.
-    if tree.is_cycle_reachable(flow_id) || !path.operations.is_empty() {
+    if tree.is_cycle_reachable(flow_id) || path.primitive_unstable || !path.operations.is_empty() {
         return trace_member_uncached(model, member, access, tree, flow_id, visited, path);
     }
     let key = cache::TraceStateKey {
@@ -2658,6 +2662,13 @@ fn trace_member_uncached(
     visited: &mut HashSet<FlowId>,
     path: &mut PathState,
 ) -> Option<LuaType> {
+    let before = access.map_or(TextSize::from(u32::MAX), LuaAstNode::get_position);
+    if let Some(access) = access
+        && let Some(statement) = access.ancestors::<emmylua_parser::LuaStat>().next()
+    {
+        path.primitive_unstable |=
+            member_call_effects::calls_conflict(model, access, statement.syntax(), before);
+    }
     let mut current = flow_id;
     loop {
         #[cfg(test)]
@@ -2666,6 +2677,8 @@ fn trace_member_uncached(
             return None;
         }
         let node = tree.get_flow_node(current)?;
+        path.primitive_unstable |=
+            primitive_member_flow_conflicts(model, tree, current, access, before);
         match &node.kind {
             FlowNodeKind::Assignment(_) => {
                 for effect in tree.get_flow_effects(current) {
@@ -2694,6 +2707,7 @@ fn trace_member_uncached(
                         }
                         // Member assignment overrides earlier guard narrowing; cast widening is retained.
                         let assign_path = PathState {
+                            primitive_unstable: false,
                             operations: path
                                 .operations
                                 .iter()
@@ -2727,6 +2741,8 @@ fn trace_member_uncached(
             FlowNodeKind::TrueCondition(cond_ptr) => {
                 if let Some(narrowing) =
                     narrow_member_condition(model, member, access, cond_ptr, true)
+                    && (!path.primitive_unstable
+                        || !matches!(narrowing, Narrowing::FilterPrimitive { .. }))
                 {
                     path.operations.push(PathOp::Guard(narrowing));
                 }
@@ -2734,6 +2750,8 @@ fn trace_member_uncached(
             FlowNodeKind::FalseCondition(cond_ptr) => {
                 if let Some(narrowing) =
                     narrow_member_condition(model, member, access, cond_ptr, false)
+                    && (!path.primitive_unstable
+                        || !matches!(narrowing, Narrowing::FilterPrimitive { .. }))
                 {
                     path.operations.push(PathOp::Guard(narrowing));
                 }
@@ -2776,6 +2794,42 @@ fn trace_member_uncached(
             }
         }
     }
+}
+
+/// Check evaluated calls in a flow node without entering uncalled closure bodies.
+fn primitive_member_flow_conflicts(
+    model: &SemanticModel,
+    tree: &FlowTree,
+    flow: FlowId,
+    access: Option<&emmylua_parser::LuaIndexExpr>,
+    before: TextSize,
+) -> bool {
+    let Some(access) = access else {
+        return false;
+    };
+    let Some(chunk) = model.chunk() else {
+        return true;
+    };
+    for effect in tree.get_flow_effects(flow) {
+        if let FlowEffect::AssignDecl { value_syntax, .. } = effect
+            && let Some(value) = value_syntax.to_node_from_root(chunk.syntax())
+            && member_call_effects::calls_conflict(model, access, &value, before)
+        {
+            return true;
+        }
+    }
+    let Some(node) = tree.get_flow_node(flow) else {
+        return true;
+    };
+    let syntax = match &node.kind {
+        FlowNodeKind::Assignment(ptr) => ptr.to_node(&chunk).map(|stat| stat.syntax().clone()),
+        FlowNodeKind::CallExprStat(ptr) => ptr.to_node(&chunk).map(|stat| stat.syntax().clone()),
+        FlowNodeKind::TrueCondition(ptr) | FlowNodeKind::FalseCondition(ptr) => {
+            ptr.to_node(&chunk).map(|expr| expr.syntax().clone())
+        }
+        _ => None,
+    };
+    syntax.is_some_and(|syntax| member_call_effects::calls_conflict(model, access, &syntax, before))
 }
 
 /// Narrowing kinds.
@@ -6095,6 +6149,10 @@ fn member_branch_is_pure(
         let Some(node) = tree.get_flow_node(current) else {
             return false;
         };
+        let before = access.map_or(TextSize::from(u32::MAX), LuaAstNode::get_position);
+        if primitive_member_flow_conflicts(model, tree, current, access, before) {
+            return false;
+        }
         match &node.kind {
             FlowNodeKind::Assignment(_) => {
                 if tree.get_flow_effects(current).iter().any(|effect| {
@@ -6188,6 +6246,7 @@ impl PathState {
     fn clone_path(&self) -> Self {
         Self {
             operations: self.operations.clone(),
+            primitive_unstable: self.primitive_unstable,
         }
     }
 }

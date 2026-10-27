@@ -64,3 +64,5 @@ mod cast_guarded_member_path;
 mod member_truthiness;
 
 mod integer_enum_arithmetic;
+
+mod primitive_guard_call_effects;
