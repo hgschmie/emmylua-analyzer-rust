@@ -431,3 +431,101 @@ fn asymmetric_fields_inside_dictionaries() {
         }
     }
 }
+
+#[test]
+fn asymmetric_fields_review_repeated_direction_flags() {
+    for flags in ["read,read", "write,write", "read,write", "write,read"] {
+        let mut ws = VirtualWorkspace::new();
+        assert!(
+            !ws.has_no_diagnostic(
+                DiagnosticCode::AnnotationUsageError,
+                &format!("---@class Invalid\n---@field ({flags}) value number"),
+            ),
+            "{flags}"
+        );
+    }
+}
+
+#[test]
+fn asymmetric_fields_review_nullable_contracts() {
+    for typ in ["Fuel", "Fuel[]", "fun(value: string)"] {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(&format!(
+            "---@class Fuel\n---@field name string\n---@class Property\n---@field (read) value? {typ}\n---@field (write) value? {typ}\n---@type Property\nproperty = {{}}",
+        ));
+        assert_eq!(
+            ws.expr_ty("property.value"),
+            ws.ty(&format!("({typ})?")),
+            "{typ}"
+        );
+        assert!(
+            ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, "property.value = nil"),
+            "{typ}"
+        );
+        assert!(
+            !ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, "property.value = true"),
+            "{typ}"
+        );
+    }
+}
+
+#[test]
+fn asymmetric_fields_review_branch_guard_merge() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def(DEFS);
+    ws.def(
+        r#"
+        if burner.fuel then
+            if ... then
+                branch = 1
+            else
+                branch = 2
+            end
+            shared_predecessor = burner.fuel
+            if ... then burner.fuel = 'coal' end
+            after_possible_write = burner.fuel
+        end
+    "#,
+    );
+    assert_eq!(ws.expr_ty("shared_predecessor"), ws.ty("Fuel"));
+    assert_eq!(ws.expr_ty("after_possible_write"), ws.ty("Fuel?"));
+}
+
+#[test]
+fn asymmetric_fields_review_repeated_callback_writer_context() {
+    for fields in [
+        "---@field callback fun(value: string)\n---@field callback fun(value: number)",
+        "---@field (read) callback fun(value: boolean)\n---@field (write) callback fun(value: string)\n---@field (write) callback fun(value: number)",
+        "---@field (write) callback fun(value: string)\n---@field (read) callback fun(value: boolean)\n---@field (write) callback fun(value: number)",
+        "---@field (write) callback fun(value: string)\n---@field (write) callback fun(value: number)\n---@field (read) callback fun(value: boolean)",
+        "---@field (write) callback fun(value: string)\n---@field (write) callback fun(value: number)",
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(&format!(
+            "---@class Holder\n{fields}\n---@type Holder\nholder = {{}}\nholder.callback = function(value)\n    callback_value = value\nend",
+        ));
+        assert_eq!(ws.expr_ty("callback_value"), LuaType::Number, "{fields}");
+    }
+}
+
+#[test]
+fn asymmetric_fields_review_repeated_callback_writer_generics() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def(
+        r#"
+        ---@class Holder<T>
+        ---@field (read) callback fun(value: boolean)
+        ---@field (write) callback fun(value: string)
+        ---@field (write) callback fun(value: T)
+        ---@class Unrelated
+        ---@field (write) callback fun(value: table)
+        ---@type Holder<number>
+        holder = {}
+        holder.callback = function(value)
+            callback_value = value
+        end
+    "#,
+    );
+    assert_eq!(ws.expr_ty("callback_value"), LuaType::Number);
+    assert_eq!(ws.expr_ty("holder.callback"), ws.ty("fun(value: boolean)"));
+}

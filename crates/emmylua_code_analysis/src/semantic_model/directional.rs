@@ -29,6 +29,16 @@ impl SemanticModel<'_> {
         prefix: &LuaType,
         key: &LuaMemberKey,
     ) -> Option<(MemberInfo, MemberInfo)> {
+        let (read, writes) = self.directional_member_views(prefix, key)?;
+        Some((read, writes.into_iter().next()?))
+    }
+
+    /// Preserve every setter declaration for contextual callback signature selection.
+    pub(super) fn directional_member_views(
+        &self,
+        prefix: &LuaType,
+        key: &LuaMemberKey,
+    ) -> Option<(MemberInfo, Vec<MemberInfo>)> {
         let read = self.member_info(prefix, key)?;
         let SemanticId::Member(id) = read.id.as_ref()? else {
             return None;
@@ -38,42 +48,50 @@ impl SemanticModel<'_> {
         if field.access == MemberAccess::ReadWrite {
             return None;
         }
-        let writer = facts
+        let mut writers = facts
             .members
             .iter()
-            .find(|other| {
+            .filter(|other| {
                 other.owner == field.owner
                     && other.key == field.key
                     && other.access == MemberAccess::Write
             })
-            .unwrap_or(field);
-        let mut typ = writer
-            .value_syntax
-            .map(|syntax| self.doc_type_lua_rich_in(id.file_id, syntax))
-            .or_else(|| self.type_of_member(&writer.id))?;
-        if writer.is_nullable && !typ.is_nullable() {
-            typ = LuaType::from_vec(vec![typ, LuaType::Nil]);
+            .collect::<Vec<_>>();
+        if writers.is_empty() {
+            writers.push(field);
         }
-        if let LuaType::Generic(generic) = prefix
-            && let SemanticId::TypeDef(owner) = &writer.owner
-            && let Some(def) = facts.type_def_by_id(&SemanticId::TypeDef(owner.clone()))
-        {
-            let names = def
-                .generic_params
-                .iter()
-                .map(|param| param.name.clone())
-                .collect::<Vec<_>>();
-            typ = self.substitute_generic_params_named(&typ, generic.get_params(), &names);
-        }
-        let write = MemberInfo {
-            index_key_type: read.index_key_type.clone(),
-            key: key.clone(),
-            typ,
-            id: Some(writer.id.clone()),
-            file_id: Some(id.file_id),
-            is_method: writer.is_method,
-        };
-        Some((read, write))
+        let writes = writers
+            .into_iter()
+            .map(|writer| {
+                let mut typ = writer
+                    .value_syntax
+                    .map(|syntax| self.doc_type_lua_rich_in(id.file_id, syntax))
+                    .or_else(|| self.type_of_member(&writer.id))?;
+                if writer.is_nullable && !typ.is_nullable() {
+                    typ = LuaType::from_vec(vec![typ, LuaType::Nil]);
+                }
+                if let LuaType::Generic(generic) = prefix
+                    && let SemanticId::TypeDef(owner) = &writer.owner
+                    && let Some(def) = facts.type_def_by_id(&SemanticId::TypeDef(owner.clone()))
+                {
+                    let names = def
+                        .generic_params
+                        .iter()
+                        .map(|param| param.name.clone())
+                        .collect::<Vec<_>>();
+                    typ = self.substitute_generic_params_named(&typ, generic.get_params(), &names);
+                }
+                Some(MemberInfo {
+                    index_key_type: read.index_key_type.clone(),
+                    key: key.clone(),
+                    typ,
+                    id: Some(writer.id.clone()),
+                    file_id: Some(id.file_id),
+                    is_method: writer.is_method,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some((read, writes))
     }
 
     pub fn directional_index(&self, index: &LuaIndexExpr) -> Option<(MemberInfo, MemberInfo)> {

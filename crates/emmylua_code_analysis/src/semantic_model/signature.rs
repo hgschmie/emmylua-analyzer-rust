@@ -819,8 +819,8 @@ impl<'db> SemanticModel<'db> {
             _ => return None,
         };
 
-        let infos = if let Some((_, write)) = self.directional_member(&owner_ty, &key) {
-            vec![write]
+        let infos = if let Some((_, writes)) = self.directional_member_views(&owner_ty, &key) {
+            writes
         } else {
             member::member_infos_with_key_all(self, &owner_ty, &key)
         };
