@@ -1,0 +1,75 @@
+name: Review external public PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repository:
+        description: Public repository to review
+        type: choice
+        required: true
+        options:
+          - justarandomgeek/vscode-factoriomod-debug
+          - EmmyLua/Intellij-EmmyLua2
+      target_pr:
+        description: External PR number
+        type: string
+        required: true
+      expected_head:
+        description: Exact external PR head (40-character SHA)
+        type: string
+        required: true
+      expected_base:
+        description: Exact external PR base (40-character SHA)
+        type: string
+        required: true
+      companion_pr:
+        description: Internal PR containing the matching target manifest
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: external-review-${{ inputs.companion_pr }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    if: github.repository == 'hgschmie/emmylua-analyzer-rust' && github.ref == 'refs/heads/fork/review'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out trusted workflow revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Check out pinned review engine
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: hustcer/deepseek-review
+          ref: d8fed14d464331174c6653b419a132e83d85771d
+          path: _review-engine
+          persist-credentials: false
+      - name: Set up pinned Nushell version
+        uses: hustcer/setup-nu@f3fd65374ffc4d60974c0dd2f7263c6c5c285f81 # v3.26
+        with:
+          version: 0.114.1
+      - name: Review frozen diff and publish internally
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          DEEPSEEK_REVIEW_MODEL: ${{ vars.DEEPSEEK_REVIEW_MODEL }}
+          REVIEW_ENGINE_DIR: ${{ github.workspace }}/_review-engine
+          REVIEW_OUTPUT_DIR: ${{ github.workspace }}/build/external-review
+        run: python3 .github/external-review/external_review.py
+      - name: Preserve review evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: external-review-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/external-review/
+          if-no-files-found: error
+          retention-days: 30
