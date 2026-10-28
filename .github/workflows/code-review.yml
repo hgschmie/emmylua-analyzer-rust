@@ -1,0 +1,43 @@
+---
+
+name: code review flow
+on:
+  pull_request_target:
+    branches:
+      - "fork/review"
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+  issue_comment:
+    types:
+      - created
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-26.04-arm
+    timeout-minutes: 30
+
+    steps:
+      - name: Review PR through OpenRouter
+        uses: hgschmie/openrouter-review@v1.2.1
+        with:
+          api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          base-url: https://openrouter.ai/api/v1
+          model: ${{ vars.DEEPSEEK_REVIEW_MODEL }}
+          watch-mention: "@code-review"
+          allowed-associations: "OWNER"
+          reasoning-exclude: true
+          reasoning-enabled: true
+          reasoning-max-tokens: 8192
+          max-tokens: 131072
+          max-diff-chars: 0
+          timeout-seconds: 1500
+          user-prompt: |
+            Please review the following code changes.
+            Write all review explanations in English, regardless of the language used in the code or comments.
