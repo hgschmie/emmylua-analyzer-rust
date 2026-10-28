@@ -3649,65 +3649,68 @@ fn super_generic_type(
     arg_ty: &LuaType,
     target_base: &LuaTypeDeclId,
 ) -> Option<LuaType> {
-    super_generic_type_on_path(model, arg_ty, target_base, &mut Vec::new())
-}
-
-fn super_generic_type_on_path(
-    model: &SemanticModel,
-    arg_ty: &LuaType,
-    target_base: &LuaTypeDeclId,
-    path: &mut Vec<(LuaTypeDeclId, LuaType)>,
-) -> Option<LuaType> {
     use LuaType::*;
-    let (arg_id, arg_params): (&LuaTypeDeclId, Option<&[LuaType]>) = match arg_ty {
-        Generic(arg_generic) => (
-            arg_generic.get_base_type_id_ref(),
-            Some(arg_generic.get_params().as_slice()),
-        ),
-        Ref(id) | Def(id) => (id, None),
-        _ => return None,
-    };
-
-    // A repeated class must consume a strict nested type, as in
-    // Wrap<Wrap<Base>> -> Wrap<Base>. Equal or growing instances form a cycle.
-    if let Some((_, previous)) = path.iter().rev().find(|(id, _)| id == arg_id)
-        && !previous.any_nested_type(|ty| ty == arg_ty)
-    {
-        return None;
+    enum Task {
+        Enter { ty: LuaType, is_base: bool },
+        Leave(LuaType),
     }
-    path.push((arg_id.clone(), arg_ty.clone()));
-    let result = (|| {
-        let mut pending = model
-            .base_types(arg_id)
-            .into_iter()
-            .map(|ty| match arg_params {
-                Some(params) => model.substitute_generic_params(&ty, params),
-                None => ty,
-            })
-            .rev()
-            .collect::<Vec<_>>();
-        while let Some(super_ty) = pending.pop() {
-            let super_id = match &super_ty {
-                Ref(id) | Def(id) => id.clone(),
-                Generic(generic) => generic.get_base_type_id(),
-                Intersection(intersection) => {
-                    pending.extend(intersection.get_types().iter().rev().cloned());
-                    continue;
-                }
-                _ => continue,
-            };
-            if &super_id == target_base {
-                return Some(super_ty);
+
+    let evaluation = crate::semantic_model::cache::TypeEvaluationScope::new(&model.cache)?;
+    // Type keys are immutable; their OnceCell only caches a stable hash.
+    #[allow(clippy::mutable_key_type)]
+    let mut path = HashSet::new();
+    let mut pending = vec![Task::Enter {
+        ty: arg_ty.clone(),
+        is_base: false,
+    }];
+    while let Some(task) = pending.pop() {
+        let (ty, is_base) = match task {
+            Task::Enter { ty, is_base } => (ty, is_base),
+            Task::Leave(ty) => {
+                path.remove(&ty);
+                continue;
             }
-            if let Some(recursive) = super_generic_type_on_path(model, &super_ty, target_base, path)
-            {
-                return Some(recursive);
+        };
+        let (id, params): (&LuaTypeDeclId, Option<&[LuaType]>) = match &ty {
+            Generic(generic) => (
+                generic.get_base_type_id_ref(),
+                Some(generic.get_params().as_slice()),
+            ),
+            Ref(id) | Def(id) => (id, None),
+            Intersection(intersection) if is_base => {
+                pending.extend(intersection.get_types().iter().rev().map(|ty| Task::Enter {
+                    ty: ty.clone(),
+                    is_base: true,
+                }));
+                continue;
             }
+            _ => continue,
+        };
+        if is_base && id == target_base {
+            return Some(ty);
         }
-        None
-    })();
-    path.pop();
-    result
+        // Changed arguments can make a repeated class reach a new finite base.
+        // Exact active instances are cycles. Expanding instances use the existing
+        // evaluation work budget; an iterative walk avoids a hierarchy depth cap.
+        if !evaluation.visit(&ty) || !path.insert(ty.clone()) {
+            continue;
+        }
+        pending.push(Task::Leave(ty.clone()));
+        pending.extend(
+            model
+                .base_types(id)
+                .into_iter()
+                .rev()
+                .map(|base| Task::Enter {
+                    ty: match params {
+                        Some(params) => model.substitute_generic_params(&base, params),
+                        None => base,
+                    },
+                    is_base: true,
+                }),
+        );
+    }
+    None
 }
 
 fn type_contains_any_tpl_id(ty: &LuaType, ids: &HashSet<GenericTplId>) -> bool {
@@ -5028,6 +5031,156 @@ mod generic_superclass_cycle_tests {
     use super::*;
 
     #[test]
+    fn generic_superclass_lookup_preserves_lateral_projection() {
+        for initial in [LuaType::String, LuaType::Integer] {
+            let mut ws = crate::VirtualWorkspace::new();
+            let file = ws.def(
+                "---@class Parent<T>\n\n---@class A<T>: T, B\n\n---@class B: A<Parent<integer>>",
+            );
+            let model = ws.analysis.semantic_model(file);
+            let parent_id = LuaTypeDeclId::global("Parent");
+            let argument = LuaType::Generic(Rc::new(LuaGenericType::new(
+                LuaTypeDeclId::global("A"),
+                vec![initial],
+            )));
+            assert_eq!(
+                super_generic_type(&model, &argument, &parent_id),
+                Some(LuaType::Generic(Rc::new(LuaGenericType::new(
+                    parent_id,
+                    vec![LuaType::Integer],
+                ))))
+            );
+        }
+    }
+
+    #[test]
+    fn generic_superclass_lookup_preserves_lateral_call_return() {
+        for initial in ["string", "integer"] {
+            let mut ws = crate::VirtualWorkspace::new();
+            ws.def(&format!(
+                r#"
+---@class Parent<T>
+---@class A<T>: T, B
+---@class B: A<Parent<integer>>
+---@generic T
+---@param arg Parent<T>
+---@return T
+local function unwrap(arg) end
+---@type A<{initial}>
+local arg
+result = unwrap(arg)
+"#,
+            ));
+            assert_eq!(ws.expr_ty("result"), LuaType::Integer, "{initial}");
+        }
+    }
+
+    #[test]
+    fn generic_superclass_lookup_preserves_wrapped_lateral_call_return() {
+        let mut ws = crate::VirtualWorkspace::new();
+        ws.def(
+            r#"
+---@class Parent<T>
+---@class Wrap<T>: T
+---@class A<T>: T, B
+---@class B: A<Wrap<Parent<integer>>>
+---@generic T
+---@param arg Parent<T>
+---@return T
+local function unwrap(arg) end
+---@type A<string>
+local arg
+result = unwrap(arg)
+"#,
+        );
+        assert_eq!(ws.expr_ty("result"), LuaType::Integer);
+    }
+
+    #[test]
+    #[ntest::timeout(10000)]
+    fn generic_superclass_lookup_bounds_expanding_parameters() {
+        for definition in [
+            "---@class A<T>: A<A<T>>",
+            "---@class A<T>: A<Wrap<T>>\n\n---@class Wrap<T>",
+            "---@class A<T>: A<Pair<T, T>>\n\n---@class Pair<K, V>",
+            "---@class A<T>: A<T[]>",
+        ] {
+            let mut ws = crate::VirtualWorkspace::new();
+            let file = ws.def(&format!(
+                "{definition}\n\n---@class Parent<T>\n\n---@class Child: Parent<string>"
+            ));
+            let model = ws.analysis.semantic_model(file);
+            let argument = LuaType::Generic(Rc::new(LuaGenericType::new(
+                LuaTypeDeclId::global("A"),
+                vec![LuaType::Integer],
+            )));
+            assert!(
+                super_generic_type(&model, &argument, &LuaTypeDeclId::global("Missing")).is_none(),
+                "{definition}"
+            );
+            assert!(!model.type_evaluation_errors().is_empty(), "{definition}");
+            let parent_id = LuaTypeDeclId::global("Parent");
+            assert_eq!(
+                super_generic_type(
+                    &model,
+                    &LuaType::Ref(LuaTypeDeclId::global("Child")),
+                    &parent_id,
+                ),
+                Some(LuaType::Generic(Rc::new(LuaGenericType::new(
+                    parent_id,
+                    vec![LuaType::String],
+                )))),
+                "query after {definition}"
+            );
+        }
+    }
+
+    #[test]
+    #[ntest::timeout(10000)]
+    fn generic_superclass_lookup_preserves_sibling_after_growing_cycle() {
+        let mut ws = crate::VirtualWorkspace::new();
+        ws.def(
+            r#"
+---@class Parent<T>
+---@class Wrap<T>
+---@class A<T>: A<Wrap<T>>, Parent<integer>
+---@generic T
+---@param arg Parent<T>
+---@return T
+local function unwrap(arg) end
+---@type A<string>
+local arg
+result = unwrap(arg)
+"#,
+        );
+        assert_eq!(ws.expr_ty("result"), LuaType::Integer);
+    }
+
+    #[test]
+    fn generic_superclass_lookup_keeps_depth_first_order_and_excludes_root() {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def(
+            "---@class Parent<T>\n\n---@class Child: Left, Parent<string>\n\n---@class Left: Via<Parent<integer>>\n\n---@class Via<T>: T",
+        );
+        let model = ws.analysis.semantic_model(file);
+        let parent_id = LuaTypeDeclId::global("Parent");
+        let parent = LuaType::Generic(Rc::new(LuaGenericType::new(
+            parent_id.clone(),
+            vec![LuaType::Integer],
+        )));
+        assert_eq!(super_generic_type(&model, &parent, &parent_id), None);
+        assert_eq!(
+            super_generic_type(
+                &model,
+                &LuaType::Ref(LuaTypeDeclId::global("Child")),
+                &parent_id,
+            ),
+            Some(parent)
+        );
+        assert!(model.type_evaluation_errors().is_empty());
+    }
+
+    #[test]
     fn generic_superclass_lookup_stops_cyclic_inheritance() {
         for definition in [
             "---@class Child: Parent\n\n---@class Parent: Child",
@@ -5075,7 +5228,7 @@ mod generic_superclass_cycle_tests {
             vec![LuaType::Integer],
         )));
         let mut wrapped = parent.clone();
-        for _ in 0..3 {
+        for _ in 0..128 {
             wrapped = LuaType::Generic(Rc::new(LuaGenericType::new(
                 LuaTypeDeclId::global("Wrap"),
                 vec![wrapped],
