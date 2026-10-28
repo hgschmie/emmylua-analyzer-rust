@@ -5106,11 +5106,24 @@ fn filter_type_by_member_discriminant(
                 continue;
             }
         }
-        let matched = model
+        let can_match_branch = model
             .member_type(&component, key)
-            .map(|member_ty| types_may_overlap(member_ty, literal.clone()))
-            .unwrap_or(false);
-        if matched == keep_matching {
+            .map(|member_ty| {
+                if keep_matching {
+                    return types_may_overlap(member_ty, literal.clone());
+                }
+                // A union-valued member can satisfy either branch. Exclude a
+                // receiver only when every member value matches the literal.
+                match member_ty {
+                    LuaType::Union(union) => union
+                        .into_vec()
+                        .iter()
+                        .any(|ty| !type_is_removed_by(ty, literal)),
+                    other => !type_is_removed_by(&other, literal),
+                }
+            })
+            .unwrap_or(!keep_matching);
+        if can_match_branch {
             kept.push(component);
         }
     }

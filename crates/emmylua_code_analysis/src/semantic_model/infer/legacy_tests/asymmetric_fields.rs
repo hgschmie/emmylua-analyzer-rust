@@ -610,6 +610,43 @@ fn asymmetric_fields_review_new_guard_after_replacement() {
 }
 
 #[test]
+fn asymmetric_fields_review_new_guard_after_setter_write() {
+    check_directional_guard_after_write(
+        "",
+        "a.value",
+        "a.value = 'changed'\nif a.value == nil then return end",
+        false,
+    );
+}
+
+#[test]
+fn asymmetric_fields_review_nullable_discriminant_keeps_receiver() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def(
+        r#"
+---@class Absent
+---@field (read) value nil
+---@field (write) value string?
+---@class Maybe
+---@field (read) value number?
+---@field (write) value string?
+---@param a Absent|Maybe
+local function check(a)
+    if a.value == nil then
+        matches_nil = a
+    else
+        may_have_number = a
+        number_value = a.value
+    end
+end
+"#,
+    );
+    assert_eq!(ws.expr_ty("matches_nil"), ws.ty("Absent|Maybe"));
+    assert_eq!(ws.expr_ty("may_have_number"), ws.ty("Maybe"));
+    assert_eq!(ws.expr_ty("number_value"), LuaType::Number);
+}
+
+#[test]
 fn asymmetric_fields_review_overloads_are_checked_per_direction() {
     for (single, repeated) in [("read", "write"), ("write", "read")] {
         let fields = [
