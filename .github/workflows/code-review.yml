@@ -1,0 +1,37 @@
+---
+
+name: code review flow
+on:
+  pull_request_target:
+    branches:
+      - "fork/review"
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+  issue_comment:
+    types:
+      - created
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-26.04-arm
+    timeout-minutes: 30
+
+    steps:
+      - name: Review PR through OpenRouter
+        uses: hgschmie/openrouter-review@v1
+        with:
+          api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          base-url: https://openrouter.ai/api/v1
+          model: ${{ vars.DEEPSEEK_REVIEW_MODEL }}
+          watch-mention: "@code-review"
+          allowed-associations: "OWNER"
+          reasoning-effort: high
+          reasoning-exclude: true
+          reasoning-enabled: true
