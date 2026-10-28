@@ -3644,14 +3644,18 @@ fn primitive_accepts_const(param: &LuaType, arg: &LuaType) -> bool {
 
 /// Project a subclass to a target base for inherited-generic unification.
 /// This shares the enclosing query's evaluation budget, so even a finite search
-/// may be incomplete. `None` means either no match or incomplete evaluation;
-/// exhaustion records model errors and marks cached results provisional.
+/// may be incomplete. `None` means either no match or incomplete evaluation.
+/// Queued matches remain available after exhaustion, so `Some` can also be provisional:
+/// declaration-order DFS is retained, while model errors mark cached results incomplete.
 fn super_generic_type(
     model: &SemanticModel,
     arg_ty: &LuaType,
     target_base: &LuaTypeDeclId,
 ) -> Option<LuaType> {
     use LuaType::*;
+    if !matches!(arg_ty, Generic(_) | Ref(_) | Def(_)) {
+        return None;
+    }
     let evaluation = crate::semantic_model::cache::TypeEvaluationScope::new(&model.cache)?;
     // Type keys are immutable; their OnceCell only caches a stable hash.
     #[allow(clippy::mutable_key_type)]
@@ -3665,6 +3669,10 @@ fn super_generic_type(
             ),
             Ref(id) | Def(id) => (id, None),
             Intersection(intersection) if is_base => {
+                if visited.contains(&ty) || !evaluation.visit(&ty) {
+                    continue;
+                }
+                visited.insert(ty.clone());
                 pending.extend(
                     intersection
                         .get_types()
@@ -5013,6 +5021,109 @@ fn merge(a: LuaType, b: LuaType) -> LuaType {
 #[cfg(test)]
 mod generic_superclass_lookup_tests {
     use super::*;
+
+    use crate::semantic_model::cache::TypeEvaluationScope;
+
+    // Pre-charge a fresh scope by exact node count, leaving the requested budget.
+    fn leave_work(evaluation: &TypeEvaluationScope<'_>, remaining: usize) {
+        const CHUNK_NODES: usize = 1024;
+        let padding = LuaType::Tuple(Rc::new(LuaTupleType::new(
+            vec![LuaType::Integer; CHUNK_NODES - 1],
+            LuaTupleStatus::DocResolve,
+        )));
+        let precharge = TypeEvaluationScope::MAX_TYPE_VISITS
+            .checked_sub(remaining)
+            .unwrap();
+        for _ in 0..precharge / CHUNK_NODES {
+            assert!(evaluation.visit(&padding));
+        }
+        for _ in 0..precharge % CHUNK_NODES {
+            assert!(evaluation.visit(&LuaType::Integer));
+        }
+    }
+
+    #[test]
+    fn generic_superclass_lookup_charges_intersection_expansion() {
+        let mut ws = crate::VirtualWorkspace::new();
+        let bases = vec!["Leaf"; 64].join(" & ");
+        let file = ws.def(&format!("---@class Leaf\n---@class Root: {bases}"));
+        let model = ws.analysis.semantic_model(file);
+        let root = LuaTypeDeclId::global("Root");
+        let bases = model.base_types(&root);
+        assert!(matches!(bases.first(), Some(LuaType::Intersection(_))));
+        let evaluation = TypeEvaluationScope::new(&model.cache).unwrap();
+        leave_work(&evaluation, 16);
+        let revision = model.cache.borrow().revision();
+        assert!(
+            super_generic_type(
+                &model,
+                &LuaType::Ref(root),
+                &LuaTypeDeclId::global("Missing")
+            )
+            .is_none()
+        );
+        assert!(!model.type_evaluation_errors().is_empty());
+        assert!(!model.cache.borrow().is_complete(revision));
+    }
+
+    #[test]
+    fn generic_superclass_lookup_skips_repeated_intersections_before_charging() {
+        let mut ws = crate::VirtualWorkspace::new();
+        let bases = vec!["Left & Right"; 32].join(", ");
+        let file = ws.def(&format!("---@class Left\n---@class Right\n---@class Parent<T>\n---@class Root: {bases}, Parent<integer>"));
+        let model = ws.analysis.semantic_model(file);
+        let root = LuaTypeDeclId::global("Root");
+        let bases = model.base_types(&root);
+        assert!(matches!(bases.first(), Some(LuaType::Intersection(_))));
+        let evaluation = TypeEvaluationScope::new(&model.cache).unwrap();
+        leave_work(&evaluation, 16);
+        let parent = LuaTypeDeclId::global("Parent");
+        assert_eq!(
+            super_generic_type(&model, &LuaType::Ref(root), &parent),
+            Some(LuaType::Generic(Rc::new(LuaGenericType::new(
+                parent,
+                vec![LuaType::Integer]
+            ))))
+        );
+        assert!(model.type_evaluation_errors().is_empty());
+    }
+
+    #[test]
+    fn generic_superclass_lookup_unsupported_roots_do_not_enter_evaluation() {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def("---@class Parent<T>");
+        let model = ws.analysis.semantic_model(file);
+        let scopes = (0..TypeEvaluationScope::MAX_EVALUATION_DEPTH)
+            .map(|_| TypeEvaluationScope::new(&model.cache).unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            super_generic_type(&model, &LuaType::Integer, &LuaTypeDeclId::global("Parent"))
+                .is_none()
+        );
+        assert!(model.type_evaluation_errors().is_empty());
+        drop(scopes);
+    }
+
+    #[test]
+    fn generic_superclass_lookup_queued_match_after_exhaustion_is_provisional() {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def("---@class Parent<T>\n---@class Grow<T>: Grow<T[]>, Parent<T>");
+        let model = ws.analysis.semantic_model(file);
+        let grow = LuaTypeDeclId::global("Grow");
+        model.base_types(&grow);
+        let evaluation = TypeEvaluationScope::new(&model.cache).unwrap();
+        leave_work(&evaluation, 128);
+        let revision = model.cache.borrow().revision();
+        let argument = LuaType::Generic(Rc::new(LuaGenericType::new(grow, vec![LuaType::Integer])));
+        let parent = LuaTypeDeclId::global("Parent");
+        let Some(LuaType::Generic(result)) = super_generic_type(&model, &argument, &parent) else {
+            panic!("queued parent");
+        };
+        assert_eq!(result.get_base_type_id(), parent);
+        assert_ne!(result.get_params().as_slice(), &[LuaType::Integer]);
+        assert!(!model.type_evaluation_errors().is_empty());
+        assert!(!model.cache.borrow().is_complete(revision));
+    }
 
     #[test]
     #[ntest::timeout(10000)]
