@@ -1,6 +1,83 @@
 #![cfg(test)]
 use crate::{DiagnosticCode, LuaType, VirtualWorkspace};
 
+fn check_inherited_write_projection(
+    declarations: &str,
+    receiver: &str,
+    read_type: &str,
+    write_type: &str,
+    valid_value: &str,
+) {
+    let mut ws = VirtualWorkspace::new();
+    ws.def(&format!(
+        "{declarations}\n---@type {receiver}\nchild = {{}}"
+    ));
+    ws.def(
+        "read_value = child.value\nchild.callback = function(value)\ncallback_value = value\nend",
+    );
+    assert_eq!(ws.expr_ty("read_value"), ws.ty(read_type));
+    assert_eq!(ws.expr_ty("callback_value"), ws.ty(write_type));
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::AssignTypeMismatch,
+        &format!("child.value = {valid_value}")
+    ));
+    assert!(!ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, "child.value = true"));
+}
+
+#[test]
+fn asymmetric_fields_inherited_generic_ref() {
+    check_inherited_write_projection(
+        r#"
+---@class Base<T>
+---@field (read) value T
+---@field (write) value T
+---@field (read) callback fun(value: T)
+---@field (write) callback fun(value: T)
+---@class Child: Base<string>
+"#,
+        "Child",
+        "string",
+        "string",
+        "'valid'",
+    );
+}
+
+#[test]
+fn asymmetric_fields_inherited_generic_mapped() {
+    check_inherited_write_projection(
+        r#"
+---@class Base<T>
+---@field (read) value T
+---@field (write) value T
+---@field (read) callback fun(value: T)
+---@field (write) callback fun(value: T)
+---@class Child<U>: Base<U[]>
+"#,
+        "Child<number>",
+        "number[]",
+        "number[]",
+        "{1, 2}",
+    );
+}
+
+#[test]
+fn asymmetric_fields_inherited_generic_distinct_directions() {
+    check_inherited_write_projection(
+        r#"
+---@class Base<R, W>
+---@field (read) value R
+---@field (write) value W
+---@field (read) callback boolean
+---@field (write) callback fun(value: W)
+---@class Child<U>: Base<number, U[]>
+"#,
+        "Child<string>",
+        "number",
+        "string[]",
+        "{'valid'}",
+    );
+}
+
 const DEFS: &str = r#"
 ---@meta
 ---@class Fuel

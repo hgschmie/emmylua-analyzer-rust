@@ -1,5 +1,8 @@
 //! Separate read/write contracts for transformed properties.
-use super::{SemanticModel, member::MemberInfo};
+use super::{
+    SemanticModel,
+    member::{self, MemberInfo},
+};
 use crate::{LuaMemberKey, LuaType, MemberAccess, SemanticId};
 use emmylua_parser::{LuaAstNode, LuaIndexExpr, LuaIndexKey};
 
@@ -62,31 +65,7 @@ impl SemanticModel<'_> {
         }
         let writes = writers
             .into_iter()
-            .map(|writer| {
-                let mut typ = self.type_of_member(&writer.id)?;
-                if writer.is_nullable && !typ.is_nullable() {
-                    typ = LuaType::from_vec(vec![typ, LuaType::Nil]);
-                }
-                if let LuaType::Generic(generic) = prefix
-                    && let SemanticId::TypeDef(owner) = &writer.owner
-                    && let Some(def) = facts.type_def_by_id(&SemanticId::TypeDef(owner.clone()))
-                {
-                    let names = def
-                        .generic_params
-                        .iter()
-                        .map(|param| param.name.clone())
-                        .collect::<Vec<_>>();
-                    typ = self.substitute_generic_params_named(&typ, generic.get_params(), &names);
-                }
-                Some(MemberInfo {
-                    index_key_type: read.index_key_type.clone(),
-                    key: key.clone(),
-                    typ,
-                    id: Some(writer.id.clone()),
-                    file_id: Some(id.file_id),
-                    is_method: writer.is_method,
-                })
-            })
+            .map(|writer| member::member_info_for_declaration(self, prefix, key, &writer.id))
             .collect::<Option<Vec<_>>>()?;
         Some((read, writes))
     }
