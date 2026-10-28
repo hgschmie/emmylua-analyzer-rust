@@ -25,7 +25,10 @@ pub(crate) fn constructor_field_infos(
             .unwrap(),
         LuaIndexKey::Integer(value) => match value.get_number_value() {
             NumberResult::Int(value) => LuaType::IntegerConst(value),
-            NumberResult::Uint(value) => LuaType::IntegerConst(value as i64),
+            NumberResult::Uint(value) => match i64::try_from(value) {
+                Ok(value) => LuaType::IntegerConst(value),
+                Err(_) => return Vec::new(),
+            },
             NumberResult::Float(value) => LuaType::FloatConst(value),
             _ => return Vec::new(),
         },
@@ -263,7 +266,8 @@ pub(crate) fn table_context_type_for_expr(
     (!matches!(ty, LuaType::Unknown)).then_some(ty)
 }
 
-/// Remove `nil` from nullable types (`T | nil` / `T?`) for display when the current assignment is non-nil.
+/// Project the non-nil alternatives for constructor context and hover display.
+/// This does not validate that a nullable key is safe to use at runtime.
 pub(crate) fn strip_nullable(ty: &LuaType) -> LuaType {
     match ty {
         LuaType::Union(union) => {
@@ -273,5 +277,38 @@ pub(crate) fn strip_nullable(ty: &LuaType) -> LuaType {
         }
         LuaType::MultiLineUnion(union) => strip_nullable(&union.to_union()),
         _ => ty.clone(),
+    }
+}
+
+#[cfg(test)]
+mod unsigned_constructor_key_tests {
+    use super::*;
+    use emmylua_code_analysis::VirtualWorkspace;
+
+    #[test]
+    fn unsigned_constructor_keys_do_not_wrap_into_signed_domains() {
+        for (literal, projects) in [
+            ("7ULL", true),
+            ("9223372036854775807ULL", true),
+            ("9223372036854775808ULL", false),
+            ("18446744073709551615ULL", false),
+            ("0xffffffffffffffff", true),
+        ] {
+            let mut config = emmylua_code_analysis::Emmyrc::default();
+            config.runtime.version = emmylua_code_analysis::EmmyrcLuaVersion::LuaJIT;
+            let mut ws = VirtualWorkspace::new();
+            ws.analysis.update_config(config.into());
+            let file = ws.def(&format!("local t = {{[{literal}] = {{}}}}"));
+            let owner = ws.ty("table<integer, string>");
+            let model = ws.analysis.semantic_model(file);
+            let field = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaTableField>()
+                .next()
+                .unwrap();
+            let infos = constructor_field_infos(&model, &owner, &field);
+            assert_eq!(!infos.is_empty(), projects, "{literal}: {infos:?}");
+        }
     }
 }
