@@ -1,4 +1,5 @@
 use super::prelude::*;
+use crate::MemberAccess;
 use crate::check::checker::generic_constraint_mismatch::resolved_call_signatures;
 use crate::check::checker::param_count::callable_functions;
 use crate::check::checker::param_type_check::callable_candidates_uncached;
@@ -448,12 +449,8 @@ impl<'db> SemanticModel<'db> {
             if let Some(file) = file_id
                 && let Some(facts) = self.file_facts_of(file)
                 && let Some(member) = facts.member_by_id(&id)
-                && member.access == crate::MemberAccess::Write
-                && let Some(read) = facts.members.iter().find(|other| {
-                    other.owner == member.owner
-                        && other.key == member.key
-                        && other.access == crate::MemberAccess::Read
-                })
+                && member.access == MemberAccess::Write
+                && let Some(read) = facts.members_with_access(member, MemberAccess::Read).next()
             {
                 return read.id.clone();
             }

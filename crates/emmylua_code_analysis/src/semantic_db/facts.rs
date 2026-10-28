@@ -18,8 +18,8 @@ use rowan::{TextRange, TextSize, WalkEvent};
 use smol_str::SmolStr;
 
 use crate::DiagnosticCode;
-use crate::FileId;
 use crate::semantic_db::def::SignatureReturnCast;
+use crate::{FileId, MemberAccess};
 
 use super::index::{Bucket, build_buckets, find_bucket};
 
@@ -240,6 +240,25 @@ impl FileFacts {
             .into_iter()
             .flat_map(|indices| indices.iter())
             .filter_map(move |&index| self.members.get(index))
+    }
+
+    /// Same-owner, same-key declarations with the requested read/write access.
+    pub(crate) fn members_with_access<'a>(
+        &'a self,
+        member: &'a Member,
+        access: MemberAccess,
+    ) -> impl Iterator<Item = &'a Member> {
+        let indices = match &member.key {
+            LuaMemberKey::Name(name) => self
+                .members_by_owner_name
+                .get(&(member.owner.clone(), name.clone())),
+            _ => self.members_by_owner.get(&member.owner),
+        };
+        indices
+            .into_iter()
+            .flat_map(|indices| indices.iter())
+            .filter_map(move |&index| self.members.get(index))
+            .filter(move |other| other.key == member.key && other.access == access)
     }
 
     /// Type operator overloads (by owner + operator name).
@@ -1550,25 +1569,29 @@ impl FactsBuilder {
         let Some(key) = field_tag.get_field_key() else {
             return;
         };
-        let mut access = crate::MemberAccess::ReadWrite;
+        let mut access = MemberAccess::ReadWrite;
         if let Some(flags) = field_tag.get_type_flag() {
             for flag in flags.get_attrib_tokens() {
                 let direction = match flag.get_name_text() {
-                    "read" => crate::MemberAccess::Read,
-                    "write" => crate::MemberAccess::Write,
+                    "read" => MemberAccess::Read,
+                    "write" => MemberAccess::Write,
                     _ => continue,
                 };
-                if access != crate::MemberAccess::ReadWrite {
+                if access != MemberAccess::ReadWrite {
                     self.annotation_errors.push(AnnotationError {
                         range: field_tag.get_range(),
-                        message: "A field may specify only one of (read) or (write)".into(),
+                        message: if access == direction {
+                            format!("Duplicate ({}) field modifier", flag.get_name_text()).into()
+                        } else {
+                            "A field may specify only one of (read) or (write)".into()
+                        },
                     });
                     return;
                 }
                 access = direction;
             }
         }
-        if access != crate::MemberAccess::ReadWrite && matches!(key, LuaDocFieldKey::Type(_)) {
+        if access != MemberAccess::ReadWrite && matches!(key, LuaDocFieldKey::Type(_)) {
             self.annotation_errors.push(AnnotationError {
                 range: field_tag.get_range(),
                 message:

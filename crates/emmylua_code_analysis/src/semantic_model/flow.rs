@@ -5706,7 +5706,8 @@ fn type_is_broader(broad: &LuaType, narrow: &LuaType) -> bool {
 }
 
 /// Directional assignments invalidate earlier guards but never substitute the
-/// write value for the property's read contract. Bound traversal conservatively.
+/// write value for the property's read contract. At the traversal limit, retain
+/// observed path modifiers over the declared getter instead of dropping results.
 fn directional_read_at(
     model: &SemanticModel,
     index: &emmylua_parser::LuaIndexExpr,
@@ -5723,8 +5724,20 @@ fn directional_read_at(
     let mut budget = 512;
     while let Some((mut current, mut path, mut seen)) = pending.pop() {
         loop {
-            if budget == 0 || !seen.insert(current) {
-                return Some(read.typ.clone());
+            if budget == 0 {
+                // Preserve completed results and modifiers already seen on every
+                // unfinished path; default only the unseen prefix to the getter.
+                results.push(finalize(model, read.typ.clone(), &path));
+                results.extend(
+                    pending
+                        .into_iter()
+                        .map(|(_, path, _)| finalize(model, read.typ.clone(), &path)),
+                );
+                return Some(LuaType::from_vec(results));
+            }
+            if !seen.insert(current) {
+                results.push(finalize(model, read.typ.clone(), &path));
+                break;
             }
             budget -= 1;
             let node = tree.get_flow_node(current)?;

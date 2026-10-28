@@ -234,3 +234,94 @@ fn asymmetric_fields_review_assignment_completion_controls() -> Result<()> {
     }
     Ok(())
 }
+
+#[gtest]
+fn asymmetric_fields_review_hover_keeps_field_types_separate() {
+    for (field, directional) in [
+        ("---@field (read) va<??>lue Value", true),
+        ("---@field (write) va<??>lue Value", true),
+        ("---@field (read) value Val<??>ue", false),
+        ("---@field (write) value Val<??>ue", false),
+    ] {
+        let mut ws = ProviderVirtualWorkspace::new();
+        let (source, position) = ProviderVirtualWorkspace::handle_file_content(&format!(
+            "---@class Value\n---@field name string\n---@class Property\n{field}"
+        ))
+        .expect("position");
+        let file = ws.def_file("defs.lua", &source);
+        let result = hover(&ws.analysis, file, position).expect("hover");
+        let HoverContents::Markup(text) = result.contents else {
+            panic!("markup")
+        };
+        assert_eq!(
+            text.value.contains("Read:"),
+            directional,
+            "{field}: {}",
+            text.value
+        );
+        assert!(text.value.contains("Value"), "{}", text.value);
+    }
+}
+
+#[gtest]
+fn asymmetric_fields_review_assignment_completion_providers() {
+    for (typ, expected) in [
+        ("'coal'|'wood'", vec!["coal", "wood"]),
+        ("Choice", vec!["coal", "wood"]),
+        ("42|43", vec!["42", "43"]),
+        ("Callback", vec!["function(value) end"]),
+        ("Callback|'coal'", vec!["function(value) end", "coal"]),
+        ("number", vec![]),
+        ("unknown", vec![]),
+    ] {
+        for read in [
+            "---@field (read) value boolean\n---@field (write)",
+            "---@field",
+        ] {
+            let mut ws = ProviderVirtualWorkspace::new();
+            let (source, position) = ProviderVirtualWorkspace::handle_file_content(&format!(
+                "---@alias Choice 'coal'|'wood'\n---@alias Callback fun(value: string)\n---@class Property\n{read} value {typ}\n---@type Property\nlocal property = {{}}\nlocal available = 1\nproperty.value = <??>"
+            )).expect("position");
+            let file = ws.def_file("use.lua", &source);
+            let response = completion(
+                &ws.analysis,
+                file,
+                position,
+                CompletionTriggerKind::INVOKED,
+                CancellationToken::new(),
+            )
+            .expect("completion");
+            let items = match response {
+                CompletionResponse::Array(items) => items,
+                CompletionResponse::List(list) => list.items,
+            };
+            // Ordinary callable targets use the earlier implementation-snippet path.
+            // Directional targets reach the shared type dispatch and retain enum alternatives.
+            let expected = if read == "---@field" && typ == "Callback|'coal'" {
+                vec!["function(value) end"]
+            } else {
+                expected.clone()
+            };
+            for label in &expected {
+                assert_eq!(
+                    items
+                        .iter()
+                        .filter(|item| item.label.trim_matches('"') == *label)
+                        .count(),
+                    1,
+                    "{read} {typ}: {label}: {items:?}"
+                );
+            }
+            if expected.is_empty() {
+                assert!(
+                    items.iter().any(|item| item.label == "available"),
+                    "{typ}: {items:?}"
+                );
+                assert!(
+                    !items.iter().any(|item| item.label == "function(value) end"),
+                    "{typ}: {items:?}"
+                );
+            }
+        }
+    }
+}

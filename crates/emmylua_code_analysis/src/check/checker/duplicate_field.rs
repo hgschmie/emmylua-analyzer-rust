@@ -11,10 +11,10 @@ use emmylua_parser::{
 
 use crate::DiagnosticCode;
 use crate::FileId;
-use crate::LuaType;
 use crate::semantic_db::def::{Member, SemanticId};
 use crate::semantic_model::SemanticModel;
 use crate::semantic_model::type_eval::expand_alias_head;
+use crate::{LuaType, MemberAccess};
 
 use super::{CheckContext, Checker};
 
@@ -58,8 +58,8 @@ impl Checker for DuplicateFieldChecker {
                     && dupes.len() == 2
                     && matches!(
                         (dupes[0].access, dupes[1].access),
-                        (crate::MemberAccess::Read, crate::MemberAccess::Write)
-                            | (crate::MemberAccess::Write, crate::MemberAccess::Read)
+                        (MemberAccess::Read, MemberAccess::Write)
+                            | (MemberAccess::Write, MemberAccess::Read)
                     )
                 {
                     continue;

@@ -3,7 +3,7 @@ use super::{
     render::humanize,
 };
 use emmylua_code_analysis::{SemanticDatabase, SemanticModel};
-use emmylua_parser::LuaSyntaxToken;
+use emmylua_parser::{LuaAstNode, LuaDocTagField, LuaSyntaxToken};
 use lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind};
 
 pub(super) fn hover(
@@ -13,7 +13,16 @@ pub(super) fn hover(
 ) -> Option<Hover> {
     let pair = super::super::common::directional_index_at(model, token)
         .map(|(read, write, _)| (read, write))
-        .or_else(|| model.directional_declaration(&model.find_decl(token.clone().into())?))?;
+        .or_else(|| {
+            let field = token.parent()?.ancestors().find_map(LuaDocTagField::cast)?;
+            if !field
+                .get_field_key_range()?
+                .contains_range(token.text_range())
+            {
+                return None;
+            }
+            model.directional_declaration(&model.find_decl(token.clone().into())?)
+        })?;
     let (read, write) = pair;
     let mut value = format!(
         "```lua\nRead: {}\nWrite: {}\n```",

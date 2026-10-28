@@ -133,7 +133,10 @@ may use its own optional marker and generic types. Named fields, string-literal
 keys, and integer-literal keys are supported; directional index signatures and
 `__newindex` modeling are not supported. Both modifiers on a single field are an
 annotation error. Repeating a declaration for the same direction remains a
-duplicate-field error (existing function overload rules still apply).
+duplicate-field error (existing function overload rules still apply). Repeated
+`(write)` function declarations accept an assigned callback matching any of the
+declared setter signatures. Contextual callback inference retains the existing
+overload order; ordinary, unqualified function fields are unchanged.
 
 Assignments to a paired property invalidate its previous flow narrowing and
 restore its declared getter type. Later checks can narrow that type normally.

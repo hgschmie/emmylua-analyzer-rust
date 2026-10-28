@@ -443,3 +443,153 @@ fn asymmetric_fields_review_repeated_callback_writer_generics() {
     assert_eq!(ws.expr_ty("callback_value"), LuaType::Number);
     assert_eq!(ws.expr_ty("holder.callback"), ws.ty("fun(value: boolean)"));
 }
+
+#[test]
+fn asymmetric_fields_review_member_collection_preserves_real_overloads() {
+    for fields in [
+        "---@field (read) value number\n---@field (write) value string",
+        "---@field (write) value string\n---@field (read) value number",
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def_file("pair.lua", &format!("---@class Pair\n{fields}"));
+        let model = ws.analysis.semantic_model(file);
+        let ty = LuaType::Ref(crate::LuaTypeDeclId::global("Pair"));
+        let infos =
+            model.member_infos_with_key_all(&ty, &crate::LuaMemberKey::Name("value".into()));
+        assert_eq!(infos.len(), 1, "{fields}: {infos:?}");
+        assert_eq!(infos[0].typ, LuaType::Number);
+    }
+    for flag in ["", "(write) "] {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def_file("overloads.lua", &format!(
+            "---@class Overloads\n---@field {flag}callback fun(value: string)\n---@field {flag}callback fun(value: number)"
+        ));
+        let model = ws.analysis.semantic_model(file);
+        let ty = LuaType::Ref(crate::LuaTypeDeclId::global("Overloads"));
+        let infos =
+            model.member_infos_with_key_all(&ty, &crate::LuaMemberKey::Name("callback".into()));
+        assert_eq!(infos.len(), 2, "{flag}: {infos:?}");
+        assert_ne!(infos[0].id, infos[1].id);
+    }
+}
+
+#[test]
+fn asymmetric_fields_review_repeated_direction_messages() {
+    for (flags, expected) in [
+        ("read,read", "Duplicate (read) field modifier"),
+        ("write,write", "Duplicate (write) field modifier"),
+        (
+            "read,write",
+            "A field may specify only one of (read) or (write)",
+        ),
+        (
+            "write,read",
+            "A field may specify only one of (read) or (write)",
+        ),
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def_file(
+            "invalid.lua",
+            &format!("---@class Invalid\n---@field ({flags}) value number"),
+        );
+        let model = ws.analysis.semantic_model(file);
+        let errors = &model.file_facts().unwrap().annotation_errors;
+        assert_eq!(errors.len(), 1, "{flags}: {errors:?}");
+        assert_eq!(errors[0].message, expected, "{flags}");
+    }
+}
+
+#[test]
+fn asymmetric_fields_review_callback_assignment_accepts_each_writer() {
+    for (first, last) in [("string", "number"), ("number", "string")] {
+        for read in ["---@field (read) callback fun(value: boolean)\n", ""] {
+            let mut ws = VirtualWorkspace::new();
+            ws.def(&format!(
+                "---@class Holder\n{read}---@field (write) callback fun(value: {first})\n---@field (write) callback fun(value: {last})\n---@type Holder\nholder = {{}}"
+            ));
+            ws.def("holder.callback = function(value) callback_context = value end");
+            assert_eq!(ws.expr_ty("callback_context"), ws.ty(last));
+            assert!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::AssignTypeMismatch,
+                    "holder.callback = function(value) callback_value = value end"
+                ),
+                "{first}/{last}: inferred callback"
+            );
+            for typ in [first, last] {
+                assert!(ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch,
+                    &format!("---@param value {typ}\nlocal function callback(value) end\nholder.callback = callback")), "{first}/{last}: {typ}");
+            }
+            assert!(!ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch,
+                "---@param value boolean\nlocal function callback(value) end\nholder.callback = callback"));
+        }
+    }
+}
+
+#[test]
+fn asymmetric_fields_review_ordinary_callback_assignment_is_unchanged() {
+    for (first, last) in [("string", "number"), ("number", "string")] {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(&format!(
+            "---@class Holder\n---@field callback fun(value: {first})\n---@field callback fun(value: {last})\n---@type Holder\nholder = {{}}"
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            "holder.callback = function(value) end"
+        ));
+        assert!(ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch,
+            &format!("---@param value {first}\nlocal function callback(value) end\nholder.callback = callback")));
+        assert!(!ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch,
+            &format!("---@param value {last}\nlocal function callback(value) end\nholder.callback = callback")));
+    }
+}
+
+#[test]
+fn asymmetric_fields_review_budget_preserves_completed_cast_paths() {
+    for op in ["", "+"] {
+        for length in [0, 600] {
+            let long = (0..length)
+                .map(|i| format!("noise = {i}\n"))
+                .collect::<String>();
+            let mut ws = VirtualWorkspace::new();
+            ws.def(&format!(
+                "---@class Box\n---@field (read) value number\n---@field (write) value number\n---@type Box\nlocal box = {{}}\nlocal noise = 0\nif flag then\n{long}else\n---@cast box.value {op}string\ncast_seen = box.value\nend\nresult = box.value"
+            ));
+            assert_eq!(
+                ws.expr_ty("result"),
+                ws.ty("number|string"),
+                "{op}: {length}"
+            );
+        }
+    }
+}
+
+#[test]
+fn asymmetric_fields_review_lhs_assertion_keeps_setter_contract() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def("---@class Box\n---@field (read) value number\n---@field (write) value string\n---@type Box\nbox = {}");
+    for (value, accepted) in [("'valid'", true), ("false", false)] {
+        let source = format!("box.value --[[@as boolean]] = {value}");
+        assert!(ws.has_no_diagnostic(DiagnosticCode::SyntaxError, &source));
+        assert_eq!(
+            ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
+            accepted
+        );
+    }
+}
+
+#[test]
+fn asymmetric_fields_review_budget_preserves_partial_cast_paths() {
+    for (op, expected) in [("", "string"), ("+", "number|string")] {
+        for length in [0, 600] {
+            let long = (0..length)
+                .map(|i| format!("noise = {i}\n"))
+                .collect::<String>();
+            let mut ws = VirtualWorkspace::new();
+            ws.def(&format!(
+                "---@class Box\n---@field (read) value number\n---@field (write) value number\n---@type Box\nlocal box = {{}}\nlocal noise = 0\nif flag then\nnoise = 1\nelse\n{long}end\n---@cast box.value {op}string\nresult = box.value"
+            ));
+            assert_eq!(ws.expr_ty("result"), ws.ty(expected), "{op}: {length}");
+        }
+    }
+}

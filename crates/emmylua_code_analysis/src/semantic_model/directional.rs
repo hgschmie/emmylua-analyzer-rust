@@ -7,6 +7,8 @@ use crate::{LuaMemberKey, LuaType, MemberAccess, SemanticId};
 use emmylua_parser::{LuaAstNode, LuaIndexExpr, LuaIndexKey};
 
 impl SemanticModel<'_> {
+    /// Return the storage type checked by assignment.
+    /// Expression-local assertions do not redefine a directional setter contract.
     pub fn assignment_target_type(&self, expr: emmylua_parser::LuaExpr) -> LuaType {
         if let emmylua_parser::LuaExpr::IndexExpr(index) = &expr
             && let Some((_, write)) = self.directional_index(index)
@@ -26,14 +28,19 @@ impl SemanticModel<'_> {
         self.directional_member(&self.type_def_ref(def), &member.key)
     }
 
-    /// Return the declared read and write views, with generic substitutions.
+    /// Return the read type and the union of setter overloads, with generic substitutions.
+    /// The write identity remains the first setter declaration for navigation.
     pub fn directional_member(
         &self,
         prefix: &LuaType,
         key: &LuaMemberKey,
     ) -> Option<(MemberInfo, MemberInfo)> {
         let (read, writes) = self.directional_member_views(prefix, key)?;
-        Some((read, writes.into_iter().next()?))
+        let mut write = writes.first()?.clone();
+        // A setter overload accepts a value matching any declared write contract.
+        // Keep the first declaration identity for navigation, but expose every type.
+        write.typ = LuaType::from_vec(writes.into_iter().map(|info| info.typ).collect());
+        Some((read, write))
     }
 
     /// Preserve every setter declaration for contextual callback signature selection.
@@ -52,13 +59,7 @@ impl SemanticModel<'_> {
             return None;
         }
         let mut writers = facts
-            .members
-            .iter()
-            .filter(|other| {
-                other.owner == field.owner
-                    && other.key == field.key
-                    && other.access == MemberAccess::Write
-            })
+            .members_with_access(field, MemberAccess::Write)
             .collect::<Vec<_>>();
         if writers.is_empty() {
             writers.push(field);

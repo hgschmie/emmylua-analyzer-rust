@@ -7,7 +7,7 @@ use crate::semantic_db::def::{DeclKind, MemberRef, SemanticId, TypeDef, TypeDefK
 use crate::semantic_model::infer::unify::{self, TplBindings};
 use crate::semantic_model::type_eval::{map_type, substitute_named_refs, with_expanded_alias};
 use crate::{FileId, GenericTplId, InFiled, LuaMemberKey, LuaType};
-use crate::{Member, semantic_db::facts::FileFacts};
+use crate::{Member, MemberAccess, semantic_db::facts::FileFacts};
 use smol_str::SmolStr;
 
 use super::SemanticModel;
@@ -403,7 +403,8 @@ pub fn member_infos_with_key(
     dedup_by_key(out)
 }
 
-/// Members with the given key of a prefix type (all matches, no dedup; duplicate `@field` lines are kept as overloads).
+/// All matching declarations, preserving distinct `@field` overloads.
+/// A setter redirected to its getter does not add another copy of that getter.
 pub(crate) fn member_infos_with_key_all(
     model: &SemanticModel,
     prefix_type: &LuaType,
@@ -742,7 +743,7 @@ fn collect_members(
         LuaType::TableConst(table) => {
             let owner = SemanticId::member(table.file_id, table.value);
             for member_ref in owner_member_refs(model, &owner, filter) {
-                if let Some(info) = member_info_of_projection(
+                if let Some(info) = member_info_for_collection(
                     model,
                     &member_ref,
                     bindings,
@@ -773,7 +774,7 @@ fn collect_members(
                 }
                 for decl_owner in owners {
                     for member_ref in owner_member_refs(model, &decl_owner, filter) {
-                        if let Some(info) = member_info_of_projection(
+                        if let Some(info) = member_info_for_collection(
                             model,
                             &member_ref,
                             bindings,
@@ -821,7 +822,7 @@ fn collect_members(
         LuaType::String | LuaType::StringConst(_) | LuaType::DocStringConst(_) => {
             let string_owner = SemanticId::name(SmolStr::new("string"));
             for member_ref in owner_member_refs(model, &string_owner, filter) {
-                if let Some(info) = member_info_of_projection(
+                if let Some(info) = member_info_for_collection(
                     model,
                     &member_ref,
                     bindings,
@@ -981,7 +982,7 @@ fn collect_type_def_members(
     // 1. This class's `@field` (workspace member index, cross-file).
     for member_ref in owner_member_refs(model, &def.id, filter) {
         if let Some(info) =
-            member_info_of_projection(model, &member_ref, bindings, name_bindings, raw_member)
+            member_info_for_collection(model, &member_ref, bindings, name_bindings, raw_member)
         {
             push_member_info(out, filter, info);
         }
@@ -1008,7 +1009,7 @@ fn collect_type_def_members(
         }
         for member_ref in owner_member_refs(model, &owner, filter) {
             if let Some(info) =
-                member_info_of_projection(model, &member_ref, bindings, name_bindings, raw_member)
+                member_info_for_collection(model, &member_ref, bindings, name_bindings, raw_member)
             {
                 push_member_info(out, filter, info);
             }
@@ -1087,6 +1088,19 @@ fn is_std_file(model: &SemanticModel<'_>, file_id: FileId) -> bool {
     model.is_std_file(file_id)
 }
 
+/// Collection visits the getter declaration itself; skip a setter remapped to it.
+/// Keep distinct declarations and generic projections, including real overloads.
+fn member_info_for_collection(
+    model: &SemanticModel,
+    member_ref: &MemberRef,
+    bindings: Option<&TplBindings>,
+    name_bindings: Option<&HashMap<String, LuaType>>,
+    raw_member: Option<&SemanticId>,
+) -> Option<MemberInfo> {
+    member_info_of_projection(model, member_ref, bindings, name_bindings, raw_member)
+        .filter(|info| info.id.as_ref() == Some(&member_ref.id))
+}
+
 /// Member reference → member info (type projection + generic substitution).
 fn member_info_of(
     model: &SemanticModel,
@@ -1110,12 +1124,8 @@ fn member_info_of_projection(
     let facts = model.file_facts_of(member_ref.file_id)?;
     let member = facts.member_by_id(&member_ref.id)?;
     if raw_member.is_none()
-        && member.access == crate::MemberAccess::Write
-        && let Some(read) = facts.members.iter().find(|other| {
-            other.owner == member.owner
-                && other.key == member.key
-                && other.access == crate::MemberAccess::Read
-        })
+        && member.access == MemberAccess::Write
+        && let Some(read) = facts.members_with_access(member, MemberAccess::Read).next()
     {
         return member_info_of(
             model,
@@ -1181,7 +1191,7 @@ fn member_info_of_projection(
     // Generic aliases stay lazy and can resolve to primitives, so they retain nil.
     if member.is_nullable
         && !typ.is_nullable()
-        && (member.access != crate::MemberAccess::ReadWrite
+        && (member.access != MemberAccess::ReadWrite
             || !matches!(
                 typ,
                 LuaType::Function
