@@ -3642,8 +3642,10 @@ fn primitive_accepts_const(param: &LuaType, arg: &LuaType) -> bool {
     )
 }
 
-/// Try to project a generic arg (subclass) to a target base class, for inherited-generic
-/// unify like `Subject<T> -> Observable<T>`.
+/// Project a subclass to a target base for inherited-generic unification.
+/// This shares the enclosing query's evaluation budget, so even a finite search
+/// may be incomplete. `None` means either no match or incomplete evaluation;
+/// exhaustion records model errors and marks cached results provisional.
 fn super_generic_type(
     model: &SemanticModel,
     arg_ty: &LuaType,
@@ -5009,7 +5011,7 @@ fn merge(a: LuaType, b: LuaType) -> LuaType {
 }
 
 #[cfg(test)]
-mod generic_superclass_cycle_tests {
+mod generic_superclass_lookup_tests {
     use super::*;
 
     #[test]
@@ -5045,6 +5047,10 @@ mod generic_superclass_cycle_tests {
 
     #[test]
     fn generic_superclass_lookup_does_not_charge_completed_instances_twice() {
+        use crate::semantic_model::cache::TypeEvaluationScope;
+
+        const ARGUMENT_WIDTH: usize = 700;
+        const CHUNK_NODES: usize = 1024;
         let mut ws = crate::VirtualWorkspace::new();
         let file = ws.def(
             "---@class Parent<T>\n---@class Via<T>: T\n---@class Loop<T>: Loop<T>\n---@class Root<T>: Loop<T>, Via<Parent<integer>>",
@@ -5053,19 +5059,28 @@ mod generic_superclass_cycle_tests {
         let argument = LuaType::Generic(Rc::new(LuaGenericType::new(
             LuaTypeDeclId::global("Root"),
             vec![LuaType::Tuple(Rc::new(LuaTupleType::new(
-                vec![LuaType::Integer; 700],
+                vec![LuaType::Integer; ARGUMENT_WIDTH],
                 LuaTupleStatus::DocResolve,
             )))],
         )));
-        let evaluation = crate::semantic_model::cache::TypeEvaluationScope::new(&model.cache)
-            .expect("fresh evaluation");
+        let evaluation = TypeEvaluationScope::new(&model.cache).expect("fresh evaluation");
         let padding = LuaType::Tuple(Rc::new(LuaTupleType::new(
-            vec![LuaType::Integer; 1023],
+            vec![LuaType::Integer; CHUNK_NODES - 1],
             LuaTupleStatus::DocResolve,
         )));
-        // Leave enough shared budget for distinct states, but not a repeated Loop<T>.
-        for _ in 0..975 {
+        // Root<T> and Loop<T> each cost a generic root, a tuple and its children.
+        // Reserve two distinct instances plus 25% for the small remaining projection,
+        // but not enough for charging the repeated Loop<T> a third time.
+        let instance_nodes = ARGUMENT_WIDTH + 2;
+        let remaining = 2 * instance_nodes + instance_nodes / 4;
+        let precharge = TypeEvaluationScope::MAX_TYPE_VISITS
+            .checked_sub(remaining)
+            .expect("work budget must accommodate the regression fixture");
+        for _ in 0..precharge / CHUNK_NODES {
             assert!(evaluation.visit(&padding));
+        }
+        for _ in 0..precharge % CHUNK_NODES {
+            assert!(evaluation.visit(&LuaType::Integer));
         }
         let parent_id = LuaTypeDeclId::global("Parent");
         assert_eq!(
@@ -5262,7 +5277,7 @@ result = unwrap(arg)
         let LuaType::Generic(generic) = result else {
             panic!("expected generic parent")
         };
-        assert_eq!(generic.get_params(), &vec![LuaType::Integer]);
+        assert_eq!(generic.get_params().as_slice(), &[LuaType::Integer]);
     }
 
     #[test]
