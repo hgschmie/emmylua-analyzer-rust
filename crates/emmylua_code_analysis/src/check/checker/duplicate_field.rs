@@ -54,13 +54,19 @@ impl Checker for DuplicateFieldChecker {
                 if dupes.len() <= 1 {
                     continue;
                 }
+                // Getter and setter declarations form independent overload sets.
                 if is_type_def
-                    && dupes.len() == 2
-                    && matches!(
-                        (dupes[0].access, dupes[1].access),
-                        (MemberAccess::Read, MemberAccess::Write)
-                            | (MemberAccess::Write, MemberAccess::Read)
-                    )
+                    && dupes
+                        .iter()
+                        .all(|member| member.access != MemberAccess::ReadWrite)
+                    && [MemberAccess::Read, MemberAccess::Write]
+                        .into_iter()
+                        .all(|access| {
+                            let mut direction =
+                                dupes.iter().filter(|member| member.access == access);
+                            direction.clone().count() <= 1
+                                || direction.all(|member| is_function_like(semantic_model, member))
+                        })
                 {
                     continue;
                 }

@@ -496,6 +496,164 @@ fn asymmetric_fields_review_repeated_direction_messages() {
         let errors = &model.file_facts().unwrap().annotation_errors;
         assert_eq!(errors.len(), 1, "{flags}: {errors:?}");
         assert_eq!(errors[0].message, expected, "{flags}");
+        let document = model.document(file).unwrap();
+        assert_eq!(
+            document.get_text_slice(errors[0].range),
+            flags.split(',').nth(1).unwrap(),
+            "{flags}"
+        );
+    }
+}
+
+fn check_directional_guard_after_write(setup: &str, access: &str, action: &str, invalidates: bool) {
+    let mut ws = VirtualWorkspace::new();
+    ws.analysis
+        .diagnostic
+        .enable_only(DiagnosticCode::ParamTypeMismatch);
+    let file = ws.def(&format!(
+        r#"
+---@class Converted
+---@field (read) value number?
+---@field (write) value string?
+---@class Root
+---@field left Converted
+---@field right Converted
+---@param value number
+local function accept_number(value) end
+local function harmless() end
+---@param a Converted
+---@param other Converted
+---@param root Root
+---@param other_root Root
+---@param unknown fun(value: Converted)
+local function check(a, other, root, other_root, unknown)
+    {setup}
+    if {access} then
+        before_write = {access}
+        {action}
+        after_write = {access}
+        accept_number({access})
+    end
+end
+"#,
+    ));
+    assert_eq!(ws.expr_ty("before_write"), LuaType::Number, "{action}");
+    let expected = if invalidates {
+        ws.ty("number?")
+    } else {
+        LuaType::Number
+    };
+    assert_eq!(ws.expr_ty("after_write"), expected, "{action}");
+    let diagnostics = ws
+        .analysis
+        .diagnose_file(file, tokio_util::sync::CancellationToken::new())
+        .unwrap();
+    assert_eq!(diagnostics.len(), usize::from(invalidates), "{action}");
+}
+
+#[test]
+fn asymmetric_fields_review_receiver_replacement_resets_guard() {
+    check_directional_guard_after_write("", "a.value", "a = other", true);
+}
+
+#[test]
+fn asymmetric_fields_review_ancestor_replacement_resets_guard() {
+    check_directional_guard_after_write("", "root.left.value", "root.left = other", true);
+}
+
+#[test]
+fn asymmetric_fields_review_root_replacement_resets_guard() {
+    check_directional_guard_after_write("", "root.left.value", "root = other_root", true);
+}
+
+#[test]
+fn asymmetric_fields_review_alias_write_resets_guard() {
+    check_directional_guard_after_write(
+        "local alias = a",
+        "a.value",
+        "alias.value = 'changed'",
+        true,
+    );
+    check_directional_guard_after_write(
+        "local alias = root",
+        "root.left.value",
+        "alias.left = other",
+        true,
+    );
+}
+
+#[test]
+fn asymmetric_fields_review_exact_write_restores_getter() {
+    for action in ["a.value = nil", "a.value = 'changed'"] {
+        check_directional_guard_after_write("", "a.value", action, true);
+    }
+}
+
+#[test]
+fn asymmetric_fields_review_unrelated_writes_and_calls_keep_guard() {
+    for action in ["", "harmless()", "unknown(a)", "other.value = 'changed'"] {
+        check_directional_guard_after_write("", "a.value", action, false);
+    }
+    check_directional_guard_after_write("", "root.left.value", "root.right = other", false);
+    check_directional_guard_after_write("local alias = a", "a.value", "alias = other", false);
+    check_directional_guard_after_write("local alias = a", "alias.value", "a = other", false);
+}
+
+#[test]
+fn asymmetric_fields_review_new_guard_after_replacement() {
+    check_directional_guard_after_write(
+        "",
+        "a.value",
+        "a = other\nif a.value == nil then return end",
+        false,
+    );
+}
+
+#[test]
+fn asymmetric_fields_review_overloads_are_checked_per_direction() {
+    for (single, repeated) in [("read", "write"), ("write", "read")] {
+        let fields = [
+            format!("---@field ({single}) value number"),
+            format!("---@field ({repeated}) value fun(value: string)"),
+            format!("---@field ({repeated}) value fun(value: boolean)"),
+        ];
+        for order in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            let declarations = order.map(|i| fields[i].as_str()).join("\n");
+            assert!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::DuplicateDocField,
+                    &format!("---@class Converted\n{declarations}"),
+                ),
+                "{declarations}"
+            );
+        }
+    }
+}
+
+#[test]
+fn asymmetric_fields_review_invalid_duplicate_directions_still_report() {
+    for declarations in [
+        "---@field (read) value number\n---@field (read) value number\n---@field (write) value fun(value: string)",
+        "---@field (write) value string\n---@field (write) value string\n---@field (read) value fun(value: number)",
+        "---@field (read) value number\n---@field (write) value fun(value: string)\n---@field value fun(value: boolean)",
+        "---@field value number\n---@field value number",
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        assert!(
+            !ws.has_no_diagnostic(
+                DiagnosticCode::DuplicateDocField,
+                &format!("---@class Converted\n{declarations}"),
+            ),
+            "{declarations}"
+        );
     }
 }
 

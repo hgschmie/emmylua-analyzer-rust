@@ -5745,7 +5745,7 @@ fn directional_read_at(
                 FlowNodeKind::Assignment(ptr) => {
                     let assignment = ptr.to_node(&root)?;
                     if assignment.get_range().end() <= offset
-                        && assignment.get_var_and_expr_list().0.iter().any(|var| {
+                        && (assignment.get_var_and_expr_list().0.iter().any(|var| {
                             let emmylua_parser::LuaVarExpr::IndexExpr(target) = var else {
                                 return false;
                             };
@@ -5753,7 +5753,14 @@ fn directional_read_at(
                                 && model
                                     .resolve_member(target)
                                     .is_some_and(|resolved| resolved.owner == owner)
-                        })
+                        }) || member_write_match(
+                            model,
+                            tree,
+                            current,
+                            member,
+                            Some(index),
+                            None,
+                        ) != MemberWrite::Unrelated)
                     {
                         results.push(finalize(model, read.typ.clone(), &path));
                         break;

@@ -1579,7 +1579,7 @@ impl FactsBuilder {
                 };
                 if access != MemberAccess::ReadWrite {
                     self.annotation_errors.push(AnnotationError {
-                        range: field_tag.get_range(),
+                        range: flag.get_range(),
                         message: if access == direction {
                             format!("Duplicate ({}) field modifier", flag.get_name_text()).into()
                         } else {
