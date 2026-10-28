@@ -754,6 +754,9 @@ impl<'db> SemanticModel<'db> {
         });
         signatures
     }
+    /// Resolve an index expression to its declaration and read view.
+    /// Paired directional fields use the getter identity even on an assignment target.
+    /// Use [`Self::directional_index`] or [`Self::assignment_target_type`] for setter types.
     pub fn resolve_member(&self, index_expr: &LuaIndexExpr) -> Option<ResolvedMember> {
         let syntax = index_expr.get_syntax_id();
         let file_id = self.view.file_id();

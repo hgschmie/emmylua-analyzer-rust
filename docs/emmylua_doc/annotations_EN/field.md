@@ -143,3 +143,20 @@ uses the getter type of `property` and the setter type of `child`.
 These annotations describe types, not access permissions. If only one direction
 is supplied it is used for both operations; no read-only or write-only diagnostic
 is introduced. Hover and completion documentation show both types for a pair.
+
+A child declaration shadows the inherited property as a unit. A single-direction
+override therefore supplies both the read type and the write type:
+
+```lua
+---@class Parent
+---@field (read) value number
+---@field (write) value string
+
+---@class Child: Parent
+---@field (read) value boolean
+
+---@type Child
+local child
+child.value = true -- Child accepts boolean; Parent accepts string
+local value = child.value -- boolean
+```

@@ -101,6 +101,33 @@ box = {}
 "#;
 
 #[test]
+fn asymmetric_fields_partial_override_replaces_both_directions() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def(
+        r#"
+---@class Parent
+---@field (read) value number
+---@field (write) value string
+---@class Child: Parent
+---@field (read) value boolean
+---@type Parent
+parent = {}
+---@type Child
+child = {}
+"#,
+    );
+    assert_eq!(ws.expr_ty("parent.value"), LuaType::Number);
+    assert_eq!(ws.expr_ty("child.value"), LuaType::Boolean);
+    assert!(ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, "parent.value = 'valid'"));
+    assert!(!ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, "parent.value = true"));
+    assert!(ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, "child.value = true"));
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::AssignTypeMismatch,
+        "child.value = 'invalid'"
+    ));
+}
+
+#[test]
 fn asymmetric_fields_read_and_write() {
     let mut ws = VirtualWorkspace::new();
     ws.def(DEFS);
