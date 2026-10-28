@@ -124,7 +124,9 @@ fn get_token_should_type(builder: &CompletionBuilder) -> Option<Vec<LuaType>> {
                 return None;
             }
             let var = vars.first()?;
-            let var_type = builder.semantic_model.assignment_target_type(var.to_expr());
+            let var_type = builder
+                .semantic_model
+                .assignment_target_type(&var.to_expr());
             if !contains_function(builder, &var_type) && !matches!(var_type, LuaType::Unknown) {
                 return Some(vec![var_type]);
             }

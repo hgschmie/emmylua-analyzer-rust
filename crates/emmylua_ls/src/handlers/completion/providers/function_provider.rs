@@ -118,7 +118,9 @@ fn infer_assign_target(builder: &CompletionBuilder) -> Option<Vec<LuaType>> {
         return None;
     }
     let var = vars.first()?;
-    let var_type = builder.semantic_model.assignment_target_type(var.to_expr());
+    let var_type = builder
+        .semantic_model
+        .assignment_target_type(&var.to_expr());
     super::equality_provider::contains_function(builder, &var_type).then(|| vec![var_type])
 }
 

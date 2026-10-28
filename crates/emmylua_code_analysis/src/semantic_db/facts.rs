@@ -1586,7 +1586,9 @@ impl FactsBuilder {
                             "A field may specify only one of (read) or (write)".into()
                         },
                     });
-                    return;
+                    // Retain the first direction so uses of this field do not
+                    // produce cascading undefined-field diagnostics.
+                    break;
                 }
                 access = direction;
             }
@@ -1598,7 +1600,8 @@ impl FactsBuilder {
                     "Directional fields require a named, string-literal, or integer-literal key"
                         .into(),
             });
-            return;
+            // Recover as an ordinary index signature after reporting the modifier.
+            access = MemberAccess::ReadWrite;
         }
         // Integer keys in `@field [1]` are encoded as `LuaMemberKey::Integer` (matching index expression keys).
         let member_key = match &key {

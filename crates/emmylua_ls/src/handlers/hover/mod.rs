@@ -1,5 +1,6 @@
 mod build_hover;
 pub(crate) mod desc;
+mod directional;
 mod keyword_hover;
 pub(crate) mod render;
 
@@ -106,5 +107,3 @@ impl RegisterCapabilities for HoverCapabilities {
         server_capabilities.hover_provider = Some(HoverProviderCapability::Simple(true));
     }
 }
-
-mod directional;

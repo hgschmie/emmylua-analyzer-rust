@@ -273,6 +273,8 @@ fn asymmetric_fields_review_assignment_completion_providers() {
         ("Callback|'coal'", vec!["function(value) end", "coal"]),
         ("number", vec![]),
         ("unknown", vec![]),
+        ("Callable", vec![]),
+        ("CallableAlias", vec![]),
     ] {
         for read in [
             "---@field (read) value boolean\n---@field (write)",
@@ -280,7 +282,7 @@ fn asymmetric_fields_review_assignment_completion_providers() {
         ] {
             let mut ws = ProviderVirtualWorkspace::new();
             let (source, position) = ProviderVirtualWorkspace::handle_file_content(&format!(
-                "---@alias Choice 'coal'|'wood'\n---@alias Callback fun(value: string)\n---@class Property\n{read} value {typ}\n---@type Property\nlocal property = {{}}\nlocal available = 1\nproperty.value = <??>"
+                "---@alias Choice 'coal'|'wood'\n---@alias Callback fun(value: string)\n---@class Callable\n---@field __call fun(self: Callable, value: string)\n---@alias CallableAlias Callable\n---@class Property\n{read} value {typ}\n---@type Property\nlocal property = {{}}\nlocal available = 1\nproperty.value = <??>"
             )).expect("position");
             let file = ws.def_file("use.lua", &source);
             let response = completion(
@@ -323,5 +325,52 @@ fn asymmetric_fields_review_assignment_completion_providers() {
                 );
             }
         }
+    }
+}
+
+#[gtest]
+fn asymmetric_fields_review_assignment_completion_uses_writer_with_callable_getter() {
+    for (writer, expected) in [
+        ("fun(setter: string)", vec!["function(setter) end"]),
+        ("'coal'|'wood'", vec!["coal", "wood"]),
+        (
+            "(fun(setter: string))|'coal'",
+            vec!["function(setter) end", "coal"],
+        ),
+        ("unknown", vec!["available"]),
+    ] {
+        let mut ws = ProviderVirtualWorkspace::new();
+        let (source, position) = ProviderVirtualWorkspace::handle_file_content(&format!(
+            "---@class Property\n---@field (read) value fun(getter: boolean)\n---@field (write) value {writer}\n---@type Property\nlocal property = {{}}\nlocal available = 1\nproperty.value = <??>"
+        )).expect("position");
+        let file = ws.def_file("use.lua", &source);
+        let response = completion(
+            &ws.analysis,
+            file,
+            position,
+            CompletionTriggerKind::INVOKED,
+            CancellationToken::new(),
+        )
+        .expect("completion");
+        let items = match response {
+            CompletionResponse::Array(items) => items,
+            CompletionResponse::List(list) => list.items,
+        };
+        for label in expected {
+            assert_eq!(
+                items
+                    .iter()
+                    .filter(|item| item.label.trim_matches('"') == label)
+                    .count(),
+                1,
+                "{writer}: {label}: {items:?}"
+            );
+        }
+        assert!(
+            !items
+                .iter()
+                .any(|item| item.label == "function(getter) end"),
+            "{writer}: {items:?}"
+        );
     }
 }

@@ -138,6 +138,11 @@ duplicate-field error (existing function overload rules still apply). Repeated
 declared setter signatures. Contextual callback inference retains the existing
 overload order; ordinary, unqualified function fields are unchanged.
 
+For a union receiver such as `A|B`, reads combine the getter types and assignments
+accept any setter type contributed by either variant, matching ordinary union-field
+assignment behavior. Ordinary fields in the union contribute their shared read/write
+type. Narrowing the receiver to one variant also narrows the available setters.
+
 Assignments to a paired property invalidate its previous flow narrowing and
 restore its declared getter type. Later checks can narrow that type normally.
 The receiver of a nested assignment is always read: `object.property.child = x`

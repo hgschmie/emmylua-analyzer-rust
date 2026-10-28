@@ -5718,6 +5718,9 @@ fn type_is_broader(broad: &LuaType, narrow: &LuaType) -> bool {
     )
 }
 
+/// Bound the total backward traversal across all paths of one directional read.
+const DIRECTIONAL_READ_FLOW_BUDGET: usize = 512;
+
 /// Directional assignments invalidate earlier guards but never substitute the
 /// write value for the property's read contract. At the traversal limit, retain
 /// observed path modifiers over the declared getter instead of dropping results.
@@ -5734,7 +5737,7 @@ fn directional_read_at(
     let start = tree.get_flow_id_at(offset)?;
     let mut pending = vec![(start, PathState::default(), HashSet::new())];
     let mut results = Vec::new();
-    let mut budget = 512;
+    let mut budget = DIRECTIONAL_READ_FLOW_BUDGET;
     while let Some((mut current, mut path, mut seen)) = pending.pop() {
         loop {
             if budget == 0 {
@@ -5780,17 +5783,12 @@ fn directional_read_at(
                     }
                 }
                 FlowNodeKind::TrueCondition(cond) | FlowNodeKind::FalseCondition(cond) => {
-                    // Avoid applying a guard for another instance of the same class.
+                    // Match receiver paths, including stable aliases, before narrowing.
                     let expr = cond.to_node(&root)?;
                     let relevant = std::iter::once(expr.syntax().clone())
                         .chain(expr.syntax().descendants())
                         .filter_map(emmylua_parser::LuaIndexExpr::cast)
-                        .any(|other| {
-                            member_key_from_index_expr(model, &other).as_ref() == Some(&read.key)
-                                && model
-                                    .resolve_member(&other)
-                                    .is_some_and(|resolved| resolved.owner == owner)
-                        });
+                        .any(|other| member_access_matches(model, member, Some(index), &other));
                     if relevant
                         && let Some(narrowing) = narrow_member_condition(
                             model,

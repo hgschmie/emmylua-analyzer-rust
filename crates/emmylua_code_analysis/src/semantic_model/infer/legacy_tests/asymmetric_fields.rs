@@ -647,6 +647,233 @@ end
 }
 
 #[test]
+fn asymmetric_fields_review_ordinary_nullable_discriminant_keeps_receiver() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def(
+        r#"
+---@class Absent
+---@field value nil
+---@class Maybe
+---@field value number?
+---@param a Absent|Maybe
+local function check(a)
+    if a.value == nil then
+        matches_nil = a
+    else
+        may_have_number = a
+    end
+end
+"#,
+    );
+    assert_eq!(ws.expr_ty("matches_nil"), ws.ty("Absent|Maybe"));
+    assert_eq!(ws.expr_ty("may_have_number"), ws.ty("Maybe"));
+}
+
+#[test]
+fn asymmetric_fields_review_alias_guard_tracks_receiver() {
+    for (before_guard, after_guard, narrowed) in [
+        ("", "", true),
+        ("a = other", "", false),
+        ("alias = other", "", false),
+        ("", "a = other", false),
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(&format!(
+            r#"
+---@class Converted
+---@field (read) value number?
+---@field (write) value string?
+---@param a Converted
+---@param other Converted
+local function check(a, other)
+    local alias = a
+    {before_guard}
+    if alias.value then
+        {after_guard}
+        guarded = a.value
+    end
+end
+"#,
+        ));
+        let expected = if narrowed { "number" } else { "number?" };
+        assert_eq!(
+            ws.expr_ty("guarded"),
+            ws.ty(expected),
+            "{before_guard}; {after_guard}"
+        );
+    }
+}
+
+const UNION_DEFS: &str = r#"
+---@class A
+---@field kind 'a'
+---@field (read) value boolean
+---@field (write) value string
+---@class B
+---@field kind 'b'
+---@field (read) value number
+---@field (write) value number
+---@class Generic<T>
+---@field (read) value boolean
+---@field (write) value T
+---@class Ordinary
+---@field value number
+---@alias Choice A|B
+---@alias GenericChoice<T> Generic<T>|B
+"#;
+
+#[test]
+fn asymmetric_fields_review_union_setter_alternatives() {
+    for receiver in ["A|B", "B|A", "Choice", "GenericChoice<string>"] {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(&format!(
+            "{UNION_DEFS}\n---@type {receiver}\nproperty = {{}}"
+        ));
+        assert_eq!(ws.expr_ty("property.value"), ws.ty("boolean|number"));
+        for value in ["'accepted'", "42"] {
+            assert!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::AssignTypeMismatch,
+                    &format!("property.value = {value}"),
+                ),
+                "{receiver}: {value}"
+            );
+        }
+        assert!(
+            !ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, "property.value = true"),
+            "{receiver}"
+        );
+    }
+}
+
+#[test]
+fn asymmetric_fields_review_union_keeps_ordinary_writer_alternatives() {
+    for receiver in [
+        "A|Ordinary",
+        "Ordinary|A",
+        "A|{value:number}",
+        "{value:number}|A",
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(&format!(
+            "{UNION_DEFS}\n---@type {receiver}\nproperty = {{}}"
+        ));
+        assert_eq!(ws.expr_ty("property.value"), ws.ty("boolean|number"));
+        for value in ["'accepted'", "42"] {
+            assert!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::AssignTypeMismatch,
+                    &format!("property.value = {value}"),
+                ),
+                "{receiver}: {value}"
+            );
+        }
+        assert!(
+            !ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, "property.value = true"),
+            "{receiver}"
+        );
+    }
+}
+
+#[test]
+fn asymmetric_fields_review_union_keeps_distinct_generic_writers() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def(&format!(
+        "{UNION_DEFS}\n---@type Generic<string>|Generic<number>\nproperty = {{}}"
+    ));
+    assert_eq!(ws.expr_ty("property.value"), LuaType::Boolean);
+    for value in ["'accepted'", "42"] {
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            &format!("property.value = {value}"),
+        ));
+    }
+    assert!(!ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, "property.value = true"));
+}
+
+#[test]
+fn asymmetric_fields_review_union_keeps_ordinary_lookup_policy() {
+    for receiver in ["A|nil", "A|Missing", "Recursive"] {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(&format!(
+            "{UNION_DEFS}\n---@class Missing\n---@alias Recursive A|Recursive\n---@type {receiver}\nproperty = {{}}"
+        ));
+        assert_eq!(ws.expr_ty("property.value"), LuaType::Boolean);
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            "property.value = 'accepted'"
+        ));
+        assert!(!ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, "property.value = true"));
+    }
+}
+
+#[test]
+fn asymmetric_fields_review_union_narrowing_selects_setter() {
+    for (kind, valid, invalid) in [("a", "'accepted'", "42"), ("b", "42", "'rejected'")] {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(UNION_DEFS);
+        let assignment = |value| {
+            format!(
+                "---@param property A|B\nlocal function check(property)\nif property.kind == '{kind}' then\nproperty.value = {value}\nend\nend"
+            )
+        };
+        assert!(ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &assignment(valid)));
+        assert!(!ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &assignment(invalid)));
+    }
+}
+
+#[test]
+fn asymmetric_fields_review_invalid_annotation_retains_member() {
+    for field in [
+        "(read,read) value",
+        "(write,write) value",
+        "(read,write) value",
+        "(write,read) value",
+        "(read) [string]",
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        ws.analysis
+            .diagnostic
+            .enable_only(DiagnosticCode::UndefinedField);
+        let source = |field: &str| {
+            format!(
+                "---@class Invalid\n---@field {field} number\n---@param target Invalid\nlocal function check(target)\nread_value = target.value\nend"
+            )
+        };
+        let file = ws.def(&source(field));
+        assert_eq!(
+            ws.analysis
+                .semantic_model(file)
+                .file_facts()
+                .unwrap()
+                .annotation_errors
+                .len(),
+            1,
+            "{field}"
+        );
+        let diagnostics = ws
+            .analysis
+            .diagnose_file(file, tokio_util::sync::CancellationToken::new())
+            .unwrap();
+        assert!(diagnostics.is_empty(), "{field}: {diagnostics:?}");
+        let ordinary_field = field.split_once(' ').unwrap().1;
+        let mut ordinary = VirtualWorkspace::new();
+        ordinary.def(&source(ordinary_field));
+        assert_eq!(
+            ws.expr_ty("read_value"),
+            ordinary.expr_ty("read_value"),
+            "{field}"
+        );
+        if ordinary_field == "value" {
+            assert!(!ws.has_no_diagnostic(
+                DiagnosticCode::UndefinedField,
+                "---@param target Invalid\nlocal function check(target)\nreturn target.missing\nend"
+            ));
+        }
+    }
+}
+
+#[test]
 fn asymmetric_fields_review_overloads_are_checked_per_direction() {
     for (single, repeated) in [("read", "write"), ("write", "read")] {
         let fields = [

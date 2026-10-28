@@ -2,15 +2,16 @@
 use super::{
     SemanticModel,
     member::{self, MemberInfo},
+    type_eval::with_expanded_alias,
 };
-use crate::{LuaMemberKey, LuaType, MemberAccess, SemanticId};
+use crate::{LuaMemberKey, LuaType, MemberAccess, SemanticId, TypeDefKind};
 use emmylua_parser::{LuaAstNode, LuaIndexExpr, LuaIndexKey};
 
 impl SemanticModel<'_> {
     /// Return the storage type checked by assignment.
     /// Expression-local assertions do not redefine a directional setter contract.
-    pub fn assignment_target_type(&self, expr: emmylua_parser::LuaExpr) -> LuaType {
-        if let emmylua_parser::LuaExpr::IndexExpr(index) = &expr
+    pub fn assignment_target_type(&self, expr: &emmylua_parser::LuaExpr) -> LuaType {
+        if let emmylua_parser::LuaExpr::IndexExpr(index) = expr
             && let Some((_, write)) = self.directional_index(index)
         {
             return write.typ;
@@ -50,13 +51,55 @@ impl SemanticModel<'_> {
         key: &LuaMemberKey,
     ) -> Option<(MemberInfo, Vec<MemberInfo>)> {
         let read = self.member_info(prefix, key)?;
-        let SemanticId::Member(id) = read.id.as_ref()? else {
-            return None;
+        let (writes, directional) = self.member_write_views(prefix, key, &read)?;
+        // Leave wholly ordinary unions on the existing inference/flow path.
+        directional.then_some((read, writes))
+    }
+
+    /// Collect writer types and whether any component declares a direction.
+    /// A failed projection stays unresolved rather than falling back to its getter.
+    fn member_write_views(
+        &self,
+        prefix: &LuaType,
+        key: &LuaMemberKey,
+        read: &MemberInfo,
+    ) -> Option<(Vec<MemberInfo>, bool)> {
+        let type_id = match prefix {
+            LuaType::Ref(id) | LuaType::Def(id) => Some(id.clone()),
+            LuaType::Generic(generic) => Some(generic.get_base_type_id()),
+            _ => None,
+        };
+        if type_id
+            .and_then(|id| self.type_def_of(&id))
+            .is_some_and(|def| def.kind == TypeDefKind::Alias)
+        {
+            return with_expanded_alias(self, prefix, |expanded| {
+                self.member_write_views(expanded, key, read)
+            })
+            .flatten();
+        }
+        if let LuaType::Union(union) = prefix {
+            let mut writes = Vec::new();
+            let mut directional = false;
+            for component in union.iter() {
+                // Missing members contribute nothing, as in ordinary union lookup.
+                let Some(component_read) = self.member_info(&component, key) else {
+                    continue;
+                };
+                let (component_writes, component_directional) =
+                    self.member_write_views(&component, key, &component_read)?;
+                directional |= component_directional;
+                writes.extend(component_writes);
+            }
+            return Some((writes, directional));
+        }
+        let Some(SemanticId::Member(id)) = read.id.as_ref() else {
+            return Some((vec![read.clone()], false));
         };
         let facts = self.file_facts_of(id.file_id)?;
         let field = facts.member_by_id(read.id.as_ref()?)?;
         if field.access == MemberAccess::ReadWrite {
-            return None;
+            return Some((vec![read.clone()], false));
         }
         let mut writers = facts
             .members_with_access(field, MemberAccess::Write)
@@ -68,7 +111,7 @@ impl SemanticModel<'_> {
             .into_iter()
             .map(|writer| member::member_info_for_declaration(self, prefix, key, &writer.id))
             .collect::<Option<Vec<_>>>()?;
-        Some((read, writes))
+        Some((writes, true))
     }
 
     pub fn directional_index(&self, index: &LuaIndexExpr) -> Option<(MemberInfo, MemberInfo)> {
