@@ -3650,27 +3650,12 @@ fn super_generic_type(
     target_base: &LuaTypeDeclId,
 ) -> Option<LuaType> {
     use LuaType::*;
-    enum Task {
-        Enter { ty: LuaType, is_base: bool },
-        Leave(LuaType),
-    }
-
     let evaluation = crate::semantic_model::cache::TypeEvaluationScope::new(&model.cache)?;
     // Type keys are immutable; their OnceCell only caches a stable hash.
     #[allow(clippy::mutable_key_type)]
-    let mut path = HashSet::new();
-    let mut pending = vec![Task::Enter {
-        ty: arg_ty.clone(),
-        is_base: false,
-    }];
-    while let Some(task) = pending.pop() {
-        let (ty, is_base) = match task {
-            Task::Enter { ty, is_base } => (ty, is_base),
-            Task::Leave(ty) => {
-                path.remove(&ty);
-                continue;
-            }
-        };
+    let mut visited = HashSet::new();
+    let mut pending = vec![(arg_ty.clone(), false)];
+    while let Some((ty, is_base)) = pending.pop() {
         let (id, params): (&LuaTypeDeclId, Option<&[LuaType]>) = match &ty {
             Generic(generic) => (
                 generic.get_base_type_id_ref(),
@@ -3678,10 +3663,13 @@ fn super_generic_type(
             ),
             Ref(id) | Def(id) => (id, None),
             Intersection(intersection) if is_base => {
-                pending.extend(intersection.get_types().iter().rev().map(|ty| Task::Enter {
-                    ty: ty.clone(),
-                    is_base: true,
-                }));
+                pending.extend(
+                    intersection
+                        .get_types()
+                        .iter()
+                        .rev()
+                        .map(|ty| (ty.clone(), true)),
+                );
                 continue;
             }
             _ => continue,
@@ -3689,26 +3677,20 @@ fn super_generic_type(
         if is_base && id == target_base {
             return Some(ty);
         }
-        // Changed arguments can make a repeated class reach a new finite base.
-        // Exact active instances are cycles. Expanding instances use the existing
-        // evaluation work budget; an iterative walk avoids a hierarchy depth cap.
-        if !evaluation.visit(&ty) || !path.insert(ty.clone()) {
+        // Each exact instance has the same bases throughout this lookup. Skip
+        // cycles and completed shared subgraphs before charging them again.
+        // Changed arguments remain distinct and use the existing work budget.
+        if visited.contains(&ty) || !evaluation.visit(&ty) {
             continue;
         }
-        pending.push(Task::Leave(ty.clone()));
-        pending.extend(
-            model
-                .base_types(id)
-                .into_iter()
-                .rev()
-                .map(|base| Task::Enter {
-                    ty: match params {
-                        Some(params) => model.substitute_generic_params(&base, params),
-                        None => base,
-                    },
-                    is_base: true,
-                }),
-        );
+        visited.insert(ty.clone());
+        pending.extend(model.base_types(id).into_iter().rev().map(|base| {
+            let base = match params {
+                Some(params) => model.substitute_generic_params(&base, params),
+                None => base,
+            };
+            (base, true)
+        }));
     }
     None
 }
@@ -5029,6 +5011,72 @@ fn merge(a: LuaType, b: LuaType) -> LuaType {
 #[cfg(test)]
 mod generic_superclass_cycle_tests {
     use super::*;
+
+    #[test]
+    #[ntest::timeout(10000)]
+    fn generic_superclass_lookup_shares_completed_diamond_subgraphs() {
+        let mut definitions = String::from(
+            "---@class Parent<T>\n---@class Via<T>: T\n---@class Root: Node0, Via<Parent<integer>>\n",
+        );
+        for level in 0..20 {
+            let next = level + 1;
+            definitions.push_str(&format!(
+                "---@class Node{level}: Left{level}, Right{level}\n---@class Left{level}: Node{next}\n---@class Right{level}: Node{next}\n"
+            ));
+        }
+        definitions.push_str("---@class Node20\n");
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def(&definitions);
+        let model = ws.analysis.semantic_model(file);
+        let parent_id = LuaTypeDeclId::global("Parent");
+        assert_eq!(
+            super_generic_type(
+                &model,
+                &LuaType::Ref(LuaTypeDeclId::global("Root")),
+                &parent_id,
+            ),
+            Some(LuaType::Generic(Rc::new(LuaGenericType::new(
+                parent_id,
+                vec![LuaType::Integer],
+            ))))
+        );
+        assert!(model.type_evaluation_errors().is_empty());
+    }
+
+    #[test]
+    fn generic_superclass_lookup_does_not_charge_completed_instances_twice() {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def(
+            "---@class Parent<T>\n---@class Via<T>: T\n---@class Loop<T>: Loop<T>\n---@class Root<T>: Loop<T>, Via<Parent<integer>>",
+        );
+        let model = ws.analysis.semantic_model(file);
+        let argument = LuaType::Generic(Rc::new(LuaGenericType::new(
+            LuaTypeDeclId::global("Root"),
+            vec![LuaType::Tuple(Rc::new(LuaTupleType::new(
+                vec![LuaType::Integer; 700],
+                LuaTupleStatus::DocResolve,
+            )))],
+        )));
+        let evaluation = crate::semantic_model::cache::TypeEvaluationScope::new(&model.cache)
+            .expect("fresh evaluation");
+        let padding = LuaType::Tuple(Rc::new(LuaTupleType::new(
+            vec![LuaType::Integer; 1023],
+            LuaTupleStatus::DocResolve,
+        )));
+        // Leave enough shared budget for distinct states, but not a repeated Loop<T>.
+        for _ in 0..975 {
+            assert!(evaluation.visit(&padding));
+        }
+        let parent_id = LuaTypeDeclId::global("Parent");
+        assert_eq!(
+            super_generic_type(&model, &argument, &parent_id),
+            Some(LuaType::Generic(Rc::new(LuaGenericType::new(
+                parent_id,
+                vec![LuaType::Integer],
+            ))))
+        );
+        assert!(model.type_evaluation_errors().is_empty());
+    }
 
     #[test]
     fn generic_superclass_lookup_preserves_lateral_projection() {
