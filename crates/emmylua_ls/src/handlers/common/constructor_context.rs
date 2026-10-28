@@ -218,13 +218,13 @@ pub(crate) fn table_context_type_for_expr(
     }
 
     // Call argument: `observe({ ... })` -> parameter type.
-    if let Some(call) = table_expr.ancestors::<LuaCallExpr>().next() {
-        let arg_idx = call
-            .get_args_list()?
-            .get_args()
-            .enumerate()
-            .find(|(_, arg)| arg.get_syntax_id() == syntax_id)
-            .map(|(idx, _)| idx)?;
+    if let Some(call) = table_expr.ancestors::<LuaCallExpr>().next()
+        && let Some(arg_idx) = call.get_args_list().and_then(|args| {
+            args.get_args()
+                .position(|arg| arg.get_syntax_id() == syntax_id)
+        })
+        && let Some(prefix) = call.get_prefix_expr()
+    {
         // Prefer call-site generic projection when available (`observe("x", { ... })` with `T -> string`).
         if let Some(fun) = model.inferred_call_doc_function(call.get_syntax_id()) {
             let mut param_idx = arg_idx;
@@ -240,7 +240,6 @@ pub(crate) fn table_context_type_for_expr(
                 return Some(ty);
             }
         }
-        let prefix = call.get_prefix_expr()?;
         let mut types = Vec::new();
         for func in callable_candidates(model, &prefix) {
             let mut param_idx = arg_idx;
@@ -310,5 +309,27 @@ mod unsigned_constructor_key_tests {
             let infos = constructor_field_infos(&model, &owner, &field);
             assert_eq!(!infos.is_empty(), projects, "{literal}: {infos:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::*;
+    use emmylua_code_analysis::VirtualWorkspace;
+
+    #[test]
+    fn unrelated_enclosing_call_keeps_constructor_fallback() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def("consume(function() return { entry = 1 } end)");
+        let model = ws.analysis.semantic_model(file);
+        let table = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaTableExpr>()
+            .next()
+            .unwrap();
+        let expected = model.type_of_expr(table.get_syntax_id());
+        assert!(!matches!(expected, LuaType::Unknown));
+        assert_eq!(table_context_type_for_expr(&model, &table), Some(expected));
     }
 }

@@ -125,10 +125,10 @@ fn constructor_hover_multiple_assignment_contract() -> Result<()> {
 
 #[gtest]
 fn constructor_hover_quoted_and_numeric_keys() -> Result<()> {
-    for key in ["['entry']", "[42]"] {
+    for key in ["['entry']", "[42]", "[42.0]"] {
         check_case(
             &format!(
-                "---@type table<string|integer, Setting>\nlocal settings = {{ {key} = {{ <??>key = missing }} }}"
+                "---@type table<string|number, Setting>\nlocal settings = {{ {key} = {{ <??>key = missing }} }}"
             ),
             "(field) key: string",
         )?;
@@ -381,6 +381,20 @@ fn constructor_definition_keeps_unannotated_keys_and_required_values() -> Result
     );
     check!(ws.check_definition(
         "local values = { entry = require('<??>tests.fixtures.constructor_context.known') }",
+        vec![VirtualLocation {
+            file: "known.lua".into(),
+            line: 0
+        }]
+    ));
+    check!(ws.check_definition(
+        "local values = { ['<??>mod'] = require('tests.fixtures.constructor_context.known') }",
+        vec![VirtualLocation {
+            file: "".into(),
+            line: 0
+        }]
+    ));
+    check!(ws.check_definition(
+        "local values = { ['mod'] = require('<??>tests.fixtures.constructor_context.known') }",
         vec![VirtualLocation {
             file: "known.lua".into(),
             line: 0
