@@ -4333,10 +4333,11 @@ fn call_may_narrow_decl(
     })
 }
 
-// Equality cannot introduce nil into a declared non-nullable value. Share this
-// rule between `==`'s true branch and `~=`'s false branch.
+/// Equality preserves possible nil unless the narrowed declaration excludes it.
+/// Used for `==`'s true branch and `~=`'s false branch.
 fn equality_narrowing(model: &SemanticModel, decl: &SemanticId, other_ty: LuaType) -> Narrowing {
-    // Resolve aliases before deciding whether the declaration excludes nil.
+    // Expose nil hidden by aliases before applying either side's contract.
+    let other_ty = super::type_eval::expand_alias_branches(model, &other_ty).unwrap_or(other_ty);
     // A missing declaration, Any or Unknown does not establish non-nullability.
     let ty = if other_ty.is_nullable()
         && model
