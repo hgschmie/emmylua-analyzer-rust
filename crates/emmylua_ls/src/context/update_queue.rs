@@ -24,7 +24,8 @@ pub enum UpdateEvent {
     DidChangeWatchedFiles(DidChangeWatchedFilesParams),
     DidRenameFiles(RenameFilesParams),
     Shutdown,
-    /// Acknowledge preceding updates without running the request on this worker.
+    /// Acknowledge preceding update handlers without running requests on this worker.
+    /// Deferred diagnostics and debounced configuration reloads are not awaited.
     Barrier(oneshot::Sender<()>),
 }
 

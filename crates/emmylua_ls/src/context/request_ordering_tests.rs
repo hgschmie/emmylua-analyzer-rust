@@ -1,14 +1,41 @@
 use super::*;
-use lsp_server::Message;
+use lsp_server::{Message, Request};
 use lsp_types::{
-    DidChangeTextDocumentParams, TextDocumentContentChangeEvent, Uri,
-    VersionedTextDocumentIdentifier,
+    ApplyWorkspaceEditParams, DidChangeTextDocumentParams, FileRename, RenameFilesParams,
+    ShowMessageRequestParams, TextDocumentContentChangeEvent, Uri, VersionedTextDocumentIdentifier,
 };
 use std::{
-    sync::atomic::{AtomicBool, Ordering},
+    path::PathBuf,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
 };
 use tokio::{sync::oneshot, time::timeout};
+
+struct TestDirectory(PathBuf);
+
+impl TestDirectory {
+    fn new() -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        loop {
+            let path = std::env::temp_dir().join(format!(
+                "emmylua-request-ordering-{}-{}",
+                std::process::id(),
+                NEXT_ID.fetch_add(1, Ordering::Relaxed)
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Self(path),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("failed to create test directory: {error}"),
+            }
+        }
+    }
+}
+
+impl Drop for TestDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
 
 async fn setup() -> (Arc<ServerContext>, Connection, Uri) {
     let (server, client) = Connection::memory();
@@ -81,27 +108,61 @@ async fn response(client: &Connection) -> Response {
     .expect("request response")
 }
 
+async fn client_request(client: &Connection, method: &str) -> Request {
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(Message::Request(request)) = client.receiver.try_recv() {
+                assert_eq!(request.method, method);
+                return request;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("outgoing client request")
+}
+
 #[tokio::test]
 async fn request_waits_for_all_preceding_edits() {
     let (context, client, uri) = setup().await;
-    // Block the update worker before it can apply either edit, without blocking
-    // analysis reads. The old dispatcher can return the initial text here.
+    // Queue both edits and the request before releasing the workspace. The
+    // manually polled future test checks the wait without a wall-clock deadline.
     let held = context.inner.workspace_manager.lock().await;
     change(&context, &uri, 1, "local intermediate = 2");
     change(&context, &uri, 2, "local after = 3");
     read(&context, &uri, 1).await;
-    assert!(
-        timeout(Duration::from_millis(100), response(&client))
-            .await
-            .is_err(),
-        "request overtook preceding edits"
-    );
     drop(held);
     assert_eq!(
         response(&client).await.response_result.unwrap(),
         "local after = 3"
     );
     context.close().await;
+}
+
+#[tokio::test]
+async fn request_future_waits_for_barrier_acknowledgement() {
+    use std::{future::Future, task::Poll};
+
+    let (ready, updates_applied) = oneshot::channel();
+    let called = Arc::new(AtomicBool::new(false));
+    let executed = called.clone();
+    let mut request = Box::pin(execute_after_updates(
+        updates_applied,
+        CancellationToken::new(),
+        move |_| async move {
+            executed.store(true, Ordering::SeqCst);
+            RequestOutcome::Ready(1)
+        },
+    ));
+    std::future::poll_fn(|cx| {
+        assert!(request.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    assert!(!called.load(Ordering::SeqCst));
+    ready.send(()).unwrap();
+    assert!(matches!(request.await, Ok(RequestOutcome::Ready(1))));
+    assert!(called.load(Ordering::SeqCst));
 }
 
 #[tokio::test]
@@ -199,4 +260,111 @@ async fn close_cancels_requests_waiting_for_updates() {
         .await
         .unwrap()
         .unwrap();
+}
+
+#[tokio::test]
+async fn unavailable_update_worker_returns_internal_error() {
+    // Cover both a refused send and an accepted barrier abandoned by shutdown.
+    for already_stopped in [true, false] {
+        let (context, client, _) = setup().await;
+        context.inner.update_tx.send(UpdateEvent::Shutdown).unwrap();
+        if already_stopped {
+            context.inner.update_tx.closed().await;
+        }
+        let called = Arc::new(AtomicBool::new(false));
+        let executed = called.clone();
+        context
+            .task(1.into(), move |_| async move {
+                executed.store(true, Ordering::SeqCst);
+                RequestOutcome::Ready(1)
+            })
+            .await;
+        let error = response(&client).await.response_result.unwrap_err();
+        assert_eq!(error.code, ErrorCode::InternalError as i32);
+        assert!(!called.load(Ordering::SeqCst));
+        assert!(context.cancellations.lock().await.is_empty());
+        context.close().await;
+    }
+}
+
+#[tokio::test]
+async fn rename_prompt_does_not_block_updates_or_requests() {
+    check_rename_client_interaction(true).await;
+}
+
+#[tokio::test]
+async fn rename_edit_acknowledgement_does_not_block_updates_or_requests() {
+    check_rename_client_interaction(false).await;
+}
+
+async fn check_rename_client_interaction(wait_at_prompt: bool) {
+    let directory = TestDirectory::new();
+    let old_path = directory.0.join("old.lua");
+    let new_path = directory.0.join("new.lua");
+    let consumer_path = directory.0.join("consumer.lua");
+    std::fs::write(&old_path, "return 1").unwrap();
+    std::fs::write(&consumer_path, "local value = require('old')").unwrap();
+    let old_uri = emmylua_code_analysis::file_path_to_uri(&old_path).unwrap();
+    let new_uri = emmylua_code_analysis::file_path_to_uri(&new_path).unwrap();
+    let consumer_uri = emmylua_code_analysis::file_path_to_uri(&consumer_path).unwrap();
+    let (context, client, _) = setup().await;
+    context
+        .inner
+        .analysis
+        .update(|analysis| {
+            analysis.add_main_workspace(directory.0.clone());
+            analysis.update_file_by_uri(&old_uri, Some("return 1".into()));
+            analysis.update_file_by_uri(&consumer_uri, Some("local value = require('old')".into()));
+        })
+        .await;
+    std::fs::rename(&old_path, &new_path).unwrap();
+    context
+        .inner
+        .update_tx
+        .send(UpdateEvent::DidRenameFiles(RenameFilesParams {
+            files: vec![FileRename {
+                old_uri: old_uri.as_str().into(),
+                new_uri: new_uri.as_str().into(),
+            }],
+        }))
+        .unwrap();
+    let prompt = client_request(&client, "window/showMessageRequest").await;
+    let prompt_params: ShowMessageRequestParams = serde_json::from_value(prompt.params).unwrap();
+    let action = prompt_params.actions.unwrap().into_iter().next().unwrap();
+
+    if wait_at_prompt {
+        // Leave the user prompt unanswered while a later edit and query complete.
+        change(&context, &new_uri, 1, "return 2");
+        read(&context, &new_uri, 10).await;
+        let edited = response(&client).await;
+        assert_eq!(edited.id, 10.into());
+        assert_eq!(edited.response_result.unwrap(), "return 2");
+    }
+    context
+        .send_response(Response::new_ok(
+            prompt.id,
+            serde_json::to_value(action).unwrap(),
+        ))
+        .await;
+
+    let apply = client_request(&client, "workspace/applyEdit").await;
+    let apply_params: ApplyWorkspaceEditParams = serde_json::from_value(apply.params).unwrap();
+    let changes = apply_params.edit.changes.unwrap();
+    assert_eq!(changes[&consumer_uri][0].new_text, "'new'");
+
+    if !wait_at_prompt {
+        // Waiting for the client's edit acknowledgement must not hold the queue either.
+        change(&context, &new_uri, 1, "return 3");
+        read(&context, &new_uri, 11).await;
+        let edited = response(&client).await;
+        assert_eq!(edited.id, 11.into());
+        assert_eq!(edited.response_result.unwrap(), "return 3");
+    }
+    context
+        .send_response(Response::new_ok(
+            apply.id,
+            serde_json::json!({ "applied": true }),
+        ))
+        .await;
+    context.close().await;
 }

@@ -90,40 +90,45 @@ pub async fn process_did_rename_files_handler(
                 return Some(());
             }
 
-            let client = context.client();
+            // Analysis is already updated. Client interaction must not hold the
+            // update worker or requests waiting for its next barrier.
+            tokio::spawn(async move {
+                let client = context.client();
 
-            let show_message_params = ShowMessageRequestParams {
-                typ: MessageType::INFO,
-                message: t!("Do you want to modify the require path?").to_string(),
-                actions: Some(vec![MessageActionItem {
-                    title: t!("Modify").to_string(),
-                    properties: HashMap::new(),
-                }]),
-            };
+                let show_message_params = ShowMessageRequestParams {
+                    typ: MessageType::INFO,
+                    message: t!("Do you want to modify the require path?").to_string(),
+                    actions: Some(vec![MessageActionItem {
+                        title: t!("Modify").to_string(),
+                        properties: HashMap::new(),
+                    }]),
+                };
 
-            // Send the prompt request.
-            let cancel_token = CancellationToken::new();
-            if let Some(selected_action) = client
-                .show_message_request(show_message_params, cancel_token)
-                .await
-            {
+                // Send the prompt request.
                 let cancel_token = CancellationToken::new();
-                if selected_action.title == t!("Modify") {
-                    client
-                        .apply_edit(
-                            ApplyWorkspaceEditParams {
-                                edit: WorkspaceEdit {
-                                    changes: Some(changes),
-                                    document_changes: None,
-                                    change_annotations: None,
+                if let Some(selected_action) = client
+                    .show_message_request(show_message_params, cancel_token)
+                    .await
+                {
+                    let cancel_token = CancellationToken::new();
+                    if selected_action.title == t!("Modify") {
+                        client
+                            .apply_edit(
+                                ApplyWorkspaceEditParams {
+                                    edit: WorkspaceEdit {
+                                        changes: Some(changes),
+                                        document_changes: None,
+                                        change_annotations: None,
+                                    },
+                                    label: None,
                                 },
-                                label: None,
-                            },
-                            cancel_token,
-                        )
-                        .await?;
+                                cancel_token,
+                            )
+                            .await?;
+                    }
                 }
-            }
+                Some(())
+            });
         }
     }
 
