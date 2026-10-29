@@ -48,18 +48,27 @@ fn complete_provider(builder: &mut CompletionBuilder) -> Option<()> {
     let completion_type = completion_type_for(builder)?;
     // Only text before the cursor filters candidates. Replacing the complete
     // name also removes a stale suffix when completion is invoked mid-token.
-    let (prefix_content, edit_range) =
-        if builder.trigger_token.kind() == LuaTokenKind::TkName.into() {
-            let range = builder.trigger_token.text_range();
-            // completion() selects a token containing this byte offset.
-            let length = usize::from(builder.position_offset - range.start());
-            (
-                builder.trigger_token.text().get(..length)?.to_owned(),
-                range,
-            )
-        } else {
-            (String::new(), TextRange::empty(builder.position_offset))
-        };
+    let name_token = if builder.trigger_token.kind() == LuaTokenKind::TkName.into() {
+        Some(builder.trigger_token.clone())
+    } else {
+        // At a token start completion() chooses the token on the left. Replace
+        // the adjacent doc name rather than inserting before its stale text.
+        builder.trigger_token.next_token().filter(|token| {
+            token.kind() == LuaTokenKind::TkName.into()
+                && token.text_range().start() == builder.position_offset
+                && token
+                    .parent()
+                    .is_some_and(|parent| LuaDocNameType::cast(parent).is_some())
+        })
+    };
+    let (prefix_content, edit_range) = if let Some(token) = name_token {
+        let range = token.text_range();
+        // Both the start and end of a name are valid cursor boundaries.
+        let length = usize::from(builder.position_offset.checked_sub(range.start())?);
+        (token.text().get(..length)?.to_owned(), range)
+    } else {
+        (String::new(), TextRange::empty(builder.position_offset))
+    };
     let edit_range = builder.get_document().to_lsp_range(edit_range)?;
     let prefix = if let Some(last_sep) = prefix_content.rfind('.') {
         let (path, _) = prefix_content.split_at(last_sep + 1);

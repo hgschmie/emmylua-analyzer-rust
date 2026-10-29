@@ -227,4 +227,52 @@ mod tests {
         )?;
         Ok(())
     }
+
+    #[gtest]
+    fn doc_types_replace_existing_name_at_its_start() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        ws.def_file("types.lua", "---@class CompletionValue\nlocal Value = {}\n");
+        let text = "---@type <??>OldName\nlocal value";
+        let result = items(&mut ws, text)?;
+        let item = result
+            .iter()
+            .find(|item| item.label == "CompletionValue")
+            .or_fail()?;
+        verify_eq!(
+            apply_first_line_edit(text, item)?,
+            "---@type CompletionValue"
+        )?;
+        Ok(())
+    }
+
+    #[gtest]
+    fn doc_attributes_replace_existing_name_after_the_opener() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        ws.def_file(
+            "types.lua",
+            "---@class CompletionAttribute\nlocal Attribute = {}\n",
+        );
+        let text = "---@[<??>OldName]\nlocal value";
+        let result = items(&mut ws, text)?;
+        let item = result
+            .iter()
+            .find(|item| item.label == "CompletionAttribute")
+            .or_fail()?;
+        verify_eq!(
+            apply_first_line_edit(text, item)?,
+            "---@[CompletionAttribute]"
+        )?;
+        Ok(())
+    }
+
+    #[gtest]
+    fn doc_types_include_forward_declarations_in_the_same_file() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        let text = "---@type Later<??>\nlocal value\n---@class Later\nlocal Later = {}";
+        let result = items(&mut ws, text)?;
+        let item = result.iter().find(|item| item.label == "Later").or_fail()?;
+        verify_eq!(item.filter_text.as_deref(), Some("Later"))?;
+        verify_eq!(apply_first_line_edit(text, item)?, "---@type Later")?;
+        Ok(())
+    }
 }
