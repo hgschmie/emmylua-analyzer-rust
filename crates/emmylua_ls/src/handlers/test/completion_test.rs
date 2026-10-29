@@ -71,6 +71,7 @@ mod tests {
         );
         let mut inserts: Vec<_> = items
             .iter()
+            .filter(|item| item.kind == Some(CompletionItemKind::PROPERTY))
             .filter_map(|item| item.insert_text.as_deref())
             .collect();
         inserts.sort_unstable();
@@ -202,6 +203,25 @@ mod tests {
                 &mut filter_completion_workspace(),
                 &format!("---@type {annotation}\nlocal value = {{ <??> }}"),
                 &[],
+            )?;
+        }
+        Ok(())
+    }
+
+    #[gtest]
+    fn test_union_table_field_completion_generic_tables_and_tuples_add_no_named_keys() -> Result<()>
+    {
+        for annotation in ["table<string, string>", "[string, number]"] {
+            let mut ws = filter_completion_workspace();
+            check_table_keys(
+                &mut ws,
+                &format!("---@type {annotation}\nlocal value = {{ <??> }}"),
+                &[],
+            )?;
+            check_table_keys(
+                &mut ws,
+                &format!("---@type {annotation}|ItemFilterRecord\nlocal value = {{ <??> }}"),
+                &["name = ", "quality = ", "comparator = "],
             )?;
         }
         Ok(())

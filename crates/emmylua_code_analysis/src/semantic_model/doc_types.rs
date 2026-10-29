@@ -3,7 +3,8 @@ use crate::{LuaArrayType, LuaConditionalType, LuaGenericType, LuaMappedType};
 
 impl<'db> SemanticModel<'db> {
     /// Resolves outer aliases and type computations without expanding data fields.
-    /// Returns `None` when the outer reduction cannot complete.
+    /// Returns `None` when the outer reduction cannot complete, including a
+    /// direct alias cycle or exhausted evaluation budget; recursive fields stay lazy.
     pub fn expand_alias_head(&self, ty: &LuaType) -> Option<LuaType> {
         type_eval::expand_alias_head(self, ty)
     }
