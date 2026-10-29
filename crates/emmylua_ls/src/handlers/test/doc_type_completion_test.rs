@@ -68,6 +68,7 @@ mod tests {
             "---@class data2.LampPrototype\nlocal Lamp = {}\n",
         );
         for prefix in [
+            "data.",
             "data.L",
             "data.Lamp",
             "data.La<??>mpWrong",
@@ -97,7 +98,7 @@ mod tests {
                 &edit.new_text,
             );
             verify_eq!(edited, "---@type data.LampPrototype")?;
-            if !prefix.starts_with("data.<??>") {
+            if prefix != "data." && !prefix.starts_with("data.<??>") {
                 verify_eq!(result.len(), 1)?;
             }
         }
@@ -273,6 +274,23 @@ mod tests {
         let item = result.iter().find(|item| item.label == "Later").or_fail()?;
         verify_eq!(item.filter_text.as_deref(), Some("Later"))?;
         verify_eq!(apply_first_line_edit(text, item)?, "---@type Later")?;
+        Ok(())
+    }
+
+    #[gtest]
+    fn doc_types_do_not_replace_parameter_or_field_names() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        ws.def_file("types.lua", "---@class CompletionType\nlocal Type = {}\n");
+        for text in [
+            "---@param Comple<??>tionParameter string\nlocal function probe(CompletionParameter) end",
+            "---@class Record\n---@field Comple<??>tionField string\nlocal Record = {}",
+        ] {
+            let result = items(&mut ws, text)?;
+            verify_eq!(
+                result.iter().any(|item| item.label == "CompletionType"),
+                false
+            )?;
+        }
         Ok(())
     }
 }

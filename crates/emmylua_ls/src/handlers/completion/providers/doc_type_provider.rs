@@ -100,6 +100,9 @@ fn complete_types_by_prefix(
             continue;
         };
         for def in exports.types.iter() {
+            if builder.is_cancelled() {
+                return;
+            }
             let full_name = def.full_name.as_str();
             // Prefix path matching: `ns.` only accepts types under `ns`.
             if !full_name.starts_with(prefix) {
