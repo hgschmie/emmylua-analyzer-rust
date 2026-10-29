@@ -165,22 +165,28 @@ fn table_field_members(model: &SemanticModel, expected: &LuaType) -> Vec<MemberI
                     let types = intersection
                         .get_types()
                         .iter()
-                        .filter_map(|component| project(model, component, visited))
-                        .collect::<Vec<_>>();
+                        .map(|component| project(model, component, visited))
+                        .collect::<Option<Vec<_>>>()?;
+                    // Every conjunct must support a table; an unresolved or
+                    // non-table constraint cannot be dropped like a union arm.
                     // Preserve member lookup's intersection precedence instead of
                     // merging same-name member types as a union would.
                     (!types.is_empty())
                         .then(|| LuaType::Intersection(LuaIntersectionType::new(types).into()))
                 }
-                LuaType::Ref(_)
-                | LuaType::Def(_)
-                | LuaType::Generic(_)
-                | LuaType::Object(_)
+                LuaType::Ref(id) | LuaType::Def(id) => model.type_def_of(id).map(|_| expanded),
+                LuaType::Generic(generic) => model
+                    .type_def_of(&generic.get_base_type_id())
+                    .map(|_| expanded),
+                // Arrays are tables, but member lookup exposes their elements'
+                // members. Retain the table constraint without inserting those keys.
+                LuaType::Table | LuaType::Array(_) => Some(LuaType::Table),
+                LuaType::Object(_)
                 | LuaType::TableConst(_)
                 | LuaType::Tuple(_)
                 | LuaType::TableGeneric(_) => Some(expanded),
-                // Arrays expose element members, not constructor keys; strings
-                // expose library methods. Other unsupported shapes add no keys.
+                // Strings expose library methods; other unsupported shapes do
+                // not establish a usable table constraint.
                 _ => None,
             }
         });

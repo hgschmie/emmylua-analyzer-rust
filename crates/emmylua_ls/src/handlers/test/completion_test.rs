@@ -271,6 +271,101 @@ mod tests {
     }
 
     #[gtest]
+    fn test_union_table_field_completion_rejects_non_table_intersections() -> Result<()> {
+        for other in ["string", "number", "fun(): string"] {
+            for annotation in [
+                format!("ItemFilterRecord&{other}"),
+                format!("{other}&ItemFilterRecord"),
+            ] {
+                check_table_keys(
+                    &mut filter_completion_workspace(),
+                    &format!("---@type {annotation}\nlocal value = {{ <??> }}"),
+                    &[],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    #[gtest]
+    fn test_union_table_field_completion_rejects_unresolved_intersections() -> Result<()> {
+        let mut ws = filter_completion_workspace();
+        ws.def("---@alias Broken\n---@alias Cycle Cycle\n---@alias MissingTarget MissingType\n---@alias CompoundCycle ItemFilterRecord&CompoundCycle\n");
+        for other in [
+            "Broken",
+            "Cycle",
+            "MissingTarget",
+            "MissingType",
+            "CompoundCycle",
+        ] {
+            for annotation in [
+                format!("ItemFilterRecord&{other}"),
+                format!("{other}&ItemFilterRecord"),
+            ] {
+                check_table_keys(
+                    &mut ws,
+                    &format!("---@type {annotation}\nlocal value = {{ <??> }}"),
+                    &[],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    #[gtest]
+    fn test_union_table_field_completion_keeps_table_only_intersections() -> Result<()> {
+        let mut ws = filter_completion_workspace();
+        ws.def("---@class ArrayElement\n---@field element_only string\n");
+        for other in [
+            "table",
+            "ArrayElement[]",
+            "table<string, string>",
+            "[string, number]",
+        ] {
+            for annotation in [
+                format!("ItemFilterRecord&{other}"),
+                format!("{other}&ItemFilterRecord"),
+            ] {
+                check_table_keys(
+                    &mut ws,
+                    &format!("---@type {annotation}\nlocal value = {{ <??> }}"),
+                    &["name = ", "quality = ", "comparator = "],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    #[gtest]
+    fn test_union_table_field_completion_bounds_compound_alias_depth() -> Result<()> {
+        for (depth, expected) in [
+            (8, &["name = ", "quality = ", "comparator = "][..]),
+            (128, &[][..]),
+        ] {
+            let mut ws = filter_completion_workspace();
+            let mut definitions = format!("---@alias Nested{depth} ItemFilterRecord\n");
+            for level in (0..depth).rev() {
+                definitions.push_str(&format!(
+                    "---@alias Nested{level} string|Nested{}\n",
+                    level + 1
+                ));
+            }
+            ws.def(&definitions);
+            check_table_keys(
+                &mut ws,
+                "---@type Nested0\nlocal value = { <??> }",
+                expected,
+            )?;
+            check_table_keys(
+                &mut ws,
+                "---@type Nested0|ItemFilterRecord\nlocal value = { <??> }",
+                &["name = ", "quality = ", "comparator = "],
+            )?;
+        }
+        Ok(())
+    }
+
+    #[gtest]
     fn test_require_completion_skips_removed_module() -> Result<()> {
         let mut ws = ProviderVirtualWorkspace::new();
         ws.def_file("lib/helper.lua", "return {}");
