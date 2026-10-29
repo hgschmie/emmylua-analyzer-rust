@@ -892,7 +892,8 @@ fn generic_table_required_mismatch(
             let expected = semantic_model
                 .type_of_member(&member_ref.id)
                 .unwrap_or(LuaType::Unknown);
-            // Type-side nil and aliases permit omission just like `field?`.
+            // Match MissingFields: nilable types (including aliases), any and
+            // unknown permit omission; unresolved inference remains conservative.
             if super::check_field::is_optional(semantic_model, &expected) {
                 continue;
             }
