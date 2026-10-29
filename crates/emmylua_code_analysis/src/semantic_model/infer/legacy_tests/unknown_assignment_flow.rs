@@ -3,6 +3,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{DiagnosticCode, LuaType, VirtualWorkspace};
 
+/// Each expectation line has one `id` expression; each RHS marker line has one assignment.
 fn assert_flow(source: &str, expected_warnings: usize) {
     let mut ws = VirtualWorkspace::new_with_init_std_lib();
     ws.analysis
@@ -27,13 +28,15 @@ fn assert_flow(source: &str, expected_warnings: usize) {
     let chunk = model.chunk().unwrap();
     for (marker, _) in source.match_indices("-- rhs: unknown") {
         let line_start = source[..marker].rfind('\n').map_or(0, |start| start + 1);
-        let assignment = chunk
+        let assignments = chunk
             .descendants::<LuaAssignStat>()
-            .find(|assignment| {
+            .filter(|assignment| {
                 let pos = u32::from(assignment.get_position()) as usize;
                 pos >= line_start && pos < marker
             })
-            .unwrap();
+            .collect::<Vec<_>>();
+        assert_eq!(assignments.len(), 1, "one assignment per RHS marker line");
+        let assignment = &assignments[0];
         let (_, values) = assignment.get_var_and_expr_list();
         assert_eq!(values.len(), 1);
         let value = &values[0];
@@ -205,6 +208,29 @@ end
 "#,
         0,
     );
+}
+
+#[test]
+fn unknown_assignment_restores_union_contract_after_constant_narrowing() {
+    for source in [
+        r#"
+---@type string|integer
+local id = "hello"
+id = unavailable() -- rhs: unknown
+local after = id -- expect: string|integer
+"#,
+        r#"
+---@param id string|integer
+local function dispatch(id)
+    if id == "hello" then
+        id = unavailable() -- rhs: unknown
+        local after = id -- expect: string|integer
+    end
+end
+"#,
+    ] {
+        assert_flow(source, 0);
+    }
 }
 
 #[test]

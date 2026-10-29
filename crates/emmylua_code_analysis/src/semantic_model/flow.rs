@@ -2871,6 +2871,7 @@ fn index_expr_type_from_initializer(
 
 /// Unknown writes discard preceding flow facts while retaining the base contract.
 /// Inferred nil initializers on locals and globals are placeholders, not nil-only contracts.
+/// An unknown value does not override an explicit annotation, including a nil-only contract.
 fn unknown_assignment_fallback(
     model: &SemanticModel,
     decl: &SemanticId,
