@@ -1,8 +1,7 @@
 //! Doc type completion: type names in `---@type` / `@param` / `@field` etc.
 //!
 //! Enumerate visible declarations, including library and metadata types;
-//! attribute contexts only suggest known built-in attribute classes like `constructor`
-//! (Attribute class inheritance detection is a later step).
+//! attribute contexts only suggest classes.
 
 use std::collections::HashSet;
 
@@ -52,6 +51,7 @@ fn complete_provider(builder: &mut CompletionBuilder) -> Option<()> {
     let (prefix_content, edit_range) =
         if builder.trigger_token.kind() == LuaTokenKind::TkName.into() {
             let range = builder.trigger_token.text_range();
+            // completion() selects a token containing this byte offset.
             let length = usize::from(builder.position_offset - range.start());
             (
                 builder.trigger_token.text().get(..length)?.to_owned(),
@@ -105,16 +105,15 @@ fn complete_types_by_prefix(
             }
             // Use the same scope/shadowing rules as a reference to the name.
             // Metadata denotes declarations, not hidden completion candidates.
-            if !builder
-                .semantic_model
-                .resolve_type_def(full_name)
-                .is_some_and(|visible| visible.id == def.id)
+            if seen.contains(full_name)
+                || !builder
+                    .semantic_model
+                    .resolve_type_def(full_name)
+                    .is_some_and(|visible| visible.id == def.id)
             {
                 continue;
             }
-            if !seen.insert(full_name.to_string()) {
-                continue;
-            }
+            seen.insert(full_name.to_string());
             let kind = match completion_type {
                 CompletionType::AttributeUse => CompletionItemKind::CLASS,
                 CompletionType::Type => match def.kind {

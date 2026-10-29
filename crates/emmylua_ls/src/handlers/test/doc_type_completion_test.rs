@@ -168,4 +168,63 @@ mod tests {
         }
         Ok(())
     }
+
+    fn apply_first_line_edit(text: &str, item: &CompletionItem) -> Result<String> {
+        let Some(CompletionTextEdit::Edit(edit)) = &item.text_edit else {
+            panic!("missing type edit: {item:?}");
+        };
+        verify_eq!(edit.range.start.line, 0)?;
+        verify_eq!(edit.range.end.line, 0)?;
+        let mut line = text
+            .lines()
+            .next()
+            .unwrap()
+            .replace("<??>", "")
+            .encode_utf16()
+            .collect::<Vec<_>>();
+        line.splice(
+            edit.range.start.character as usize..edit.range.end.character as usize,
+            edit.new_text.encode_utf16(),
+        );
+        String::from_utf16(&line).or_fail()
+    }
+
+    #[gtest]
+    fn doc_types_replace_multibyte_prefixes_with_character_ranges() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        ws.def_file("types.lua", "---@class 数据.灯Prototype\nlocal Lamp = {}\n");
+        let text = "---@type 数据.灯<??>旧\nlocal value";
+        let result = items(&mut ws, text)?;
+        let item = result
+            .iter()
+            .find(|item| item.label == "灯Prototype")
+            .or_fail()?;
+        verify_eq!(item.filter_text.as_deref(), Some("数据.灯Prototype"))?;
+        verify_eq!(
+            apply_first_line_edit(text, item)?,
+            "---@type 数据.灯Prototype"
+        )?;
+        Ok(())
+    }
+
+    #[gtest]
+    fn doc_attribute_types_keep_class_filter_and_qualified_replacement() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        ws.def_file(
+            "types.lua",
+            "---@class attrs.Constructor\nlocal C = {}\n---@alias attrs.Constant integer\n---@enum attrs.Color\nlocal Color = { RED = 1 }\n",
+        );
+        let text = "---@[attrs.Co<??>Old]\nlocal value";
+        let result = items(&mut ws, text)?;
+        verify_eq!(result.len(), 1)?;
+        let item = &result[0];
+        verify_eq!(item.label.as_str(), "Constructor")?;
+        verify_eq!(item.kind, Some(CompletionItemKind::CLASS))?;
+        verify_eq!(item.filter_text.as_deref(), Some("attrs.Constructor"))?;
+        verify_eq!(
+            apply_first_line_edit(text, item)?,
+            "---@[attrs.Constructor]"
+        )?;
+        Ok(())
+    }
 }
