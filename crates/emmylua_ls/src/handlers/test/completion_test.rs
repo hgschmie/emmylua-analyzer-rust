@@ -59,6 +59,16 @@ mod tests {
         expected: &[&str],
     ) -> Result<()> {
         let items = get_completion_items(ws, code, CompletionTriggerKind::INVOKED)?;
+        assert!(
+            items
+                .iter()
+                .filter(|item| item.kind == Some(CompletionItemKind::PROPERTY))
+                .all(|item| item
+                    .insert_text
+                    .as_ref()
+                    .is_some_and(|text| !text.is_empty())),
+            "table-key items must include insertion text: {items:?}"
+        );
         let mut inserts: Vec<_> = items
             .iter()
             .filter_map(|item| item.insert_text.as_deref())
@@ -102,6 +112,7 @@ mod tests {
             "ItemFilter?",
             "Wrapper<ItemFilterRecord>",
             "RecursiveFilter",
+            "MultilineFilter",
             "ItemFilterRecord[]|ItemFilterRecord|string",
         ] {
             let mut ws = filter_completion_workspace();
@@ -109,6 +120,9 @@ mod tests {
                 r#"
                 ---@alias Wrapper<T> string|T
                 ---@alias RecursiveFilter string|ItemFilterRecord|RecursiveFilter[]
+                ---@alias MultilineFilter
+                ---| ItemFilterRecord
+                ---| string
             "#,
             );
             let keys = &["name = ", "quality = ", "comparator = "];
@@ -172,6 +186,67 @@ mod tests {
             CompletionTriggerKind::INVOKED,
         )?;
         assert!(items.iter().any(|item| item.label == "sub"), "{items:?}");
+        Ok(())
+    }
+
+    #[gtest]
+    fn test_union_table_field_completion_ignores_non_table_expected_types() -> Result<()> {
+        for annotation in [
+            "string",
+            "number",
+            "fun():string",
+            "ItemFilterRecord[]",
+            "table",
+        ] {
+            check_table_keys(
+                &mut filter_completion_workspace(),
+                &format!("---@type {annotation}\nlocal value = {{ <??> }}"),
+                &[],
+            )?;
+        }
+        Ok(())
+    }
+
+    #[gtest]
+    fn test_union_table_field_completion_unresolved_aliases_keep_concrete_alternatives()
+    -> Result<()> {
+        let mut ws = filter_completion_workspace();
+        ws.def("---@alias Broken\n---@alias Cycle Cycle\n---@alias MissingTarget MissingType\n");
+        for annotation in ["Broken", "Cycle", "MissingTarget"] {
+            check_table_keys(
+                &mut ws,
+                &format!("---@type {annotation}\nlocal value = {{ <??> }}"),
+                &[],
+            )?;
+            check_table_keys(
+                &mut ws,
+                &format!("---@type {annotation}|ItemFilterRecord\nlocal value = {{ <??> }}"),
+                &["name = ", "quality = ", "comparator = "],
+            )?;
+        }
+        Ok(())
+    }
+
+    #[gtest]
+    fn test_union_table_field_completion_preserves_intersection_member_precedence() -> Result<()> {
+        let mut ws = filter_completion_workspace();
+        ws.def("---@class RequiredField\n---@field shared string\n---@class OptionalField\n---@field shared string?\n");
+        for (annotation, label) in [
+            ("RequiredField&OptionalField", "shared = "),
+            ("OptionalField&RequiredField", "shared? = "),
+            ("RequiredField|OptionalField", "shared? = "),
+        ] {
+            let items = get_completion_items(
+                &mut ws,
+                &format!("---@type {annotation}\nlocal value = {{ <??> }}"),
+                CompletionTriggerKind::INVOKED,
+            )?;
+            let item = items
+                .iter()
+                .find(|item| item.insert_text.as_deref() == Some("shared = "))
+                .or_fail()?;
+            assert_eq!(item.label, label, "{annotation}");
+        }
         Ok(())
     }
 

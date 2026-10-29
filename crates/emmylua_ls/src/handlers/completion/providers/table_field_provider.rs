@@ -1,7 +1,7 @@
 //! Table-field completion: `{ name = <??> }` / `{ <??> }` / expected types for table constructor arguments.
 
 use emmylua_code_analysis::{
-    LuaMemberKey, LuaType, MemberInfo, SemanticId, SemanticModel, TypeDefKind,
+    LuaIntersectionType, LuaMemberKey, LuaType, MemberInfo, SemanticId, SemanticModel,
 };
 use emmylua_parser::{
     LuaAst, LuaAstNode, LuaCallExpr, LuaExpr, LuaKind, LuaTableExpr, LuaTableField, LuaTokenKind,
@@ -18,6 +18,9 @@ use super::{
 };
 
 pub struct TableFieldProvider;
+
+// Bound each active alias/compound-type path; sibling alternatives remain independent.
+const MAX_TABLE_TYPE_DEPTH: usize = 64;
 
 impl CompletionProvider for TableFieldProvider {
     fn name(&self) -> &'static str {
@@ -139,56 +142,56 @@ fn add_table_field_key_completion(
 /// Ordinary member lookup also exposes string-library methods and array element
 /// members, neither of which are keys to insert into this table.
 fn table_field_members(model: &SemanticModel, expected: &LuaType) -> Vec<MemberInfo> {
-    fn collect(
+    fn project(
         model: &SemanticModel,
         typ: &LuaType,
         visited: &mut Vec<LuaType>,
-        tables: &mut Vec<LuaType>,
-    ) {
-        if visited.contains(typ) || visited.len() >= 64 {
-            return;
+    ) -> Option<LuaType> {
+        if visited.contains(typ) || visited.len() >= MAX_TABLE_TYPE_DEPTH {
+            return None;
         }
         visited.push(typ.clone());
-        let expanded = model.expand_alias_for_hover(typ);
-        if expanded != *typ {
-            collect(model, &expanded, visited, tables);
-        } else {
-            match typ {
-                LuaType::Ref(id) | LuaType::Def(id) => {
-                    if let Some(def) = model.type_def_of(id)
-                        && def.kind == TypeDefKind::Alias
-                    {
-                        if let Some(target) = model.alias_target(&def) {
-                            collect(model, &target, visited, tables);
-                        }
-                    } else {
-                        tables.push(typ.clone());
-                    }
-                }
+        let result = model.expand_alias_head(typ).and_then(|expanded| {
+            match &expanded {
                 LuaType::Union(union) => {
-                    for component in union.iter() {
-                        collect(model, component, visited, tables);
-                    }
+                    let types = union
+                        .iter()
+                        .filter_map(|component| project(model, component, visited))
+                        .collect::<Vec<_>>();
+                    (!types.is_empty()).then(|| LuaType::from_vec(types))
                 }
+                LuaType::MultiLineUnion(union) => project(model, &union.to_union(), visited),
                 LuaType::Intersection(intersection) => {
-                    for component in intersection.get_types() {
-                        collect(model, component, visited, tables);
-                    }
+                    let types = intersection
+                        .get_types()
+                        .iter()
+                        .filter_map(|component| project(model, component, visited))
+                        .collect::<Vec<_>>();
+                    // Preserve member lookup's intersection precedence instead of
+                    // merging same-name member types as a union would.
+                    (!types.is_empty())
+                        .then(|| LuaType::Intersection(LuaIntersectionType::new(types).into()))
                 }
-                LuaType::Generic(_)
+                LuaType::Ref(_)
+                | LuaType::Def(_)
+                | LuaType::Generic(_)
                 | LuaType::Object(_)
                 | LuaType::TableConst(_)
                 | LuaType::Tuple(_)
-                | LuaType::TableGeneric(_) => tables.push(typ.clone()),
-                _ => {}
+                | LuaType::TableGeneric(_) => Some(expanded),
+                // Arrays expose element members, not constructor keys; strings
+                // expose library methods. Other unsupported shapes add no keys.
+                _ => None,
             }
-        }
+        });
         visited.pop();
+        result
     }
 
-    let mut tables = Vec::new();
-    collect(model, expected, &mut Vec::new(), &mut tables);
-    model.member_infos(&LuaType::from_vec(tables))
+    let Some(table_type) = project(model, expected, &mut Vec::new()) else {
+        return Vec::new();
+    };
+    model.member_infos(&table_type)
 }
 
 fn add_field_key_completion(builder: &mut CompletionBuilder, member: &MemberInfo) {
