@@ -69,7 +69,7 @@ pub fn load_configs_raw(config_files: Vec<PathBuf>, partial_emmyrcs: Option<Vec<
         let flatten_config = FlattenConfigObject::parse(first_config);
         flatten_config.to_emmyrc()
     } else {
-        let merge_config = config_jsons
+        config_jsons
             .into_iter()
             // Normalize each layer before merging so dotted and nested keys
             // share the same precedence and array-append behavior.
@@ -77,9 +77,7 @@ pub fn load_configs_raw(config_files: Vec<PathBuf>, partial_emmyrcs: Option<Vec<
             .fold(Value::Object(Default::default()), |mut acc, item| {
                 merge_values(&mut acc, item);
                 acc
-            });
-        let flatten_config = FlattenConfigObject::parse(merge_config);
-        flatten_config.to_emmyrc()
+            })
     }
 }
 
@@ -121,7 +119,8 @@ fn merge_values(base: &mut Value, overlay: Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::load_configs_raw;
+    use super::{load_configs, load_configs_raw};
+    use crate::config::EmmyrcLuaVersion;
     use serde_json::{Value, json};
 
     fn merge(layers: Vec<Value>) -> Value {
@@ -174,13 +173,20 @@ mod tests {
 
     #[test]
     fn same_notation_retains_existing_merge_behavior() {
-        // merge_values deduplicates entries within the appended overlay.
+        // Only duplicates within the appended overlay are removed, not matches in the base.
         assert_eq!(
             merge(vec![
                 json!({"workspace": {"ignoreDir": ["first"]}}),
                 json!({"workspace": {"ignoreDir": ["second", "second"]}}),
             ])["workspace"]["ignoreDir"],
             json!(["first", "second"])
+        );
+        assert_eq!(
+            merge(vec![
+                json!({"workspace": {"ignoreDir": ["first"]}}),
+                json!({"workspace": {"ignoreDir": ["first", "second", "second"]}}),
+            ])["workspace"]["ignoreDir"],
+            json!(["first", "first", "second"])
         );
         assert_eq!(merge(vec![]), json!({}));
         assert_eq!(
@@ -191,6 +197,10 @@ mod tests {
 
     #[test]
     fn empty_and_sparse_layers_preserve_values_and_array_order() {
+        assert_eq!(
+            merge(vec![json!({"diagnostics.enable": false}), json!({})]),
+            json!({"diagnostics": {"enable": false}})
+        );
         assert_eq!(
             merge(vec![json!({"runtime.version": "Lua5.2"}), json!({})]),
             json!({"runtime": {"version": "Lua5.2"}})
@@ -244,7 +254,30 @@ mod tests {
     }
 
     #[test]
+    fn later_valid_scalar_overrides_invalid_type_before_deserialization() {
+        let layers = vec![
+            json!({"runtime.version": false}),
+            json!({"runtime": {"version": "Lua5.2"}}),
+        ];
+        assert_eq!(
+            merge(layers.clone()),
+            json!({"runtime": {"version": "Lua5.2"}})
+        );
+        assert_eq!(
+            load_configs(Vec::new(), Some(layers)).runtime.version,
+            EmmyrcLuaVersion::Lua52
+        );
+    }
+
+    #[test]
     fn file_layers_and_partial_settings_share_normalization_and_precedence() {
+        struct TestDirectory(std::path::PathBuf);
+        impl Drop for TestDirectory {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
         let directory = std::env::temp_dir().join(format!(
             "emmylua-config-layers-{}-{}",
             std::process::id(),
@@ -254,6 +287,7 @@ mod tests {
                 .as_nanos(),
         ));
         std::fs::create_dir(&directory).unwrap();
+        let _cleanup = TestDirectory(directory.clone());
         let base = directory.join("base.json");
         let empty = directory.join("empty.json");
         let overlay = directory.join("overlay.json");
@@ -274,7 +308,6 @@ mod tests {
                 json!({"runtime.version": "Lua5.3", "workspace.ignoreDir": ["partial"]}),
             ]),
         );
-        std::fs::remove_dir_all(&directory).unwrap();
         assert_eq!(
             result,
             json!({
