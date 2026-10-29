@@ -25,16 +25,6 @@ fn assert_flow(source: &str, expected_warnings: usize) {
         .unwrap();
     let model = ws.analysis.semantic_model(file);
     let chunk = model.chunk().unwrap();
-    for assignment in chunk.descendants::<LuaAssignStat>() {
-        let (_, values) = assignment.get_var_and_expr_list();
-        for value in values {
-            eprintln!(
-                "assignment RHS {}: {:?}",
-                value.get_text(),
-                model.type_of_expr_at(value.get_syntax_id(), value.get_position())
-            );
-        }
-    }
     for (marker, _) in source.match_indices("-- rhs: unknown") {
         let line_start = source[..marker].rfind('\n').map_or(0, |start| start + 1);
         let assignment = chunk
@@ -187,6 +177,20 @@ end
 }
 
 #[test]
+fn unknown_assignment_invalidates_earlier_cast() {
+    assert_flow(
+        r#"
+local id = nil
+---@cast id string
+local before = id -- expect: string
+id = unavailable() -- rhs: unknown
+local after = id -- expect: unknown
+"#,
+        0,
+    );
+}
+
+#[test]
 fn unknown_assignment_invalidates_type_guard() {
     assert_flow(
         r#"
@@ -283,6 +287,48 @@ if id then return id end
 }
 
 #[test]
+fn unknown_assignment_invalidates_unannotated_global_nil_initializer() {
+    assert_flow(
+        r#"
+id = nil
+id = unavailable() -- rhs: unknown
+local after = id -- expect: unknown
+if id then return id end
+"#,
+        0,
+    );
+}
+
+#[test]
+fn unknown_assignment_invalidates_captured_nil_initializer() {
+    assert_flow(
+        r#"
+local id = nil
+local function update()
+    id = unavailable() -- rhs: unknown
+    local after = id -- expect: unknown
+    if id then return id end
+end
+"#,
+        0,
+    );
+}
+
+#[test]
+fn unknown_assignment_preserves_global_explicit_nil_contract() {
+    assert_flow(
+        r#"
+---@type nil
+id = nil
+id = unavailable() -- rhs: unknown
+local after = id -- expect: nil
+if id then return id end
+"#,
+        1,
+    );
+}
+
+#[test]
 fn unknown_assignment_preserves_explicit_nil_contract() {
     assert_flow(
         r#"
@@ -331,11 +377,25 @@ end
 #[test]
 fn unknown_assignment_broad_indexes_do_not_keep_nil_guard() {
     for rhs in ["values[key]", "values[key] or values[tostring(key)]"] {
-        let source = reassignment(rhs)
-            .replace("table<string,unknown>", "table")
-            .replace(" -- rhs: unknown", "")
-            .replace(" -- expect: string?", "")
-            .replace(" -- expect: string", "");
+        // Broad table indexing need not infer Unknown, so check stale-guard
+        // diagnostics without imposing the typed-index RHS precondition.
+        let source = format!(
+            r#"
+---@param id string?
+---@param values table
+---@param key string
+local function dispatch(id, values, key)
+    if id then return id end
+    local before = id -- expect: nil
+    id = {rhs}
+    local after = id
+    if id then
+        local guarded = id
+        return guarded
+    end
+end
+"#
+        );
         assert_flow(&source, 0);
     }
 }

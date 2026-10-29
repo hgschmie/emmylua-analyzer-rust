@@ -26,7 +26,7 @@ use rowan::TextSize;
 
 use ExprCastMode::{All, AsOnly};
 
-use crate::semantic_db::def::{SemanticId, Signature};
+use crate::semantic_db::def::{DeclKind, SemanticId, Signature};
 use crate::semantic_db::flow::{
     FlowAntecedent, FlowEffect, FlowId, FlowNodeKind, FlowTree, LuaClosureId,
 };
@@ -1614,7 +1614,7 @@ fn local_alias_path(
         }
         if !matches!(
             info.kind,
-            crate::DeclKind::Local { is_iter: false, .. } | crate::DeclKind::Param
+            DeclKind::Local { is_iter: false, .. } | DeclKind::Param
         ) || flow.latest_decl_assignment(&decl, context.at).is_some()
             || (all_writes && flow.has_decl_assignment(&decl))
             || info.multi_return_index.is_some_and(|index| index > 0)
@@ -2869,7 +2869,8 @@ fn index_expr_type_from_initializer(
     }
 }
 
-/// Unknown writes retain the declaration contract, not facts about the preceding value.
+/// Unknown writes discard preceding flow facts while retaining the base contract.
+/// Inferred nil initializers on locals and globals are placeholders, not nil-only contracts.
 fn unknown_assignment_fallback(
     model: &SemanticModel,
     decl: &SemanticId,
@@ -2879,7 +2880,7 @@ fn unknown_assignment_fallback(
         && let SemanticId::Decl(key) = decl
         && let Some(facts) = model.file_facts_of(key.file_id)
         && let Some(def) = facts.decl_by_id(decl)
-        && matches!(def.kind, crate::semantic_db::def::DeclKind::Local { .. })
+        && matches!(def.kind, DeclKind::Local { .. } | DeclKind::Global)
         && def.doc_type_syntax.is_none()
     {
         // An inferred nil initializer is a placeholder, not an explicit nil-only contract.
