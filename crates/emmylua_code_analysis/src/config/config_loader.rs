@@ -78,7 +78,7 @@ pub fn load_configs_raw(config_files: Vec<PathBuf>, partial_emmyrcs: Option<Vec<
                 merge_values(&mut acc, item);
                 acc
             });
-        let flatten_config = FlattenConfigObject::parse(merge_config.clone());
+        let flatten_config = FlattenConfigObject::parse(merge_config);
         flatten_config.to_emmyrc()
     }
 }
@@ -174,6 +174,7 @@ mod tests {
 
     #[test]
     fn same_notation_retains_existing_merge_behavior() {
+        // merge_values deduplicates entries within the appended overlay.
         assert_eq!(
             merge(vec![
                 json!({"workspace": {"ignoreDir": ["first"]}}),
@@ -185,6 +186,101 @@ mod tests {
         assert_eq!(
             merge(vec![json!({"runtime.version": "Lua5.2"})]),
             json!({"runtime": {"version": "Lua5.2"}})
+        );
+    }
+
+    #[test]
+    fn empty_and_sparse_layers_preserve_values_and_array_order() {
+        assert_eq!(
+            merge(vec![json!({"runtime.version": "Lua5.2"}), json!({})]),
+            json!({"runtime": {"version": "Lua5.2"}})
+        );
+        assert_eq!(
+            merge(vec![
+                json!({"runtime.version": "Lua5.2", "workspace.ignoreDir": ["first"]}),
+                json!({}),
+                json!({"workspace": {"ignoreDir": ["second"]}}),
+                json!({}),
+                json!({"workspace.ignoreDir": ["third"], "diagnostics.enable": false}),
+            ]),
+            json!({
+                "runtime": {"version": "Lua5.2"},
+                "workspace": {"ignoreDir": ["first", "second", "third"]},
+                "diagnostics": {"enable": false},
+            })
+        );
+    }
+
+    #[test]
+    fn normalization_is_sparse_and_preserves_leaf_values() {
+        assert_eq!(merge(vec![json!({})]), json!({}));
+        let entries = json!([{"path": "library", "custom.key": {"enabled": false}}, null]);
+        let result = merge(vec![json!({
+            "workspace.library": entries.clone(),
+            "extension": {"enabled": false, "count": 0, "value": null, "list": []},
+        })]);
+        assert_eq!(
+            result,
+            json!({
+                "workspace": {"library": entries},
+                "extension": {"enabled": false, "count": 0, "value": null, "list": []},
+            })
+        );
+    }
+
+    #[test]
+    fn single_layer_mixed_notation_keeps_existing_duplicate_key_precedence() {
+        let layer = json!({
+            "runtime.version": "Lua5.2",
+            "workspace.ignoreDir": ["dotted"],
+            "workspace": {"ignoreDir": ["nested"], "library": ["library"]},
+        });
+        let expected = json!({
+            "runtime": {"version": "Lua5.2"},
+            "workspace": {"ignoreDir": ["dotted"], "library": ["library"]},
+        });
+        assert_eq!(merge(vec![layer.clone()]), expected);
+        assert_eq!(merge(vec![layer, json!({})]), expected);
+    }
+
+    #[test]
+    fn file_layers_and_partial_settings_share_normalization_and_precedence() {
+        let directory = std::env::temp_dir().join(format!(
+            "emmylua-config-layers-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let base = directory.join("base.json");
+        let empty = directory.join("empty.json");
+        let overlay = directory.join("overlay.json");
+        std::fs::write(
+            &base,
+            r#"{"runtime.version":"Lua5.1","workspace.ignoreDir":["base"]}"#,
+        )
+        .unwrap();
+        std::fs::write(&empty, "{}").unwrap();
+        std::fs::write(
+            &overlay,
+            r#"{"runtime":{"version":"Lua5.2"},"workspace":{"ignoreDir":["overlay"]}}"#,
+        )
+        .unwrap();
+        let result = load_configs_raw(
+            vec![base, empty, overlay],
+            Some(vec![
+                json!({"runtime.version": "Lua5.3", "workspace.ignoreDir": ["partial"]}),
+            ]),
+        );
+        std::fs::remove_dir_all(&directory).unwrap();
+        assert_eq!(
+            result,
+            json!({
+                "runtime": {"version": "Lua5.3"},
+                "workspace": {"ignoreDir": ["base", "overlay", "partial"]},
+            })
         );
     }
 }
