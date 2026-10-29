@@ -31,7 +31,8 @@ pub use crate::semantic_db::exports::{
 };
 pub use crate::semantic_db::facts::FileFacts;
 pub use check::{
-    CheckConfig, CheckProfile, DiagnosticCode, get_default_severity, is_code_default_enable,
+    CheckConfig, CheckProfile, DiagnosticCode, FileDiagnosticResult, get_default_severity,
+    is_code_default_enable,
 };
 pub use config::*;
 pub use locale::get_locale_code;
@@ -257,37 +258,39 @@ impl EmmyLuaAnalysis {
         }
         let line_index = self.db.line_index(file_id)?;
         let text = self.db.get_file_text(file_id)?;
-        Some(
-            diagnostics
-                .into_iter()
-                .filter_map(|d| {
-                    let start = line_index.get_line_col(d.range.start(), text)?;
-                    let end = line_index.get_line_col(d.range.end(), text)?;
-                    Some(lsp_types::Diagnostic {
-                        range: lsp_types::Range {
-                            start: lsp_types::Position {
-                                line: start.0 as u32,
-                                character: start.1 as u32,
-                            },
-                            end: lsp_types::Position {
-                                line: end.0 as u32,
-                                character: end.1 as u32,
-                            },
+        let diagnostics = diagnostics
+            .into_iter()
+            .filter_map(|d| {
+                let start = line_index.get_line_col(d.range.start(), text)?;
+                let end = line_index.get_line_col(d.range.end(), text)?;
+                Some(lsp_types::Diagnostic {
+                    range: lsp_types::Range {
+                        start: lsp_types::Position {
+                            line: start.0 as u32,
+                            character: start.1 as u32,
                         },
-                        severity: Some(d.severity),
-                        code: Some(lsp_types::NumberOrString::String(
-                            d.code.get_name().to_string(),
-                        )),
-                        code_description: None,
-                        source: Some("EmmyLua".to_string()),
-                        message: d.message,
-                        related_information: None,
-                        tags: d.tags,
-                        data: d.data,
-                    })
+                        end: lsp_types::Position {
+                            line: end.0 as u32,
+                            character: end.1 as u32,
+                        },
+                    },
+                    severity: Some(d.severity),
+                    code: Some(lsp_types::NumberOrString::String(
+                        d.code.get_name().to_string(),
+                    )),
+                    code_description: None,
+                    source: Some("EmmyLua".to_string()),
+                    message: d.message,
+                    related_information: None,
+                    tags: d.tags,
+                    data: d.data,
                 })
-                .collect(),
-        )
+            })
+            .collect();
+        if model.is_cancelled() {
+            return None;
+        }
+        Some(diagnostics)
     }
 
     pub fn diagnose_file(
@@ -296,6 +299,16 @@ impl EmmyLuaAnalysis {
         cancel_token: CancellationToken,
     ) -> Option<Vec<lsp_types::Diagnostic>> {
         self.diagnostic.diagnose_file(self, file_id, cancel_token)
+    }
+
+    /// Distinguishes complete reports, skipped files and cancellation for host retry decisions.
+    pub fn diagnose_file_result(
+        &self,
+        file_id: FileId,
+        cancel_token: CancellationToken,
+    ) -> FileDiagnosticResult {
+        self.diagnostic
+            .diagnose_file_result(self, file_id, cancel_token)
     }
 
     /// Remove files that no longer exist on disk.

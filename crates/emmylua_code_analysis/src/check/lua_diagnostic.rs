@@ -11,6 +11,17 @@ use crate::{DiagnosticCode, EmmyLuaAnalysis, Emmyrc, FileId};
 use lsp_types::Diagnostic;
 use tokio_util::sync::CancellationToken;
 
+/// Separates a completed diagnostic pass from an ineligible file or interrupted work.
+#[derive(Debug)]
+pub enum FileDiagnosticResult {
+    /// A complete report, including an empty report that clears previous diagnostics.
+    Complete(Vec<Diagnostic>),
+    /// Diagnostics are disabled or the file has no current source text.
+    Skipped,
+    /// The request or analysis lifetime was cancelled before the report completed.
+    Cancelled,
+}
+
 #[derive(Debug, Clone)]
 pub struct LuaDiagnostic {
     enable: bool,
@@ -54,14 +65,37 @@ impl LuaDiagnostic {
         file_id: FileId,
         cancel_token: CancellationToken,
     ) -> Option<Vec<Diagnostic>> {
-        if !self.enable {
-            return None;
+        match self.diagnose_file_result(analysis, file_id, cancel_token) {
+            FileDiagnosticResult::Complete(diagnostics) => Some(diagnostics),
+            FileDiagnosticResult::Skipped | FileDiagnosticResult::Cancelled => None,
         }
-        if cancel_token.is_cancelled() {
-            return None;
+    }
+
+    /// Reports why a file produced no diagnostics, so hosts retry only interrupted work.
+    pub fn diagnose_file_result(
+        &self,
+        analysis: &EmmyLuaAnalysis,
+        file_id: FileId,
+        cancel_token: CancellationToken,
+    ) -> FileDiagnosticResult {
+        // Ineligible files remain skipped even when a previous lifetime is cancelled.
+        if !self.enable
+            || analysis.db.get_file_text(file_id).is_none()
+            || analysis.db.line_index(file_id).is_none()
+        {
+            return FileDiagnosticResult::Skipped;
         }
-        // Do not diagnose non-main workspace files (mirrors the old module_index.is_main semantics;
-        // once semantic workspace scoping is mirrored, filter by workspace id).
-        analysis.diagnose_file_cancellable(file_id, self.check_config.clone(), cancel_token)
+        let lifetime = analysis.diagnostic_cancellation_token();
+        match analysis.diagnose_file_cancellable(
+            file_id,
+            self.check_config.clone(),
+            cancel_token.clone(),
+        ) {
+            Some(diagnostics) => FileDiagnosticResult::Complete(diagnostics),
+            None if cancel_token.is_cancelled() || lifetime.is_cancelled() => {
+                FileDiagnosticResult::Cancelled
+            }
+            None => FileDiagnosticResult::Skipped,
+        }
     }
 }

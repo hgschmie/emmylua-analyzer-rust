@@ -1,3 +1,4 @@
+use emmylua_code_analysis::FileDiagnosticResult;
 use lsp_types::{
     DocumentDiagnosticParams, DocumentDiagnosticReport, DocumentDiagnosticReportResult,
     FullDocumentDiagnosticReport, RelatedFullDocumentDiagnosticReport,
@@ -22,36 +23,31 @@ pub async fn on_pull_document_diagnostic(
         Some(token.clone()),
         move |analysis| {
             let file_id = analysis.get_file_id(&uri)?;
-            let diagnostics = analysis.diagnose_file(file_id, token.clone());
-            if diagnostics.is_none()
-                && !token.is_cancelled()
-                && !analysis.diagnostic_cancellation_token().is_cancelled()
-            {
-                return None;
-            }
-            Some(diagnostics)
+            Some(analysis.diagnose_file_result(file_id, token))
         },
     )
-    .await
-    .map(|diagnostics| {
-        diagnostics.map(|diagnostics| {
-            DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
-                related_documents: None,
-                full_document_diagnostic_report: FullDocumentDiagnosticReport {
-                    result_id: None,
-                    items: diagnostics,
-                },
-            })
-            .into()
-        })
-    });
+    .await;
     match result {
-        RequestOutcome::Ready(Some(report)) => RequestOutcome::Ready(report),
-        RequestOutcome::Ready(None) => RequestOutcome::Cancelled(if request_token.is_cancelled() {
-            CancelSource::Client
-        } else {
-            CancelSource::DiagnosticRefresh
-        }),
+        RequestOutcome::Ready(FileDiagnosticResult::Complete(diagnostics)) => {
+            RequestOutcome::Ready(
+                DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
+                    related_documents: None,
+                    full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                        result_id: None,
+                        items: diagnostics,
+                    },
+                })
+                .into(),
+            )
+        }
+        RequestOutcome::Ready(FileDiagnosticResult::Skipped) => RequestOutcome::Missing,
+        RequestOutcome::Ready(FileDiagnosticResult::Cancelled) => {
+            RequestOutcome::Cancelled(if request_token.is_cancelled() {
+                CancelSource::Client
+            } else {
+                CancelSource::DiagnosticRefresh
+            })
+        }
         RequestOutcome::Cancelled(source) => RequestOutcome::Cancelled(source),
         RequestOutcome::Missing => RequestOutcome::Missing,
     }
@@ -84,9 +80,20 @@ mod tests {
                 );
             })
             .await;
-        let result = on_pull_document_diagnostic(snapshot, params, CancellationToken::new()).await;
+        let result =
+            on_pull_document_diagnostic(snapshot.clone(), params.clone(), CancellationToken::new())
+                .await;
+        snapshot.analysis().with_snapshot(|analysis| {
+            analysis.diagnostic_cancellation_token().cancel();
+        });
+        let cancelled_lifetime =
+            on_pull_document_diagnostic(snapshot, params, CancellationToken::new()).await;
         context.close().await;
         assert!(matches!(result, RequestOutcome::Missing), "{result:?}");
+        assert!(
+            matches!(cancelled_lifetime, RequestOutcome::Missing),
+            "{cancelled_lifetime:?}"
+        );
     }
 
     #[tokio::test]

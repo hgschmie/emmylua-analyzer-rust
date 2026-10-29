@@ -26,16 +26,6 @@ pub enum RequestOutcome<T> {
     Missing,
 }
 
-impl<T> RequestOutcome<T> {
-    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> RequestOutcome<U> {
-        match self {
-            RequestOutcome::Ready(value) => RequestOutcome::Ready(f(value)),
-            RequestOutcome::Cancelled(source) => RequestOutcome::Cancelled(source),
-            RequestOutcome::Missing => RequestOutcome::Missing,
-        }
-    }
-}
-
 /// Unified executor for pull requests with PullCache.
 pub async fn analysis_query<T, F>(
     analysis: &AnalysisState,
