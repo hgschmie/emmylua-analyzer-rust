@@ -1015,3 +1015,73 @@ fn asymmetric_fields_review_budget_preserves_partial_cast_paths() {
         }
     }
 }
+
+#[test]
+fn asymmetric_fields_index_signature_domains_remain_separate() {
+    let fields = r#"
+---@class Indexed<T>
+---@field [integer] T
+---@field [string] boolean
+---@field (read) integer number
+---@field (write) integer string
+"#;
+    let mut ws = VirtualWorkspace::new();
+    assert!(ws.has_no_diagnostic(DiagnosticCode::DuplicateDocField, fields));
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::DuplicateDocField,
+        &format!("{fields}\n---@field [integer] boolean")
+    ));
+    let mut ws = VirtualWorkspace::new();
+    let file_id = ws.def(&format!(
+        "{fields}\n---@type Indexed<string>\nindexed = {{}}"
+    ));
+    let indexed_type = ws.ty("Indexed<string>");
+    let index_infos = ws
+        .analysis
+        .semantic_model(file_id)
+        .index_infos(&indexed_type);
+    assert_eq!(index_infos.len(), 2);
+    assert!(
+        index_infos
+            .iter()
+            .any(|info| info.key_type == LuaType::Integer && info.value_type == LuaType::String)
+    );
+    assert!(
+        index_infos
+            .iter()
+            .any(|info| info.key_type == LuaType::String && info.value_type == LuaType::Boolean)
+    );
+    assert_eq!(ws.expr_ty("indexed.integer"), LuaType::Number);
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::AssignTypeMismatch,
+        "indexed.integer = 'accepted'"
+    ));
+    assert!(!ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, "indexed.integer = 42"));
+}
+
+#[test]
+fn asymmetric_fields_array_members_belong_to_elements() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def(
+        r#"
+---@class Element
+---@field (read) value number
+---@field (write) value string
+---@type Element[]
+items = {}
+"#,
+    );
+    assert_eq!(ws.expr_ty("items[1].value"), LuaType::Number);
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::UndefinedField,
+        "local value = items[1].value"
+    ));
+    assert!(!ws.has_no_diagnostic(DiagnosticCode::UndefinedField, "local value = items.value"));
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::AssignTypeMismatch,
+        "items[1].value = 'accepted'"
+    ));
+    assert!(!ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, "items[1].value = true"));
+    ws.def("items[1].value = 'accepted'\nread_after = items[1].value");
+    assert_eq!(ws.expr_ty("read_after"), LuaType::Number);
+}
