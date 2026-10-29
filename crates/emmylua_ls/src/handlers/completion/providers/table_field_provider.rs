@@ -181,6 +181,8 @@ fn table_field_members(model: &SemanticModel, expected: &LuaType) -> Vec<MemberI
                 // Arrays are tables, but member lookup exposes their elements'
                 // members. Retain the table constraint without inserting those keys.
                 LuaType::Table | LuaType::Array(_) => Some(LuaType::Table),
+                // Unconstrained built-ins permit tables but contribute no named keys.
+                LuaType::Any | LuaType::Unknown => Some(LuaType::Table),
                 LuaType::Object(_)
                 | LuaType::TableConst(_)
                 | LuaType::Tuple(_)

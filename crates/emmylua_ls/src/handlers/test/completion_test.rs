@@ -195,6 +195,7 @@ mod tests {
         for annotation in [
             "string",
             "number",
+            "string|number",
             "fun():string",
             "ItemFilterRecord[]",
             "table",
@@ -322,6 +323,29 @@ mod tests {
             "table<string, string>",
             "[string, number]",
         ] {
+            for annotation in [
+                format!("ItemFilterRecord&{other}"),
+                format!("{other}&ItemFilterRecord"),
+            ] {
+                check_table_keys(
+                    &mut ws,
+                    &format!("---@type {annotation}\nlocal value = {{ <??> }}"),
+                    &["name = ", "quality = ", "comparator = "],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    #[gtest]
+    fn test_union_table_field_completion_keeps_unconstrained_intersections() -> Result<()> {
+        for other in ["any", "unknown"] {
+            let mut ws = filter_completion_workspace();
+            check_table_keys(
+                &mut ws,
+                &format!("---@type {other}\nlocal value = {{ <??> }}"),
+                &[],
+            )?;
             for annotation in [
                 format!("ItemFilterRecord&{other}"),
                 format!("{other}&ItemFilterRecord"),
