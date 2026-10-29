@@ -1758,6 +1758,7 @@ fn finish_decl_frames(
         let value_ty = if value_ty.is_unknown()
             && !matches!(narrowed_before, LuaType::Unknown | LuaType::Any)
         {
+            // The new value invalidates previous guards, so use the base contract.
             unknown_assignment_fallback(model, decl, &frame.base_before)
         } else {
             value_ty
@@ -2870,13 +2871,14 @@ fn index_expr_type_from_initializer(
 }
 
 /// Unknown writes discard preceding flow facts while retaining the base contract.
-/// Inferred nil initializers on locals and globals are placeholders, not nil-only contracts.
+/// Inferred nil initializers on locals and globals become Unknown, leaving later truthiness guards undecided.
 /// An unknown value does not override an explicit annotation, including a nil-only contract.
 fn unknown_assignment_fallback(
     model: &SemanticModel,
     decl: &SemanticId,
     base_before: &LuaType,
 ) -> LuaType {
+    // Parameters obtain their contracts from signatures, not inferred initializers.
     if base_before.is_nil()
         && let SemanticId::Decl(key) = decl
         && let Some(facts) = model.file_facts_of(key.file_id)

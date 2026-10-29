@@ -15,8 +15,15 @@ fn assert_flow(source: &str, expected_warnings: usize) {
         .filter_map(|line| {
             let start = offset;
             offset += line.len();
-            line.split_once("-- expect: ")
-                .map(|(_, ty)| (start, offset, ws.ty(ty.trim())))
+            line.split_once("-- expect: ").map(|(_, text)| {
+                let text = text.trim();
+                let expected = ws.ty(text);
+                assert!(
+                    text == "unknown" || !expected.is_unknown(),
+                    "expected-type text must not silently resolve to Unknown: {text}"
+                );
+                (start, offset, expected)
+            })
         })
         .collect::<Vec<_>>();
     let file = ws.def(source);
@@ -103,7 +110,10 @@ fn unknown_assignment_invalidates_nil_guard_after_index_alternatives() {
 }
 
 #[test]
-fn unknown_assignment_invalidates_nil_guard_in_recursive_tag_map() {
+fn recursive_tag_map_reassignment_does_not_report_stale_nil_guard() {
+    // Diagnostic compatibility control: this broad recursive RHS need not be
+    // Unknown. The inferred types after assignment and inside the guard are
+    // intentionally unasserted; typed-index cases above verify Unknown writes.
     assert_flow(
         r#"
 ---@alias Basic boolean|number|string|table<string,Basic>
@@ -401,10 +411,11 @@ end
 }
 
 #[test]
-fn unknown_assignment_broad_indexes_do_not_keep_nil_guard() {
+fn broad_index_reassignment_does_not_report_stale_nil_guard() {
     for rhs in ["values[key]", "values[key] or values[tostring(key)]"] {
         // Broad table indexing need not infer Unknown, so check stale-guard
-        // diagnostics without imposing the typed-index RHS precondition.
+        // diagnostics without imposing the typed-index RHS precondition. Types
+        // after assignment and inside the guard are intentionally unasserted.
         let source = format!(
             r#"
 ---@param id string?
