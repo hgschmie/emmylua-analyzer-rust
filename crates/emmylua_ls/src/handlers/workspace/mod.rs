@@ -1,5 +1,7 @@
 mod did_rename_files;
 
+pub(crate) use did_rename_files::RenameClientQueue;
+
 pub use did_rename_files::{on_did_rename_files_handler, process_did_rename_files_handler};
 use lsp_types::{
     ClientCapabilities, FileOperationFilter, FileOperationPattern, FileOperationPatternOptions,

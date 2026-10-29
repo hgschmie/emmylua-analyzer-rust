@@ -63,6 +63,7 @@ impl ServerContext {
 
         let (update_tx, update_rx) = tokio::sync::mpsc::unbounded_channel();
         let inner = Arc::new(ServerContextInner {
+            rename_client_queue: crate::handlers::RenameClientQueue::new(),
             analysis,
             client,
             file_diagnostic,
@@ -160,6 +161,7 @@ impl ServerContext {
         for token in tokens {
             token.cancel();
         }
+        self.inner.rename_client_queue.close().await;
         {
             let mut workspace_manager = self.inner.workspace_manager.lock().await;
             workspace_manager.watcher = None;

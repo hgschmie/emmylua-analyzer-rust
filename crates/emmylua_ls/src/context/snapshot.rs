@@ -1,7 +1,10 @@
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::context::{UpdateEvent, lsp_features::LspFeatures};
+use crate::{
+    context::{UpdateEvent, lsp_features::LspFeatures},
+    handlers::RenameClientQueue,
+};
 
 use super::{
     AnalysisState, RequestManager, client::ClientProxy, diagnostic_service::DiagnosticService,
@@ -46,12 +49,17 @@ impl ServerContextSnapshot {
         &self.inner.request_manager
     }
 
+    pub(crate) fn rename_client_queue(&self) -> &RenameClientQueue {
+        &self.inner.rename_client_queue
+    }
+
     pub fn update_tx(&self) -> &tokio::sync::mpsc::UnboundedSender<UpdateEvent> {
         &self.inner.update_tx
     }
 }
 
 pub struct ServerContextInner {
+    pub(crate) rename_client_queue: RenameClientQueue,
     pub analysis: Arc<AnalysisState>,
     pub client: Arc<ClientProxy>,
     pub file_diagnostic: Arc<DiagnosticService>,

@@ -9,6 +9,10 @@ use lsp_types::{
     ApplyWorkspaceEditParams, FileRename, MessageActionItem, MessageType, RenameFilesParams,
     ShowMessageRequestParams, TextEdit, Uri, WorkspaceEdit,
 };
+use tokio::{
+    sync::{Mutex, mpsc, oneshot},
+    task::JoinHandle,
+};
 use tokio_util::sync::CancellationToken;
 use walkdir::WalkDir;
 
@@ -81,57 +85,156 @@ pub async fn process_did_rename_files_handler(
             })
             .await;
 
-        // try_modify_require_path only needs to be computed synchronously on a snapshot; release it immediately and then await the user prompt.
-        let changes = context
-            .analysis()
-            .try_with_snapshot(|analysis| try_modify_require_path(analysis, &all_renames));
-        if let Some(changes) = changes {
-            if changes.is_empty() {
-                return Some(());
-            }
+        // Queue one client interaction per notification, after its analysis
+        // mutations. User interaction must not occupy the update worker.
+        context
+            .rename_client_queue()
+            .enqueue(context.clone(), all_renames);
+    }
 
-            // Analysis is already updated. Client interaction must not hold the
-            // update worker or requests waiting for its next barrier.
-            tokio::spawn(async move {
-                let client = context.client();
+    Some(())
+}
 
-                let show_message_params = ShowMessageRequestParams {
-                    typ: MessageType::INFO,
-                    message: t!("Do you want to modify the require path?").to_string(),
-                    actions: Some(vec![MessageActionItem {
-                        title: t!("Modify").to_string(),
-                        properties: HashMap::new(),
-                    }]),
+/// Serializes rename prompts and edits without blocking document updates.
+pub(crate) struct RenameClientQueue {
+    sender: mpsc::UnboundedSender<(ServerContextSnapshot, Vec<RenameInfo>)>,
+    cancel_token: CancellationToken,
+    worker: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl RenameClientQueue {
+    pub(crate) fn new() -> Self {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let cancel_token = CancellationToken::new();
+        let worker_token = cancel_token.clone();
+        let worker = tokio::spawn(async move {
+            loop {
+                let job = tokio::select! {
+                    biased;
+                    _ = worker_token.cancelled() => break,
+                    job = receiver.recv() => job,
                 };
-
-                // Send the prompt request.
-                let cancel_token = CancellationToken::new();
-                if let Some(selected_action) = client
-                    .show_message_request(show_message_params, cancel_token)
-                    .await
-                {
-                    let cancel_token = CancellationToken::new();
-                    if selected_action.title == t!("Modify") {
-                        client
-                            .apply_edit(
-                                ApplyWorkspaceEditParams {
-                                    edit: WorkspaceEdit {
-                                        changes: Some(changes),
-                                        document_changes: None,
-                                        change_annotations: None,
-                                    },
-                                    label: None,
-                                },
-                                cancel_token,
-                            )
-                            .await?;
-                    }
-                }
-                Some(())
-            });
+                let Some((context, renames)) = job else {
+                    break;
+                };
+                update_require_paths(context, renames, worker_token.clone()).await;
+            }
+        });
+        Self {
+            sender,
+            cancel_token,
+            worker: Mutex::new(Some(worker)),
         }
     }
 
+    fn enqueue(&self, context: ServerContextSnapshot, renames: Vec<RenameInfo>) {
+        if !self.cancel_token.is_cancelled() && self.sender.send((context, renames)).is_err() {
+            log::error!("Rename client worker unavailable");
+        }
+    }
+
+    pub(crate) async fn close(&self) {
+        self.cancel_token.cancel();
+        // Keep the guard until the worker finishes so repeated closes also
+        // wait for client response registrations to be cleaned up.
+        let mut worker = self.worker.lock().await;
+        if let Some(worker) = worker.take()
+            && let Err(error) = worker.await
+        {
+            log::error!("Rename client worker stopped unexpectedly: {error}");
+        }
+    }
+}
+
+async fn wait_for_rename_updates(
+    context: &ServerContextSnapshot,
+    cancel_token: &CancellationToken,
+) -> bool {
+    if cancel_token.is_cancelled() {
+        return false;
+    }
+    let (ready, updates_applied) = oneshot::channel();
+    let _ = context.update_tx().send(UpdateEvent::Barrier(ready));
+    tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => false,
+        result = updates_applied => {
+            if let Err(error) = result {
+                log::error!("Update worker unavailable for rename edits: {error}");
+                false
+            } else {
+                true
+            }
+        }
+    }
+}
+
+async fn update_require_paths(
+    context: ServerContextSnapshot,
+    renames: Vec<RenameInfo>,
+    cancel_token: CancellationToken,
+) -> Option<()> {
+    // Earlier batches may have changed the references while this one waited.
+    if !wait_for_rename_updates(&context, &cancel_token).await {
+        return None;
+    }
+    let has_changes = context.analysis().try_with_snapshot(|analysis| {
+        Some(!try_modify_require_path(analysis, &renames)?.is_empty())
+    })?;
+    if !has_changes || cancel_token.is_cancelled() {
+        return None;
+    }
+    let client = context.client();
+    let selected_action = client
+        .show_message_request(
+            ShowMessageRequestParams {
+                typ: MessageType::INFO,
+                message: t!("Do you want to modify the require path?").to_string(),
+                actions: Some(vec![MessageActionItem {
+                    title: t!("Modify").to_string(),
+                    properties: HashMap::new(),
+                }]),
+            },
+            cancel_token.clone(),
+        )
+        .await?;
+    if selected_action.title != t!("Modify")
+        || !wait_for_rename_updates(&context, &cancel_token).await
+    {
+        return None;
+    }
+
+    // Recompute ranges from the live analysis after confirmation and preceding
+    // updates; never retain TextEdits across the user's potentially long wait.
+    // The existing unversioned protocol still cannot guard client edits in flight.
+    let changes = context
+        .analysis()
+        .try_with_snapshot(|analysis| try_modify_require_path(analysis, &renames))?;
+    if changes.is_empty() || cancel_token.is_cancelled() {
+        return None;
+    }
+    let response = client
+        .apply_edit(
+            ApplyWorkspaceEditParams {
+                edit: WorkspaceEdit {
+                    changes: Some(changes),
+                    document_changes: None,
+                    change_annotations: None,
+                },
+                label: None,
+            },
+            cancel_token,
+        )
+        .await?;
+    if !response.applied {
+        log::warn!(
+            "Client did not apply rename edits: {}",
+            response
+                .failure_reason
+                .as_deref()
+                .unwrap_or("no reason supplied")
+        );
+    }
     Some(())
 }
 

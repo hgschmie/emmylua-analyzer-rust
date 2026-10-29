@@ -368,3 +368,203 @@ async fn check_rename_client_interaction(wait_at_prompt: bool) {
         .await;
     context.close().await;
 }
+
+struct RenameFixture {
+    context: Arc<ServerContext>,
+    client: Connection,
+    directory: TestDirectory,
+    consumer: Uri,
+}
+
+impl RenameFixture {
+    async fn new() -> Self {
+        let directory = TestDirectory::new();
+        let (context, client, _) = setup().await;
+        let consumer =
+            emmylua_code_analysis::file_path_to_uri(&directory.0.join("consumer.lua")).unwrap();
+        context
+            .inner
+            .analysis
+            .update(|analysis| {
+                analysis.add_main_workspace(directory.0.clone());
+                for name in ["old", "other"] {
+                    let path = directory.0.join(format!("{name}.lua"));
+                    std::fs::write(&path, "return 1").unwrap();
+                    let uri = emmylua_code_analysis::file_path_to_uri(&path).unwrap();
+                    analysis.update_file_by_uri(&uri, Some("return 1".into()));
+                }
+                analysis.update_file_by_uri(
+                    &consumer,
+                    Some("local first = require('old')\nlocal second = require('other')".into()),
+                );
+            })
+            .await;
+        Self {
+            context,
+            client,
+            directory,
+            consumer,
+        }
+    }
+
+    fn rename(&self, old: &str, new: &str) -> Uri {
+        let old_path = self.directory.0.join(format!("{old}.lua"));
+        let new_path = self.directory.0.join(format!("{new}.lua"));
+        std::fs::rename(&old_path, &new_path).unwrap();
+        let old_uri = emmylua_code_analysis::file_path_to_uri(&old_path).unwrap();
+        let new_uri = emmylua_code_analysis::file_path_to_uri(&new_path).unwrap();
+        self.context
+            .inner
+            .update_tx
+            .send(UpdateEvent::DidRenameFiles(RenameFilesParams {
+                files: vec![FileRename {
+                    old_uri: old_uri.as_str().into(),
+                    new_uri: new_uri.as_str().into(),
+                }],
+            }))
+            .unwrap();
+        new_uri
+    }
+
+    fn prompt_response(prompt: Request) -> Response {
+        let params: ShowMessageRequestParams = serde_json::from_value(prompt.params).unwrap();
+        let action = params.actions.unwrap().into_iter().next().unwrap();
+        Response::new_ok(prompt.id, serde_json::to_value(action).unwrap())
+    }
+
+    async fn accept(&self, prompt: Request) {
+        self.context
+            .send_response(Self::prompt_response(prompt))
+            .await;
+    }
+
+    async fn acknowledge(&self, apply: Request, applied: bool) {
+        self.context
+            .send_response(Response::new_ok(
+                apply.id,
+                serde_json::json!({ "applied": applied, "failureReason": "test response" }),
+            ))
+            .await;
+    }
+}
+
+#[tokio::test]
+async fn rename_edits_are_refreshed_after_confirmation() {
+    let fixture = RenameFixture::new().await;
+    fixture.rename("old", "new");
+    let prompt = client_request(&fixture.client, "window/showMessageRequest").await;
+    let updated = "-- inserted while the prompt was open\n\nlocal first = require('old')";
+    change(&fixture.context, &fixture.consumer, 1, updated);
+    read(&fixture.context, &fixture.consumer, 20).await;
+    assert_eq!(
+        response(&fixture.client).await.response_result.unwrap(),
+        updated
+    );
+    fixture.accept(prompt).await;
+    let apply = client_request(&fixture.client, "workspace/applyEdit").await;
+    let params: ApplyWorkspaceEditParams = serde_json::from_value(apply.params.clone()).unwrap();
+    let edits = params.edit.changes.unwrap();
+    assert_eq!(edits[&fixture.consumer][0].range.start.line, 2);
+    assert_eq!(edits[&fixture.consumer][0].new_text, "'new'");
+    fixture.acknowledge(apply, true).await;
+    fixture.context.close().await;
+}
+
+#[tokio::test]
+async fn separate_rename_batches_serialize_client_interaction() {
+    let fixture = RenameFixture::new().await;
+    fixture.rename("old", "new");
+    let first_prompt = client_request(&fixture.client, "window/showMessageRequest").await;
+    let second_uri = fixture.rename("other", "later");
+    read(&fixture.context, &second_uri, 21).await;
+    // Observe every message through a real query response; don't discard an
+    // overlapping prompt while checking that the second mutation completed.
+    let early_requests = timeout(Duration::from_secs(5), async {
+        let mut requests = Vec::new();
+        loop {
+            match fixture.client.receiver.try_recv() {
+                Ok(Message::Request(request)) => requests.push(request),
+                Ok(Message::Response(response)) => {
+                    assert_eq!(response.id, 21.into());
+                    assert_eq!(response.response_result.unwrap(), "return 1");
+                    return requests;
+                }
+                _ => tokio::time::sleep(Duration::from_millis(1)).await,
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        early_requests.is_empty(),
+        "overlapping rename prompts: {early_requests:?}"
+    );
+    fixture.accept(first_prompt).await;
+    let first_apply = client_request(&fixture.client, "workspace/applyEdit").await;
+    let params: ApplyWorkspaceEditParams =
+        serde_json::from_value(first_apply.params.clone()).unwrap();
+    assert_eq!(
+        params.edit.changes.unwrap()[&fixture.consumer][0].new_text,
+        "'new'"
+    );
+    // A client's refusal must not strand the following batch.
+    fixture.acknowledge(first_apply, false).await;
+    let second_prompt = client_request(&fixture.client, "window/showMessageRequest").await;
+    fixture.accept(second_prompt).await;
+    let second_apply = client_request(&fixture.client, "workspace/applyEdit").await;
+    let params: ApplyWorkspaceEditParams =
+        serde_json::from_value(second_apply.params.clone()).unwrap();
+    assert_eq!(
+        params.edit.changes.unwrap()[&fixture.consumer][0].new_text,
+        "'later'"
+    );
+    fixture.acknowledge(second_apply, true).await;
+    fixture.context.close().await;
+}
+
+#[tokio::test]
+async fn close_cancels_pending_rename_prompt() {
+    let fixture = RenameFixture::new().await;
+    fixture.rename("old", "new");
+    let prompt = client_request(&fixture.client, "window/showMessageRequest").await;
+    fixture.context.close().await;
+    // A late reply must have no registered waiter and cannot start an edit.
+    assert!(
+        fixture
+            .context
+            .inner
+            .client
+            .on_response(RenameFixture::prompt_response(prompt))
+            .await
+            .is_none()
+    );
+    assert!(
+        fixture
+            .client
+            .receiver
+            .try_iter()
+            .all(|message| !matches!(message, Message::Request(_)))
+    );
+}
+
+#[tokio::test]
+async fn close_cancels_pending_rename_edit() {
+    let fixture = RenameFixture::new().await;
+    fixture.rename("old", "new");
+    let prompt = client_request(&fixture.client, "window/showMessageRequest").await;
+    fixture.accept(prompt).await;
+    let apply = client_request(&fixture.client, "workspace/applyEdit").await;
+    fixture.context.close().await;
+    assert!(
+        fixture
+            .context
+            .inner
+            .client
+            .on_response(Response::new_ok(
+                apply.id,
+                serde_json::json!({"applied": true})
+            ))
+            .await
+            .is_none()
+    );
+}
