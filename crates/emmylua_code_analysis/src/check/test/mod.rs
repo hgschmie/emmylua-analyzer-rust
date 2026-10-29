@@ -149,22 +149,27 @@ fn test_check_config_default_enable_rules() {
 }
 
 #[test]
-fn cancelled_diagnostics_do_not_publish_partial_results_or_poison_later_checks() {
+fn cancelled_diagnostic_requests_and_lifetimes_recover_independently() {
     use tokio_util::sync::CancellationToken;
     let mut ws = crate::VirtualWorkspace::new();
-    let source = (0..20000)
-        .map(|index| format!("local value{index} = missing{index}\n"))
-        .collect::<String>();
-    let file = ws.def(&source);
+    ws.analysis
+        .diagnostic
+        .enable_only(DiagnosticCode::UndefinedGlobal);
+    let file = ws.def("local value = missing_value");
+    let expected = ws
+        .analysis
+        .diagnose_file(file, CancellationToken::new())
+        .unwrap();
+    assert!(expected.iter().any(|d| d.message.contains("missing_value")));
+
     let token = CancellationToken::new();
-    let cancel = token.clone();
-    let worker = std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        cancel.cancel();
-    });
-    let result = ws.analysis.diagnose_file(file, token);
-    worker.join().unwrap();
-    assert!(result.is_none());
+    token.cancel();
+    assert!(ws.analysis.diagnose_file(file, token).is_none());
+    assert_eq!(
+        ws.analysis.diagnose_file(file, CancellationToken::new()),
+        Some(expected.clone())
+    );
+
     let lifetime = ws.analysis.diagnostic_cancellation_token();
     lifetime.cancel();
     assert!(
@@ -173,8 +178,9 @@ fn cancelled_diagnostics_do_not_publish_partial_results_or_poison_later_checks()
             .is_none()
     );
     assert!(!ws.analysis.renew_diagnostic_cancellation().is_cancelled());
-    assert!(!ws.has_no_diagnostic(
-        DiagnosticCode::UndefinedGlobal,
-        "print(missing_after_cancel)"
-    ));
+    assert!(lifetime.is_cancelled());
+    assert_eq!(
+        ws.analysis.diagnose_file(file, CancellationToken::new()),
+        Some(expected)
+    );
 }

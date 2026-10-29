@@ -138,9 +138,20 @@ pub(crate) struct CallSiteAnalysis {
 
 impl<'db> SemanticModel<'db> {
     pub fn new(db: &'db SemanticDatabase, file_id: FileId) -> Self {
+        Self::new_with_cancellation(db, file_id, Vec::new())
+    }
+
+    pub(crate) fn new_with_cancellation(
+        db: &'db SemanticDatabase,
+        file_id: FileId,
+        cancellation: Vec<tokio_util::sync::CancellationToken>,
+    ) -> Self {
         Self {
             view: AnalysisView::new(db).file(file_id),
-            cache: Rc::new(LazyCache::default()),
+            cache: Rc::new(LazyCache {
+                cancellation,
+                ..Default::default()
+            }),
         }
     }
 

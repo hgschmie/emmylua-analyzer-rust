@@ -242,9 +242,11 @@ impl EmmyLuaAnalysis {
         config: Arc<CheckConfig>,
         token: CancellationToken,
     ) -> Option<Vec<lsp_types::Diagnostic>> {
-        let model = self
-            .semantic_model(file_id)
-            .with_cancellation(vec![token, self.diagnostic_cancellation.clone()]);
+        let model = SemanticModel::new_with_cancellation(
+            &self.db,
+            file_id,
+            vec![token, self.diagnostic_cancellation.clone()],
+        );
         if model.is_cancelled() {
             return None;
         }

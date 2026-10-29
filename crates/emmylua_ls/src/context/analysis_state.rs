@@ -19,6 +19,20 @@ pub struct AnalysisState {
     gate: Arc<tokio::sync::RwLock<()>>,
 }
 
+// A callback may renew the lifetime or replace the analysis, even before panicking.
+// Synchronize its final token before releasing the gate to the next update.
+struct DiagnosticCancellationSync<'a> {
+    analysis: &'a mut EmmyLuaAnalysis,
+    cancellation: &'a Mutex<CancellationToken>,
+}
+
+impl Drop for DiagnosticCancellationSync<'_> {
+    fn drop(&mut self) {
+        *self.cancellation.lock().unwrap_or_else(|p| p.into_inner()) =
+            self.analysis.diagnostic_cancellation_token();
+    }
+}
+
 impl AnalysisState {
     pub fn new() -> Self {
         let analysis = EmmyLuaAnalysis::new();
@@ -102,12 +116,15 @@ impl AnalysisState {
             let mut analysis = inner
                 .write()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            *self
-                .diagnostic_cancellation
-                .lock()
-                .unwrap_or_else(|p| p.into_inner()) = analysis.renew_diagnostic_cancellation();
+            analysis.renew_diagnostic_cancellation();
+            let sync = DiagnosticCancellationSync {
+                analysis: &mut analysis,
+                cancellation: &self.diagnostic_cancellation,
+            };
+            let result = f(&mut *sync.analysis);
+            drop(sync);
             drop(gate);
-            f(&mut analysis)
+            result
         };
         if tokio::runtime::Handle::try_current()
             .map(|handle| handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
@@ -168,8 +185,15 @@ mod tests {
         assert_eq!(write.await.unwrap(), 2);
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn waiting_update_preempts_diagnostics_and_restores_fresh_checks() {
+    #[derive(Clone, Copy)]
+    enum DiagnosticLifetimeChange {
+        None,
+        Renew,
+        ReplaceAnalysis,
+        RenewAndPanic,
+    }
+
+    async fn assert_waiting_update_preempts_diagnostics(change: DiagnosticLifetimeChange) {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::time::Duration;
         use tokio_util::sync::CancellationToken;
@@ -178,6 +202,15 @@ mod tests {
         let uri = lsp_types::Uri::from_str("file:///C:/ws/preempt.lua").unwrap();
         let file_id = state
             .update(|analysis| {
+                match change {
+                    DiagnosticLifetimeChange::Renew => {
+                        analysis.renew_diagnostic_cancellation();
+                    }
+                    DiagnosticLifetimeChange::ReplaceAnalysis => {
+                        *analysis = EmmyLuaAnalysis::new();
+                    }
+                    _ => {}
+                }
                 analysis
                     .diagnostic
                     .enable_only(emmylua_code_analysis::DiagnosticCode::UndefinedGlobal);
@@ -185,6 +218,19 @@ mod tests {
                 analysis.get_file_id(&uri).unwrap()
             })
             .await;
+        if matches!(change, DiagnosticLifetimeChange::RenewAndPanic) {
+            let update_state = state.clone();
+            let failed_update = tokio::spawn(async move {
+                update_state
+                    .update(|analysis| {
+                        analysis.renew_diagnostic_cancellation();
+                        panic!("test update panics after renewing the diagnostic lifetime");
+                    })
+                    .await;
+            })
+            .await;
+            assert!(failed_update.unwrap_err().is_panic());
+        }
         let request_token = CancellationToken::new();
         let before = state
             .try_with_snapshot(|analysis| analysis.diagnose_file(file_id, request_token.clone()))
@@ -268,5 +314,25 @@ mod tests {
                 .iter()
                 .any(|d| d.message.contains("missing_after_edit"))
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn waiting_update_preempts_diagnostics_and_restores_fresh_checks() {
+        assert_waiting_update_preempts_diagnostics(DiagnosticLifetimeChange::None).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn waiting_update_preempts_diagnostics_after_callback_renews_lifetime() {
+        assert_waiting_update_preempts_diagnostics(DiagnosticLifetimeChange::Renew).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn waiting_update_preempts_diagnostics_after_callback_replaces_analysis() {
+        assert_waiting_update_preempts_diagnostics(DiagnosticLifetimeChange::ReplaceAnalysis).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn waiting_update_preempts_diagnostics_after_callback_renews_then_panics() {
+        assert_waiting_update_preempts_diagnostics(DiagnosticLifetimeChange::RenewAndPanic).await;
     }
 }
