@@ -4336,8 +4336,14 @@ fn call_may_narrow_decl(
 // Equality cannot introduce nil into a declared non-nullable value. Share this
 // rule between `==`'s true branch and `~=`'s false branch.
 fn equality_narrowing(model: &SemanticModel, decl: &SemanticId, other_ty: LuaType) -> Narrowing {
-    let declared = model.type_of_decl(decl).unwrap_or(LuaType::Unknown);
-    let ty = if other_ty.is_nullable() && !declared.is_nullable() {
+    // Resolve aliases before deciding whether the declaration excludes nil.
+    // A missing declaration, Any or Unknown does not establish non-nullability.
+    let ty = if other_ty.is_nullable()
+        && model
+            .type_of_decl(decl)
+            .and_then(|declared| super::type_eval::expand_alias_branches(model, &declared))
+            .is_some_and(|declared| !declared.is_optional())
+    {
         remove_type(other_ty, &LuaType::Nil)
     } else {
         other_ty
@@ -4748,6 +4754,7 @@ fn direct_narrow_condition_false(
                     };
                     if !matches!(other_ty, LuaType::Unknown) {
                         if op == BinaryOperator::OpNe {
+                            // `x ~= y` being false implies the same equality as `x == y`.
                             return Some(equality_narrowing(model, decl, other_ty));
                         }
                         // Similarly, `x == y` false cannot remove y's wide type entirely from x.

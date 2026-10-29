@@ -300,14 +300,17 @@ mod test {
 mod equality_nullability_tests {
     use crate::{DiagnosticCode, VirtualWorkspace};
 
-    fn check(required: bool, guard: &str, safe: bool) {
+    fn check(existing_type: &str, guard: &str, expect_no_diagnostic: bool) {
         let mut ws = VirtualWorkspace::new();
-        let existing = if required { "Distance" } else { "Distance?" };
         let source = format!(
             r#"
 ---@class Distance
 ---@field value number?
----@param existing {existing}
+---@alias RequiredDistance Distance
+---@alias OptionalDistance Distance?
+---@alias NestedOptionalDistance OptionalDistance|boolean
+---@alias MaybeDistance<T> T?
+---@param existing {existing_type}
 ---@param maybe Distance?
 ---@param enabled boolean
 local function probe(existing, maybe, enabled)
@@ -317,13 +320,14 @@ end
         );
         assert_eq!(
             ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
-            safe,
-            "{guard}"
+            expect_no_diagnostic,
+            "existing: {existing_type}; {guard}"
         );
     }
 
     #[test]
     fn equality_nullability_required_parameter_survives_equivalent_guards() {
+        // Member prefixes must remain non-nullable for both writes and reads.
         for guard in [
             "if maybe ~= existing then return end; existing.value = 1",
             "if existing ~= maybe then return end; return existing.value",
@@ -332,7 +336,7 @@ end
             "if maybe == existing then return existing.value end",
             "if not enabled or maybe ~= existing then return end; return existing.value",
         ] {
-            check(true, guard, true);
+            check("Distance", guard, true);
         }
     }
 
@@ -340,23 +344,68 @@ end
     fn equality_nullability_optional_parameters_can_both_be_nil() {
         for guard in [
             "if maybe ~= existing then return end; return existing.value",
+            "if maybe ~= existing then return end; existing.value = 1",
             "if existing == maybe then return existing.value end",
         ] {
-            check(false, guard, false);
+            check("Distance?", guard, false);
         }
     }
 
     #[test]
     fn equality_nullability_inequality_does_not_prove_presence() {
         check(
-            false,
+            "Distance?",
             "if maybe ~= existing then return existing.value end",
             false,
         );
         check(
-            false,
+            "Distance?",
             "if maybe == existing then return end; return existing.value",
             false,
         );
+    }
+
+    #[test]
+    fn equality_nullability_required_parameter_survives_equality_false_branch() {
+        for guard in [
+            "if maybe == existing then return end; return existing.value",
+            "if existing == maybe then return end; existing.value = 1",
+        ] {
+            check("Distance", guard, true);
+        }
+    }
+
+    fn check_optional_equality_with_unconstrained_type(existing_type: &str) {
+        for guard in [
+            "if maybe == existing then return existing.value end",
+            "if existing == maybe then return existing.value end",
+            "if maybe ~= existing then return end; return existing.value",
+            "if existing ~= maybe then return end; return existing.value",
+        ] {
+            check(existing_type, guard, false);
+        }
+    }
+
+    #[test]
+    fn equality_nullability_unknown_declaration_can_equal_nil() {
+        check_optional_equality_with_unconstrained_type("unknown");
+    }
+
+    #[test]
+    fn equality_nullability_any_declaration_can_equal_nil() {
+        check_optional_equality_with_unconstrained_type("any");
+    }
+
+    #[test]
+    fn equality_nullability_respects_aliased_declaration_contracts() {
+        for guard in [
+            "if maybe == existing then return existing.value end",
+            "if maybe ~= existing then return end; return existing.value",
+        ] {
+            check("RequiredDistance", guard, true);
+            check("OptionalDistance", guard, false);
+            check("NestedOptionalDistance", guard, false);
+            check("MaybeDistance<Distance>", guard, false);
+        }
     }
 }
