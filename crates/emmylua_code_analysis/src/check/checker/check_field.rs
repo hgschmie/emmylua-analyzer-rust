@@ -12,7 +12,7 @@ use crate::semantic_model::SemanticModel;
 use crate::semantic_model::type_eval::expand_alias_branches;
 use crate::{LuaMemberKey, LuaType, LuaTypeDeclId, LuaUnionType};
 
-use super::assign_type_mismatch::index_key_type;
+use super::assign_type_mismatch::{index_key_type, member_write_target};
 use super::constructor::{Task, UnionMode, evaluate};
 use super::param_type_check::callable_candidates;
 use super::{CheckContext, Checker};
@@ -65,7 +65,7 @@ fn check_local(
     }
 }
 
-/// `c = { ... }` (c has a doc type).
+/// Check constructor structure against a reassigned name or member's declared contract.
 fn check_assign(
     context: &mut CheckContext<'_>,
     semantic_model: &SemanticModel<'_>,
@@ -76,13 +76,19 @@ fn check_assign(
         let LuaExpr::TableExpr(table) = expr else {
             continue;
         };
-        let LuaVarExpr::NameExpr(name_expr) = var else {
-            continue;
-        };
-        let Some(decl_id) = semantic_model.resolve_name(name_expr.get_position()) else {
-            continue;
-        };
-        check_against(context, semantic_model, &decl_id, table);
+        match var {
+            LuaVarExpr::NameExpr(name_expr) => {
+                let Some(decl_id) = semantic_model.resolve_name(name_expr.get_position()) else {
+                    continue;
+                };
+                check_against(context, semantic_model, &decl_id, table);
+            }
+            LuaVarExpr::IndexExpr(index_expr) => {
+                if let Some(target) = member_write_target(semantic_model, index_expr, expr) {
+                    check_against_type(context, semantic_model, &target, table);
+                }
+            }
+        }
     }
 }
 
@@ -587,7 +593,6 @@ fn is_optional(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> bool {
 
 #[cfg(test)]
 mod constructor_selection_limits {
-    use super::super::MAX_CONSTRUCTOR_TYPE_DEPTH;
     use super::*;
     use crate::{LuaUnionMembers, VirtualWorkspace};
 
@@ -598,11 +603,7 @@ mod constructor_selection_limits {
         let file = ws.def("local value = {value=1}");
         let table = ws.get_node::<LuaTableExpr>(file);
         let model = ws.analysis.semantic_model(file);
-        for depth in [
-            MAX_CONSTRUCTOR_TYPE_DEPTH - 1,
-            MAX_CONSTRUCTOR_TYPE_DEPTH,
-            MAX_CONSTRUCTOR_TYPE_DEPTH * 2,
-        ] {
+        for depth in [99, 100, 200] {
             let mut nested = target.clone();
             for _ in 0..depth {
                 nested = LuaType::Union(Rc::new(LuaUnionType::Multi(LuaUnionMembers::new(vec![

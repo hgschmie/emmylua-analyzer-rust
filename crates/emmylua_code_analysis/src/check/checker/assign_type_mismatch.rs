@@ -260,35 +260,9 @@ fn check_assign(
                 );
             }
             LuaVarExpr::IndexExpr(index_expr) => {
-                let Some(resolved) = semantic_model.resolve_member(index_expr) else {
-                    check_self_member_assign(context, semantic_model, index_expr, &expr);
-                    continue;
-                };
-                let Some(member_id) = resolved.member_id else {
-                    check_self_member_assign(context, semantic_model, index_expr, &expr);
-                    continue;
-                };
-                let owner_is_self = semantic_model
-                    .file_facts()
-                    .and_then(|facts| facts.member_by_id(&member_id))
-                    .is_some_and(|member| {
-                        matches!(
-                            member.owner,
-                            SemanticId::Name(ref name)
-                                if name.as_str() == "self"
-                        )
-                    });
-                if owner_is_self {
-                    check_self_member_assign(context, semantic_model, index_expr, &expr);
-                    continue;
+                if let Some(target) = member_write_target(semantic_model, index_expr, expr) {
+                    check_value_against(context, semantic_model, &target, expr);
                 }
-                check_member_assign(
-                    context,
-                    semantic_model,
-                    &member_id,
-                    index_expr.get_range().start(),
-                    &expr,
-                );
             }
         }
     }
@@ -319,13 +293,43 @@ fn check_assign_against(
     check_value_against(context, semantic_model, &target, value_expr);
 }
 
-/// `function mt:init() self.x = value`: self member falls back to the same-named member on the method owner.
-fn check_self_member_assign(
-    context: &mut CheckContext<'_>,
+/// Resolve the same write contract for structural and value checks of a member assignment.
+/// Prefer the declared member over the member synthesized from this RHS, retaining
+/// the existing self fallback and nil/incomplete-template exclusions.
+pub(super) fn member_write_target(
     semantic_model: &SemanticModel<'_>,
     index_expr: &LuaIndexExpr,
     value_expr: &LuaExpr,
-) -> Option<()> {
+) -> Option<LuaType> {
+    let Some(member_id) = semantic_model
+        .resolve_member(index_expr)
+        .and_then(|resolved| resolved.member_id)
+    else {
+        return self_member_write_target(semantic_model, index_expr, value_expr);
+    };
+    let owner_is_self = semantic_model
+        .file_facts()
+        .and_then(|facts| facts.member_by_id(&member_id))
+        .is_some_and(
+            |member| matches!(member.owner, SemanticId::Name(ref name) if name.as_str() == "self"),
+        );
+    if owner_is_self {
+        return self_member_write_target(semantic_model, index_expr, value_expr);
+    }
+    resolved_member_write_target(
+        semantic_model,
+        &member_id,
+        index_expr.get_range().start(),
+        value_expr,
+    )
+}
+
+/// `function mt:init() self.x = value`: self member falls back to the same-named member on the method owner.
+fn self_member_write_target(
+    semantic_model: &SemanticModel<'_>,
+    index_expr: &LuaIndexExpr,
+    value_expr: &LuaExpr,
+) -> Option<LuaType> {
     let prefix = index_expr.get_prefix_expr()?;
     let LuaExpr::NameExpr(name_expr) = &prefix else {
         return None;
@@ -361,17 +365,15 @@ fn check_self_member_assign(
         .or_else(|| {
             semantic_model.member_type(&owner_ty, &LuaMemberKey::Name(key.clone().into()))
         })?;
-    check_value_against(context, semantic_model, &target, value_expr);
-    Some(())
+    Some(target)
 }
 
-fn check_member_assign(
-    context: &mut CheckContext<'_>,
+fn resolved_member_write_target(
     semantic_model: &SemanticModel<'_>,
     member_id: &SemanticId,
     target_offset: rowan::TextSize,
     value_expr: &LuaExpr,
-) {
+) -> Option<LuaType> {
     let mut target = semantic_model.member_assignment_type(
         member_id,
         semantic_model.type_of_member_at(member_id, target_offset),
@@ -382,7 +384,7 @@ fn check_member_assign(
     {
         if member.value_syntax == Some(value_expr.get_syntax_id()) {
             let SemanticId::Decl(owner) = &member.owner else {
-                return check_value_against_target(context, semantic_model, &target, value_expr);
+                return complete_member_write_target(target);
             };
             let prefix_ty = semantic_model
                 .type_of_decl_assign_target_at(&SemanticId::Decl(owner.clone()), target_offset);
@@ -404,65 +406,55 @@ fn check_member_assign(
     let value_ty =
         semantic_model.type_of_expr_at(value_expr.get_syntax_id(), value_expr.get_range().start());
     if matches!(value_ty, LuaType::Nil) || matches!(target, LuaType::Nil) {
-        return;
+        return None;
     }
-    check_value_against_target(context, semantic_model, &target, value_expr);
+    complete_member_write_target(target)
 }
 
-fn check_value_against_target(
-    context: &mut CheckContext<'_>,
-    semantic_model: &SemanticModel<'_>,
-    target: &LuaType,
-    value_expr: &LuaExpr,
-) {
+fn complete_member_write_target(target: LuaType) -> Option<LuaType> {
     if target.contains_tpl_node() {
         // Skip when class-level generic projection is incomplete, avoiding false positives for conditional generics like `MockResult<MockReturnType<T>>`.
-        return;
+        return None;
     }
-    check_value_against(context, semantic_model, target, value_expr);
+    Some(target)
 }
 
 fn is_structured_table_target(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> bool {
-    is_structured_table_target_inner(semantic_model, ty, &mut Vec::new())
-}
-
-fn is_structured_table_target_inner(
-    semantic_model: &SemanticModel<'_>,
-    ty: &LuaType,
-    active: &mut Vec<LuaType>,
-) -> bool {
-    if active.len() >= super::MAX_CONSTRUCTOR_TYPE_DEPTH || active.contains(ty) {
-        return false;
+    let mut pending = vec![ty.clone()];
+    let mut seen = Vec::new();
+    while let Some(target) = pending.pop() {
+        if seen.contains(&target) {
+            continue;
+        }
+        seen.push(target.clone());
+        match &target {
+            LuaType::Array(_) | LuaType::Object(_) => return true,
+            LuaType::Union(union) => pending.extend(union.into_vec().into_iter().rev()),
+            LuaType::Generic(generic) => {
+                if generic.get_base_type_id().get_name() == "array" {
+                    return true;
+                }
+                pending.push(LuaType::Ref(generic.get_base_type_id()));
+            }
+            LuaType::Ref(_) | LuaType::Def(_) => {
+                if let Some(def) = named_def(semantic_model, &target) {
+                    match def.kind {
+                        TypeDefKind::Class => return true,
+                        TypeDefKind::Alias => {
+                            if let Some(expanded) =
+                                super::check_field::expand_alias_type(semantic_model, &target)
+                            {
+                                pending.push(expanded);
+                            }
+                        }
+                        TypeDefKind::Enum => {}
+                    }
+                }
+            }
+            _ => {}
+        }
     }
-    active.push(ty.clone());
-    let structured = match ty {
-        LuaType::Array(_) | LuaType::Object(_) => true,
-        LuaType::Union(union) => union
-            .into_vec()
-            .iter()
-            .any(|component| is_structured_table_target_inner(semantic_model, component, active)),
-        LuaType::Generic(generic) => {
-            generic.get_base_type_id().get_name() == "array"
-                || is_structured_table_target_inner(
-                    semantic_model,
-                    &LuaType::Ref(generic.get_base_type_id()),
-                    active,
-                )
-        }
-        LuaType::Ref(_) | LuaType::Def(_) => {
-            named_def(semantic_model, ty).is_some_and(|def| match def.kind {
-                TypeDefKind::Class => true,
-                TypeDefKind::Alias => super::check_field::expand_alias_type(semantic_model, ty)
-                    .is_some_and(|target| {
-                        is_structured_table_target_inner(semantic_model, &target, active)
-                    }),
-                TypeDefKind::Enum => false,
-            })
-        }
-        _ => false,
-    };
-    active.pop();
-    structured
+    false
 }
 
 pub(super) fn check_value_against(
@@ -922,5 +914,51 @@ fn type_mismatch(
     TypeMismatch {
         range,
         message: message.into_owned(),
+    }
+}
+
+#[cfg(test)]
+mod structured_target_classification {
+    use super::*;
+    use crate::{LuaUnionMembers, LuaUnionType, VirtualWorkspace};
+
+    #[test]
+    fn finite_union_graphs_keep_their_structured_leaf() {
+        let mut ws = VirtualWorkspace::new();
+        let object = ws.ty("{value:number}");
+        let file = ws.def("local value = {}\nreturn value");
+        let model = ws.analysis.semantic_model(file);
+        for depth in [99, 100, 200] {
+            for (leaf, expected) in [(object.clone(), true), (LuaType::String, false)] {
+                let mut target = leaf;
+                for _ in 0..depth {
+                    target =
+                        LuaType::Union(Rc::new(LuaUnionType::Multi(LuaUnionMembers::new(vec![
+                            target,
+                        ]))));
+                }
+                assert_eq!(
+                    is_structured_table_target(&model, &target),
+                    expected,
+                    "depth={depth}, structured={expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn alias_cycles_do_not_hide_a_structured_sibling() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def("---@alias Cycle Cycle\n---@alias Left Right|{value:number}\n---@alias Right Left");
+        let cycle = ws.ty("Cycle");
+        let left = ws.ty("Left");
+        let right = ws.ty("Right");
+        let array = ws.ty("number[]");
+        let file = ws.def("local value = {}\nreturn value");
+        let model = ws.analysis.semantic_model(file);
+        assert!(!is_structured_table_target(&model, &cycle));
+        for target in [left, right, array] {
+            assert!(is_structured_table_target(&model, &target));
+        }
     }
 }

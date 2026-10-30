@@ -1983,3 +1983,139 @@ mod constructor_depth_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod member_union_constructors {
+    use crate::{DiagnosticCode, Emmyrc, check::test::check_source_with_emmyrc};
+
+    fn source(target: &str, value: &str, context: &str) -> String {
+        let body = match context {
+            "name" => {
+                format!("---@type {target}\nlocal assigned\nassigned = {value}\nreturn assigned")
+            }
+            "member" | "indexed-member" => {
+                let lhs = if context == "member" {
+                    "holder.value"
+                } else {
+                    "holder['value']"
+                };
+                format!(
+                    "---@class Holder\n---@field value {target}\nlocal Holder = {{}}\n---@param holder Holder\nlocal function update(holder)\n{lhs} = {value}\nend\nreturn update"
+                )
+            }
+            "self" => format!(
+                "---@class Holder\n---@field value {target}\nlocal Holder = {{}}\nfunction Holder:update()\nself.value = {value}\nend\nreturn Holder"
+            ),
+            _ => unreachable!(),
+        };
+        let declarations = if target == "First|Second" || target == "Second|First" {
+            "---@class First\n---@field x number\nlocal First = {}\n---@class Second\n---@field y string\nlocal Second = {}\n"
+        } else {
+            ""
+        };
+        format!("{declarations}{body}")
+    }
+
+    fn diagnostics(
+        target: &str,
+        value: &str,
+        context: &str,
+        config: Emmyrc,
+    ) -> Vec<crate::check::checker::Diagnostic> {
+        let source = source(target, value, context);
+        let start = source.rfind(value).unwrap();
+        check_source_with_emmyrc(&source, config)
+            .into_iter()
+            .filter(|d| {
+                d.code != DiagnosticCode::Unused
+                    && usize::from(d.range.start()) >= start
+                    && usize::from(d.range.end()) <= start + value.len()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn member_array_unions_reject_named_constructors() {
+        for target in ["integer[]|string[]", "string[]|integer[]"] {
+            for value in ["{id=false}", "{id=1}"] {
+                for context in ["name", "member", "indexed-member", "self"] {
+                    let diagnostics = diagnostics(target, value, context, Emmyrc::default());
+                    assert_eq!(
+                        diagnostics.len(),
+                        1,
+                        "{context}: {target}: {value}: {diagnostics:?}"
+                    );
+                    assert_eq!(
+                        diagnostics[0].code,
+                        DiagnosticCode::InjectField,
+                        "{context}: {target}: {value}: {diagnostics:?}"
+                    );
+                    assert_eq!(usize::from(diagnostics[0].range.len()), value.len());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn member_array_unions_accept_numeric_key_constructors() {
+        for target in ["integer[]|string[]", "string[]|integer[]"] {
+            for value in ["{1}", "{'ok'}", "{}", "{[1]=1}"] {
+                for context in ["name", "member", "indexed-member", "self"] {
+                    let diagnostics = diagnostics(target, value, context, Emmyrc::default());
+                    assert!(
+                        diagnostics.is_empty(),
+                        "{context}: {target}: {value}: {diagnostics:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn member_union_structural_diagnostics_keep_code_ownership() {
+        for context in ["name", "member", "indexed-member", "self"] {
+            for disabled in [
+                DiagnosticCode::AssignTypeMismatch,
+                DiagnosticCode::InjectField,
+            ] {
+                let mut config = Emmyrc::default();
+                config.diagnostics.disable.push(disabled);
+                let diagnostics = diagnostics("integer[]|string[]", "{id=false}", context, config);
+                if disabled == DiagnosticCode::InjectField {
+                    assert!(diagnostics.is_empty(), "{context}: {diagnostics:?}");
+                } else {
+                    assert_eq!(diagnostics.len(), 1, "{context}: {diagnostics:?}");
+                    assert_eq!(diagnostics[0].code, DiagnosticCode::InjectField);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn member_record_unions_check_structure_and_values() {
+        for target in ["First|Second", "Second|First"] {
+            for (value, expected) in [
+                ("{}", Some(DiagnosticCode::MissingFields)),
+                ("{x=1}", None),
+                ("{y='ok'}", None),
+                ("{x=false}", Some(DiagnosticCode::AssignTypeMismatch)),
+                ("{x=1,extra=false}", Some(DiagnosticCode::InjectField)),
+            ] {
+                for context in ["member", "indexed-member", "self"] {
+                    let diagnostics = diagnostics(target, value, context, Emmyrc::default());
+                    assert_eq!(
+                        diagnostics.len(),
+                        usize::from(expected.is_some()),
+                        "{context}: {target}: {value}: {diagnostics:?}"
+                    );
+                    if let Some(expected) = expected {
+                        assert_eq!(
+                            diagnostics[0].code, expected,
+                            "{context}: {target}: {value}: {diagnostics:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

@@ -54,8 +54,6 @@ use crate::semantic_model::SemanticModel;
 
 use super::config::CheckConfig;
 
-pub(super) const MAX_CONSTRUCTOR_TYPE_DEPTH: usize = 100;
-
 /// A diagnostic result entry (decoupled from LSP via TextRange; consumers convert to LSP).
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
