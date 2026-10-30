@@ -1240,3 +1240,127 @@ fn saved_member_callees_include_alias_valued_table_fields() {
         }
     }
 }
+
+#[cfg(test)]
+mod call_guard_followups {
+    use super::*;
+    use crate::LuaType;
+
+    #[test]
+    fn known_rawset_alias_invalidates_the_matching_receiver() {
+        assert_primitive_call_boundary(
+            "local write = rawset\nwrite(elem, 'handler', nil)\nlocal value = elem.handler.name -- observe",
+            true,
+        );
+    }
+
+    #[test]
+    fn known_numeric_rawset_keys_preserve_a_named_field_guard() {
+        for key in ["1.0", "1.5", "-1.5", "1e20"] {
+            assert_primitive_call_boundary(
+                &format!("rawset(elem, {key}, nil)\nlocal value = elem.handler.name -- observe"),
+                false,
+            );
+        }
+    }
+
+    fn conditional_handler_type(statement: &str) -> LuaType {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let source = format!(
+            "---@class BranchHandler\n---@field name string\nlocal Handler = {{}}\n---@class BranchReceiver\n---@field handler BranchHandler|fun()|nil\nlocal Receiver = {{}}\n---@param elem BranchReceiver\n---@param other BranchReceiver\n---@param flag boolean\nlocal function dispatch(elem, other, flag)\nif type(elem.handler) == 'table' then\nif flag then {statement} end\nlocal value = elem.handler -- observe\nend\nend"
+        );
+        let marker = source.find("-- observe").unwrap();
+        let start = source[..marker].rfind('\n').unwrap() + 1;
+        let file = ws.def(&source);
+        let model = ws.analysis.semantic_model(file);
+        let field = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .find(|field| {
+                field.get_text() == "elem.handler"
+                    && (start..marker).contains(&(u32::from(field.get_position()) as usize))
+            })
+            .unwrap();
+        model.type_of_expr_at(field.get_syntax_id(), field.get_position())
+    }
+
+    #[test]
+    fn conditional_member_function_write_matches_assignment() {
+        let assignment = conditional_handler_type("elem.handler = function() end");
+        let definition = conditional_handler_type("function elem.handler() end");
+        assert_eq!(definition, assignment);
+    }
+    #[test]
+    fn rawset_aliases_follow_possible_reaching_values() {
+        for (setup, nullable) in [
+            (
+                "local first = rawset; local write = (first); write(elem, 'handler', nil)",
+                true,
+            ),
+            ("local write = rawset; write(other, 'handler', nil)", false),
+            ("local write = rawset; write(elem, 'other', nil)", false),
+            (
+                "local write = rawset; write = function() end; write(elem, 'handler', nil)",
+                false,
+            ),
+            (
+                "local write = rawset; function write() end; write(elem, 'handler', nil)",
+                false,
+            ),
+            (
+                "local write = rawset; if flag then write = function() end end; write(elem, 'handler', nil)",
+                true,
+            ),
+            (
+                "local write = function() end; if flag then write = rawset end; write(elem, 'handler', nil)",
+                true,
+            ),
+            (
+                "local write = rawset; if flag then write = function() end else write = function() end end; write(elem, 'handler', nil)",
+                false,
+            ),
+            (
+                "local function rawset() end; local write = rawset; write(elem, 'handler', nil)",
+                false,
+            ),
+            (
+                "local first = rawset; local write = first; first = function() end; write(elem, 'handler', nil)",
+                true,
+            ),
+            (
+                "local write; write = write; write(elem, 'handler', nil)",
+                false,
+            ),
+            (
+                "local methods = {}; function methods.clear(target) target[key] = nil end; local set = rawset; set(methods, 'clear', function() end); methods.clear(elem)",
+                false,
+            ),
+            (
+                "local methods = {}; function methods.clear(target) target[key] = nil end; local set = rawset; set(other, 'clear', function() end); methods.clear(elem)",
+                true,
+            ),
+        ] {
+            assert_primitive_call_boundary(
+                &format!("{setup}\nlocal value = elem.handler.name -- observe"),
+                nullable,
+            );
+        }
+    }
+
+    #[test]
+    fn rawset_aliases_preserve_truthy_and_primitive_guard_identity() {
+        for guard in ["elem.handler", "type(elem.handler) == 'table'"] {
+            for (receiver, nullable) in [("elem", true), ("other", false)] {
+                assert_member_call_boundary(
+                    guard,
+                    "local write = rawset",
+                    &format!(
+                        "write({receiver}, 'handler', nil)\nlocal value = elem.handler.name -- observe"
+                    ),
+                    nullable,
+                );
+            }
+        }
+    }
+}

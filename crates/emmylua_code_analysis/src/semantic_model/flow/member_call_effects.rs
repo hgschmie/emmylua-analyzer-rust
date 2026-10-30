@@ -541,6 +541,78 @@ fn local_callees(
     callees
 }
 
+/// Follow local name values without invoking member lookup. Mutable captures
+/// outside their defining closure remain opaque, as in the visible-call resolver.
+fn local_name_values(model: &SemanticModel, expr: &LuaExpr) -> Vec<LuaExpr> {
+    let LuaExpr::NameExpr(name) = expr else {
+        return Vec::new();
+    };
+    let Some(id @ SemanticId::Decl(_)) = model.resolve_name(name.get_position()) else {
+        return Vec::new();
+    };
+    let SemanticId::Decl(key) = &id else {
+        return Vec::new();
+    };
+    if key.file_id != model.file_id() {
+        return Vec::new();
+    }
+    let (Some(facts), Some(tree), Some(chunk)) =
+        (model.file_facts(), model.flow_tree(), model.chunk())
+    else {
+        return Vec::new();
+    };
+    let Some(decl) = facts.decl_by_id(&id) else {
+        return Vec::new();
+    };
+    if tree.has_decl_assignment(&id) {
+        let owner = decl
+            .owner_syntax
+            .and_then(|owner| owner.to_node_from_root(chunk.syntax()));
+        if owner.is_none_or(|owner| {
+            LuaClosureId::from_node(&owner) != LuaClosureId::from_node(name.syntax())
+        }) {
+            return Vec::new();
+        }
+    }
+    reaching_values(model, &id, expr)
+        .into_iter()
+        .filter_map(|value| {
+            value.or_else(|| {
+                decl.value_expr_syntax
+                    .and_then(|value| value.to_node_from_root(chunk.syntax()))
+                    .and_then(LuaExpr::cast)
+            })
+        })
+        .collect()
+}
+
+/// A possible standard rawset value suffices to expose a conflicting write.
+/// This name-only walk is also used during member resolution and must not call
+/// that resolver recursively. Definite harmless replacements stop old aliases.
+fn may_call_rawset(model: &SemanticModel, expr: LuaExpr) -> bool {
+    let mut pending = vec![expr];
+    let mut seen = HashSet::new();
+    while let Some(expr) = pending.pop() {
+        let Some(expr) = guards::unparenthesized(expr) else {
+            continue;
+        };
+        if !seen.insert(expr.get_syntax_id()) {
+            continue;
+        }
+        let LuaExpr::NameExpr(name) = &expr else {
+            continue;
+        };
+        if name.get_name_text().as_deref() == Some("rawset")
+            && let Some(SemanticId::Decl(decl)) = model.resolve_name(name.get_position())
+            && model.is_std_file(decl.file_id)
+        {
+            return true;
+        }
+        pending.extend(local_name_values(model, &expr));
+    }
+    false
+}
+
 fn resolve_callees(
     model: &SemanticModel,
     expr: LuaExpr,
@@ -563,44 +635,12 @@ fn resolve_callees(
         }
         match &expr {
             LuaExpr::ClosureExpr(closure) => callees.push(closure.clone()),
-            LuaExpr::NameExpr(name) => {
-                let Some(id @ SemanticId::Decl(_)) = model.resolve_name(name.get_position()) else {
-                    continue;
-                };
-                let SemanticId::Decl(key) = &id else {
-                    continue;
-                };
-                if key.file_id != model.file_id() {
-                    continue;
-                }
-                let (Some(facts), Some(tree), Some(chunk)) =
-                    (model.file_facts(), model.flow_tree(), model.chunk())
-                else {
-                    continue;
-                };
-                let Some(decl) = facts.decl_by_id(&id) else {
-                    continue;
-                };
-                if tree.has_decl_assignment(&id) {
-                    let owner = decl
-                        .owner_syntax
-                        .and_then(|owner| owner.to_node_from_root(chunk.syntax()));
-                    if owner.is_none_or(|owner| {
-                        LuaClosureId::from_node(&owner) != LuaClosureId::from_node(name.syntax())
-                    }) {
-                        continue;
-                    }
-                }
-                for value in reaching_values(model, &id, &expr) {
-                    let value = value.or_else(|| {
-                        decl.value_expr_syntax
-                            .and_then(|value| value.to_node_from_root(chunk.syntax()))
-                            .and_then(LuaExpr::cast)
-                    });
-                    if let Some(value) = value {
-                        pending.push((value, context));
-                    }
-                }
+            LuaExpr::NameExpr(_) => {
+                pending.extend(
+                    local_name_values(model, &expr)
+                        .into_iter()
+                        .map(|value| (value, context)),
+                );
             }
             LuaExpr::IndexExpr(_) => {
                 let (bindings, invocations) = &contexts[context];
@@ -902,16 +942,7 @@ fn mutator_conflicts(
     let Some(prefix) = call.get_prefix_expr().and_then(guards::unparenthesized) else {
         return false;
     };
-    let LuaExpr::NameExpr(name) = prefix else {
-        return false;
-    };
-    if name.get_name_text().as_deref() != Some("rawset") {
-        return false;
-    }
-    let Some(SemanticId::Decl(decl)) = model.resolve_name(name.get_position()) else {
-        return false;
-    };
-    if !model.is_std_file(decl.file_id) {
+    if !may_call_rawset(model, prefix) {
         return false;
     }
     let Some(args) = call.get_args_list() else {
@@ -922,19 +953,32 @@ fn mutator_conflicts(
         return false;
     };
     let mut written = access_paths(model, receiver, bindings, std::slice::from_ref(expected));
-    let key = args
+    let key_type = args
         .get(1)
         .map(|key| model.type_of_expr(key.get_syntax_id()));
-    let key = match key {
+    let numeric = key_type.as_ref().is_some_and(LuaType::is_number);
+    let non_integer = matches!(&key_type, Some(LuaType::FloatConst(value)) if crate::semantic_db::types::exact_integer(*value).is_none());
+    let key = match key_type {
         Some(LuaType::StringConst(key) | LuaType::DocStringConst(key)) => {
             LuaMemberKey::Name((*key).clone())
         }
         Some(LuaType::IntegerConst(key) | LuaType::DocIntegerConst(key)) => {
             LuaMemberKey::Integer(key)
         }
+        Some(LuaType::FloatConst(value)) => crate::semantic_db::types::exact_integer(value)
+            .map(LuaMemberKey::Integer)
+            .unwrap_or(LuaMemberKey::None),
         _ => LuaMemberKey::None,
     };
     written.iter_mut().any(|path| {
+        // A raw write affects this next segment, including when it replaces an
+        // ancestor of the guarded member. Unknown key domains stay conservative.
+        let segment = expected.1.get(path.1.len());
+        if numeric && segment.is_some_and(LuaMemberKey::is_name)
+            || non_integer && segment.is_some_and(LuaMemberKey::is_integer)
+        {
+            return false;
+        }
         path.1.push(key.clone());
         path_write_affects(path, &expected.0, &expected.1)
     })
@@ -1253,5 +1297,46 @@ local observed = receiver.value
             call.syntax(),
             call.get_range().end()
         ));
+    }
+}
+
+#[cfg(test)]
+mod rawset_key_tests {
+    use super::*;
+    use crate::VirtualWorkspace;
+
+    #[test]
+    fn numeric_rawset_keys_keep_receiver_and_ancestor_identity() {
+        for (guarded, call_text, conflicts) in [
+            ("elem[1].handler", "rawset(elem, 1.0, nil)", true),
+            ("elem[1].handler", "rawset(elem, 1.5, nil)", false),
+            ("elem[2].handler", "rawset(elem, 1.0, nil)", false),
+            ("elem[1].handler", "rawset(other, 1.0, nil)", false),
+            ("elem.handler", "rawset(elem, dynamic, nil)", true),
+            ("elem.handler", "rawset(elem, mixed, nil)", true),
+            ("elem.handler", "rawset(elem, numeric, nil)", false),
+            ("elem[1]", "rawset(elem, numeric, nil)", true),
+            ("elem.child.handler", "rawset(elem, 'child', nil)", true),
+            ("elem.child.handler", "rawset(elem.child, 1.5, nil)", false),
+            ("elem[1].handler", "rawset(elem[1], 'handler', nil)", true),
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            let file = ws.def(&format!("---@param numeric number\n---@param mixed number|string\nlocal function inspect(elem, other, numeric, dynamic, mixed)\n{call_text}\nlocal observed = {guarded}\nend"));
+            let model = ws.analysis.semantic_model(file);
+            let chunk = model.chunk().unwrap();
+            let index = chunk
+                .descendants::<LuaIndexExpr>()
+                .find(|index| index.get_text() == guarded)
+                .unwrap();
+            let call = chunk
+                .descendants::<LuaCallExpr>()
+                .find(|call| call.get_text() == call_text)
+                .unwrap();
+            assert_eq!(
+                calls_conflict(&model, &index, call.syntax(), call.get_range().end()),
+                conflicts,
+                "{guarded}; {call_text}"
+            );
+        }
     }
 }

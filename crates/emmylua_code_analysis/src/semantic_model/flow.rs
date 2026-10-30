@@ -5680,7 +5680,7 @@ fn member_branch_is_pure(
             return false;
         }
         match &node.kind {
-            FlowNodeKind::Assignment(_) => {
+            FlowNodeKind::Assignment(_) | FlowNodeKind::ImplFunc(_) => {
                 if tree.get_flow_effects(current).iter().any(|effect| {
                     matches!(
                         effect,
@@ -6037,5 +6037,62 @@ pub(crate) mod flow_metrics {
 
     pub(crate) fn fast_member_hits() -> u64 {
         COUNTERS.with(|c| c.get().fast_member_hits)
+    }
+}
+
+#[cfg(test)]
+mod member_branch_write_tests {
+    use super::*;
+    use crate::VirtualWorkspace;
+    use emmylua_parser::{LuaFuncStat, LuaIndexExpr};
+
+    #[test]
+    fn member_function_definition_is_not_a_pure_branch() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def("local elem = {}; local other = {}; if flag then function elem.handler() end end; local first = elem.handler; local second = other.handler");
+        let model = ws.analysis.semantic_model(file);
+        let chunk = model.chunk().unwrap();
+        let function = chunk.descendants::<LuaFuncStat>().next().unwrap();
+        let tree = model.flow_tree().unwrap();
+        let flow = (0..).map(FlowId).take_while(|id| tree.get_flow_node(*id).is_some()).find(|id| matches!(&tree.get_flow_node(*id).unwrap().kind, FlowNodeKind::ImplFunc(ptr) if ptr.get_syntax_id() == function.get_syntax_id())).unwrap();
+        let node = tree.get_flow_node(flow).unwrap();
+        assert!(matches!(node.kind, FlowNodeKind::ImplFunc(_)));
+        let Some(FlowAntecedent::Single(stop)) = node.antecedent else {
+            panic!("function must have a single predecessor")
+        };
+        let member = tree
+            .get_flow_effects(flow)
+            .iter()
+            .find_map(|effect| match effect {
+                FlowEffect::AssignMember { member, .. } => Some(member),
+                _ => None,
+            })
+            .unwrap();
+        let access = chunk
+            .descendants::<LuaIndexExpr>()
+            .filter(|index| index.get_text() == "elem.handler")
+            .max_by_key(LuaAstNode::get_position)
+            .unwrap();
+        assert!(!member_branch_is_pure(
+            &model,
+            &tree,
+            member,
+            Some(&access),
+            flow,
+            stop
+        ));
+        let other = chunk
+            .descendants::<LuaIndexExpr>()
+            .find(|index| index.get_text() == "other.handler")
+            .unwrap();
+        let other_member = SemanticId::member(file, other.get_range());
+        assert!(member_branch_is_pure(
+            &model,
+            &tree,
+            &other_member,
+            Some(&other),
+            flow,
+            stop
+        ));
     }
 }
