@@ -495,7 +495,7 @@ fn check_against_type(
 pub(super) fn check_union_table_fields(
     context: &mut CheckContext<'_>,
     semantic_model: &SemanticModel<'_>,
-    union: &LuaUnionType,
+    union: &Rc<LuaUnionType>,
     table: &LuaTableExpr,
     codes: &[DiagnosticCode],
 ) {
@@ -508,12 +508,12 @@ pub(super) fn check_union_table_fields(
 
 pub(super) fn table_union_diagnostics(
     semantic_model: &SemanticModel<'_>,
-    union: &LuaUnionType,
+    union: &Rc<LuaUnionType>,
     table: &LuaTableExpr,
 ) -> Vec<super::Diagnostic> {
     semantic_model.constructor_diagnostics(
         table.get_syntax_id(),
-        LuaType::Union(Rc::new(union.clone())),
+        LuaType::Union(Rc::clone(union)),
         || table_union_diagnostics_uncached(semantic_model, union, table),
     )
 }
@@ -522,7 +522,7 @@ fn table_union_diagnostics_uncached(
     semantic_model: &SemanticModel<'_>,
     union: &LuaUnionType,
     table: &LuaTableExpr,
-) -> Vec<super::Diagnostic> {
+) -> Option<Vec<super::Diagnostic>> {
     fn collect_alternatives(
         model: &SemanticModel<'_>,
         ty: &LuaType,
@@ -556,25 +556,41 @@ fn table_union_diagnostics_uncached(
     }
     let value_expr = LuaExpr::TableExpr(table.clone());
     let mut best: Option<Vec<super::Diagnostic>> = None;
+    let mut rejected_array = None;
+    let named_key =
+        table.get_fields_with_keys().iter().find_map(|(_, key)| {
+            match static_member_key(semantic_model, key) {
+                Some(LuaMemberKey::Name(name)) => Some(name),
+                _ => None,
+            }
+        });
     for alternative in alternatives {
         // A constructor with named keys is not the array alternative of `C|C[]`.
         // Keep reporting the class's missing fields rather than an element error.
         if matches!(alternative, LuaType::Array(_))
-            && table.get_fields_with_keys().iter().any(|(_, key)| {
-                matches!(
-                    static_member_key(semantic_model, key),
-                    Some(LuaMemberKey::Name(_))
-                )
-            })
+            && let Some(name) = &named_key
         {
+            rejected_array.get_or_insert_with(|| {
+                let mut candidate = CheckContext::unfiltered(semantic_model);
+                candidate.add_diagnostic(
+                    DiagnosticCode::InjectField,
+                    table.get_range(),
+                    format!("Field `{name}` cannot be injected into an array type."),
+                );
+                candidate.into_diagnostics()
+            });
             continue;
         }
-        let mut candidate = CheckContext::unfiltered(semantic_model);
-        check_against_type(&mut candidate, semantic_model, &alternative, table);
-        check_value_against(&mut candidate, semantic_model, &alternative, &value_expr);
-        let diagnostics = candidate.into_diagnostics();
+        let Some(diagnostics) = semantic_model.constructor_alternative_diagnostics(|| {
+            let mut candidate = CheckContext::unfiltered(semantic_model);
+            check_against_type(&mut candidate, semantic_model, &alternative, table);
+            check_value_against(&mut candidate, semantic_model, &alternative, &value_expr);
+            candidate.into_diagnostics()
+        }) else {
+            continue;
+        };
         if diagnostics.is_empty() {
-            return diagnostics;
+            return Some(diagnostics);
         }
         if best
             .as_ref()
@@ -583,7 +599,7 @@ fn table_union_diagnostics_uncached(
             best = Some(diagnostics);
         }
     }
-    best.unwrap_or_default()
+    best.or(rejected_array)
 }
 
 /// Target type -> named type id (Ref/Def/Generic base class).

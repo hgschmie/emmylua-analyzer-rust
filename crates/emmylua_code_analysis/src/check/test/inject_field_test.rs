@@ -1271,4 +1271,157 @@ mod union_table_constructors {
             }
         }
     }
+
+    #[test]
+    fn review24_array_only_unions_reject_named_fields() {
+        for (target, expression) in [
+            ("integer[]|string[]", "{id=1}"),
+            ("integer[]|string[]", "{[('id')]=1}"),
+            ("[string,string]|[number]", "{id=1}"),
+        ] {
+            let diagnostics = diagnostics(target, expression);
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.code == DiagnosticCode::ParamTypeMismatch),
+                "{target} / {expression}: {diagnostics:?}"
+            );
+            assert!(
+                diagnostics.iter().any(|d| matches!(
+                    d.code,
+                    DiagnosticCode::AssignTypeMismatch
+                        | DiagnosticCode::InjectField
+                        | DiagnosticCode::MissingFields
+                )),
+                "{target} / {expression}: {diagnostics:?}"
+            );
+        }
+        for expression in ["{1,2}", "{'one','two'}", "{}"] {
+            let diagnostics = diagnostics("integer[]|string[]", expression);
+            assert!(diagnostics.is_empty(), "{expression}: {diagnostics:?}");
+        }
+    }
+
+    #[test]
+    fn review24_recursive_intersection_union_uses_concrete_alternative() {
+        for (expression, valid) in [
+            ("{next={name='leaf'}}", true),
+            ("{next={next={name='leaf'}}}", true),
+            ("{next={name=1}}", false),
+        ] {
+            let source = format!(
+                "---@alias Chain {{next:Chain}}|{{name:string}}\n---@param value Chain\nlocal function accept(value) return value end\naccept({expression})"
+            );
+            let diagnostics = check_source(&source);
+            assert_eq!(
+                diagnostics.is_empty(),
+                valid,
+                "{expression}: {diagnostics:?}"
+            );
+        }
+        for expression in ["{name='ok'}", "{value='bad'}", "{value=1}"] {
+            let source = format!(
+                "---@alias Recursive (Recursive & {{value:number}})|{{name:string}}\n---@param value Recursive\nlocal function accept(value) return value end\naccept({expression})"
+            );
+            let diagnostics = check_source(&source);
+            assert_eq!(
+                diagnostics.is_empty(),
+                expression == "{name='ok'}",
+                "{expression}: {diagnostics:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn review24_union_selection_does_not_switch_for_disabled_codes() {
+        let source = r#"
+            ---@class First
+            ---@field x number
+            local first = {}
+            ---@class Second
+            ---@field x string
+            ---@field y string
+            local second = {}
+            ---@type First|Second
+            local value = {x=false}
+            return value
+        "#;
+        let diagnostics: Vec<_> = check_source(source)
+            .into_iter()
+            .filter(|d| d.code != DiagnosticCode::Unused)
+            .collect();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0].code, DiagnosticCode::AssignTypeMismatch);
+        let mut config = crate::Emmyrc::default();
+        config
+            .diagnostics
+            .disable
+            .push(DiagnosticCode::AssignTypeMismatch);
+        let diagnostics = crate::check::test::check_source_with_emmyrc(source, config);
+        assert!(
+            diagnostics.iter().all(|d| d.code == DiagnosticCode::Unused),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn review24_union_diagnostics_use_active_severity_and_keep_distinct_fields() {
+        let source = r#"
+            ---@class First
+            ---@field x number
+            local first = {}
+            ---@class Second
+            ---@field y string
+            local second = {}
+            ---@type First|Second
+            local value = {extra=1, other=2}
+            return value
+        "#;
+        let mut config = crate::Emmyrc::default();
+        config.diagnostics.severity.insert(
+            DiagnosticCode::InjectField,
+            crate::DiagnosticSeveritySetting::Error,
+        );
+        config.diagnostics.severity.insert(
+            DiagnosticCode::MissingFields,
+            crate::DiagnosticSeveritySetting::Hint,
+        );
+        let diagnostics: Vec<_> = crate::check::test::check_source_with_emmyrc(source, config)
+            .into_iter()
+            .filter(|d| d.code != DiagnosticCode::Unused)
+            .collect();
+        assert_eq!(diagnostics.len(), 3, "{diagnostics:?}");
+        let injected: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::InjectField)
+            .collect();
+        assert_eq!(injected.len(), 2, "{diagnostics:?}");
+        assert_eq!(injected[0].range, injected[1].range);
+        assert_ne!(injected[0].message, injected[1].message);
+        assert!(
+            injected
+                .iter()
+                .all(|d| d.severity == lsp_types::DiagnosticSeverity::ERROR)
+        );
+        let missing = diagnostics
+            .iter()
+            .find(|d| d.code == DiagnosticCode::MissingFields)
+            .unwrap();
+        assert_eq!(missing.severity, lsp_types::DiagnosticSeverity::HINT);
+    }
+
+    #[test]
+    fn review24_concrete_recursive_result_can_satisfy_an_outer_alternative() {
+        for (expression, valid) in [("{nested={name='ok'}}", true), ("{nested={name=1}}", false)] {
+            let source = format!(
+                "---@alias Recursive (Recursive & {{value:number}})|{{name:string}}\n---@alias Outer {{nested:Recursive}}|{{other:boolean}}\n---@param value Outer\nlocal function accept(value) return value end\naccept({expression})"
+            );
+            let diagnostics = check_source(&source);
+            assert_eq!(
+                diagnostics.is_empty(),
+                valid,
+                "{expression}: {diagnostics:?}"
+            );
+        }
+    }
 }

@@ -5,23 +5,65 @@ use crate::check::checker::param_type_check::callable_candidates_uncached;
 
 impl<'db> SemanticModel<'db> {
     /// Reuse complete, unfiltered constructor checks within one semantic snapshot.
+    /// A callback returning `None` has no resolved alternative and cannot prove a match.
+    /// Cached presentation metadata uses defaults; consumers must re-emit code, range,
+    /// and message through their active CheckContext to apply user configuration.
     pub(crate) fn constructor_diagnostics(
         &self,
         table: LuaSyntaxId,
         target: LuaType,
-        check: impl FnOnce() -> Vec<crate::check::checker::Diagnostic>,
+        check: impl FnOnce() -> Option<Vec<crate::check::checker::Diagnostic>>,
     ) -> Vec<crate::check::checker::Diagnostic> {
         let key = (self.file_id(), table, target);
-        if let Some(result) = self.cache.borrow().constructor_diagnostics.get(&key) {
-            return result.clone();
+        {
+            let cache = self.cache.borrow();
+            if let Some(entry) = cache.constructor_diagnostics.get(&key) {
+                if matches!(entry, cache::CacheEntry::InProgress) {
+                    cache
+                        .constructor_recursion_revision
+                        .set(cache.constructor_recursion_revision.get().wrapping_add(1));
+                }
+                return entry.get(&cache).cloned().unwrap_or_default();
+            }
         }
         let _query = cache::QueryCacheScope::new(&self.cache);
         let revision = self.cache.borrow().revision();
+        let recursion_revision = self.cache.borrow().constructor_recursion_revision.get();
+        self.cache
+            .borrow_mut()
+            .constructor_diagnostics
+            .insert(key.clone(), cache::CacheEntry::InProgress);
         let result = check();
-        self.cache.publish_if_complete(revision, |cache| {
-            cache.constructor_diagnostics.insert(key, result.clone());
-        });
+        let mut cache = self.cache.borrow_mut();
+        let Some(result) = result else {
+            cache.mark_incomplete();
+            cache
+                .constructor_recursion_revision
+                .set(recursion_revision.wrapping_add(1));
+            cache.constructor_diagnostics.remove(&key);
+            return Vec::new();
+        };
+        // A concrete result no longer depends on discarded recursive alternatives.
+        // Keep the ordinary incomplete revision so provisional work is not cached.
+        cache.constructor_recursion_revision.set(recursion_revision);
+        if cache.is_complete(revision) {
+            cache
+                .constructor_diagnostics
+                .insert(key, cache::CacheEntry::Ready(result.clone()));
+        } else {
+            cache.constructor_diagnostics.remove(&key);
+        }
         result
+    }
+
+    /// A recursive constructor dependency cannot prove that an alternative matches.
+    pub(crate) fn constructor_alternative_diagnostics(
+        &self,
+        check: impl FnOnce() -> Vec<crate::check::checker::Diagnostic>,
+    ) -> Option<Vec<crate::check::checker::Diagnostic>> {
+        let revision = self.cache.borrow().constructor_recursion_revision.get();
+        let result = check();
+        (self.cache.borrow().constructor_recursion_revision.get() == revision).then_some(result)
     }
 
     /// Currently configured runtime version (used for `---@version` visibility checks).
@@ -1258,7 +1300,7 @@ mod constructor_cache_tests {
         let calls = Cell::new(0);
         let check = || {
             calls.set(calls.get() + 1);
-            Vec::new()
+            Some(Vec::new())
         };
         model.constructor_diagnostics(table, LuaType::String, check);
         model.constructor_diagnostics(table, LuaType::String, check);
@@ -1283,13 +1325,39 @@ mod constructor_cache_tests {
         let model = ws.analysis.semantic_model(file);
         model.constructor_diagnostics(table, LuaType::String, || {
             model.cache.borrow().mark_incomplete();
-            Vec::new()
+            Some(Vec::new())
         });
         let retried = Cell::new(false);
         model.constructor_diagnostics(table, LuaType::String, || {
             retried.set(true);
-            Vec::new()
+            Some(Vec::new())
         });
         assert!(retried.get());
+    }
+
+    #[test]
+    fn constructor_cache_reentry_is_not_a_completed_match() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def("local value = {}");
+        let table = ws.get_node::<LuaTableExpr>(file).get_syntax_id();
+        let model = ws.analysis.semantic_model(file);
+        let result = model.constructor_alternative_diagnostics(|| {
+            model.constructor_diagnostics(table, LuaType::String, || {
+                model.constructor_alternative_diagnostics(|| {
+                    model.constructor_diagnostics(table, LuaType::String, || {
+                        panic!("the same constructor query must not be re-entered")
+                    })
+                })
+            })
+        });
+        assert!(result.is_none());
+        let calls = Cell::new(0);
+        let check = || {
+            calls.set(calls.get() + 1);
+            Some(Vec::new())
+        };
+        model.constructor_diagnostics(table, LuaType::String, check);
+        model.constructor_diagnostics(table, LuaType::String, check);
+        assert_eq!(calls.get(), 1);
     }
 }

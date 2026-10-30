@@ -43,7 +43,7 @@ pub mod unnecessary_if;
 pub mod unresolved_require;
 pub mod unused;
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use lsp_types::{DiagnosticSeverity, DiagnosticTag};
 use rowan::TextRange;
@@ -108,9 +108,10 @@ impl<'a> CheckContext<'a> {
     /// Collect structural failures before applying user-facing diagnostic filters.
     /// Union alternative selection must not depend on which warnings are enabled.
     pub(super) fn unfiltered(semantic_model: &'a SemanticModel<'a>) -> Self {
+        static DEFAULT_CONFIG: OnceLock<Arc<CheckConfig>> = OnceLock::new();
         Self {
             semantic_model,
-            config: Arc::new(CheckConfig::default()),
+            config: Arc::clone(DEFAULT_CONFIG.get_or_init(|| Arc::new(CheckConfig::default()))),
             diagnostics: Vec::new(),
             filter_diagnostics: false,
         }
