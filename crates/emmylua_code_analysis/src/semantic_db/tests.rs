@@ -2402,3 +2402,37 @@ fn implicit_array_member_values_are_not_declaration_keys() {
         assert!(model.type_of_member(&member.id).is_some());
     }
 }
+
+#[test]
+fn constructor_annotations_follow_written_keys_with_trivia() {
+    for annotation in ["---@type boolean", "---@module 'known'"] {
+        for key in [
+            "entry =",
+            "['entry' ] =",
+            "[7 ] =",
+            "[(key) ] =",
+            "[key -- key trivia\n ] =",
+            "",
+        ] {
+            let mut ws = crate::VirtualWorkspace::new();
+            let file = ws.def(&format!(
+                "local values = {{\n{annotation}\n {key} missing\n}}"
+            ));
+            let model = ws.analysis.semantic_model(file);
+            let facts = model.file_facts().unwrap();
+            assert!(!facts.members.is_empty(), "{annotation}: {key}");
+            for member in &facts.members {
+                assert_eq!(
+                    member.doc_type_syntax.is_some(),
+                    !key.is_empty() && annotation.contains("@type"),
+                    "{annotation}: {key}"
+                );
+                assert_eq!(
+                    member.module_path.as_deref(),
+                    (!key.is_empty() && annotation.contains("@module")).then_some("known"),
+                    "{annotation}: {key}"
+                );
+            }
+        }
+    }
+}

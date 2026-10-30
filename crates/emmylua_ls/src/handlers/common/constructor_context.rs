@@ -1,5 +1,7 @@
 use crate::handlers::completion::providers::callable_candidates;
-use emmylua_code_analysis::{LuaMemberKey, LuaType, MemberInfo, SemanticModel, TypeDefKind};
+use emmylua_code_analysis::{
+    LuaMemberKey, LuaType, LuaTypeDeclId, MemberInfo, SemanticModel, TypeDefKind,
+};
 use emmylua_parser::{
     LuaAssignStat, LuaAstNode, LuaCallExpr, LuaIndexKey, LuaLocalStat, LuaSyntaxToken,
     LuaTableExpr, LuaTableField, NumberResult,
@@ -90,8 +92,11 @@ fn constructor_context_infos(
                 }
             }
             LuaType::Generic(generic)
-                if generic.get_base_type_id().get_name() == "table"
-                    && generic.get_params().len() == 2 =>
+                if generic.get_base_type_id() == LuaTypeDeclId::global("table")
+                    && generic.get_params().len() == 2
+                    && model
+                        .type_def_of(&generic.get_base_type_id())
+                        .is_none_or(|def| model.is_std_file(def.file_id)) =>
             {
                 let params = generic.get_params();
                 value_info(&params[0], &params[1])
@@ -153,9 +158,13 @@ pub(crate) fn table_context_type_for_expr(
     if let Some(field) = table_expr.get_parent::<LuaTableField>() {
         if let Some(facts) = model.file_facts()
             && let Some(member) = facts.member_by_value_syntax(syntax_id)
-            && let Some(syntax) = member.doc_type_syntax
         {
-            return Some(model.doc_type_lua_rich_in(model.file_id(), syntax));
+            if let Some(module_path) = &member.module_path {
+                return Some(model.require_module_type(module_path));
+            }
+            if let Some(syntax) = member.doc_type_syntax {
+                return Some(model.doc_type_lua_rich_in(model.file_id(), syntax));
+            }
         }
         if let Some(parent) = field.get_parent::<LuaTableExpr>()
             && let Some(owner) = table_context_type_for_expr(model, &parent)

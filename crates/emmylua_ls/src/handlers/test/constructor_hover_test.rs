@@ -253,3 +253,138 @@ fn constructor_definition_preserves_value_and_anonymous_key_targets() -> Result<
     }
     Ok(())
 }
+
+#[gtest]
+fn constructor_hover_module_annotation_preserves_member_contract() -> Result<()> {
+    for owner in [
+        "",
+        "---@type string[]\n",
+        "---@type table<string,boolean>\n",
+        "---@class Container\n---@field entry boolean\nlocal Container = {}\n---@type Container\n",
+    ] {
+        let mut ws = ProviderVirtualWorkspace::new();
+        ws.def_file("known.lua", "return 42");
+        let source =
+            format!("{owner}local values = {{\n---@module 'known'\n <??>entry = missing\n}}");
+        let file = ws.def(&source.replace("<??>", ""));
+        let model = ws.analysis.semantic_model(file);
+        let facts = model.file_facts().unwrap();
+        let member = facts
+            .members
+            .iter()
+            .find(|member| {
+                member.key.name() == Some("entry")
+                    && !matches!(member.owner, emmylua_code_analysis::SemanticId::TypeDef(_))
+            })
+            .unwrap();
+        assert_eq!(member.module_path.as_deref(), Some("known"));
+        let typ = model.type_of_member(&member.id).unwrap();
+        assert!(matches!(typ, emmylua_code_analysis::LuaType::ModuleRef(_)));
+        check!(ws.check_hover(
+            &source,
+            VirtualHoverResult {
+                value: "```lua\n(field) entry: module\n```".into()
+            }
+        ));
+    }
+    Ok(())
+}
+
+#[gtest]
+fn constructor_hover_user_generic_table_uses_declared_field_contract() -> Result<()> {
+    for (name, modifier, with_std) in [
+        ("Box", "", false),
+        ("table", "", false),
+        ("Table", "", true),
+        ("Custom.table", "", false),
+        ("Custom.table", "", true),
+        ("table", "(internal) ", false),
+        ("table", "(internal) ", true),
+    ] {
+        for element in ["Setting", "string"] {
+            let mut ws = if with_std {
+                ProviderVirtualWorkspace::new_with_init_std_lib()
+            } else {
+                ProviderVirtualWorkspace::new()
+            };
+            check!(ws.check_hover(
+                &format!(
+                    "{TYPES}\n---@class {modifier}{name}<K,V>\n---@field entry K\n---@type {name}<{element},boolean>\nlocal values = {{ <??>entry = missing }}"
+                ),
+                VirtualHoverResult {value: format!("```lua\n(field) entry: {element}\n```{}", if name == "Custom.table" { "\n\n&nbsp;&nbsp;in class `Custom.table`" } else { "" })}
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[gtest]
+fn constructor_hover_module_annotation_supplies_nested_contract() -> Result<()> {
+    for (value, expected) in [
+        ("{ <??>child = missing }", "(field) child: integer"),
+        ("<??>{ child = missing }", "ModuleConfig"),
+        ("{ child = missing <??>}", "ModuleConfig"),
+    ] {
+        let mut ws = ProviderVirtualWorkspace::new();
+        ws.def_file(
+            "known.lua",
+            "---@class ModuleConfig\n---@field child integer\nlocal config = {}\nreturn config",
+        );
+        check!(ws.check_hover(
+            &format!("---@class Other\n---@field child boolean\nlocal Other = {{}}\n---@type table<string,Other>\nlocal values = {{\n---@module 'known'\n entry = {value}\n}}"),
+            VirtualHoverResult {value: format!("```lua\n{expected}\n```")}
+        ));
+    }
+    Ok(())
+}
+
+#[gtest]
+fn constructor_hover_unknown_array_key_does_not_borrow_element_field() -> Result<()> {
+    check_case(
+        "---@type Setting[]\nlocal settings = { <??>key = missing }",
+        "(field) key: unknown",
+    )
+}
+
+#[gtest]
+fn constructor_hover_builtin_table_contract_is_preserved() -> Result<()> {
+    for with_std in [false, true] {
+        for (key, expected) in [("string", "Setting"), ("integer", "unknown")] {
+            let mut ws = if with_std {
+                ProviderVirtualWorkspace::new_with_init_std_lib()
+            } else {
+                ProviderVirtualWorkspace::new()
+            };
+            check!(ws.check_hover(
+                &format!("{TYPES}\n---@type table<{key},Setting>\nlocal values = {{ <??>entry = missing }}"),
+                VirtualHoverResult {value: format!("```lua\n(field) entry: {expected}\n```")}
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[gtest]
+fn constructor_definition_keeps_unannotated_keys_and_required_values() -> Result<()> {
+    let mut ws = ProviderVirtualWorkspace::new();
+    check!(ws.check_definition(
+        "local values = { ['<??>entry'] = 1 }",
+        vec![VirtualLocation {
+            file: "".into(),
+            line: 0
+        }]
+    ));
+    let module_file = "tests/fixtures/constructor_context/known.lua";
+    ws.def_file(
+        module_file,
+        include_str!("../../../tests/fixtures/constructor_context/known.lua"),
+    );
+    check!(ws.check_definition(
+        "local values = { entry = require('<??>tests.fixtures.constructor_context.known') }",
+        vec![VirtualLocation {
+            file: "known.lua".into(),
+            line: 0
+        }]
+    ));
+    Ok(())
+}

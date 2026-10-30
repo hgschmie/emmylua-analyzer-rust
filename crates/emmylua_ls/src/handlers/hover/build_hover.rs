@@ -329,6 +329,21 @@ fn member_context_infos(
         let Some(member) = facts.member_by_id(decl) else {
             return Vec::new();
         };
+        // Module metadata supplies the member's own type, independently of its initializer.
+        if member.module_path.is_some()
+            && let Some(typ) = model.type_of_member(decl)
+        {
+            return vec![MemberContextInfo {
+                info: MemberInfo {
+                    key: member.key.clone(),
+                    typ,
+                    id: Some(decl.clone()),
+                    file_id: Some(member_key.file_id),
+                    is_method: member.is_method,
+                },
+                show_unknown: false,
+            }];
+        }
         // An explicit field annotation overrides the enclosing constructor contract.
         if member.doc_type_syntax.is_some() {
             return Vec::new();
