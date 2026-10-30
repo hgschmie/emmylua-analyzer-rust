@@ -810,10 +810,13 @@ fn check_arg_pairs(
             {
                 let diagnostics =
                     super::check_field::table_union_diagnostics(semantic_model, union, table);
-                if !diagnostics.is_empty() {
+                if diagnostics
+                    .as_ref()
+                    .is_none_or(|diagnostics| !diagnostics.is_empty())
+                {
                     // Whole-constructor failures use ParamTypeMismatch below;
                     // preserve AssignTypeMismatch only for the selected field ranges.
-                    out.extend(diagnostics.into_iter().filter_map(|diagnostic| {
+                    out.extend(diagnostics.into_iter().flatten().filter_map(|diagnostic| {
                         (diagnostic.code == DiagnosticCode::AssignTypeMismatch
                             && diagnostic.range != table.get_range())
                         .then_some(Mismatch {

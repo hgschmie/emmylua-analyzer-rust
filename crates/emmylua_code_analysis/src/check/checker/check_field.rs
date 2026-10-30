@@ -201,6 +201,8 @@ pub(super) fn expand_alias_type(
             // Preserve object fields inside unions; the shell projection can reduce
             // an object alternative to `table`, which would accept any constructor.
             // Leave mapped/generic alias projection with its existing resolver.
+            // Resolve in the defining file so namespace-qualified and imported
+            // alias chains retain the same type-name lookup context.
             current = semantic_model.doc_type_lua_rich_in(def.file_id, def.alias_type?);
         }
     }
@@ -499,7 +501,12 @@ pub(super) fn check_union_table_fields(
     table: &LuaTableExpr,
     codes: &[DiagnosticCode],
 ) {
-    for diagnostic in table_union_diagnostics(semantic_model, union, table) {
+    let Some(diagnostics) = table_union_diagnostics(semantic_model, union, table) else {
+        // No resolved field shape is available; value/argument checks report
+        // the unresolved constructor as a whole-type mismatch.
+        return;
+    };
+    for diagnostic in diagnostics {
         if codes.contains(&diagnostic.code) {
             context.add_diagnostic(diagnostic.code, diagnostic.range, diagnostic.message);
         }
@@ -510,7 +517,7 @@ pub(super) fn table_union_diagnostics(
     semantic_model: &SemanticModel<'_>,
     union: &Rc<LuaUnionType>,
     table: &LuaTableExpr,
-) -> Vec<super::Diagnostic> {
+) -> Option<Vec<super::Diagnostic>> {
     semantic_model.constructor_diagnostics(
         table.get_syntax_id(),
         LuaType::Union(Rc::clone(union)),
@@ -581,17 +588,15 @@ fn table_union_diagnostics_uncached(
             });
             continue;
         }
-        let Some(diagnostics) = semantic_model.constructor_alternative_diagnostics(|| {
-            let mut candidate = CheckContext::unfiltered(semantic_model);
-            check_against_type(&mut candidate, semantic_model, &alternative, table);
-            check_value_against(&mut candidate, semantic_model, &alternative, &value_expr);
-            candidate.into_diagnostics()
-        }) else {
-            continue;
-        };
+        let mut candidate = CheckContext::unfiltered(semantic_model);
+        check_against_type(&mut candidate, semantic_model, &alternative, table);
+        check_value_against(&mut candidate, semantic_model, &alternative, &value_expr);
+        let diagnostics = candidate.into_diagnostics();
         if diagnostics.is_empty() {
             return Some(diagnostics);
         }
+        // Equal failure counts retain declaration order. All diagnostic passes
+        // share this choice before user configuration filters the result.
         if best
             .as_ref()
             .is_none_or(|current| diagnostics.len() < current.len())

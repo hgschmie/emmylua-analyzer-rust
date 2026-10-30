@@ -1424,4 +1424,93 @@ mod union_table_constructors {
             );
         }
     }
+
+    #[test]
+    fn review24_unresolved_recursive_union_is_not_compatible() {
+        for expression in ["{}", "{value=1,name='ok'}"] {
+            let source = format!(
+                "---@alias Recursive (Recursive & {{value:number}})|(Recursive & {{name:string}})\n---@param value Recursive\nlocal function accept(value) return value end\naccept({expression})\n---@type Recursive\nlocal assigned = {expression}\nreturn assigned"
+            );
+            let diagnostics = check_source(&source);
+            for code in [
+                DiagnosticCode::ParamTypeMismatch,
+                DiagnosticCode::AssignTypeMismatch,
+            ] {
+                assert!(
+                    diagnostics.iter().any(|d| d.code == code),
+                    "{expression}: {diagnostics:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn review24_whole_constructor_mismatch_is_reported_once_per_context() {
+        for (statement, expected) in [
+            (
+                "---@type Choice\nlocal assigned = {}\nreturn assigned",
+                DiagnosticCode::AssignTypeMismatch,
+            ),
+            ("accept({})", DiagnosticCode::ParamTypeMismatch),
+            ("pcall(accept, {})", DiagnosticCode::ParamTypeMismatch),
+        ] {
+            let source = format!(
+                "---@alias Choice string|{{x:number,y:number}}\n---@param value Choice\nlocal function accept(value) return value end\n{statement}"
+            );
+            let diagnostics: Vec<_> = check_source(&source)
+                .into_iter()
+                .filter(|d| d.code != DiagnosticCode::Unused)
+                .collect();
+            assert_eq!(diagnostics.len(), 1, "{source}: {diagnostics:?}");
+            assert_eq!(diagnostics[0].code, expected, "{source}: {diagnostics:?}");
+            assert_eq!(diagnostics[0].range.len(), rowan::TextSize::from(2));
+        }
+    }
+
+    #[test]
+    fn review24_union_aliases_resolve_in_the_defining_file() {
+        for target in ["Shared.Raw", "Shared.Choice", "Choice"] {
+            for (expression, valid) in [("{x=1}", true), ("{y='ok'}", true), ("{x=false}", false)] {
+                let mut ws = crate::VirtualWorkspace::new();
+                ws.def_file("types.lua", "---@namespace Shared\n---@alias Raw {x:number}|{y:string}\n---@alias Choice Raw\nreturn {}");
+                let source = format!(
+                    "---@using Shared\n---@param value {target}\nlocal function accept(value) return value end\naccept({expression})\n---@type {target}\nlocal assigned = {expression}\nreturn assigned"
+                );
+                for code in [
+                    DiagnosticCode::ParamTypeMismatch,
+                    DiagnosticCode::AssignTypeMismatch,
+                ] {
+                    assert_eq!(
+                        ws.has_no_diagnostic(code, &source),
+                        valid,
+                        "{target}: {expression}: {code:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn review24_equal_failure_counts_keep_declared_alternative_order() {
+        for (target, expected) in [
+            ("{value:number}|{value:string}", "number"),
+            ("{value:string}|{value:number}", "string"),
+        ] {
+            let source = format!(
+                "---@alias Choice {target}\n---@type Choice\nlocal assigned = {{value=false}}\nreturn assigned"
+            );
+            for _ in 0..2 {
+                let diagnostics: Vec<_> = check_source(&source)
+                    .into_iter()
+                    .filter(|d| d.code != DiagnosticCode::Unused)
+                    .collect();
+                assert_eq!(diagnostics.len(), 1, "{target}: {diagnostics:?}");
+                assert_eq!(diagnostics[0].code, DiagnosticCode::AssignTypeMismatch);
+                assert!(
+                    diagnostics[0].message.contains(expected),
+                    "{target}: {diagnostics:?}"
+                );
+            }
+        }
+    }
 }

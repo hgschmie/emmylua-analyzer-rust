@@ -504,7 +504,10 @@ fn collect_value_mismatches(
         {
             return;
         }
-        if is_structured_table_target(semantic_model, target) {
+        let expanded = super::check_field::expand_alias_type(semantic_model, target);
+        let target = expanded.as_ref().unwrap_or(target);
+        if matches!(target, LuaType::Union(_)) || is_structured_table_target(semantic_model, target)
+        {
             collect_table_field_mismatches(mismatches, semantic_model, target, table);
         } else {
             let value_ty = semantic_model
@@ -607,8 +610,20 @@ fn collect_table_field_mismatches(
     table: &LuaTableExpr,
 ) {
     if let LuaType::Union(union) = target {
-        mismatches.extend(
+        let Some(diagnostics) =
             super::check_field::table_union_diagnostics(semantic_model, union, table)
+        else {
+            let value_type = semantic_model.type_of_expr(table.get_syntax_id());
+            mismatches.push(type_mismatch(
+                semantic_model,
+                table.get_range(),
+                target,
+                &value_type,
+            ));
+            return;
+        };
+        mismatches.extend(
+            diagnostics
                 .into_iter()
                 .filter(|diagnostic| diagnostic.code == DiagnosticCode::AssignTypeMismatch)
                 .map(|diagnostic| TypeMismatch {
