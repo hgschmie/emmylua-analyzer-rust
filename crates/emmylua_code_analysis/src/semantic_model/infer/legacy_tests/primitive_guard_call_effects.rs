@@ -872,3 +872,111 @@ fn recursive_visible_callees_keep_receiver_bindings_distinct() {
         assert_primitive_call_boundary(body, nullable);
     }
 }
+
+#[test]
+fn member_assignment_values_expire_after_visible_calls() {
+    for (body, nullable) in [
+        (
+            "elem.handler = replacement\nclear()\nlocal value = elem.handler.name -- observe",
+            true,
+        ),
+        (
+            "elem.handler = replacement\nlocal value = select(1, clear(), elem.handler.name) -- observe",
+            true,
+        ),
+        (
+            "elem.handler = replacement\nopaque(elem)\nlocal value = elem.handler.name -- observe",
+            false,
+        ),
+        (
+            "elem.handler = replacement\nlocal function change() other[key] = nil end\nchange()\nlocal value = elem.handler.name -- observe",
+            false,
+        ),
+        (
+            "elem.handler = replacement\nclear()\nif elem.handler then\nlocal value = elem.handler.name -- observe\nend",
+            false,
+        ),
+        (
+            "clear()\nelem.handler = replacement\nlocal value = elem.handler.name -- observe",
+            false,
+        ),
+        (
+            "elem.handler = replacement\nlocal value = select(1, elem.handler.name, clear()) -- observe",
+            false,
+        ),
+    ] {
+        assert_member_call_boundary(
+            "type(elem.handler) == 'table'",
+            "---@type CallBoundaryHandler\nlocal replacement",
+            body,
+            nullable,
+        );
+    }
+}
+
+#[test]
+fn recursive_descendant_receivers_terminate_without_losing_captures() {
+    for (body, nullable) in [
+        (
+            "local function descend(receiver) descend(receiver.child) end\ndescend(elem)\nlocal value = elem.handler.name -- observe",
+            false,
+        ),
+        (
+            "local function descend(receiver) if flag then descend(receiver.child) end; elem[key] = nil end\ndescend(other)\nlocal value = elem.handler.name -- observe",
+            true,
+        ),
+        (
+            "local function write(receiver) receiver = elem; receiver[key] = nil end\nlocal function descend(receiver) if flag then descend(receiver.child) else write(receiver) end end\ndescend(other)\nlocal value = elem.handler.name -- observe",
+            true,
+        ),
+        (
+            "local function descend(receiver) if flag then descend() end; other[key] = nil end\ndescend(elem)\nlocal value = elem.handler.name -- observe",
+            false,
+        ),
+    ] {
+        assert_primitive_call_boundary(body, nullable);
+    }
+}
+
+#[test]
+fn long_aliases_and_distant_rebindings_keep_receiver_identity() {
+    for (receiver, nullable) in [("elem", true), ("other", false)] {
+        let mut aliases =
+            format!("local function alias0() if flag then {receiver}[key] = nil end end\n");
+        for alias in 1..40 {
+            aliases.push_str(&format!("local alias{alias} = alias{}\n", alias - 1));
+        }
+        aliases.push_str("alias39()\nlocal value = elem.handler.name -- observe");
+        assert_primitive_call_boundary(&aliases, nullable);
+
+        let mut aliases =
+            "local function redirect(target)\nlocal alias0 = target\ntarget = {}\n".to_string();
+        for alias in 1..40 {
+            aliases.push_str(&format!("local alias{alias} = alias{}\n", alias - 1));
+        }
+        aliases.push_str(&format!("if flag then alias39[key] = nil end\nend\nredirect({receiver})\nlocal value = elem.handler.name -- observe"));
+        assert_primitive_call_boundary(&aliases, nullable);
+
+        let padding = "count = count + 1\n".repeat(300);
+        let body = format!(
+            "local function writer() if flag then {receiver}[key] = nil end end\nlocal action = function() end\naction = writer\nlocal count = 0\n{padding}action()\nlocal value = elem.handler.name -- observe"
+        );
+        assert_primitive_call_boundary(&body, nullable);
+
+        let original_receiver = if nullable { "other" } else { "elem" };
+        let body = format!(
+            "local function redirect(target)\ntarget = {receiver}\nlocal count = 0\n{padding}if flag then target[key] = nil end\nend\nredirect({original_receiver})\nlocal value = elem.handler.name -- observe"
+        );
+        assert_primitive_call_boundary(&body, nullable);
+    }
+}
+
+#[test]
+fn cyclic_receiver_aliases_terminate_and_keep_reachable_writes() {
+    for (receiver, nullable) in [("elem", true), ("other", false)] {
+        let body = format!(
+            "local function redirect(target)\nlocal saved = target\nwhile flag do saved = saved.child end\nif flag then saved[key] = nil end\nend\nredirect({receiver})\nlocal value = elem.handler.name -- observe"
+        );
+        assert_primitive_call_boundary(&body, nullable);
+    }
+}

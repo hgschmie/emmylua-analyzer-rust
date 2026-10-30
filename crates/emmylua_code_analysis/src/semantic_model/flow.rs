@@ -281,6 +281,55 @@ fn flow_member_value_type(model: &SemanticModel, member: &SemanticId) -> Option<
     }
 }
 
+/// Keep the concrete access path when consulting a runtime member override.
+fn type_of_member_read(
+    model: &SemanticModel,
+    member: &SemanticId,
+    access: &emmylua_parser::LuaIndexExpr,
+    offset: TextSize,
+) -> LuaType {
+    if let Some(tree) = model.flow_tree()
+        && (tree.has_condition() || tree.has_complex_control())
+        && let Some(flow) = tree.get_flow_id_at(offset)
+    {
+        trace_member(
+            model,
+            member,
+            Some(access),
+            &tree,
+            skip_own_member_assign(member, &tree, flow, offset),
+            &mut HashSet::new(),
+            &mut PathState::default(),
+        )
+        .unwrap_or_else(|| type_of_member_at(model, member, offset))
+    } else {
+        type_of_member_at(model, member, offset)
+    }
+}
+
+/// A conflicting call removes assignment precision but retains the declared contract.
+fn invalidated_member_value_type(
+    model: &SemanticModel,
+    member: &SemanticId,
+    access: Option<&emmylua_parser::LuaIndexExpr>,
+) -> LuaType {
+    access
+        .and_then(|access| {
+            let prefix = access.get_prefix_expr()?;
+            let prefix_ty = model.type_of_expr_at(prefix.get_syntax_id(), access.get_position());
+            if !matches!(
+                prefix_ty,
+                LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_) | LuaType::Object(_)
+            ) {
+                return None;
+            }
+            let key = member_key_from_index_expr(model, access)?;
+            model.member_type(&prefix_ty, &key)
+        })
+        .or_else(|| member_annotation_type(model, member))
+        .unwrap_or(LuaType::Unknown)
+}
+
 /// Nullable members declared with `---@field x? T` should also carry nil in flow queries.
 fn apply_field_nullable(model: &SemanticModel, member: &SemanticId, ty: LuaType) -> LuaType {
     let member_file = match member {
@@ -471,25 +520,9 @@ pub(crate) fn type_of_expr_at_node(
                         .find_map(|info| info.id)
                 })
             {
-                let mut member_ty = if let Some(flow_tree) = model.flow_tree()
-                    && (flow_tree.has_condition() || flow_tree.has_complex_control())
-                    && let Some(flow_id) = flow_tree.get_flow_id_at(offset)
-                {
-                    trace_member(
-                        model,
-                        &member_id,
-                        Some(index_expr),
-                        &flow_tree,
-                        skip_own_member_assign(&member_id, &flow_tree, flow_id, offset),
-                        &mut HashSet::new(),
-                        &mut PathState::default(),
-                    )
-                    .unwrap_or_else(|| type_of_member_at(model, &member_id, offset))
-                } else {
-                    type_of_member_at(model, &member_id, offset)
-                }
-                .get_result_slot_type(0)
-                .unwrap_or(LuaType::Nil);
+                let mut member_ty = type_of_member_read(model, &member_id, index_expr, offset)
+                    .get_result_slot_type(0)
+                    .unwrap_or(LuaType::Nil);
                 // Old semantics use `LuaType::Signature` to represent the closure member's definition site;
                 // flow-sensitive member values also keep that identity, matching the VM's member access path.
                 if matches!(member_ty, LuaType::Function)
@@ -594,7 +627,8 @@ pub(crate) fn type_of_expr_at_node(
                         // field access is still governed by the class `@field` type, avoiding widening `integer` to `number`.
                         && !model.is_initializer_table_field(&runtime_member.id, runtime_member)
                     {
-                        let runtime_ty = type_of_member_at(model, &runtime_member.id, offset);
+                        let runtime_ty =
+                            type_of_member_read(model, &runtime_member.id, index_expr, offset);
                         if !matches!(runtime_ty, LuaType::Unknown) {
                             return apply_casts(runtime_ty, All);
                         }
@@ -758,7 +792,7 @@ fn guarded_index_type(
         |cond, truthy| {
             let after = cond.get_range().end();
             if let Some(guard) = narrow_index_condition(model, &target, &access, cond, truthy)
-                && !member_calls_since_guard(model, Some(index), after, offset)
+                && !member_calls_after(model, Some(index), after, offset)
             {
                 if matches!(guard, Narrowing::NotNil) {
                     narrowing = guard;
@@ -2242,6 +2276,20 @@ fn trace_member_uncached(
                             }
                             MemberWrite::Exact => {}
                         }
+                        if path.member_unstable
+                            || member_calls_after(
+                                model,
+                                access,
+                                value_syntax.get_range().end(),
+                                before,
+                            )
+                        {
+                            return Some(finalize(
+                                model,
+                                invalidated_member_value_type(model, member, access),
+                                path,
+                            ));
+                        }
                         // Member assignment overrides earlier guard narrowing; cast widening is retained.
                         let assign_path = PathState {
                             narrowings: Vec::new(),
@@ -2275,7 +2323,7 @@ fn trace_member_uncached(
                 if let Some(narrowing) =
                     narrow_member_condition(model, member, access, cond_ptr, true)
                     && !path.member_unstable
-                    && !member_calls_since_guard(
+                    && !member_calls_after(
                         model,
                         access,
                         cond_ptr.get_syntax_id().get_range().end(),
@@ -2289,7 +2337,7 @@ fn trace_member_uncached(
                 if let Some(narrowing) =
                     narrow_member_condition(model, member, access, cond_ptr, false)
                     && !path.member_unstable
-                    && !member_calls_since_guard(
+                    && !member_calls_after(
                         model,
                         access,
                         cond_ptr.get_syntax_id().get_range().end(),
@@ -2339,8 +2387,8 @@ fn trace_member_uncached(
     }
 }
 
-/// Calls in the access statement invalidate only guards evaluated before them.
-fn member_calls_since_guard(
+/// Calls in the access statement invalidate only observations evaluated before them.
+fn member_calls_after(
     model: &SemanticModel,
     access: Option<&emmylua_parser::LuaIndexExpr>,
     after: TextSize,
