@@ -1755,9 +1755,7 @@ fn finish_decl_frames(
             &narrowed_before,
             &frame.base_before,
         );
-        let value_ty = if value_ty.is_unknown()
-            && !matches!(narrowed_before, LuaType::Unknown | LuaType::Any)
-        {
+        let value_ty = if value_ty.is_unknown() {
             // The new value invalidates previous guards, so use the base contract.
             unknown_assignment_fallback(model, decl, &frame.base_before)
         } else {
@@ -1936,9 +1934,7 @@ fn trace_decl_uncached(
                                 &narrowed_before,
                                 &base_before,
                             );
-                            let value_ty = if value_ty.is_unknown()
-                                && !matches!(narrowed_before, LuaType::Unknown | LuaType::Any)
-                            {
+                            let value_ty = if value_ty.is_unknown() {
                                 unknown_assignment_fallback(model, decl, &base_before)
                             } else {
                                 value_ty
@@ -2878,16 +2874,18 @@ fn unknown_assignment_fallback(
     decl: &SemanticId,
     base_before: &LuaType,
 ) -> LuaType {
-    // Parameters obtain their contracts from signatures, not inferred initializers.
-    if base_before.is_nil()
-        && let SemanticId::Decl(key) = decl
+    if let SemanticId::Decl(key) = decl
         && let Some(facts) = model.file_facts_of(key.file_id)
         && let Some(def) = facts.decl_by_id(decl)
-        && matches!(def.kind, DeclKind::Local { .. } | DeclKind::Global)
-        && def.doc_type_syntax.is_none()
     {
-        // An inferred nil initializer is a placeholder, not an explicit nil-only contract.
-        return LuaType::Unknown;
+        // Parameters obtain their contracts from signatures, not inferred initializers.
+        if def.doc_type_syntax.is_some() || matches!(def.kind, DeclKind::Param) {
+            return base_before.clone();
+        }
+        if base_before.is_nil() && matches!(def.kind, DeclKind::Local { .. } | DeclKind::Global) {
+            // An inferred nil initializer is a placeholder, not an explicit nil-only contract.
+            return LuaType::Unknown;
+        }
     }
     widen_const_type(base_before.clone())
 }

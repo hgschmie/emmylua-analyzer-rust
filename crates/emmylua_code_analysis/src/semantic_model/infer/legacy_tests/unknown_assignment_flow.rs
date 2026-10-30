@@ -436,3 +436,105 @@ end
         assert_flow(&source, 0);
     }
 }
+
+#[test]
+fn unknown_assignment_restores_contract_after_any_cast() {
+    for branch in ["", "if choose then first() else second() end"] {
+        assert_flow(
+            &format!(
+                r#"
+---@param id string?
+---@param choose boolean
+local function dispatch(id, choose)
+    ---@cast id any
+    local before = id -- expect: any
+    {branch}
+    id = unavailable() -- rhs: unknown
+    local after = id -- expect: string?
+end
+"#
+            ),
+            0,
+        );
+    }
+}
+
+#[test]
+fn unknown_assignment_preserves_unknown_cast_behavior() {
+    assert_flow(
+        r#"
+---@param id string?
+local function dispatch(id)
+    ---@cast id unknown
+    local before = id -- expect: string?
+    id = unavailable() -- rhs: unknown
+    local after = id -- expect: string?
+end
+"#,
+        0,
+    );
+}
+
+#[test]
+fn unknown_assignment_preserves_literal_contracts() {
+    for literal in ["\"a\"", "42", "\"a\"|42"] {
+        for binding in ["local id", "id"] {
+            assert_flow(
+                &format!(
+                    r#"
+---@type {literal}
+{binding} = unavailable()
+local before = id -- expect: {literal}
+id = unavailable_again() -- rhs: unknown
+local after = id -- expect: {literal}
+"#
+                ),
+                0,
+            );
+        }
+        assert_flow(
+            &format!(
+                r#"
+---@param id {literal}
+local function dispatch(id)
+    local before = id -- expect: {literal}
+    id = unavailable() -- rhs: unknown
+    local after = id -- expect: {literal}
+end
+"#
+            ),
+            0,
+        );
+    }
+}
+
+#[test]
+fn unknown_assignment_still_widens_inferred_literals() {
+    for (initial, expected) in [("\"a\"", "string"), ("42", "integer")] {
+        assert_flow(
+            &format!(
+                r#"
+local id = {initial}
+id = unavailable() -- rhs: unknown
+local after = id -- expect: {expected}
+"#
+            ),
+            0,
+        );
+    }
+}
+
+#[test]
+fn unknown_assignment_retains_any_contract() {
+    assert_flow(
+        r#"
+---@param id any
+local function dispatch(id)
+    local before = id -- expect: any
+    id = unavailable() -- rhs: unknown
+    local after = id -- expect: any
+end
+"#,
+        0,
+    );
+}
