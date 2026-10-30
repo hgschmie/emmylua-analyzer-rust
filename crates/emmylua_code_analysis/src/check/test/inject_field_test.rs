@@ -895,6 +895,89 @@ return items
     }
 }
 
+#[cfg(test)]
+mod finite_union_alias_chains {
+    use crate::DiagnosticCode;
+    use crate::check::test::check_source;
+
+    fn source(reverse: bool, statement: &str) -> String {
+        let mut source = "---@alias A0 {value:number}\n".to_string();
+        for alias in 1..=60 {
+            let previous = alias - 1;
+            let target = if reverse {
+                format!("string|A{previous}")
+            } else {
+                format!("A{previous}|string")
+            };
+            source.push_str(&format!("---@alias A{alias} {target}\n"));
+        }
+        source.push_str(statement);
+        source
+    }
+
+    fn contexts(value: &str) -> Vec<(String, DiagnosticCode)> {
+        vec![
+            (
+                format!("---@type A60\nlocal assigned = {value}\nreturn assigned"),
+                DiagnosticCode::AssignTypeMismatch,
+            ),
+            (
+                format!(
+                    "---@param value A60\nlocal function accept(value) return value end\naccept({value})"
+                ),
+                DiagnosticCode::ParamTypeMismatch,
+            ),
+            (
+                format!(
+                    "---@param ... A60\nlocal function accept(...) return ... end\naccept({value})"
+                ),
+                DiagnosticCode::ParamTypeMismatch,
+            ),
+            (
+                format!(
+                    "---@param ... [A60]...\nlocal function accept(...) return ... end\naccept({value})"
+                ),
+                DiagnosticCode::ParamTypeMismatch,
+            ),
+            (
+                format!(
+                    "---@param value A60\nlocal function accept(value) return value end\npcall(accept, {value})"
+                ),
+                DiagnosticCode::ParamTypeMismatch,
+            ),
+        ]
+    }
+
+    #[test]
+    fn finite_alias_chains_accept_valid_constructors_in_every_context() {
+        for reverse in [false, true] {
+            for (statement, _) in contexts("{value=1}") {
+                let diagnostics: Vec<_> = check_source(&source(reverse, &statement))
+                    .into_iter()
+                    .filter(|d| d.code != DiagnosticCode::Unused)
+                    .collect();
+                assert!(
+                    diagnostics.is_empty(),
+                    "reverse={reverse}: {statement}: {diagnostics:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn finite_alias_chains_reject_invalid_constructors_in_every_context() {
+        for reverse in [false, true] {
+            for (statement, expected) in contexts("{value='bad'}") {
+                let diagnostics = check_source(&source(reverse, &statement));
+                assert!(
+                    diagnostics.iter().any(|d| d.code == expected),
+                    "reverse={reverse}: {statement}: {diagnostics:?}"
+                );
+            }
+        }
+    }
+}
+
 // These tests load the standard library because its `table` declaration is
 // what made dictionaries incorrectly look like closed records.
 

@@ -14,7 +14,7 @@ use crate::{LuaMemberKey, LuaType, LuaTypeDeclId, LuaUnionType};
 
 use super::assign_type_mismatch::{check_value_against, index_key_type};
 use super::param_type_check::callable_candidates;
-use super::{CheckContext, Checker, MAX_CONSTRUCTOR_TYPE_DEPTH};
+use super::{CheckContext, Checker};
 use crate::semantic_model::render::humanize_type;
 
 pub struct CheckFieldChecker;
@@ -545,36 +545,25 @@ fn table_union_diagnostics_uncached(
     union: &LuaUnionType,
     table: &LuaTableExpr,
 ) -> Option<Vec<super::Diagnostic>> {
-    fn collect_alternatives(
-        model: &SemanticModel<'_>,
-        ty: &LuaType,
-        active: &mut Vec<LuaType>,
-        out: &mut Vec<LuaType>,
-    ) {
-        if active.len() >= MAX_CONSTRUCTOR_TYPE_DEPTH || active.contains(ty) {
-            return;
-        }
-        active.push(ty.clone());
-        if let Some(expanded) = expand_alias_type(model, ty) {
-            collect_alternatives(model, &expanded, active, out);
-        } else if let LuaType::Union(union) = ty {
-            for component in union.iter() {
-                collect_alternatives(model, component, active, out);
-            }
-        } else {
-            out.push(ty.clone());
-        }
-        active.pop();
-    }
-
     let mut alternatives = Vec::new();
-    for component in union.iter() {
-        collect_alternatives(
-            semantic_model,
-            component,
-            &mut Vec::new(),
-            &mut alternatives,
-        );
+    let mut pending = union.into_vec();
+    pending.reverse();
+    let mut visited = Vec::new();
+    // Alias and union edges form a finite graph; compound types remain leaves.
+    // Keep the first declaration-order occurrence without dropping valid deep
+    // alternatives. Recursive structural checking has its own depth policy.
+    while let Some(ty) = pending.pop() {
+        if visited.contains(&ty) {
+            continue;
+        }
+        visited.push(ty.clone());
+        if let Some(expanded) = expand_alias_type(semantic_model, &ty) {
+            pending.push(expanded);
+        } else if let LuaType::Union(union) = ty {
+            pending.extend(union.into_vec().into_iter().rev());
+        } else {
+            alternatives.push(ty);
+        }
     }
     let value_expr = LuaExpr::TableExpr(table.clone());
     let mut best: Option<Vec<super::Diagnostic>> = None;
@@ -654,17 +643,22 @@ fn is_optional(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> bool {
 
 #[cfg(test)]
 mod constructor_selection_limits {
+    use super::super::MAX_CONSTRUCTOR_TYPE_DEPTH;
     use super::*;
     use crate::{LuaUnionMembers, VirtualWorkspace};
 
     #[test]
-    fn constructor_depth_limit_keeps_outer_concrete_alternatives() {
+    fn finite_union_nesting_preserves_complete_alternatives() {
         let mut ws = VirtualWorkspace::new();
         let target = ws.ty("{value:number}");
         let file = ws.def("local value = {value=1}");
         let table = ws.get_node::<LuaTableExpr>(file);
         let model = ws.analysis.semantic_model(file);
-        for depth in [MAX_CONSTRUCTOR_TYPE_DEPTH - 1, MAX_CONSTRUCTOR_TYPE_DEPTH] {
+        for depth in [
+            MAX_CONSTRUCTOR_TYPE_DEPTH - 1,
+            MAX_CONSTRUCTOR_TYPE_DEPTH,
+            MAX_CONSTRUCTOR_TYPE_DEPTH * 2,
+        ] {
             let mut nested = target.clone();
             for _ in 0..depth {
                 nested = LuaType::Union(Rc::new(LuaUnionType::Multi(LuaUnionMembers::new(vec![
@@ -675,10 +669,7 @@ mod constructor_selection_limits {
                 nested.clone(),
             ])));
             let result = table_union_diagnostics(&model, &union, &table);
-            assert_eq!(
-                result.is_some_and(|d| d.is_empty()),
-                depth < MAX_CONSTRUCTOR_TYPE_DEPTH
-            );
+            assert!(result.is_some_and(|d| d.is_empty()), "depth={depth}");
             let union = Rc::new(LuaUnionType::Multi(LuaUnionMembers::new(vec![
                 nested,
                 target.clone(),

@@ -5,8 +5,8 @@ use crate::check::checker::param_type_check::callable_candidates_uncached;
 
 impl<'db> SemanticModel<'db> {
     /// Reuse complete, unfiltered constructor checks within one semantic snapshot.
-    /// Re-entry or a callback returning `None` remains unresolved in the result;
-    /// only `Some` with an empty list proves a match.
+    /// Re-entry prevents caching even when a callback returns a usable outer result;
+    /// `None` remains unresolved and only `Some` with an empty list proves a match.
     /// Cached failures contain only code, range and message; consumers re-emit them
     /// through their active CheckContext to apply user configuration.
     pub(crate) fn constructor_diagnostics(
