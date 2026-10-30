@@ -65,6 +65,24 @@ pub struct Diagnostic {
     pub data: Option<serde_json::Value>,
 }
 
+/// Unconfigured failure data shared between constructor checker passes.
+#[derive(Debug, Clone)]
+pub(crate) struct ConstructorDiagnostic {
+    pub range: TextRange,
+    pub code: DiagnosticCode,
+    pub message: String,
+}
+
+impl From<Diagnostic> for ConstructorDiagnostic {
+    fn from(diagnostic: Diagnostic) -> Self {
+        Self {
+            range: diagnostic.range,
+            code: diagnostic.code,
+            message: diagnostic.message,
+        }
+    }
+}
+
 /// Checker trait (mirrors `diagnostic::checker::Checker`).
 pub trait Checker {
     /// Diagnostic codes handled by this check (used to skip the whole check by config).

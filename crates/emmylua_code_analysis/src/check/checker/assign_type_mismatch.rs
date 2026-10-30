@@ -430,7 +430,7 @@ fn is_structured_table_target_inner(
     ty: &LuaType,
     active: &mut Vec<LuaType>,
 ) -> bool {
-    if active.len() >= 100 || active.contains(ty) {
+    if active.len() >= super::check_field::MAX_CONSTRUCTOR_TYPE_DEPTH || active.contains(ty) {
         return false;
     }
     active.push(ty.clone());

@@ -7,14 +7,14 @@ impl<'db> SemanticModel<'db> {
     /// Reuse complete, unfiltered constructor checks within one semantic snapshot.
     /// Re-entry or a callback returning `None` remains unresolved in the result;
     /// only `Some` with an empty list proves a match.
-    /// Cached presentation metadata uses defaults; consumers must re-emit code, range,
-    /// and message through their active CheckContext to apply user configuration.
+    /// Cached failures contain only code, range and message; consumers re-emit them
+    /// through their active CheckContext to apply user configuration.
     pub(crate) fn constructor_diagnostics(
         &self,
         table: LuaSyntaxId,
         target: LuaType,
-        check: impl FnOnce() -> Option<Vec<crate::check::checker::Diagnostic>>,
-    ) -> Option<Vec<crate::check::checker::Diagnostic>> {
+        check: impl FnOnce() -> Option<Vec<crate::check::checker::ConstructorDiagnostic>>,
+    ) -> Option<Vec<crate::check::checker::ConstructorDiagnostic>> {
         let key = (self.file_id(), table, target);
         {
             let cache = self.cache.borrow();
@@ -24,10 +24,7 @@ impl<'db> SemanticModel<'db> {
         }
         let _query = cache::QueryCacheScope::new(&self.cache);
         let revision = self.cache.borrow().revision();
-        self.cache
-            .borrow_mut()
-            .constructor_diagnostics
-            .insert(key.clone(), cache::CacheEntry::InProgress);
+        let _active = cache::ConstructorQueryGuard::new(&self.cache, key.clone());
         let result = check();
         let mut cache = self.cache.borrow_mut();
         let Some(result) = result else {
@@ -1265,6 +1262,7 @@ impl<'db> SemanticModel<'db> {
 
 #[cfg(test)]
 mod constructor_cache_tests {
+    use crate::semantic_model::cache::QueryCacheScope;
     use crate::{LuaType, VirtualWorkspace};
     use emmylua_parser::{LuaAstNode, LuaTableExpr};
     use std::cell::Cell;
@@ -1361,5 +1359,53 @@ mod constructor_cache_tests {
             }
             assert_eq!(calls.get(), 1);
         }
+    }
+
+    #[test]
+    fn constructor_cache_panics_do_not_poison_future_queries() {
+        for nested in [false, true] {
+            let mut ws = VirtualWorkspace::new();
+            let file = ws.def("local value = {}");
+            let table = ws.get_node::<LuaTableExpr>(file).get_syntax_id();
+            let model = ws.analysis.semantic_model(file);
+            let _outer = nested.then(|| QueryCacheScope::new(&model.cache));
+            let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                model.constructor_diagnostics(table, LuaType::String, || {
+                    panic!("constructor callback failed")
+                })
+            }));
+            assert!(panic.is_err());
+            let retried = Cell::new(false);
+            let result = model.constructor_diagnostics(table, LuaType::String, || {
+                retried.set(true);
+                Some(Vec::new())
+            });
+            assert!(retried.get(), "nested={nested}");
+            assert!(result.is_some_and(|diagnostics| diagnostics.is_empty()));
+        }
+    }
+
+    #[test]
+    fn constructor_cache_ignored_reentry_result_is_not_cached() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def("local value = {}");
+        let table = ws.get_node::<LuaTableExpr>(file).get_syntax_id();
+        let model = ws.analysis.semantic_model(file);
+        let result = model.constructor_diagnostics(table, LuaType::String, || {
+            let inner = model.constructor_diagnostics(table, LuaType::String, || {
+                panic!("re-entry must not execute the callback")
+            });
+            assert!(inner.is_none());
+            Some(Vec::new())
+        });
+        assert!(result.is_some());
+        let calls = Cell::new(0);
+        for _ in 0..2 {
+            model.constructor_diagnostics(table, LuaType::String, || {
+                calls.set(calls.get() + 1);
+                Some(Vec::new())
+            });
+        }
+        assert_eq!(calls.get(), 1);
     }
 }

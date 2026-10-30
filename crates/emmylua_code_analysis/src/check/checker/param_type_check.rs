@@ -646,6 +646,51 @@ fn table_field_mismatches(
         .collect()
 }
 
+/// Apply the same complete-alternative proof to fixed and variadic table arguments.
+fn check_union_table_argument(
+    out: &mut Vec<Mismatch>,
+    semantic_model: &SemanticModel<'_>,
+    param_ty: &LuaType,
+    arg: &LuaExpr,
+    arg_ty: &LuaType,
+    name: &str,
+) -> bool {
+    let LuaExpr::TableExpr(table) = arg else {
+        return false;
+    };
+    let target = super::check_field::expand_alias_type(semantic_model, param_ty)
+        .unwrap_or_else(|| param_ty.clone());
+    let LuaType::Union(union) = &target else {
+        return false;
+    };
+    if target.contains_tpl_node() {
+        return false;
+    }
+    let diagnostics = super::check_field::table_union_diagnostics(semantic_model, union, table);
+    if diagnostics
+        .as_ref()
+        .is_none_or(|diagnostics| !diagnostics.is_empty())
+    {
+        // Whole-constructor failures use ParamTypeMismatch; only selected field
+        // ranges are forwarded as assignment failures.
+        out.extend(diagnostics.into_iter().flatten().filter_map(|diagnostic| {
+            (diagnostic.code == DiagnosticCode::AssignTypeMismatch
+                && diagnostic.range != table.get_range())
+            .then_some(Mismatch {
+                code: DiagnosticCode::AssignTypeMismatch,
+                range: diagnostic.range,
+                message: diagnostic.message,
+            })
+        }));
+        out.push(Mismatch {
+            code: DiagnosticCode::ParamTypeMismatch,
+            range: table.get_range(),
+            message: mismatch_message(semantic_model, arg_ty, param_ty, name),
+        });
+    }
+    true
+}
+
 fn check_arg_pairs(
     semantic_model: &SemanticModel<'_>,
     params: &[(String, Option<LuaType>)],
@@ -726,6 +771,16 @@ fn check_arg_pairs(
                         }
                         slot_ty = unify::substitute(&slot_ty, bindings);
                         slot_ty = type_eval::expand_alias_generic(semantic_model, &slot_ty);
+                        if check_union_table_argument(
+                            &mut out,
+                            semantic_model,
+                            &slot_ty,
+                            arg,
+                            &arg_ty,
+                            name,
+                        ) {
+                            continue;
+                        }
                         out.extend(table_field_mismatches(semantic_model, &slot_ty, arg));
                         if arg_ty == slot_ty || is_compatible(semantic_model, &arg_ty, &slot_ty) {
                             continue;
@@ -759,6 +814,16 @@ fn check_arg_pairs(
                         }
                         let param_ty = unify::substitute(&param_ty_orig, bindings);
                         let param_ty = type_eval::expand_alias_generic(semantic_model, &param_ty);
+                        if check_union_table_argument(
+                            &mut out,
+                            semantic_model,
+                            &param_ty,
+                            arg,
+                            &arg_ty,
+                            name,
+                        ) {
+                            continue;
+                        }
                         out.extend(table_field_mismatches(semantic_model, &param_ty, arg));
                         if arg_ty == param_ty
                             || param_generic_base_match(semantic_model, &arg_ty, &param_ty)
@@ -803,34 +868,14 @@ fn check_arg_pairs(
         }
         // Table literals targeting object / intersection: check field by field and then fully take over.
         if let LuaExpr::TableExpr(table) = arg {
-            let table_target = super::check_field::expand_alias_type(semantic_model, &param_ty)
-                .unwrap_or_else(|| param_ty.clone());
-            if let LuaType::Union(union) = &table_target
-                && !table_target.contains_tpl_node()
-            {
-                let diagnostics =
-                    super::check_field::table_union_diagnostics(semantic_model, union, table);
-                if diagnostics
-                    .as_ref()
-                    .is_none_or(|diagnostics| !diagnostics.is_empty())
-                {
-                    // Whole-constructor failures use ParamTypeMismatch below;
-                    // preserve AssignTypeMismatch only for the selected field ranges.
-                    out.extend(diagnostics.into_iter().flatten().filter_map(|diagnostic| {
-                        (diagnostic.code == DiagnosticCode::AssignTypeMismatch
-                            && diagnostic.range != table.get_range())
-                        .then_some(Mismatch {
-                            code: DiagnosticCode::AssignTypeMismatch,
-                            range: diagnostic.range,
-                            message: diagnostic.message,
-                        })
-                    }));
-                    out.push(Mismatch {
-                        code: DiagnosticCode::ParamTypeMismatch,
-                        range: table.get_range(),
-                        message: mismatch_message(semantic_model, &call_arg_ty, &param_ty, name),
-                    });
-                }
+            if check_union_table_argument(
+                &mut out,
+                semantic_model,
+                &param_ty,
+                arg,
+                &call_arg_ty,
+                name,
+            ) {
                 continue;
             }
             out.extend(table_field_mismatches(semantic_model, &param_ty, arg));

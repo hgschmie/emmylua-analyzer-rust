@@ -112,6 +112,35 @@ impl Drop for QueryCacheScope<'_> {
     }
 }
 
+/// Remove an unfinished constructor entry even when its callback unwinds.
+pub(super) struct ConstructorQueryGuard<'a> {
+    cache: &'a super::LazyCache,
+    key: (FileId, LuaSyntaxId, LuaType),
+}
+
+impl<'a> ConstructorQueryGuard<'a> {
+    pub(super) fn new(cache: &'a super::LazyCache, key: (FileId, LuaSyntaxId, LuaType)) -> Self {
+        cache
+            .borrow_mut()
+            .constructor_diagnostics
+            .insert(key.clone(), CacheEntry::InProgress);
+        Self { cache, key }
+    }
+}
+
+impl Drop for ConstructorQueryGuard<'_> {
+    fn drop(&mut self) {
+        let mut cache = self.cache.borrow_mut();
+        if matches!(
+            cache.constructor_diagnostics.get(&self.key),
+            Some(CacheEntry::InProgress)
+        ) {
+            cache.constructor_diagnostics.remove(&self.key);
+            cache.mark_incomplete();
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum CacheEntry<T> {
     InProgress,
@@ -206,8 +235,10 @@ pub(crate) struct TypeDefCache {
 #[derive(Default)]
 pub(crate) struct SemanticLocalCache {
     /// Unfiltered constructor failures shared by all diagnostic passes in this model.
-    pub(crate) constructor_diagnostics:
-        HashMap<(FileId, LuaSyntaxId, LuaType), CacheEntry<Vec<crate::check::checker::Diagnostic>>>,
+    pub(crate) constructor_diagnostics: HashMap<
+        (FileId, LuaSyntaxId, LuaType),
+        CacheEntry<Vec<crate::check::checker::ConstructorDiagnostic>>,
+    >,
     /// Changes whenever a query reads an unfinished dependency. Most queries
     /// use this to decide whether a result can be cached. Type comparisons
     /// track completeness in their result, including discarded alternatives.

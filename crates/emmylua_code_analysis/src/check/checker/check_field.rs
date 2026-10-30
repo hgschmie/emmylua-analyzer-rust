@@ -17,6 +17,8 @@ use super::param_type_check::callable_candidates;
 use super::{CheckContext, Checker};
 use crate::semantic_model::render::humanize_type;
 
+pub(super) const MAX_CONSTRUCTOR_TYPE_DEPTH: usize = 100;
+
 pub struct CheckFieldChecker;
 
 impl Checker for CheckFieldChecker {
@@ -517,11 +519,14 @@ pub(super) fn table_union_diagnostics(
     semantic_model: &SemanticModel<'_>,
     union: &Rc<LuaUnionType>,
     table: &LuaTableExpr,
-) -> Option<Vec<super::Diagnostic>> {
+) -> Option<Vec<super::ConstructorDiagnostic>> {
     semantic_model.constructor_diagnostics(
         table.get_syntax_id(),
         LuaType::Union(Rc::clone(union)),
-        || table_union_diagnostics_uncached(semantic_model, union, table),
+        || {
+            table_union_diagnostics_uncached(semantic_model, union, table)
+                .map(|diagnostics| diagnostics.into_iter().map(Into::into).collect())
+        },
     )
 }
 
@@ -536,7 +541,7 @@ fn table_union_diagnostics_uncached(
         active: &mut Vec<LuaType>,
         out: &mut Vec<LuaType>,
     ) {
-        if active.len() >= 100 || active.contains(ty) {
+        if active.len() >= MAX_CONSTRUCTOR_TYPE_DEPTH || active.contains(ty) {
             return;
         }
         active.push(ty.clone());

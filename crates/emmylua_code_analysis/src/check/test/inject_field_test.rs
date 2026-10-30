@@ -1273,7 +1273,7 @@ mod union_table_constructors {
     }
 
     #[test]
-    fn review24_array_only_unions_reject_named_fields() {
+    fn array_only_unions_reject_named_fields() {
         for (target, expression) in [
             ("integer[]|string[]", "{id=1}"),
             ("integer[]|string[]", "{[('id')]=1}"),
@@ -1303,7 +1303,7 @@ mod union_table_constructors {
     }
 
     #[test]
-    fn review24_recursive_intersection_union_uses_concrete_alternative() {
+    fn recursive_intersection_union_uses_concrete_alternative() {
         for (expression, valid) in [
             ("{next={name='leaf'}}", true),
             ("{next={next={name='leaf'}}}", true),
@@ -1333,7 +1333,7 @@ mod union_table_constructors {
     }
 
     #[test]
-    fn review24_union_selection_does_not_switch_for_disabled_codes() {
+    fn union_selection_does_not_switch_for_disabled_codes() {
         let source = r#"
             ---@class First
             ---@field x number
@@ -1365,7 +1365,7 @@ mod union_table_constructors {
     }
 
     #[test]
-    fn review24_union_diagnostics_use_active_severity_and_keep_distinct_fields() {
+    fn union_diagnostics_use_active_severity_and_keep_distinct_fields() {
         let source = r#"
             ---@class First
             ---@field x number
@@ -1411,7 +1411,7 @@ mod union_table_constructors {
     }
 
     #[test]
-    fn review24_concrete_recursive_result_can_satisfy_an_outer_alternative() {
+    fn concrete_recursive_result_can_satisfy_an_outer_alternative() {
         for (expression, valid) in [("{nested={name='ok'}}", true), ("{nested={name=1}}", false)] {
             let source = format!(
                 "---@alias Recursive (Recursive & {{value:number}})|{{name:string}}\n---@alias Outer {{nested:Recursive}}|{{other:boolean}}\n---@param value Outer\nlocal function accept(value) return value end\naccept({expression})"
@@ -1426,7 +1426,7 @@ mod union_table_constructors {
     }
 
     #[test]
-    fn review24_unresolved_recursive_union_is_not_compatible() {
+    fn unresolved_recursive_union_is_not_compatible() {
         for expression in ["{}", "{value=1,name='ok'}"] {
             let source = format!(
                 "---@alias Recursive (Recursive & {{value:number}})|(Recursive & {{name:string}})\n---@param value Recursive\nlocal function accept(value) return value end\naccept({expression})\n---@type Recursive\nlocal assigned = {expression}\nreturn assigned"
@@ -1445,7 +1445,7 @@ mod union_table_constructors {
     }
 
     #[test]
-    fn review24_whole_constructor_mismatch_is_reported_once_per_context() {
+    fn whole_constructor_mismatch_is_reported_once_per_context() {
         for (statement, expected) in [
             (
                 "---@type Choice\nlocal assigned = {}\nreturn assigned",
@@ -1468,7 +1468,7 @@ mod union_table_constructors {
     }
 
     #[test]
-    fn review24_union_aliases_resolve_in_the_defining_file() {
+    fn union_aliases_resolve_in_the_defining_file() {
         for target in ["Shared.Raw", "Shared.Choice", "Choice"] {
             for (expression, valid) in [("{x=1}", true), ("{y='ok'}", true), ("{x=false}", false)] {
                 let mut ws = crate::VirtualWorkspace::new();
@@ -1491,7 +1491,7 @@ mod union_table_constructors {
     }
 
     #[test]
-    fn review24_equal_failure_counts_keep_declared_alternative_order() {
+    fn equal_failure_counts_keep_declared_alternative_order() {
         for (target, expected) in [
             ("{value:number}|{value:string}", "number"),
             ("{value:string}|{value:number}", "string"),
@@ -1509,6 +1509,27 @@ mod union_table_constructors {
                 assert!(
                     diagnostics[0].message.contains(expected),
                     "{target}: {diagnostics:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn union_arguments_report_structural_failure_with_only_parameter_warnings_enabled() {
+        for signature in [
+            "---@param value Choice\nlocal function accept(value) return value end",
+            "---@param ... Choice\nlocal function accept(...) return ... end",
+            "---@param ... [Choice]...\nlocal function accept(...) return ... end",
+        ] {
+            for (argument, valid) in [("{left=1}", true), ("{}", false), ("{left=false}", false)] {
+                let source = format!(
+                    "---@alias Choice {{left:number}}|{{right:string}}\n{signature}\naccept({argument})"
+                );
+                let mut ws = crate::VirtualWorkspace::new();
+                assert_eq!(
+                    ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, &source),
+                    valid,
+                    "{source}"
                 );
             }
         }
