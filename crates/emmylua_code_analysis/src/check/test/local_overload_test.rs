@@ -9,6 +9,18 @@ local function accept(value) return value end
 "#;
 
 #[test]
+fn local_overload_review_incomplete_dictionary_field_keeps_earlier_value() {
+    let source = "---@param values table<string, integer>\nlocal function accept(values) return values end\naccept({count = 'bad', count = })";
+    let diagnostics = check_source(source);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagnosticCode::ParamTypeMismatch),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
 fn local_overload_accepts_primary_and_documented_alternative() {
     for call in ["accept('text')", "accept(1)"] {
         let diagnostics = check_source(&format!("{DECLARATION}{call}"));

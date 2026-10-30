@@ -203,6 +203,13 @@ pub(crate) struct TypeDefCache {
     pub(crate) base_types: Option<Vec<LuaType>>,
 }
 
+/// Syntax-only cast positions and asserted expressions in one file view.
+#[derive(Default)]
+pub(crate) struct LocalCallableCasts {
+    pub(crate) first_cast: HashMap<SemanticId, TextSize>,
+    pub(crate) asserted_exprs: HashSet<LuaSyntaxId>,
+}
+
 #[derive(Default)]
 pub(crate) struct SemanticLocalCache {
     /// Changes whenever a query reads an unfinished dependency. Most queries
@@ -243,6 +250,9 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) return_cast:
         HashMap<(FileId, LuaSyntaxId), Option<(LuaExpr, LuaType, Option<LuaType>, bool)>>,
     pub(crate) callable_candidates: HashMap<(FileId, LuaSyntaxId), Vec<LuaFunctionType>>,
+    pub(crate) local_callable_casts: HashMap<FileId, Rc<LocalCallableCasts>>,
+    #[cfg(test)]
+    pub(crate) local_callable_cast_scans: usize,
     pub(crate) call_site: HashMap<(FileId, LuaSyntaxId), CallSiteAnalysis>,
     pub(crate) call_site_signatures:
         HashMap<(FileId, LuaSyntaxId), Vec<(LuaFunctionType, TplBindings)>>,

@@ -434,15 +434,15 @@ fn dictionary_literal_mismatch(
     let mut overwritten = std::collections::HashSet::new();
     let value_or_absent = LuaType::from_vec(vec![value_type.clone(), LuaType::Nil]);
     for (index, (field, key)) in fields.into_iter().enumerate().rev() {
+        let Some(value) = field.get_value_expr() else {
+            continue;
+        };
         let static_key = super::check_field::static_member_key(semantic_model, &key);
         if let Some(key) = &static_key
             && !overwritten.insert(key.clone())
         {
             continue;
         }
-        let Some(value) = field.get_value_expr() else {
-            continue;
-        };
         let inferred = semantic_model.type_of_expr_at(value.get_syntax_id(), value.get_position());
         let values = match &inferred {
             LuaType::Variadic(variadic) if index == last && field.is_value_field() => {
