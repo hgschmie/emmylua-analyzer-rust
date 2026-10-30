@@ -14,10 +14,8 @@ use crate::{LuaMemberKey, LuaType, LuaTypeDeclId, LuaUnionType};
 
 use super::assign_type_mismatch::{check_value_against, index_key_type};
 use super::param_type_check::callable_candidates;
-use super::{CheckContext, Checker};
+use super::{CheckContext, Checker, MAX_CONSTRUCTOR_TYPE_DEPTH};
 use crate::semantic_model::render::humanize_type;
-
-pub(super) const MAX_CONSTRUCTOR_TYPE_DEPTH: usize = 100;
 
 pub struct CheckFieldChecker;
 
@@ -236,6 +234,11 @@ pub(super) fn static_member_key(
             LuaType::IntegerConst(i) | LuaType::DocIntegerConst(i) => {
                 Some(LuaMemberKey::Integer(i))
             }
+            LuaType::FloatConst(i)
+                if i.fract() == 0.0 && (i64::MIN as f64..i64::MAX as f64).contains(&i) =>
+            {
+                Some(LuaMemberKey::Integer(i as i64))
+            }
             _ => None,
         },
     }
@@ -344,7 +347,11 @@ fn check_against_type(
             return;
         }
         LuaType::Object(object) => {
-            let fields = table.get_fields_with_keys().to_vec();
+            let fields: Vec<_> = table
+                .get_fields_with_keys()
+                .into_iter()
+                .map(|(field, key)| (field, static_member_key(semantic_model, &key)))
+                .collect();
             let mut missing = Vec::new();
             for (key, ty) in object.get_fields() {
                 let name = match key {
@@ -352,9 +359,10 @@ fn check_against_type(
                     LuaMemberKey::Integer(i) => i.to_string(),
                     _ => continue,
                 };
-                if !fields.iter().any(|(_, field_key)| {
-                    static_member_key(semantic_model, field_key).as_ref() == Some(key)
-                }) && !ty.is_nullable()
+                if !fields
+                    .iter()
+                    .any(|(_, field_key)| field_key.as_ref() == Some(key))
+                    && !ty.is_nullable()
                 {
                     missing.push(name);
                 }
@@ -379,7 +387,7 @@ fn check_against_type(
                 let Some(value) = field.get_value_expr() else {
                     continue;
                 };
-                let Some(key) = static_member_key(semantic_model, &key) else {
+                let Some(key) = key else {
                     continue;
                 };
                 if !overwritten.insert(key.clone()) {
@@ -496,6 +504,8 @@ fn check_against_type(
 /// A table constructor must satisfy one complete union alternative. Choose using
 /// both field presence and value checks so the two diagnostic passes cannot pick
 /// different alternatives and accidentally accept an invalid constructor.
+/// Each pass emits only its own codes after this selection; disabling structural
+/// warnings does not convert them into assignment warnings or select another branch.
 pub(super) fn check_union_table_fields(
     context: &mut CheckContext<'_>,
     semantic_model: &SemanticModel<'_>,
@@ -639,5 +649,41 @@ fn is_optional(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> bool {
         LuaType::Any | LuaType::Unknown | LuaType::Nil => true,
         LuaType::Union(union) => union.into_vec().iter().any(|t| matches!(t, LuaType::Nil)),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod constructor_selection_limits {
+    use super::*;
+    use crate::{LuaUnionMembers, VirtualWorkspace};
+
+    #[test]
+    fn constructor_depth_limit_keeps_outer_concrete_alternatives() {
+        let mut ws = VirtualWorkspace::new();
+        let target = ws.ty("{value:number}");
+        let file = ws.def("local value = {value=1}");
+        let table = ws.get_node::<LuaTableExpr>(file);
+        let model = ws.analysis.semantic_model(file);
+        for depth in [MAX_CONSTRUCTOR_TYPE_DEPTH - 1, MAX_CONSTRUCTOR_TYPE_DEPTH] {
+            let mut nested = target.clone();
+            for _ in 0..depth {
+                nested = LuaType::Union(Rc::new(LuaUnionType::Multi(LuaUnionMembers::new(vec![
+                    nested,
+                ]))));
+            }
+            let union = Rc::new(LuaUnionType::Multi(LuaUnionMembers::new(vec![
+                nested.clone(),
+            ])));
+            let result = table_union_diagnostics(&model, &union, &table);
+            assert_eq!(
+                result.is_some_and(|d| d.is_empty()),
+                depth < MAX_CONSTRUCTOR_TYPE_DEPTH
+            );
+            let union = Rc::new(LuaUnionType::Multi(LuaUnionMembers::new(vec![
+                nested,
+                target.clone(),
+            ])));
+            assert!(table_union_diagnostics(&model, &union, &table).is_some_and(|d| d.is_empty()));
+        }
     }
 }

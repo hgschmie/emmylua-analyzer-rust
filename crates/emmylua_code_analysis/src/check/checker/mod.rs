@@ -53,6 +53,8 @@ use crate::semantic_model::SemanticModel;
 
 use super::config::CheckConfig;
 
+pub(super) const MAX_CONSTRUCTOR_TYPE_DEPTH: usize = 100;
+
 /// A diagnostic result entry (decoupled from LSP via TextRange; consumers convert to LSP).
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
@@ -66,6 +68,8 @@ pub struct Diagnostic {
 }
 
 /// Unconfigured failure data shared between constructor checker passes.
+/// These producers use no code-action data; consumers apply severity and tags
+/// through their active context after selecting one complete alternative.
 #[derive(Debug, Clone)]
 pub(crate) struct ConstructorDiagnostic {
     pub range: TextRange,
@@ -125,6 +129,7 @@ impl<'a> CheckContext<'a> {
 
     /// Collect structural failures before applying user-facing diagnostic filters.
     /// Union alternative selection must not depend on which warnings are enabled.
+    /// Only code, range and message contribute; default presentation fields are discarded.
     pub(super) fn unfiltered(semantic_model: &'a SemanticModel<'a>) -> Self {
         static DEFAULT_CONFIG: OnceLock<Arc<CheckConfig>> = OnceLock::new();
         Self {

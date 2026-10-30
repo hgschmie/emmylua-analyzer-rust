@@ -430,7 +430,7 @@ fn is_structured_table_target_inner(
     ty: &LuaType,
     active: &mut Vec<LuaType>,
 ) -> bool {
-    if active.len() >= super::check_field::MAX_CONSTRUCTOR_TYPE_DEPTH || active.contains(ty) {
+    if active.len() >= super::MAX_CONSTRUCTOR_TYPE_DEPTH || active.contains(ty) {
         return false;
     }
     active.push(ty.clone());
@@ -449,18 +449,14 @@ fn is_structured_table_target_inner(
                 )
         }
         LuaType::Ref(_) | LuaType::Def(_) => {
-            let Some(def) = named_def(semantic_model, ty) else {
-                active.pop();
-                return false;
-            };
-            match def.kind {
+            named_def(semantic_model, ty).is_some_and(|def| match def.kind {
                 TypeDefKind::Class => true,
                 TypeDefKind::Alias => super::check_field::expand_alias_type(semantic_model, ty)
                     .is_some_and(|target| {
                         is_structured_table_target_inner(semantic_model, &target, active)
                     }),
                 TypeDefKind::Enum => false,
-            }
+            })
         }
         _ => false,
     };
@@ -663,7 +659,7 @@ fn collect_table_field_mismatches(
             let Some(value_expr) = field.get_value_expr() else {
                 continue;
             };
-            let member_key = index_key_to_member_key(semantic_model, &key);
+            let member_key = static_member_key(semantic_model, &key);
             if let Some(expected) = member_key
                 .as_ref()
                 .and_then(|key| object.get_fields().get(key))
@@ -829,34 +825,6 @@ pub(super) fn index_key_type(semantic_model: &SemanticModel<'_>, key: &LuaIndexK
         },
         LuaIndexKey::Idx(value) => LuaType::IntegerConst(*value as i64),
         LuaIndexKey::Expr(expr) => semantic_model.type_of_expr(expr.get_syntax_id()),
-    }
-}
-
-fn index_key_to_member_key(
-    _semantic_model: &SemanticModel<'_>,
-    key: &LuaIndexKey,
-) -> Option<LuaMemberKey> {
-    match key {
-        LuaIndexKey::Name(_) | LuaIndexKey::String(_) => {
-            Some(LuaMemberKey::Name(key.get_path_part().into()))
-        }
-        LuaIndexKey::Integer(_) | LuaIndexKey::Idx(_) => {
-            let value = match key {
-                LuaIndexKey::Integer(token) => Some(token.get_number_value()),
-                LuaIndexKey::Idx(_) => key
-                    .get_path_part()
-                    .parse::<i64>()
-                    .ok()
-                    .map(NumberResult::Int),
-                _ => None,
-            };
-            match value {
-                Some(NumberResult::Int(i)) => Some(LuaMemberKey::Integer(i)),
-                Some(NumberResult::Uint(u)) => Some(LuaMemberKey::Integer(u as i64)),
-                _ => None,
-            }
-        }
-        LuaIndexKey::Expr(_) => None,
     }
 }
 

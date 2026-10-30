@@ -1534,4 +1534,121 @@ mod union_table_constructors {
             }
         }
     }
+    #[test]
+    fn union_object_keys_distinguish_integer_and_string_literals() {
+        for (target, value, valid) in [
+            ("{[1]:number}|{name:string}", "{[1]=7}", true),
+            ("{[1]:number}|{name:string}", "{[(1)]=7}", true),
+            ("{[1]:number}|{name:string}", "{[1.0]=7}", true),
+            ("{[1]:number}|{name:string}", "{[(1.0)]=7}", true),
+            ("{[1]:number}|{name:string}", "{[(1)]='bad'}", false),
+            ("{[1]:number}|{name:string}", "{[1.0]='bad'}", false),
+            ("{[1]:number}|{name:string}", "{[(1.0)]='bad'}", false),
+            ("{[1]:number}|{name:string}", "{[1.5]=7}", false),
+            ("{[1]:number}|{name:string}", "{7}", true),
+            ("{[1]:number}|{name:string}", "{['1']=7}", false),
+            ("{['1']:number}|{name:string}", "{['1']=7}", true),
+            ("{['1']:number}|{name:string}", "{[('1')]=7}", true),
+            ("{['1']:number}|{name:string}", "{[('1')]='bad'}", false),
+            ("{['1']:number}|{name:string}", "{[1]=7}", false),
+        ] {
+            let diagnostics = diagnostics(target, value);
+            assert_eq!(
+                diagnostics.is_empty(),
+                valid,
+                "{target} / {value}: {diagnostics:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn union_object_scalar_values_keep_assignment_failures() {
+        for statement in [
+            "---@type Choice\nlocal value = {nested=5}\nreturn value",
+            "---@param value Choice\nlocal function accept(value) return value end\naccept({nested=5})",
+            "---@param value Choice\nlocal function accept(value) return value end\npcall(accept, {nested=5})",
+        ] {
+            let source = format!(
+                "---@alias Choice {{nested:{{value:number}}}}|{{nested:{{name:string}}}}\n{statement}"
+            );
+            let diagnostics = check_source(&source);
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.code == DiagnosticCode::AssignTypeMismatch),
+                "{source}: {diagnostics:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn isolated_union_checkers_keep_structural_and_value_ownership() {
+        use crate::check::CheckConfig;
+        use crate::check::checker::{
+            CheckContext, Checker, assign_type_mismatch::AssignTypeMismatchChecker,
+            check_field::CheckFieldChecker,
+        };
+        use std::sync::Arc;
+        for (value, expected_structural, expected_value) in
+            [("{}", true, false), ("{nested=5}", false, true)]
+        {
+            for field_first in [false, true] {
+                let mut ws = crate::VirtualWorkspace::new();
+                let source = format!(
+                    "---@alias Choice {{nested:{{value:number}}}}|{{nested:{{name:string}}}}\n---@type Choice\nlocal value = {value}\nreturn value"
+                );
+                let file = ws.def(&source);
+                let model = ws.analysis.semantic_model(file);
+                let mut fields = CheckContext::new(&model, Arc::new(CheckConfig::default()));
+                let mut values = CheckContext::new(&model, Arc::new(CheckConfig::default()));
+                if field_first {
+                    CheckFieldChecker::check(&mut fields, &model);
+                    AssignTypeMismatchChecker::check(&mut values, &model);
+                } else {
+                    AssignTypeMismatchChecker::check(&mut values, &model);
+                    CheckFieldChecker::check(&mut fields, &model);
+                }
+                let fields = fields.into_diagnostics();
+                let values = values.into_diagnostics();
+                assert_eq!(
+                    !fields.is_empty(),
+                    expected_structural,
+                    "{source}: {fields:?}"
+                );
+                assert_eq!(!values.is_empty(), expected_value, "{source}: {values:?}");
+                assert!(fields.iter().all(|d| matches!(
+                    d.code,
+                    DiagnosticCode::MissingFields | DiagnosticCode::InjectField
+                )));
+                assert!(
+                    values
+                        .iter()
+                        .all(|d| d.code == DiagnosticCode::AssignTypeMismatch)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn union_computed_object_keys_check_value_types() {
+        for (target, value) in [
+            ("{[1]:number}|{name:string}", "{[(1)]='bad'}"),
+            ("{[1]:number}|{name:string}", "{[1.0]='bad'}"),
+            ("{['1']:number}|{name:string}", "{[('1')]='bad'}"),
+        ] {
+            let diagnostics = diagnostics(target, value);
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.code == DiagnosticCode::AssignTypeMismatch),
+                "{target} / {value}: {diagnostics:?}"
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.code == DiagnosticCode::ParamTypeMismatch),
+                "{target} / {value}: {diagnostics:?}"
+            );
+        }
+    }
 }
