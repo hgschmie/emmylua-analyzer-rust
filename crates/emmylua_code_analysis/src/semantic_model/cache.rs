@@ -224,6 +224,8 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) expr_type_at: HashMap<(FileId, LuaSyntaxId, TextSize), CacheEntry<LuaType>>,
     /// Cast-bearing flow bindings on the node and its ancestors, nearest first.
     pub(crate) expr_cast_flows: HashMap<(FileId, LuaSyntaxId), Rc<Vec<FlowId>>>,
+    /// Syntax-only member-callee presence for this model snapshot; never call effects.
+    pub(crate) member_call_resolution: HashMap<FileId, bool>,
     pub(crate) resolve_name: HashMap<(FileId, TextSize), Option<SemanticId>>,
     /// Builtin identity at each read and declaration/flow state.
     pub(crate) builtin_function: HashMap<(FileId, BuiltinKey), Option<SmolStr>>,

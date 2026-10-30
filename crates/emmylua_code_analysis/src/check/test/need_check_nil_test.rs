@@ -301,12 +301,12 @@ fn test_member_primitive_guards() {
     use crate::{DiagnosticCode, LuaType, VirtualWorkspace};
     use emmylua_parser::{LuaAstNode, LuaIndexExpr};
     for body in [
-        "if type(elem.handler) == 'table' then local observed = elem.handler; print(elem.handler.name) end",
-        "if 'table' == type(elem.handler) then local observed = elem.handler; print(observed.name) end",
-        "if type(elem['handler']) ~= 'table' then return end; local observed = elem.handler; print(observed.name)",
-        "if not (type(elem.handler) ~= 'table') then local observed = elem.handler; print(observed.name) end",
-        "if type(elem.handler) == 'table' then else return end; local observed = elem.handler; print(observed.name)",
-        "if type(elem.handler) == 'string' then return end; if elem.handler ~= nil then local observed = elem.handler; print(observed.name) end",
+        "if type(elem.handler) == 'table' then local observed = elem.handler -- observe\n print(elem.handler.name) end",
+        "if 'table' == type(elem.handler) then local observed = elem.handler -- observe\n print(observed.name) end",
+        "if type(elem['handler']) ~= 'table' then return end; local observed = elem.handler -- observe\n print(observed.name)",
+        "if not (type(elem.handler) ~= 'table') then local observed = elem.handler -- observe\n print(observed.name) end",
+        "if type(elem.handler) == 'table' then else return end; local observed = elem.handler -- observe\n print(observed.name)",
+        "if type(elem.handler) == 'string' then return end; if elem.handler ~= nil then local observed = elem.handler -- observe\n print(observed.name) end",
     ] {
         let source = format!(
             r#"
@@ -327,7 +327,8 @@ fn test_member_primitive_guards() {
         );
         let file = ws.def(&source);
         let model = ws.analysis.semantic_model(file);
-        let pos = source.rfind("elem.handler").unwrap() as u32;
+        let marker = source.find("-- observe").unwrap();
+        let pos = source[..marker].rfind("elem.handler").unwrap() as u32;
         let index = model
             .chunk()
             .unwrap()
@@ -416,6 +417,48 @@ fn test_member_primitive_guards_filter_other_primitives() {
             model.type_of_expr_at(index.get_syntax_id(), index.get_position()),
             expected,
             "{guard}"
+        );
+    }
+}
+
+#[test]
+fn unguarded_numeric_runtime_member_keeps_assignment_precision() {
+    use crate::{LuaType, VirtualWorkspace};
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    for assignment in ["7", "7.5"] {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def(&format!(
+            r#"
+---@class RuntimeNumericMember
+---@field value number|string|nil
+local Values = {{}}
+---@param elem RuntimeNumericMember
+local function read(elem)
+    elem.value = {assignment}
+    local observed = elem.value -- observe
+end
+"#
+        ));
+        let model = ws.analysis.semantic_model(file);
+        let access = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .filter(|index| index.get_text() == "elem.value")
+            .last()
+            .unwrap();
+        let expected = if assignment == "7" {
+            LuaType::IntegerConst(7)
+        } else {
+            LuaType::FloatConst(7.5)
+        };
+        assert_eq!(
+            model.type_of_expr_at(access.get_syntax_id(), access.get_position()),
+            expected
+        );
+        assert_eq!(
+            model.type_of_expr_at(access.get_syntax_id(), access.get_position()),
+            expected
         );
     }
 }

@@ -11,7 +11,9 @@ use crate::semantic_db::flow::{FlowAntecedent, FlowId, FlowNodeKind, FlowTree, L
 use super::{SemanticModel, flow_condition_expr, literal_type};
 
 /// Each incoming path must reach a guard in the same function before a loop,
-/// goto boundary, or entry point. Callers decide which intervening flow nodes are safe.
+/// goto boundary, or entry point. Before dispatching every reached node (including
+/// entry/control nodes), `check_node` must accept its effects; returning `None`
+/// rejects the guard proof. It must not depend on one fixed predecessor order.
 pub(super) fn guarded_on_all_paths(
     model: &SemanticModel,
     index: &LuaIndexExpr,

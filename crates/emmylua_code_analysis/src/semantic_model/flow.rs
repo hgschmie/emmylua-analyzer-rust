@@ -807,14 +807,13 @@ fn guarded_index_type(
                 return None;
             }
             let node = tree.get_flow_node(current)?;
-            let FlowNodeKind::Assignment(ptr) = &node.kind else {
+            let Some(syntax) = node.kind.assignment_syntax() else {
                 return Some(());
             };
-            if ptr.get_syntax_id().get_range().contains(offset) {
+            if syntax.get_range().contains(offset) {
                 return Some(());
             }
-            let assign = flow_assign_stat(model, tree, current)?;
-            for var in assign.get_var_and_expr_list().0 {
+            for var in flow_written_vars(model, tree, current)? {
                 if let Some(written) = LuaExpr::cast(var.syntax().clone()).and_then(|expr| {
                     stable_access_path(model, &expr).or_else(|| index_access_path(model, &expr))
                 }) && path_write_affects(&written, &target.0, &target.1)
@@ -1499,14 +1498,14 @@ fn member_write_match(
         return MemberWrite::Unrelated;
     };
     let key_range = assigned.and_then(SemanticId::member_key_range);
-    let Some(assign) = flow_assign_stat(model, tree, flow_id) else {
+    let Some(vars) = flow_written_vars(model, tree, flow_id) else {
         return MemberWrite::Unrelated;
     };
     let target = LuaExpr::IndexExpr(access.clone());
     let Some(target_path) = index_access_path(model, &target) else {
         return MemberWrite::Unrelated;
     };
-    for var in assign.get_var_and_expr_list().0 {
+    for var in vars {
         let Some(written) = LuaExpr::cast(var.syntax().clone()) else {
             continue;
         };
@@ -1537,6 +1536,8 @@ fn member_write_match(
     MemberWrite::Unrelated
 }
 
+/// A write to an owner or ancestor affects the member; an unknown key is a
+/// wildcard at that segment, but never matches a different root receiver.
 fn path_write_affects(
     written: &(SemanticId, Vec<LuaMemberKey>),
     owner: &SemanticId,
@@ -1589,8 +1590,7 @@ fn stable_access_path_at(
         if !captures.iter().any(affects_capture) {
             continue;
         }
-        let assign = flow_assign_stat(model, tree, flow_id)?;
-        for var in assign.get_var_and_expr_list().0 {
+        for var in flow_written_vars(model, tree, flow_id)? {
             let written = LuaExpr::cast(var.syntax().clone())?;
             let raw = index_access_path(model, &written)?;
             // Keep possible writes through initializer aliases even when an
@@ -2240,6 +2240,8 @@ fn trace_member_uncached(
     visited: &mut HashSet<FlowId>,
     path: &mut PathState,
 ) -> Option<LuaType> {
+    // Without an access both call-effect helpers return false; this offset
+    // does not suppress ordinary assignment/cast tracing.
     let before = access.map_or(TextSize::from(u32::MAX), LuaAstNode::get_position);
     let mut current = flow_id;
     loop {
@@ -2251,7 +2253,7 @@ fn trace_member_uncached(
         let node = tree.get_flow_node(current)?;
         path.member_unstable |= member_flow_calls_conflict(model, tree, current, access, before);
         match &node.kind {
-            FlowNodeKind::Assignment(_) => {
+            FlowNodeKind::Assignment(_) | FlowNodeKind::ImplFunc(_) => {
                 for effect in tree.get_flow_effects(current) {
                     if let FlowEffect::AssignMember {
                         member: assigned_member,
@@ -2290,7 +2292,8 @@ fn trace_member_uncached(
                                 path,
                             ));
                         }
-                        // Member assignment overrides earlier guard narrowing; cast widening is retained.
+                        // A fresh assignment replaces older narrowing and clears the
+                        // old instability flag; explicit cast widening is retained.
                         let assign_path = PathState {
                             narrowings: Vec::new(),
                             casts: path.casts.clone(),
@@ -2839,9 +2842,20 @@ fn table_member_type(model: &SemanticModel, ty: &LuaType, key: &LuaMemberKey) ->
         .or_else(|| Some(model.type_of_expr(syntax)))
 }
 
-/// Table-literal assignments preserve branch narrowing:
-/// if `x` was narrowed to `Foo` in a branch, then `x = { kind = "foo" }` should remain `Foo`;
-/// if the literal's discriminant field conflicts with `Foo` (`{ kind = "bar" }`), drop the narrowing and return to the declared union.
+/// Return assignment targets, including the member written by a function statement.
+fn flow_written_vars(
+    model: &SemanticModel,
+    tree: &FlowTree,
+    flow: FlowId,
+) -> Option<Vec<emmylua_parser::LuaVarExpr>> {
+    let chunk = model.chunk()?;
+    match &tree.get_flow_node(flow)?.kind {
+        FlowNodeKind::Assignment(ptr) => Some(ptr.to_node(&chunk)?.get_var_and_expr_list().0),
+        FlowNodeKind::ImplFunc(ptr) => Some(vec![ptr.to_node(&chunk)?.get_func_name()?]),
+        _ => None,
+    }
+}
+
 fn flow_assign_stat(
     model: &SemanticModel,
     tree: &FlowTree,
@@ -5659,6 +5673,8 @@ fn member_branch_is_pure(
         let Some(node) = tree.get_flow_node(current) else {
             return false;
         };
+        // Without an access both call-effect helpers return false; this offset
+        // does not suppress ordinary assignment/cast tracing.
         let before = access.map_or(TextSize::from(u32::MAX), LuaAstNode::get_position);
         if member_flow_calls_conflict(model, tree, current, access, before) {
             return false;

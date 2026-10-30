@@ -980,3 +980,263 @@ fn cyclic_receiver_aliases_terminate_and_keep_reachable_writes() {
         assert_primitive_call_boundary(&body, nullable);
     }
 }
+
+#[test]
+fn fixed_member_callees_invalidate_the_written_receiver() {
+    for body in [
+        "local methods = {}\nfunction methods.clear(receiver) if flag then receiver[key] = nil end end\nmethods.clear(elem)",
+        "function elem:clear() if flag then self[key] = nil end end\nelem:clear()",
+        "local methods = {}\nfunction methods:clear() if flag then self[key] = nil end end\nmethods.clear(elem)",
+        "local methods = {}\nfunction methods:clear(receiver) if flag then receiver[key] = nil end end\nmethods:clear(elem)",
+    ] {
+        assert_primitive_call_boundary(
+            &format!("{body}\nlocal value = elem.handler.name -- observe"),
+            true,
+        );
+    }
+}
+
+#[test]
+fn fixed_member_callees_preserve_unrelated_receiver_guards() {
+    for body in [
+        "local methods = {}\nfunction methods:clear() if flag then self[key] = nil end end\nmethods:clear(elem)",
+        "function other:clear() if flag then self[key] = nil end end\nother:clear()",
+        "function elem:clear(receiver) if flag then receiver[key] = nil end end\nelem:clear(other)",
+        "local methods = {}\nfunction methods.clear(receiver) if flag then receiver[key] = nil end end\nmethods:clear(elem)",
+    ] {
+        assert_primitive_call_boundary(
+            &format!("{body}\nlocal value = elem.handler.name -- observe"),
+            false,
+        );
+    }
+}
+
+#[test]
+fn rawset_dynamic_and_constant_keys_invalidate_the_same_receiver() {
+    for key in ["key", "'handler'"] {
+        assert_primitive_call_boundary(
+            &format!("rawset(elem, {key}, nil)\nlocal value = elem.handler.name -- observe"),
+            true,
+        );
+    }
+}
+
+#[test]
+fn fixed_member_callees_follow_reaching_assignments_and_full_paths() {
+    for (setup, body, nullable) in [
+        (
+            "local methods = {}; function methods.clear(receiver) receiver[key] = nil end",
+            "methods.clear(elem)",
+            true,
+        ),
+        (
+            "local methods = {}; methods.clear = function(receiver) receiver[key] = nil end",
+            "methods.clear(elem)",
+            true,
+        ),
+        (
+            "local methods = {clear = function(receiver) receiver[key] = nil end}",
+            "methods.clear(elem)",
+            true,
+        ),
+        (
+            "local methods = {nested = {clear = function(receiver) receiver[key] = nil end}}",
+            "methods.nested.clear(elem)",
+            true,
+        ),
+        (
+            "local methods = {}; function methods.clear(receiver) receiver[key] = nil end",
+            "methods.clear = function() end; methods.clear(elem)",
+            false,
+        ),
+        (
+            "local methods = {}; function methods.clear(receiver) receiver[key] = nil end",
+            "methods = {}; methods.clear(elem)",
+            false,
+        ),
+        (
+            "local methods = {}; function methods.clear(receiver) receiver[key] = nil end",
+            "methods[key] = opaque; methods.clear(elem)",
+            false,
+        ),
+        (
+            "local methods = {}; function methods.clear(receiver) receiver[key] = nil end",
+            "if flag then methods.clear = function() end end; methods.clear(elem)",
+            true,
+        ),
+        (
+            "local methods = {}; function methods.clear(receiver) receiver[key] = nil end",
+            "if flag then methods.clear = function() end else methods.clear = opaque end; methods.clear(elem)",
+            false,
+        ),
+        (
+            "local methods = {}; function methods.clear(receiver) receiver[key] = nil end",
+            "methods.clear(other)",
+            false,
+        ),
+        (
+            "local methods = {}; function methods.clear(receiver) receiver[key] = nil end",
+            "do local methods = {}; function methods.clear() end; methods.clear(elem) end",
+            false,
+        ),
+        (
+            "local methods = {left = {}, right = {}}; function methods.left.clear(receiver) receiver[key] = nil end; function methods.right.clear() end",
+            "methods.right.clear(elem)",
+            false,
+        ),
+        (
+            "local methods = {left = {}, right = {}}; function methods.left.clear(receiver) receiver[key] = nil end; function methods.right.clear() end",
+            "methods.left.clear(elem)",
+            true,
+        ),
+        (
+            "local methods = {child = {}}; function methods.child.clear(receiver) receiver[key] = nil end",
+            "methods.child = {}; methods.child.clear(elem)",
+            false,
+        ),
+        (
+            "local methods = {}; function methods.clear() end",
+            "methods.clear(elem); function methods.clear(receiver) receiver[key] = nil end",
+            false,
+        ),
+        (
+            "local methods = {}; function methods.clear(receiver) receiver[key] = nil end",
+            "local saved = methods.clear; methods.clear = function() end; saved(elem)",
+            true,
+        ),
+    ] {
+        assert_member_call_boundary(
+            "type(elem.handler) == 'table'",
+            setup,
+            &format!("{body}\nlocal value = elem.handler.name -- observe"),
+            nullable,
+        );
+    }
+}
+
+#[test]
+fn fixed_member_callees_forward_tables_at_the_invocation_state() {
+    for (setup, body, nullable) in [
+        (
+            "local methods = {clear = function(receiver) receiver[key] = nil end}; local function helper(m) m.clear(elem) end",
+            "helper(methods)",
+            true,
+        ),
+        (
+            "local methods = {}; function methods.clear(receiver) receiver[key] = nil end; local function helper(m) m.clear(elem) end",
+            "helper(methods)",
+            true,
+        ),
+        (
+            "local methods = {}; local function helper(m) m.clear(elem) end; function methods.clear(receiver) receiver[key] = nil end",
+            "helper(methods)",
+            true,
+        ),
+        (
+            "local methods = {}; function methods.clear(receiver) receiver[key] = nil end; local function helper(m) m.clear(elem) end",
+            "methods.clear = function() end; helper(methods)",
+            false,
+        ),
+        (
+            "local methods = {}; function methods.clear() end; local function helper(m) m.clear(elem) end",
+            "helper(methods); function methods.clear(receiver) receiver[key] = nil end; helper(methods)",
+            true,
+        ),
+        (
+            "local methods = {}; function methods.clear(receiver) receiver[key] = nil end; local function inner(m) m.clear(elem) end; local function helper(m) inner(m) end",
+            "helper(methods)",
+            true,
+        ),
+        (
+            "local methods = {}; function methods.clear(receiver) receiver[key] = nil end; local function inner(m) m.clear(elem) end; local function helper(m) m.clear = function() end; inner(m) end",
+            "helper(methods)",
+            false,
+        ),
+        (
+            "local methods = {}; function methods.clear() end; local function helper() methods.clear(elem) end",
+            "function methods.clear(receiver) receiver[key] = nil end; helper()",
+            true,
+        ),
+        (
+            "local methods = {}; function methods.clear(receiver) receiver[key] = nil end; local function helper() methods.clear(elem) end",
+            "methods.clear = function() end; helper()",
+            false,
+        ),
+        (
+            "local methods = {}; function methods.clear(receiver) receiver[key] = nil end; local function helper(m) if flag then helper(m.child) end; m.clear(elem) end",
+            "helper(methods)",
+            true,
+        ),
+        (
+            "local methods = {}; function methods.clear() end; local function helper(m) if flag then helper(m.child) end; m.clear(elem) end",
+            "helper(methods)",
+            false,
+        ),
+    ] {
+        assert_member_call_boundary(
+            "type(elem.handler) == 'table'",
+            setup,
+            &format!("{body}\nlocal value = elem.handler.name -- observe"),
+            nullable,
+        );
+    }
+}
+
+#[test]
+fn recursive_member_callees_retain_external_entry_context() {
+    for (last, nullable) in [("elem", true), ("other", false)] {
+        assert_member_call_boundary(
+            "type(elem.handler) == 'table'",
+            "local methods = {}; function methods.clear(target) target[key] = nil end; local function run(m, target, next) if next then run(m, next, nil) else m.clear(target) end end",
+            &format!("run(methods, other, {last})\nlocal value = elem.handler.name -- observe"),
+            nullable,
+        );
+    }
+}
+
+#[test]
+fn recursive_member_callees_do_not_revive_replaced_methods() {
+    assert_member_call_boundary(
+        "type(elem.handler) == 'table'",
+        "local methods = {}; function methods.clear(target) target[key] = nil end; local function run(m, target, next) if next then m.clear = function() end; run(m, next, nil) else m.clear(target) end end",
+        "run(methods, other, elem)\nlocal value = elem.handler.name -- observe",
+        false,
+    );
+}
+
+#[test]
+fn member_alias_values_use_the_assigning_callers_bindings() {
+    for (first, second, nullable) in [
+        ("target[key] = nil", "", true),
+        ("", "target[key] = nil", false),
+    ] {
+        assert_member_call_boundary(
+            "type(elem.handler) == 'table'",
+            &format!(
+                "local first = {{}}; local second = {{}}; function first.writer(target) {first} end; function second.writer(target) {second} end; local function run(m, target, next) if next then first.clear = m.writer; run(second, next, nil) else first.clear(target) end end"
+            ),
+            "run(first, other, elem)\nlocal value = elem.handler.name -- observe",
+            nullable,
+        );
+    }
+}
+
+#[test]
+fn saved_member_callees_include_alias_valued_table_fields() {
+    for definition in [
+        "local methods = {clear = writer}",
+        "local methods = {clear = (writer)}",
+        "local methods = {}; methods.clear = (writer)",
+    ] {
+        for (receiver, nullable) in [("elem", true), ("other", false)] {
+            assert_member_call_boundary(
+                "type(elem.handler) == 'table'",
+                &format!(
+                    "local function writer(target) target[key] = nil end; {definition}; local saved = methods.clear"
+                ),
+                &format!("saved({receiver})\nlocal value = elem.handler.name -- observe"),
+                nullable,
+            );
+        }
+    }
+}
