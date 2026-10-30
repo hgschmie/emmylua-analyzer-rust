@@ -13,6 +13,7 @@ pub mod check_field;
 pub mod check_return_count;
 pub mod circle_doc_class;
 pub mod code_style;
+mod constructor;
 pub mod deprecated;
 pub mod discard_returns;
 pub mod duplicate_field;
@@ -43,7 +44,7 @@ pub mod unnecessary_if;
 pub mod unresolved_require;
 pub mod unused;
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use lsp_types::{DiagnosticSeverity, DiagnosticTag};
 use rowan::TextRange;
@@ -114,7 +115,6 @@ pub struct CheckContext<'a> {
     pub semantic_model: &'a SemanticModel<'a>,
     pub(crate) config: Arc<CheckConfig>,
     diagnostics: Vec<Diagnostic>,
-    filter_diagnostics: bool,
 }
 
 impl<'a> CheckContext<'a> {
@@ -123,20 +123,6 @@ impl<'a> CheckContext<'a> {
             semantic_model,
             config,
             diagnostics: Vec::new(),
-            filter_diagnostics: true,
-        }
-    }
-
-    /// Collect structural failures before applying user-facing diagnostic filters.
-    /// Union alternative selection must not depend on which warnings are enabled.
-    /// Only code, range and message contribute; default presentation fields are discarded.
-    pub(super) fn unfiltered(semantic_model: &'a SemanticModel<'a>) -> Self {
-        static DEFAULT_CONFIG: OnceLock<Arc<CheckConfig>> = OnceLock::new();
-        Self {
-            semantic_model,
-            config: Arc::clone(DEFAULT_CONFIG.get_or_init(|| Arc::new(CheckConfig::default()))),
-            diagnostics: Vec::new(),
-            filter_diagnostics: false,
         }
     }
 
@@ -161,23 +147,21 @@ impl<'a> CheckContext<'a> {
         message: String,
         data: Option<serde_json::Value>,
     ) {
-        if self.filter_diagnostics {
-            if let Some(facts) = self.semantic_model.file_facts() {
-                let force_enable = facts.file_diagnostic_enabled.contains(&code);
-                if !force_enable {
-                    if !self.config.is_code_enabled(&code) {
-                        return;
-                    }
-                    if facts.file_diagnostic_disabled.contains(&code) {
-                        return;
-                    }
-                }
-                if facts.is_range_diagnostic_disabled(&code, &range) {
+        if let Some(facts) = self.semantic_model.file_facts() {
+            let force_enable = facts.file_diagnostic_enabled.contains(&code);
+            if !force_enable {
+                if !self.config.is_code_enabled(&code) {
                     return;
                 }
-            } else if !self.config.is_code_enabled(&code) {
+                if facts.file_diagnostic_disabled.contains(&code) {
+                    return;
+                }
+            }
+            if facts.is_range_diagnostic_disabled(&code, &range) {
                 return;
             }
+        } else if !self.config.is_code_enabled(&code) {
+            return;
         }
         let severity = self.config.severity_of(&code);
         let tags = default_tags(&code);

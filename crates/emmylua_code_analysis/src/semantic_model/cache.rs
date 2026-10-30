@@ -141,6 +141,46 @@ impl Drop for ConstructorQueryGuard<'_> {
     }
 }
 
+/// An active constructor query may be suspended while a child query completes.
+/// Drop the active-key guard before the outer query scope, including during unwind.
+pub(crate) struct ConstructorQuery<'a> {
+    active: ConstructorQueryGuard<'a>,
+    _scope: QueryCacheScope<'a>,
+    revision: u64,
+}
+
+impl<'a> ConstructorQuery<'a> {
+    pub(super) fn new(cache: &'a super::LazyCache, key: (FileId, LuaSyntaxId, LuaType)) -> Self {
+        let scope = QueryCacheScope::new(cache);
+        let revision = cache.borrow().revision();
+        Self {
+            active: ConstructorQueryGuard::new(cache, key),
+            _scope: scope,
+            revision,
+        }
+    }
+
+    pub(crate) fn finish(
+        self,
+        result: Option<Vec<crate::check::checker::ConstructorDiagnostic>>,
+    ) -> Option<Vec<crate::check::checker::ConstructorDiagnostic>> {
+        let mut cache = self.active.cache.borrow_mut();
+        let Some(result) = result else {
+            cache.mark_incomplete();
+            cache.constructor_diagnostics.remove(&self.active.key);
+            return None;
+        };
+        if cache.is_complete(self.revision) {
+            cache
+                .constructor_diagnostics
+                .insert(self.active.key.clone(), CacheEntry::Ready(result.clone()));
+        } else {
+            cache.constructor_diagnostics.remove(&self.active.key);
+        }
+        Some(result)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum CacheEntry<T> {
     InProgress,

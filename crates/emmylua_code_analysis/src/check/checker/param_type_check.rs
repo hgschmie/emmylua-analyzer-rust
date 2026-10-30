@@ -667,6 +667,8 @@ fn check_union_table_argument(
         return false;
     }
     let diagnostics = super::check_field::table_union_diagnostics(semantic_model, union, table);
+    // An unresolved result proves no complete alternative; accepting it would
+    // turn recursive cache re-entry into a successful constructor match.
     if diagnostics
         .as_ref()
         .is_none_or(|diagnostics| !diagnostics.is_empty())

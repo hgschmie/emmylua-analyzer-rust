@@ -12,7 +12,8 @@ use crate::semantic_model::SemanticModel;
 use crate::semantic_model::type_eval::expand_alias_branches;
 use crate::{LuaMemberKey, LuaType, LuaTypeDeclId, LuaUnionType};
 
-use super::assign_type_mismatch::{check_value_against, index_key_type};
+use super::assign_type_mismatch::index_key_type;
+use super::constructor::{Task, UnionMode, evaluate};
 use super::param_type_check::callable_candidates;
 use super::{CheckContext, Checker};
 use crate::semantic_model::render::humanize_type;
@@ -203,6 +204,7 @@ pub(super) fn expand_alias_type(
             // Leave mapped/generic alias projection with its existing resolver.
             // Resolve in the defining file so namespace-qualified and imported
             // alias chains retain the same type-name lookup context.
+            // alias_target above already requires this same definition's alias_type.
             current = semantic_model.doc_type_lua_rich_in(def.file_id, def.alias_type?);
         }
     }
@@ -234,6 +236,7 @@ pub(super) fn static_member_key(
             LuaType::IntegerConst(i) | LuaType::DocIntegerConst(i) => {
                 Some(LuaMemberKey::Integer(i))
             }
+            // As for literal tokens above, the rounded 2^63 upper bound is exclusive.
             LuaType::FloatConst(i)
                 if i.fract() == 0.0 && (i64::MIN as f64..i64::MAX as f64).contains(&i) =>
             {
@@ -311,10 +314,24 @@ fn check_against_type(
     target: &LuaType,
     table: &LuaTableExpr,
 ) {
+    if let Some(diagnostics) = evaluate(semantic_model, Task::Fields(target.clone(), table.clone()))
+    {
+        for diagnostic in diagnostics {
+            context.add_diagnostic(diagnostic.code, diagnostic.range, diagnostic.message);
+        }
+    }
+}
+
+pub(super) fn field_tasks(
+    tasks: &mut Vec<Task<'_>>,
+    semantic_model: &SemanticModel<'_>,
+    target: &LuaType,
+    table: &LuaTableExpr,
+) {
     // Expand aliases before checking table literals against them. This makes alias-to-object,
     // alias-to-class and alias-to-unknown behave like their target types.
     if let Some(expanded) = expand_alias_type(semantic_model, target) {
-        check_against_type(context, semantic_model, &expanded, table);
+        tasks.push(Task::Fields(expanded, table.clone()));
         return;
     }
     match target {
@@ -325,25 +342,23 @@ fn check_against_type(
                         .applicable_index_infos(target, &index_key_type(semantic_model, &key))
                         .is_ok_and(|infos| !infos.is_empty())
                 {
-                    check_against_type(context, semantic_model, array.get_base(), &value);
+                    tasks.push(Task::Fields(array.get_base().clone(), value));
                 }
             }
             return;
         }
         LuaType::Intersection(intersection) => {
             for component in intersection.get_types() {
-                check_against_type(context, semantic_model, component, table);
+                tasks.push(Task::Fields(component.clone(), table.clone()));
             }
             return;
         }
         LuaType::Union(union) => {
-            check_union_table_fields(
-                context,
-                semantic_model,
-                union,
-                table,
-                &[DiagnosticCode::MissingFields, DiagnosticCode::InjectField],
-            );
+            tasks.push(Task::Union(
+                Rc::clone(union),
+                table.clone(),
+                UnionMode::Fields,
+            ));
             return;
         }
         LuaType::Object(object) => {
@@ -368,7 +383,7 @@ fn check_against_type(
                 }
             }
             if !missing.is_empty() {
-                context.add_diagnostic(
+                tasks.push(Task::diagnostic(
                     DiagnosticCode::MissingFields,
                     table.get_range(),
                     format!(
@@ -379,7 +394,7 @@ fn check_against_type(
                             .collect::<Vec<_>>()
                             .join(", ")
                     ),
-                );
+                ));
             }
             // Only the final complete write supplies a nested constructor's fields.
             let mut overwritten = HashSet::new();
@@ -396,7 +411,7 @@ fn check_against_type(
                 if let Some(expected) = object.get_field(&key)
                     && let LuaExpr::TableExpr(value) = value
                 {
-                    check_against_type(context, semantic_model, expected, &value);
+                    tasks.push(Task::Fields(expected.clone(), value));
                 }
             }
             return;
@@ -460,17 +475,17 @@ fn check_against_type(
         {
             if let Some(info) = infos.first() {
                 if let Some(LuaExpr::TableExpr(value)) = field.get_value_expr() {
-                    check_against_type(context, semantic_model, &info.value_type, &value);
+                    tasks.push(Task::Fields(info.value_type.clone(), value));
                 }
             } else {
-                context.add_diagnostic(
+                tasks.push(Task::diagnostic(
                     DiagnosticCode::InjectField,
                     table.get_range(),
                     format!(
                         "Field `{}` cannot be injected into the target type.",
                         key.get_path_part()
                     ),
-                );
+                ));
             }
         }
         if let Some(key) = member_key {
@@ -486,7 +501,7 @@ fn check_against_type(
         .collect();
     missing.sort_unstable();
     if !missing.is_empty() {
-        context.add_diagnostic(
+        tasks.push(Task::diagnostic(
             DiagnosticCode::MissingFields,
             table.get_range(),
             format!(
@@ -497,61 +512,33 @@ fn check_against_type(
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-        );
+        ));
     }
 }
 
-/// A table constructor must satisfy one complete union alternative. Choose using
-/// both field presence and value checks so the two diagnostic passes cannot pick
-/// different alternatives and accidentally accept an invalid constructor.
-/// Each pass emits only its own codes after this selection; disabling structural
-/// warnings does not convert them into assignment warnings or select another branch.
-pub(super) fn check_union_table_fields(
-    context: &mut CheckContext<'_>,
-    semantic_model: &SemanticModel<'_>,
-    union: &Rc<LuaUnionType>,
-    table: &LuaTableExpr,
-    codes: &[DiagnosticCode],
-) {
-    let Some(diagnostics) = table_union_diagnostics(semantic_model, union, table) else {
-        // No resolved field shape is available; value/argument checks report
-        // the unresolved constructor as a whole-type mismatch.
-        return;
-    };
-    for diagnostic in diagnostics {
-        if codes.contains(&diagnostic.code) {
-            context.add_diagnostic(diagnostic.code, diagnostic.range, diagnostic.message);
-        }
-    }
-}
-
+/// Select one complete union alternative using both structural and value failures.
+/// Consumers apply their own diagnostic codes and configuration after selection.
 pub(super) fn table_union_diagnostics(
     semantic_model: &SemanticModel<'_>,
     union: &Rc<LuaUnionType>,
     table: &LuaTableExpr,
 ) -> Option<Vec<super::ConstructorDiagnostic>> {
-    semantic_model.constructor_diagnostics(
-        table.get_syntax_id(),
-        LuaType::Union(Rc::clone(union)),
-        || {
-            table_union_diagnostics_uncached(semantic_model, union, table)
-                .map(|diagnostics| diagnostics.into_iter().map(Into::into).collect())
-        },
+    evaluate(
+        semantic_model,
+        Task::Union(Rc::clone(union), table.clone(), UnionMode::All),
     )
 }
 
-fn table_union_diagnostics_uncached(
+pub(super) fn union_alternatives(
     semantic_model: &SemanticModel<'_>,
     union: &LuaUnionType,
-    table: &LuaTableExpr,
-) -> Option<Vec<super::Diagnostic>> {
+) -> Vec<LuaType> {
     let mut alternatives = Vec::new();
     let mut pending = union.into_vec();
     pending.reverse();
     let mut visited = Vec::new();
     // Alias and union edges form a finite graph; compound types remain leaves.
-    // Keep the first declaration-order occurrence without dropping valid deep
-    // alternatives. Recursive structural checking has its own depth policy.
+    // Preserve the first declaration-order occurrence without a depth cutoff.
     while let Some(ty) = pending.pop() {
         if visited.contains(&ty) {
             continue;
@@ -565,50 +552,7 @@ fn table_union_diagnostics_uncached(
             alternatives.push(ty);
         }
     }
-    let value_expr = LuaExpr::TableExpr(table.clone());
-    let mut best: Option<Vec<super::Diagnostic>> = None;
-    let mut rejected_array = None;
-    let named_key =
-        table.get_fields_with_keys().iter().find_map(|(_, key)| {
-            match static_member_key(semantic_model, key) {
-                Some(LuaMemberKey::Name(name)) => Some(name),
-                _ => None,
-            }
-        });
-    for alternative in alternatives {
-        // A constructor with named keys is not the array alternative of `C|C[]`.
-        // Keep reporting the class's missing fields rather than an element error.
-        if matches!(alternative, LuaType::Array(_))
-            && let Some(name) = &named_key
-        {
-            rejected_array.get_or_insert_with(|| {
-                let mut candidate = CheckContext::unfiltered(semantic_model);
-                candidate.add_diagnostic(
-                    DiagnosticCode::InjectField,
-                    table.get_range(),
-                    format!("Field `{name}` cannot be injected into an array type."),
-                );
-                candidate.into_diagnostics()
-            });
-            continue;
-        }
-        let mut candidate = CheckContext::unfiltered(semantic_model);
-        check_against_type(&mut candidate, semantic_model, &alternative, table);
-        check_value_against(&mut candidate, semantic_model, &alternative, &value_expr);
-        let diagnostics = candidate.into_diagnostics();
-        if diagnostics.is_empty() {
-            return Some(diagnostics);
-        }
-        // Equal failure counts retain declaration order. All diagnostic passes
-        // share this choice before user configuration filters the result.
-        if best
-            .as_ref()
-            .is_none_or(|current| diagnostics.len() < current.len())
-        {
-            best = Some(diagnostics);
-        }
-    }
-    best.or(rejected_array)
+    alternatives
 }
 
 /// Target type -> named type id (Ref/Def/Generic base class).

@@ -12,6 +12,7 @@ use crate::semantic_model::SemanticModel;
 use crate::semantic_model::type_check::{TypeCheckFailReason, check_type_detail, is_compatible};
 use crate::{Decl, LuaMemberKey, LuaType, LuaTypeNode, SemanticId, TypeDef, TypeDefKind};
 
+use super::constructor::{Task, UnionMode, evaluate};
 use super::{CheckContext, Checker, check_field::static_member_key};
 use crate::semantic_model::render::humanize_type;
 
@@ -470,19 +471,18 @@ pub(super) fn check_value_against(
     target: &LuaType,
     value_expr: &LuaExpr,
 ) {
-    let mut mismatches = Vec::new();
-    collect_value_mismatches(&mut mismatches, semantic_model, target, value_expr);
-    for mismatch in mismatches {
-        context.add_diagnostic(
-            DiagnosticCode::AssignTypeMismatch,
-            mismatch.range,
-            mismatch.message,
-        );
+    if let Some(diagnostics) = evaluate(
+        semantic_model,
+        Task::Value(target.clone(), value_expr.clone()),
+    ) {
+        for diagnostic in diagnostics {
+            context.add_diagnostic(diagnostic.code, diagnostic.range, diagnostic.message);
+        }
     }
 }
 
-fn collect_value_mismatches(
-    mismatches: &mut Vec<TypeMismatch>,
+pub(super) fn value_tasks(
+    tasks: &mut Vec<Task<'_>>,
     semantic_model: &SemanticModel<'_>,
     target: &LuaType,
     value_expr: &LuaExpr,
@@ -504,7 +504,7 @@ fn collect_value_mismatches(
         let target = expanded.as_ref().unwrap_or(target);
         if matches!(target, LuaType::Union(_)) || is_structured_table_target(semantic_model, target)
         {
-            collect_table_field_mismatches(mismatches, semantic_model, target, table);
+            tasks.push(Task::TableValues(target.clone(), table.clone()));
         } else {
             let value_ty = semantic_model
                 .type_of_expr_at(value_expr.get_syntax_id(), value_expr.get_range().start());
@@ -518,12 +518,12 @@ fn collect_value_mismatches(
             {
                 return;
             }
-            mismatches.push(type_mismatch(
+            tasks.push(Task::mismatch(type_mismatch(
                 semantic_model,
                 value_expr.get_range(),
                 target,
                 &value_ty,
-            ));
+            )));
         }
         return;
     }
@@ -533,12 +533,12 @@ fn collect_value_mismatches(
     {
         return;
     }
-    mismatches.push(type_mismatch(
+    tasks.push(Task::mismatch(type_mismatch(
         semantic_model,
         value_expr.get_range(),
         target,
         &value_ty,
-    ));
+    )));
 }
 
 /// Assignment RHS type: when VM yields `Function`, if the RHS is a named function, resolve its cross-file signature structure.
@@ -592,41 +592,34 @@ pub(super) fn table_field_mismatches(
     target: &LuaType,
     table: &LuaTableExpr,
 ) -> Vec<TypeMismatch> {
-    let mut mismatches = Vec::new();
-    if is_structured_table_target(semantic_model, target) {
-        collect_table_field_mismatches(&mut mismatches, semantic_model, target, table);
+    if !is_structured_table_target(semantic_model, target) {
+        return Vec::new();
     }
-    mismatches
+    evaluate(
+        semantic_model,
+        Task::TableValues(target.clone(), table.clone()),
+    )
+    .unwrap_or_default()
+    .into_iter()
+    .map(|diagnostic| TypeMismatch {
+        range: diagnostic.range,
+        message: diagnostic.message,
+    })
+    .collect()
 }
 
-fn collect_table_field_mismatches(
-    mismatches: &mut Vec<TypeMismatch>,
+pub(super) fn table_value_tasks(
+    tasks: &mut Vec<Task<'_>>,
     semantic_model: &SemanticModel<'_>,
     target: &LuaType,
     table: &LuaTableExpr,
 ) {
     if let LuaType::Union(union) = target {
-        let Some(diagnostics) =
-            super::check_field::table_union_diagnostics(semantic_model, union, table)
-        else {
-            let value_type = semantic_model.type_of_expr(table.get_syntax_id());
-            mismatches.push(type_mismatch(
-                semantic_model,
-                table.get_range(),
-                target,
-                &value_type,
-            ));
-            return;
-        };
-        mismatches.extend(
-            diagnostics
-                .into_iter()
-                .filter(|diagnostic| diagnostic.code == DiagnosticCode::AssignTypeMismatch)
-                .map(|diagnostic| TypeMismatch {
-                    range: diagnostic.range,
-                    message: diagnostic.message,
-                }),
-        );
+        tasks.push(Task::Union(
+            Rc::clone(union),
+            table.clone(),
+            UnionMode::Values,
+        ));
         return;
     }
     // Array target: check every table-literal element against the element type.
@@ -636,7 +629,7 @@ fn collect_table_field_mismatches(
             let Some(value_expr) = field.get_value_expr() else {
                 continue;
             };
-            collect_table_value_mismatches(mismatches, semantic_model, &value_expr, expected);
+            tasks.push(Task::EntryValue(expected.clone(), value_expr));
         }
         return;
     }
@@ -649,7 +642,7 @@ fn collect_table_field_mismatches(
             let Some(value_expr) = field.get_value_expr() else {
                 continue;
             };
-            collect_table_value_mismatches(mismatches, semantic_model, &value_expr, expected);
+            tasks.push(Task::EntryValue(expected.clone(), value_expr));
         }
         return;
     }
@@ -664,19 +657,14 @@ fn collect_table_field_mismatches(
                 .as_ref()
                 .and_then(|key| object.get_fields().get(key))
             {
-                collect_table_value_mismatches(mismatches, semantic_model, &value_expr, expected);
+                tasks.push(Task::EntryValue(expected.clone(), value_expr));
                 continue;
             }
             let key_ty = index_key_type(semantic_model, &key);
             if let Ok(infos) = semantic_model.applicable_index_infos(target, &key_ty)
                 && let Some(info) = infos.first()
             {
-                collect_table_value_mismatches(
-                    mismatches,
-                    semantic_model,
-                    &value_expr,
-                    &info.value_type,
-                );
+                tasks.push(Task::EntryValue(info.value_type.clone(), value_expr));
             }
         }
         return;
@@ -689,7 +677,7 @@ fn collect_table_field_mismatches(
         && let Some(alias_target) = super::check_field::expand_alias_type(semantic_model, target)
         && is_structured_table_target(semantic_model, &alias_target)
     {
-        collect_table_field_mismatches(mismatches, semantic_model, &alias_target, table);
+        tasks.push(Task::TableValues(alias_target, table.clone()));
         return;
     }
 
@@ -729,7 +717,7 @@ fn collect_table_field_mismatches(
             let Some(value_expr) = field.get_value_expr() else {
                 continue;
             };
-            collect_table_value_mismatches(mismatches, semantic_model, &value_expr, expected);
+            tasks.push(Task::EntryValue(expected.clone(), value_expr));
             continue;
         }
         // Static member not found -> check against index signatures (`@field [integer] string`).
@@ -745,7 +733,7 @@ fn collect_table_field_mismatches(
         let Some(value_expr) = field.get_value_expr() else {
             continue;
         };
-        collect_table_value_mismatches(mismatches, semantic_model, &value_expr, expected);
+        tasks.push(Task::EntryValue(expected.clone(), value_expr));
     }
     // Array-shaped table literal + integer index signature: required static members from class inheritance must still appear
     // (an Opts with `@field [integer] string` still requires the parent's `@field foo boolean`).
@@ -771,12 +759,12 @@ fn collect_table_field_mismatches(
                         value_expr.get_syntax_id(),
                         value_expr.get_range().start(),
                     );
-                    mismatches.push(type_mismatch(
+                    tasks.push(Task::mismatch(type_mismatch(
                         semantic_model,
                         value_expr.get_range(),
                         required_ty,
                         &value_ty,
-                    ));
+                    )));
                 }
                 break;
             }
@@ -784,14 +772,14 @@ fn collect_table_field_mismatches(
     }
 }
 
-fn collect_table_value_mismatches(
-    mismatches: &mut Vec<TypeMismatch>,
+pub(super) fn entry_value_tasks(
+    tasks: &mut Vec<Task<'_>>,
     semantic_model: &SemanticModel<'_>,
     value_expr: &LuaExpr,
     expected: &LuaType,
 ) {
     if matches!(value_expr, LuaExpr::TableExpr(_)) {
-        collect_value_mismatches(mismatches, semantic_model, expected, value_expr);
+        tasks.push(Task::Value(expected.clone(), value_expr.clone()));
         return;
     }
     let value_ty =
@@ -803,12 +791,21 @@ fn collect_table_value_mismatches(
     {
         return;
     }
-    mismatches.push(type_mismatch(
+    tasks.push(Task::mismatch(type_mismatch(
         semantic_model,
         value_expr.get_range(),
         expected,
         &value_ty,
-    ));
+    )));
+}
+
+pub(super) fn unresolved_constructor_mismatch(
+    semantic_model: &SemanticModel<'_>,
+    target: &LuaType,
+    table: &LuaTableExpr,
+) -> TypeMismatch {
+    let value_type = semantic_model.type_of_expr(table.get_syntax_id());
+    type_mismatch(semantic_model, table.get_range(), target, &value_type)
 }
 
 pub(super) fn index_key_type(semantic_model: &SemanticModel<'_>, key: &LuaIndexKey) -> LuaType {

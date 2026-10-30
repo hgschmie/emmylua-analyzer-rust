@@ -9,37 +9,37 @@ impl<'db> SemanticModel<'db> {
     /// `None` remains unresolved and only `Some` with an empty list proves a match.
     /// Cached failures contain only code, range and message; consumers re-emit them
     /// through their active CheckContext to apply user configuration.
+    #[cfg(test)]
     pub(crate) fn constructor_diagnostics(
         &self,
         table: LuaSyntaxId,
         target: LuaType,
         check: impl FnOnce() -> Option<Vec<crate::check::checker::ConstructorDiagnostic>>,
     ) -> Option<Vec<crate::check::checker::ConstructorDiagnostic>> {
+        match self.begin_constructor_diagnostics(table, target) {
+            Ok(query) => query.finish(check()),
+            Err(result) => result,
+        }
+    }
+
+    /// Start a constructor query whose continuation may live on an explicit work stack.
+    /// The guard keeps dependency completeness and active-key cleanup scoped until finish.
+    pub(crate) fn begin_constructor_diagnostics(
+        &self,
+        table: LuaSyntaxId,
+        target: LuaType,
+    ) -> Result<
+        cache::ConstructorQuery<'_>,
+        Option<Vec<crate::check::checker::ConstructorDiagnostic>>,
+    > {
         let key = (self.file_id(), table, target);
         {
             let cache = self.cache.borrow();
             if let Some(entry) = cache.constructor_diagnostics.get(&key) {
-                return entry.get(&cache).cloned();
+                return Err(entry.get(&cache).cloned());
             }
         }
-        let _query = cache::QueryCacheScope::new(&self.cache);
-        let revision = self.cache.borrow().revision();
-        let _active = cache::ConstructorQueryGuard::new(&self.cache, key.clone());
-        let result = check();
-        let mut cache = self.cache.borrow_mut();
-        let Some(result) = result else {
-            cache.mark_incomplete();
-            cache.constructor_diagnostics.remove(&key);
-            return None;
-        };
-        if cache.is_complete(revision) {
-            cache
-                .constructor_diagnostics
-                .insert(key, cache::CacheEntry::Ready(result.clone()));
-        } else {
-            cache.constructor_diagnostics.remove(&key);
-        }
-        Some(result)
+        Ok(cache::ConstructorQuery::new(&self.cache, key))
     }
 
     /// Currently configured runtime version (used for `---@version` visibility checks).
@@ -1407,5 +1407,35 @@ mod constructor_cache_tests {
             });
         }
         assert_eq!(calls.get(), 1);
+    }
+    #[test]
+    fn suspended_constructor_queries_retain_dependency_completeness() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def("local value = {}");
+        let table = ws.get_node::<LuaTableExpr>(file).get_syntax_id();
+        let model = ws.analysis.semantic_model(file);
+        let parent = model
+            .begin_constructor_diagnostics(table, LuaType::String)
+            .ok()
+            .unwrap();
+        let child = model
+            .begin_constructor_diagnostics(table, LuaType::Integer)
+            .ok()
+            .unwrap();
+        assert!(matches!(
+            model.begin_constructor_diagnostics(table, LuaType::String),
+            Err(None)
+        ));
+        assert!(child.finish(Some(Vec::new())).unwrap().is_empty());
+        assert!(parent.finish(Some(Vec::new())).unwrap().is_empty());
+        for key in [LuaType::String, LuaType::Integer] {
+            let retry = model
+                .begin_constructor_diagnostics(table, key.clone())
+                .expect("incomplete dependency must prevent admission");
+            retry.finish(Some(Vec::new()));
+            assert!(
+                matches!(model.begin_constructor_diagnostics(table, key), Err(Some(diagnostics)) if diagnostics.is_empty())
+            );
+        }
     }
 }

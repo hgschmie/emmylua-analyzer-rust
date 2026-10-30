@@ -1735,3 +1735,251 @@ mod union_table_constructors {
         }
     }
 }
+
+#[cfg(test)]
+mod constructor_depth_tests {
+    use crate::{DiagnosticCode, check::test::check_source};
+
+    #[test]
+    fn scalar_only_union_reports_once_in_each_context() {
+        for target in ["string|number", "number|string"] {
+            for (statement, expected) in [
+                (
+                    "---@type Choice\nlocal value = {1}\nreturn value",
+                    DiagnosticCode::AssignTypeMismatch,
+                ),
+                (
+                    "---@param value Choice\nlocal function accept(value) return value end\naccept({1})",
+                    DiagnosticCode::ParamTypeMismatch,
+                ),
+                (
+                    "---@param value Choice\nlocal function accept(value) return value end\npcall(accept, {1})",
+                    DiagnosticCode::ParamTypeMismatch,
+                ),
+                (
+                    "---@param ... Choice\nlocal function accept(...) return ... end\naccept({1})",
+                    DiagnosticCode::ParamTypeMismatch,
+                ),
+                (
+                    "---@param ... [Choice]...\nlocal function accept(...) return ... end\naccept({1})",
+                    DiagnosticCode::ParamTypeMismatch,
+                ),
+            ] {
+                let source = format!("---@alias Choice {target}\n{statement}");
+                let diagnostics = check_source(&source)
+                    .into_iter()
+                    .filter(|d| d.code != DiagnosticCode::Unused)
+                    .collect::<Vec<_>>();
+                assert_eq!(diagnostics.len(), 1, "{source}: {diagnostics:?}");
+                assert_eq!(diagnostics[0].code, expected, "{source}: {diagnostics:?}");
+                assert_eq!(diagnostics[0].range.len(), rowan::TextSize::from(3));
+            }
+        }
+    }
+
+    #[test]
+    fn mutual_alias_cycles_keep_the_concrete_exit() {
+        for alternative in ["A|{x:number}", "{x:number}|A"] {
+            for (value, valid) in [("{x=1}", true), ("{x='bad'}", false)] {
+                let source = format!(
+                    "---@alias A B\n---@alias B {alternative}\n---@param value A\nlocal function accept(value) return value end\naccept({value})"
+                );
+                let diagnostics = check_source(&source)
+                    .into_iter()
+                    .filter(|d| d.code != DiagnosticCode::Unused)
+                    .collect::<Vec<_>>();
+                assert_eq!(diagnostics.is_empty(), valid, "{source}: {diagnostics:?}");
+            }
+        }
+    }
+
+    fn isolated_checks(source: String) -> Vec<crate::check::checker::Diagnostic> {
+        use crate::check::{
+            CheckConfig,
+            checker::{
+                CheckContext, Checker, assign_type_mismatch::AssignTypeMismatchChecker,
+                check_field::CheckFieldChecker, param_type_check::ParamTypeChecker,
+            },
+        };
+        // File loading/dropping has a separate inherited native-stack limit.
+        // Only those stages use this helper; every checker runs on the test thread.
+        let (ws, file) = std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || {
+                let mut ws = crate::VirtualWorkspace::new();
+                let file = ws.def(&source);
+                (ws, file)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        let mut diagnostics = Vec::new();
+        for checker in 0..3 {
+            // A fresh model prevents a previous checker's cache from hiding recursion.
+            let model = ws.analysis.semantic_model(file);
+            let mut context =
+                CheckContext::new(&model, std::sync::Arc::new(CheckConfig::default()));
+            match checker {
+                0 => CheckFieldChecker::check(&mut context, &model),
+                1 => AssignTypeMismatchChecker::check(&mut context, &model),
+                _ => ParamTypeChecker::check(&mut context, &model),
+            }
+            diagnostics.extend(context.into_diagnostics());
+        }
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || drop(ws))
+            .unwrap()
+            .join()
+            .unwrap();
+        diagnostics
+    }
+
+    #[test]
+    fn deep_object_constructors_keep_field_and_value_failures() {
+        for depth in [256, 512] {
+            for (leaf, valid) in [("{value=1}", true), ("{value='bad'}", false), ("{}", false)] {
+                let mut value = leaf.to_string();
+                for _ in 0..depth {
+                    value = format!("{{value=1,next={value}}}");
+                }
+                for (statement, expected) in [
+                    (
+                        format!("---@type Node|string\nlocal value = {value}\nreturn value"),
+                        DiagnosticCode::AssignTypeMismatch,
+                    ),
+                    (
+                        format!(
+                            "---@param value Node|string\nlocal function accept(value) return value end\naccept({value})"
+                        ),
+                        DiagnosticCode::ParamTypeMismatch,
+                    ),
+                    (
+                        format!(
+                            "---@param value Node|string\nlocal function accept(value) return value end\npcall(accept, {value})"
+                        ),
+                        DiagnosticCode::ParamTypeMismatch,
+                    ),
+                    (
+                        format!(
+                            "---@param ... Node|string\nlocal function accept(...) return ... end\naccept({value})"
+                        ),
+                        DiagnosticCode::ParamTypeMismatch,
+                    ),
+                    (
+                        format!(
+                            "---@param ... [Node|string]...\nlocal function accept(...) return ... end\naccept({value})"
+                        ),
+                        DiagnosticCode::ParamTypeMismatch,
+                    ),
+                ] {
+                    let source = format!("---@alias Node {{value:number,next:Node?}}\n{statement}");
+                    let diagnostics = isolated_checks(source);
+                    assert_eq!(
+                        diagnostics.is_empty(),
+                        valid,
+                        "depth={depth}, leaf={leaf}: {diagnostics:?}"
+                    );
+                    if !valid {
+                        assert!(
+                            diagnostics.iter().any(|d| d.code == expected),
+                            "depth={depth}, leaf={leaf}: {diagnostics:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn deep_array_and_index_constructors_keep_leaf_failures() {
+        for (definition, array) in [
+            ("---@alias Node {value:number,children:Node[]?}", true),
+            (
+                "---@class Node\n---@field value number\n---@field [integer] Node",
+                false,
+            ),
+        ] {
+            for (leaf, valid) in [("{value=1}", true), ("{value='bad'}", false), ("{}", false)] {
+                let mut value = leaf.to_string();
+                for _ in 0..128 {
+                    value = if array {
+                        format!("{{value=1,children={{{value}}}}}")
+                    } else {
+                        format!("{{value=1,[1]={value}}}")
+                    };
+                }
+                let source = format!(
+                    "{definition}\n---@param value Node|string\nlocal function accept(value) return value end\naccept({value})"
+                );
+                let diagnostics = isolated_checks(source);
+                assert_eq!(
+                    diagnostics.is_empty(),
+                    valid,
+                    "array={array}, leaf={leaf}: {diagnostics:?}"
+                );
+                if !valid {
+                    assert!(
+                        diagnostics
+                            .iter()
+                            .any(|d| d.code == DiagnosticCode::ParamTypeMismatch),
+                        "array={array}, leaf={leaf}: {diagnostics:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn deep_recursive_union_keeps_a_successful_sibling() {
+        for (leaf, valid) in [("{text='ok'}", true), ("{text=1}", false)] {
+            let mut value = leaf.to_string();
+            for _ in 0..128 {
+                value = format!("{{value=1,next={value}}}");
+            }
+            let source = format!(
+                "---@alias Node {{value:number,next:Node?}}|{{text:string,next:Node?}}\n---@param value Node\nlocal function accept(value) return value end\naccept({value})"
+            );
+            let diagnostics = isolated_checks(source);
+            assert_eq!(
+                diagnostics.is_empty(),
+                valid,
+                "leaf={leaf}: {diagnostics:?}"
+            );
+            if !valid {
+                assert!(
+                    diagnostics
+                        .iter()
+                        .any(|d| d.code == DiagnosticCode::ParamTypeMismatch),
+                    "{diagnostics:?}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn deep_named_index_fields_report_a_missing_leaf() {
+        for (leaf, valid) in [("{value=1}", true), ("{}", false)] {
+            let mut value = leaf.to_string();
+            for _ in 0..256 {
+                value = format!("{{value=1,[1]={value}}}");
+            }
+            let source = format!(
+                "---@class Node\n---@field value number\n---@field [integer] Node\n---@type Node\nlocal value = {value}\nreturn value"
+            );
+            let diagnostics = isolated_checks(source);
+            assert_eq!(
+                diagnostics.is_empty(),
+                valid,
+                "leaf={leaf}: {diagnostics:?}"
+            );
+            if !valid {
+                assert!(
+                    diagnostics
+                        .iter()
+                        .any(|d| d.code == DiagnosticCode::MissingFields),
+                    "{diagnostics:?}"
+                );
+            }
+        }
+    }
+}
