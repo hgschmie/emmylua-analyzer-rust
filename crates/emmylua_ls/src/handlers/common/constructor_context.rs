@@ -56,7 +56,11 @@ fn constructor_context_infos(
     }
     path.push(owner.clone());
     let value_info = |expected_key: &LuaType, value: &LuaType| {
-        if key.is_nil() || !model.type_check(&strip_nullable(key), expected_key) {
+        // Ordinary compatibility accepts Unknown, but it does not establish
+        // which index domain supplies this constructor entry's value contract.
+        if matches!(key, LuaType::Unknown | LuaType::Nil)
+            || !model.type_check(&strip_nullable(key), expected_key)
+        {
             return Vec::new();
         }
         vec![MemberInfo {

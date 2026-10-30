@@ -388,3 +388,97 @@ fn constructor_definition_keeps_unannotated_keys_and_required_values() -> Result
     ));
     Ok(())
 }
+
+#[gtest]
+fn constructor_hover_unknown_computed_key_keeps_nested_value_inferred() -> Result<()> {
+    use emmylua_parser::{LuaAstNode, LuaIndexKey, LuaTableField};
+
+    for owner in [
+        "Setting[]",
+        "table<string,Setting>",
+        "{ [string]: Setting }",
+    ] {
+        let mut ws = ProviderVirtualWorkspace::new();
+        let source = format!(
+            "{TYPES}\n---@type {owner}\nlocal settings = {{ [missing_key] = {{ <??>key = true }} }}"
+        );
+        let file = ws.def(&source.replace("<??>", ""));
+        let model = ws.analysis.semantic_model(file);
+        let key = model
+            .chunk()
+            .unwrap()
+            .syntax()
+            .descendants()
+            .filter_map(LuaTableField::cast)
+            .find_map(|field| match field.get_field_key()? {
+                LuaIndexKey::Expr(expr) => Some(expr),
+                _ => None,
+            })
+            .unwrap();
+        assert!(matches!(
+            model.type_of_expr(key.get_syntax_id()),
+            emmylua_code_analysis::LuaType::Unknown
+        ));
+        check!(ws.check_hover(
+            &source,
+            VirtualHoverResult {
+                value: "```lua\n(field) key: boolean = true\n```".into()
+            }
+        ));
+    }
+    Ok(())
+}
+
+#[gtest]
+fn constructor_definition_annotated_quoted_key_ignores_enclosing_call() -> Result<()> {
+    for literal in ["{ ['<??>entry'] = 1 }", "consume({ ['<??>entry'] = 1 })"] {
+        let mut ws = ProviderVirtualWorkspace::new();
+        check!(ws.check_definition(
+            &format!("---@class Record\n---@field entry integer\n---@param value Record\nlocal function consume(value) end\n---@type Record\nlocal values = {literal}"),
+            vec![VirtualLocation {file: "".into(), line: 1}, VirtualLocation {file: "".into(), line: 5}]
+        ));
+    }
+    Ok(())
+}
+
+#[gtest]
+fn constructor_hover_computed_key_domain_controls() -> Result<()> {
+    for (owner, key_type, projected) in [
+        ("Setting[]", "integer", true),
+        ("Setting[]", "integer?", true),
+        ("Setting[]", "string", false),
+        ("Setting[]", "nil", false),
+        ("Setting[]", "any", true),
+        ("table<string,Setting>", "string", true),
+        ("table<string,Setting>", "string?", true),
+        ("table<string,Setting>", "integer", false),
+        ("table<string,Setting>", "nil", false),
+        ("table<string,Setting>", "any", true),
+        ("{ [string]: Setting }", "string", true),
+        ("{ [string]: Setting }", "integer", false),
+    ] {
+        check_case(
+            &format!(
+                "---@type {key_type}\nlocal index\n---@type {owner}\nlocal settings = {{ [index] = {{ <??>key = true }} }}"
+            ),
+            if projected {
+                "(field) key: string = true"
+            } else {
+                "(field) key: boolean = true"
+            },
+        )?;
+    }
+    check_case(
+        "---@type table<string,Setting>\nlocal settings = { [42] = { <??>key = missing } }",
+        "(field) key: unknown",
+    )?;
+    Ok(())
+}
+
+#[gtest]
+fn constructor_hover_synthetic_union_keeps_all_value_contracts() -> Result<()> {
+    check_case(
+        "---@type table<string,string>|table<string,integer>\nlocal settings = { <??>entry = missing }",
+        "(field) entry: (string|integer)",
+    )
+}
