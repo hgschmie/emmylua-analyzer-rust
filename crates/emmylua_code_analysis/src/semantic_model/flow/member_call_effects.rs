@@ -23,64 +23,70 @@ pub(super) fn calls_conflict(
     node: &LuaSyntaxNode,
     before: TextSize,
 ) -> bool {
+    calls_conflict_after(model, index, node, TextSize::from(0), before)
+}
+
+pub(super) fn calls_conflict_after(
+    model: &SemanticModel,
+    index: &LuaIndexExpr,
+    node: &LuaSyntaxNode,
+    after: TextSize,
+    before: TextSize,
+) -> bool {
     let expr = LuaExpr::IndexExpr(index.clone());
     let Some(expected) =
         stable_access_path(model, &expr).or_else(|| index_access_path(model, &expr))
     else {
         return false;
     };
-    scan(
-        model,
-        &expected,
-        node,
-        before,
-        &Vec::new(),
-        false,
-        0,
-        &mut 2048,
-    )
+    scan(model, &expected, node, after, before)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Inspect all direct writes in a visible body before expanding its callees.
+/// Repeated callee/binding states terminate recursion; expansion limits leave
+/// unresolved calls opaque, preserving the caller's guard policy.
 fn scan(
     model: &SemanticModel,
     expected: &Access,
     node: &LuaSyntaxNode,
+    after: TextSize,
     before: TextSize,
-    bindings: &Bindings,
-    writes: bool,
-    depth: usize,
-    budget: &mut usize,
 ) -> bool {
-    if depth >= 8 {
-        return false;
-    }
-    let mut pending = vec![node.clone()];
-    while let Some(node) = pending.pop() {
-        if *budget == 0 {
-            return false;
-        }
-        *budget -= 1;
-        if node.text_range().start() >= before || LuaClosureExpr::can_cast(node.kind().into()) {
-            continue;
-        }
-        if writes
-            && node.text_range().end() <= before
-            && let Some(assign) = LuaAssignStat::cast(node.clone())
-            && assign
-                .get_var_and_expr_list()
-                .0
-                .iter()
-                .any(|var| write_conflicts(model, expected, var, bindings))
-        {
-            return true;
-        }
-        if node.text_range().end() <= before
-            && let Some(call) = LuaCallExpr::cast(node.clone())
-        {
-            if mutator_conflicts(model, expected, &call, bindings) {
+    const MAX_CALLEE_STATES: usize = 2048;
+    let mut bodies = vec![(node.clone(), after, before, Bindings::new(), false)];
+    let mut seen = HashSet::new();
+    while let Some((body, after, before, bindings, writes)) = bodies.pop() {
+        let mut pending = vec![body];
+        let mut calls = Vec::new();
+        while let Some(node) = pending.pop() {
+            if node.text_range().start() >= before
+                || node.text_range().end() <= after
+                || LuaClosureExpr::can_cast(node.kind().into())
+            {
+                continue;
+            }
+            if writes
+                && node.text_range().end() <= before
+                && let Some(assign) = LuaAssignStat::cast(node.clone())
+                && assign
+                    .get_var_and_expr_list()
+                    .0
+                    .iter()
+                    .any(|var| write_conflicts(model, expected, var, &bindings))
+            {
                 return true;
             }
+            if node.text_range().end() <= before
+                && let Some(call) = LuaCallExpr::cast(node.clone())
+            {
+                if mutator_conflicts(model, expected, &call, &bindings) {
+                    return true;
+                }
+                calls.push(call);
+            }
+            pending.extend(node.children());
+        }
+        for call in calls {
             for closure in local_callees(model, &call) {
                 let Some(body) = closure.get_block() else {
                     continue;
@@ -93,28 +99,26 @@ fn scan(
                 if let Some(params) = closure.get_params_list() {
                     for (param, arg) in params.get_params().zip(args.iter()) {
                         let id = SemanticId::decl(model.file_id(), param.get_range());
-                        let paths = access_paths(model, arg, bindings, 0, &mut 256);
+                        let paths = access_paths(model, arg, &bindings, 0, &mut 256);
                         if !paths.is_empty() {
                             nested.retain(|(bound, _)| *bound != id);
                             nested.push((id, paths));
                         }
                     }
                 }
-                if scan(
-                    model,
-                    expected,
-                    body.syntax(),
-                    body.get_range().end(),
-                    &nested,
-                    true,
-                    depth + 1,
-                    budget,
-                ) {
-                    return true;
+                if seen.len() < MAX_CALLEE_STATES
+                    && seen.insert((closure.get_syntax_id(), nested.clone()))
+                {
+                    bodies.push((
+                        body.syntax().clone(),
+                        TextSize::from(0),
+                        body.get_range().end(),
+                        nested,
+                        true,
+                    ));
                 }
             }
         }
-        pending.extend(node.children());
     }
     false
 }

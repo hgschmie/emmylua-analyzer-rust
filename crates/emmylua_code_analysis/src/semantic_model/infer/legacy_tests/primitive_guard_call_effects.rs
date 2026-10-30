@@ -52,10 +52,8 @@ end
             })
             .unwrap();
         let typ = model.type_of_expr_at(field.get_syntax_id(), field.get_position());
-        eprintln!("{marker}: {typ:?}");
         results.push(typ);
     }
-    eprintln!("diagnostics={diagnostics:#?}");
     assert_eq!(
         &results[..3],
         &[
@@ -99,6 +97,10 @@ end
 }
 
 fn assert_primitive_call_boundary(body: &str, nullable: bool) {
+    assert_member_call_boundary("type(elem.handler) == 'table'", "", body, nullable);
+}
+
+fn assert_member_call_boundary(guard: &str, setup: &str, body: &str, nullable: bool) {
     let mut ws = VirtualWorkspace::new_with_init_std_lib();
     ws.analysis
         .diagnostic
@@ -117,7 +119,8 @@ local Receiver = {{}}
 ---@param other CallBoundaryReceiver
 local function dispatch(elem, key, flag, other)
     local function clear() if flag then elem[key] = nil end end
-    if type(elem.handler) == 'table' then
+{setup}
+    if {guard} then
 {body}
     end
 end
@@ -136,10 +139,11 @@ end
         .chunk()
         .unwrap()
         .descendants::<LuaIndexExpr>()
-        .find(|field| {
+        .filter(|field| {
             field.get_text() == "elem.handler"
                 && (start..marker).contains(&(u32::from(field.get_position()) as usize))
         })
+        .max_by_key(LuaAstNode::get_position)
         .unwrap();
     let actual = model.type_of_expr_at(field.get_syntax_id(), field.get_position());
     assert_eq!(actual, expected, "{body}");
@@ -724,6 +728,144 @@ fn primitive_guard_index_fallback_respects_visible_call_effects() {
         ),
         (
             "clear(); if type(elem.handler) == 'table' then if flag then else\nprint(elem.handler.name) -- observe\nend end",
+            false,
+        ),
+    ] {
+        assert_primitive_call_boundary(body, nullable);
+    }
+}
+
+#[test]
+fn visible_calls_invalidate_truthiness_and_nil_guards() {
+    for guard in [
+        "elem.handler",
+        "elem.handler ~= nil",
+        "not (elem.handler == nil)",
+        "type(elem.handler) == 'table'",
+    ] {
+        for (body, nullable) in [
+            ("clear()\nlocal value = elem.handler.name -- observe", true),
+            (
+                "opaque(elem)\nlocal value = elem.handler.name -- observe",
+                false,
+            ),
+            (
+                "clear()\nif elem.handler then\nlocal value = elem.handler.name -- observe\nend",
+                false,
+            ),
+        ] {
+            assert_member_call_boundary(guard, "", body, nullable);
+        }
+    }
+}
+
+#[test]
+fn member_guards_respect_call_order_in_conditions() {
+    for (guard, nullable) in [
+        ("check() and type(elem.handler) == 'table'", false),
+        ("type(elem.handler) == 'table' and check()", true),
+        ("(check() or flag) and type(elem.handler) == 'table'", false),
+        ("type(elem.handler) == 'table' and opaque(elem)", false),
+    ] {
+        assert_member_call_boundary(
+            guard,
+            "local function check() clear(); return flag end",
+            "local value = elem.handler.name -- observe",
+            nullable,
+        );
+    }
+}
+
+#[test]
+fn visible_writes_in_large_callees_invalidate_member_guards() {
+    for (write, nullable) in [
+        ("if flag then elem[key] = nil end", true),
+        ("if flag then other[key] = nil end", false),
+    ] {
+        let filler = "local ignored = 1\n".repeat(700);
+        let body = format!(
+            "local function large()\n{write}\n{filler}end\nlarge()\nlocal value = elem.handler.name -- observe"
+        );
+        assert_primitive_call_boundary(&body, nullable);
+    }
+}
+
+#[test]
+fn visible_writes_in_deep_callees_invalidate_member_guards() {
+    for (write, nullable) in [
+        ("if flag then elem[key] = nil end", true),
+        ("if flag then other[key] = nil end", false),
+    ] {
+        let mut body = format!("local function step0() {write} end\n");
+        for index in 1..12 {
+            body.push_str(&format!(
+                "local function step{index}() step{}() end\n",
+                index - 1
+            ));
+        }
+        body.push_str("step11()\nlocal value = elem.handler.name -- observe");
+        assert_primitive_call_boundary(&body, nullable);
+    }
+}
+
+#[test]
+fn inline_member_guards_follow_preceding_calls() {
+    for (body, nullable) in [
+        (
+            "local value = check() and type(elem.handler) == 'table' and elem.handler.name -- observe",
+            false,
+        ),
+        (
+            "local value = type(elem.handler) == 'table' and check() and elem.handler.name -- observe",
+            true,
+        ),
+        (
+            "local value = check() and elem.handler and elem.handler.name -- observe",
+            false,
+        ),
+        (
+            "local value = elem.handler and check() and elem.handler.name -- observe",
+            true,
+        ),
+    ] {
+        assert_member_call_boundary(
+            "flag",
+            "local function check() clear(); return flag end",
+            body,
+            nullable,
+        );
+    }
+}
+
+#[test]
+fn visible_calls_invalidate_falsy_member_guards() {
+    for guard in [
+        "not elem.handler",
+        "elem.handler == nil",
+        "not (elem.handler ~= nil)",
+    ] {
+        assert_member_call_boundary(
+            guard,
+            "",
+            "clear()\nlocal value = elem.handler.name -- observe",
+            true,
+        );
+    }
+}
+
+#[test]
+fn recursive_visible_callees_keep_receiver_bindings_distinct() {
+    for (body, nullable) in [
+        (
+            "local function recurse(receiver) if flag then recurse(receiver) end end\nrecurse(elem)\nlocal value = elem.handler.name -- observe",
+            false,
+        ),
+        (
+            "local function recurse(receiver) if flag then recurse(elem) end; receiver[key] = nil end\nrecurse(other)\nlocal value = elem.handler.name -- observe",
+            true,
+        ),
+        (
+            "local function recurse(receiver) if flag then recurse(other) end; receiver[key] = nil end\nrecurse(other)\nlocal value = elem.handler.name -- observe",
             false,
         ),
     ] {
