@@ -140,6 +140,62 @@ mod tests {
     }
 
     #[gtest]
+    fn test_union_table_field_completion_substitutes_generic_class_fields() -> Result<()> {
+        let mut ws = filter_completion_workspace();
+        ws.def("---@class Box<T>\n---@field value T\n");
+        check_table_keys(
+            &mut ws,
+            "---@type Box<ItemFilterRecord>|string\nlocal box = { <??> }",
+            &["value = "],
+        )?;
+        check_table_keys(
+            &mut ws,
+            "---@type Box<ItemFilterRecord>|string\nlocal box = { value = { <??> } }",
+            &["name = ", "quality = ", "comparator = "],
+        )?;
+        let items = get_completion_items(
+            &mut ws,
+            r#"---@type Box<ItemFilterRecord>|string
+local box = { value = { comparator = "<??>" } }"#,
+            CompletionTriggerKind::INVOKED,
+        )?;
+        let mut labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        labels.sort_unstable();
+        assert_eq!(labels, vec!["=", ">"]);
+        let items = get_completion_items(
+            &mut ws,
+            r#"---@type Box<'first'|'second'>|string
+local box = { value = "<??>" }"#,
+            CompletionTriggerKind::INVOKED,
+        )?;
+        let mut labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        labels.sort_unstable();
+        assert_eq!(labels, vec!["first", "second"]);
+        Ok(())
+    }
+
+    #[gtest]
+    fn test_union_table_field_completion_preserves_array_element_values() -> Result<()> {
+        for annotation in ["Choice[]", "Choice|Choice[]"] {
+            for value in [r#""<??>""#, r#"[1] = "<??>""#] {
+                let mut ws = filter_completion_workspace();
+                ws.def(&format!(
+                    "---@alias Choice 'first'|'second'\n---@param values {annotation}\nfunction choose(values) end\n"
+                ));
+                let items = get_completion_items(
+                    &mut ws,
+                    &format!("choose {{ {value} }}"),
+                    CompletionTriggerKind::INVOKED,
+                )?;
+                let mut labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+                labels.sort_unstable();
+                assert_eq!(labels, vec!["first", "second"], "{annotation}: {value}");
+            }
+        }
+        Ok(())
+    }
+
+    #[gtest]
     fn test_union_table_field_completion_inline_object() -> Result<()> {
         check_table_keys(
             &mut filter_completion_workspace(),
@@ -180,6 +236,7 @@ mod tests {
 
     #[gtest]
     fn test_union_table_field_completion_preserves_string_members() -> Result<()> {
+        // Filtering constructor keys must not filter ordinary string member access.
         let mut ws = filter_completion_workspace();
         let items = get_completion_items(
             &mut ws,
@@ -249,7 +306,10 @@ mod tests {
     }
 
     #[gtest]
-    fn test_union_table_field_completion_preserves_intersection_member_precedence() -> Result<()> {
+    fn test_union_table_field_completion_preserves_existing_intersection_precedence() -> Result<()>
+    {
+        // Compatibility control: general member lookup is currently order-sensitive.
+        // This is a known limitation, not a claim that intersection is noncommutative.
         let mut ws = filter_completion_workspace();
         ws.def("---@class RequiredField\n---@field shared string\n---@class OptionalField\n---@field shared string?\n");
         for (annotation, label) in [

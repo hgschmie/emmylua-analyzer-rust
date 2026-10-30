@@ -20,6 +20,8 @@ use super::{
 pub struct TableFieldProvider;
 
 // Bound each active alias/compound-type path; sibling alternatives remain independent.
+// 64 is a conservative recursion-stack cap, separate from the shared alias evaluator's
+// work budget. Deeper paths omit keys; this does not bound work across wide unions.
 const MAX_TABLE_TYPE_DEPTH: usize = 64;
 
 impl CompletionProvider for TableFieldProvider {
@@ -139,8 +141,8 @@ fn add_table_field_key_completion(
 }
 
 /// A constructor can only use the table alternatives of its expected type.
-/// Ordinary member lookup also exposes string-library methods and array element
-/// members, neither of which are keys to insert into this table.
+/// String-library methods are not constructor keys, and array element types
+/// remain available separately for value completion.
 fn table_field_members(model: &SemanticModel, expected: &LuaType) -> Vec<MemberInfo> {
     fn project(
         model: &SemanticModel,
@@ -169,8 +171,8 @@ fn table_field_members(model: &SemanticModel, expected: &LuaType) -> Vec<MemberI
                         .collect::<Option<Vec<_>>>()?;
                     // Every conjunct must support a table; an unresolved or
                     // non-table constraint cannot be dropped like a union arm.
-                    // Preserve member lookup's intersection precedence instead of
-                    // merging same-name member types as a union would.
+                    // Preserve member lookup's existing, order-sensitive precedence
+                    // rather than changing general intersection merge semantics here.
                     (!types.is_empty())
                         .then(|| LuaType::Intersection(LuaIntersectionType::new(types).into()))
                 }
@@ -178,8 +180,7 @@ fn table_field_members(model: &SemanticModel, expected: &LuaType) -> Vec<MemberI
                 LuaType::Generic(generic) => model
                     .type_def_of(&generic.get_base_type_id())
                     .map(|_| expanded),
-                // Arrays are tables, but member lookup exposes their elements'
-                // members. Retain the table constraint without inserting those keys.
+                // Arrays impose a table constraint but supply no named constructor keys.
                 LuaType::Table | LuaType::Array(_) => Some(LuaType::Table),
                 // Unconstrained built-ins permit tables but contribute no named keys.
                 LuaType::Any | LuaType::Unknown => Some(LuaType::Table),
