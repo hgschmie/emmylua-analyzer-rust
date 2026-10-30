@@ -3590,7 +3590,7 @@ mod class_index_array_compatibility {
 
     #[test]
     fn class_array_results_preserve_callback_parameter_compatibility() {
-        use crate::{LuaType, VariadicType, VirtualWorkspace};
+        use crate::{LuaType, VariadicType};
         use std::rc::Rc;
 
         for (callback, expected) in [
@@ -3776,6 +3776,7 @@ mod class_index_array_compatibility {
         ));
         assert_eq!(mismatch_count(inherited, "ChildList", "string"), 1);
     }
+
     #[test]
     fn numeric_array_projection_keeps_cross_file_defaults_and_aliases() {
         for (source, target, compatible) in [
@@ -3829,6 +3830,72 @@ local Derived = {}
                 usize::from(!compatible),
                 "key domain={domain}"
             );
+        }
+    }
+
+    #[test]
+    fn generic_array_checks_keep_builtin_table_value_contract() {
+        for with_std in [false, true] {
+            let mut ws = if with_std {
+                VirtualWorkspace::new_with_init_std_lib()
+            } else {
+                VirtualWorkspace::new()
+            };
+            let actual = ws.ty("table<integer,string>");
+            let accepted = ws.ty("string[]");
+            let rejected = ws.ty("number[]");
+            assert!(ws.check_type(&accepted, &actual));
+            assert!(!ws.check_type(&rejected, &actual));
+        }
+    }
+
+    #[test]
+    fn user_declared_table_generics_use_their_own_index_contract() {
+        for (params, field, source, target, compatible) in [
+            ("T", "[integer] T", "table<string>", "string[]", true),
+            ("T", "[integer] T", "table<string>", "number[]", false),
+            ("T", "[string] T", "table<string>", "string[]", false),
+            (
+                "K,V",
+                "[integer] K",
+                "table<string,number>",
+                "string[]",
+                true,
+            ),
+            (
+                "K,V",
+                "[integer] K",
+                "table<string,number>",
+                "number[]",
+                false,
+            ),
+        ] {
+            for (name, modifier, with_std) in [
+                ("table", "", false),
+                ("Table", "", false),
+                ("Table", "", true),
+                ("Custom.table", "", false),
+                ("Custom.table", "", true),
+                ("table", "(internal) ", false),
+                ("table", "(internal) ", true),
+            ] {
+                let mut ws = if with_std {
+                    VirtualWorkspace::new_with_init_std_lib()
+                } else {
+                    VirtualWorkspace::new()
+                };
+                ws.def(&format!(
+                    "---@class {modifier}{name}<{params}>\n---@field {field}\nlocal CustomTable = {{}}"
+                ));
+                let source = source.replace("table", name);
+                let actual = ws.ty(&source);
+                let expected = ws.ty(target);
+                assert_eq!(
+                    ws.check_type(&expected, &actual),
+                    compatible,
+                    "{modifier}{source} -> {target}, field={field}, std={with_std}"
+                );
+            }
         }
     }
 }

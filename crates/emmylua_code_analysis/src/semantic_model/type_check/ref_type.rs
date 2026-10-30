@@ -191,6 +191,7 @@ fn check_ref_class(
 /// A declared numeric index signature supplies the elements of an array even
 /// when the class has additional named fields. Static fields like `[1]` do not
 /// establish a signature for arbitrary integer indices.
+/// A `number` domain covers every integer key; density and length are not checked.
 pub(super) fn check_class_array(
     context: &mut TypeCheckContext,
     source: &LuaType,

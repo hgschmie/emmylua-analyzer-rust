@@ -57,26 +57,33 @@ pub fn check_generic_type_compact(
                 ),
             )
         }
-        LuaType::Array(array) if source_generic.get_base_type_id().get_name() != "table" => {
-            ref_type::check_class_array(
-                context,
-                &LuaType::Generic(Rc::new(source_generic.clone())),
-                compact_type,
-                array.get_base(),
-            )
+        LuaType::Array(array) => {
+            let base = source_generic.get_base_type_id();
+            let builtin_table = base == LuaTypeDeclId::global("table")
+                && context
+                    .model
+                    .type_def_of(&base)
+                    .is_none_or(|def| context.model.is_std_file(def.file_id));
+            if builtin_table {
+                let value = source_generic
+                    .get_params()
+                    .get(1)
+                    .unwrap_or(&LuaType::Unknown);
+                check_general_type_compact(context, value, array.get_base())
+            } else {
+                ref_type::check_class_array(
+                    context,
+                    &LuaType::Generic(Rc::new(source_generic.clone())),
+                    compact_type,
+                    array.get_base(),
+                )
+            }
         }
         LuaType::Ref(ref_id) | LuaType::Def(ref_id) => {
             if is_tpl {
                 return Ok(());
             }
             check_generic_type_compact_ref_type(context, source_generic, ref_id)
-        }
-        LuaType::Array(array) if source_generic.get_base_type_id().get_name() == "table" => {
-            let value = source_generic
-                .get_params()
-                .get(1)
-                .unwrap_or(&LuaType::Unknown);
-            check_general_type_compact(context, value, array.get_base())
         }
         LuaType::Table | LuaType::TableConst(_) | LuaType::Object(_) | LuaType::Tuple(_) => {
             // Table structures: M0 checks by base type name (`table`).
