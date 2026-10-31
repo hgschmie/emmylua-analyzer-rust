@@ -398,7 +398,9 @@ impl<'db> SemanticModel<'db> {
         file_id: FileId,
         signature: &Signature,
     ) -> Vec<GenericTpl> {
-        if let Some(docs) = signature.docs.as_ref() {
+        if let Some(docs) = signature.docs.as_ref()
+            && !docs.generic_params.is_empty()
+        {
             return self.generic_tpls_with_metadata(file_id, &docs.generic_params);
         }
         let Some(tree) = self.syntax_tree_of(file_id) else {
@@ -1077,7 +1079,7 @@ impl<'db> SemanticModel<'db> {
         self.type_check(&key, expected_key).then(|| value.clone())
     }
 
-    /// Projects field annotations when a closure has no collected signature docs.
+    /// Projects field annotations when a closure has no collected parameter or return contract.
     /// This fallback preserves `setmetatable`'s `__call` / `__index` field signatures.
     pub(crate) fn table_field_signature_override(
         &self,
@@ -1095,6 +1097,11 @@ impl<'db> SemanticModel<'db> {
         let generics = self.contextual_signature_generics(file_id, signature);
         let tree = self.syntax_tree_of(file_id)?;
         let node = closure_syntax.to_node_from_root(&tree.get_red_root())?;
+        // Flags on the surrounding statement can create signature docs without
+        // a contract. Only the closure's own field may fill that new fallback.
+        if signature.docs.is_some() && node.parent().and_then(LuaTableField::cast).is_none() {
+            return None;
+        }
         let field = node.ancestors().find_map(LuaTableField::cast)?;
         let mut has_param = false;
         let mut has_return = false;
@@ -1207,14 +1214,18 @@ impl<'db> SemanticModel<'db> {
                 ret = inferred;
             }
         }
-        if signature.docs.is_none()
-            && let Some((new_params, new_ret)) = self.table_field_signature_override(
-                file_id,
-                closure_syntax,
-                params.clone(),
-                ret.clone(),
-            )
-        {
+        if signature.docs.as_ref().is_none_or(|docs| {
+            docs.param_types.is_empty()
+                && docs.returns.is_empty()
+                && docs.overloads.is_empty()
+                && docs.return_overloads.is_empty()
+                && docs.return_cast.is_none()
+        }) && let Some((new_params, new_ret)) = self.table_field_signature_override(
+            file_id,
+            closure_syntax,
+            params.clone(),
+            ret.clone(),
+        ) {
             params = new_params;
             ret = new_ret;
         }
