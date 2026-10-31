@@ -16,3 +16,4 @@ mod semantic_token_test;
 mod signature_helper_test;
 
 mod asymmetric_fields_test;
+mod flow_receiver_hover_test;
