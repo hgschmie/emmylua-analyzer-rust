@@ -8,7 +8,7 @@ pub(super) fn loop_carried_type(
     syntax: LuaSyntaxId,
     entry: super::FlowId,
 ) -> Option<LuaType> {
-    let key = (syntax, decl.clone());
+    let key = (model.file_id(), syntax, decl.clone());
     let cached = model.cache.borrow().loop_carried.get(&key).cloned();
     if let Some(cached) = cached {
         return match cached {
@@ -138,4 +138,49 @@ pub(super) fn references_decl(
                 .filter_map(emmylua_parser::LuaNameExpr::cast)
                 .any(|name| model.resolve_name(name.get_position()).as_ref() == Some(decl))
         })
+}
+
+#[cfg(test)]
+#[test]
+fn loop_cache_keeps_file_view_identity() {
+    use emmylua_parser::LuaNameExpr;
+    let mut ws = crate::VirtualWorkspace::new();
+    let source = "local value = 1\nwhile flag do\n local observed = value\n value = 'text'\nend";
+    let a = ws.def_file("loop-a.lua", source);
+    let b = ws.def_file("loop-b.lua", source);
+    let model_a = ws.analysis.semantic_model(a);
+    let read = model_a
+        .chunk()
+        .unwrap()
+        .descendants::<LuaNameExpr>()
+        .find(|name| name.get_name_text().as_deref() == Some("value"))
+        .unwrap();
+    let decl = model_a.resolve_name(read.get_position()).unwrap();
+    let expected = model_a.type_of_decl_at(&decl, read.get_position());
+    assert_eq!(
+        expected,
+        LuaType::from_vec(vec![LuaType::Integer, LuaType::String])
+    );
+    for foreign_first in [true, false] {
+        let model_b = ws.analysis.semantic_model(b);
+        let shared_a = model_b.model_for(a);
+        if foreign_first {
+            assert_eq!(
+                model_b.type_of_decl_at(&decl, read.get_position()),
+                LuaType::IntegerConst(1)
+            );
+        }
+        assert_eq!(
+            shared_a.type_of_decl_at(&decl, read.get_position()),
+            expected
+        );
+        assert_eq!(
+            model_b.type_of_decl_at(&decl, read.get_position()),
+            LuaType::IntegerConst(1)
+        );
+        assert_eq!(
+            shared_a.type_of_decl_at(&decl, read.get_position()),
+            expected
+        );
+    }
 }
