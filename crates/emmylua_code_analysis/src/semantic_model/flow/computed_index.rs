@@ -320,3 +320,55 @@ end
         }
     }
 }
+
+#[cfg(test)]
+#[test]
+fn global_collection_reset_invalidates_prior_write() {
+    for (effect, nullable) in [
+        ("storage.ConnectedSurfaces={}", true),
+        ("storage={ConnectedSurfaces={}}", true),
+        ("other.ConnectedSurfaces={}", false),
+        ("local storage={}; storage.ConnectedSurfaces={}", false),
+        ("", false),
+    ] {
+        let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+        let mut config = ws.get_emmyrc();
+        config.strict.array_index = true;
+        ws.update_emmyrc(config);
+        ws.def_file("types.lua", "---@class Storage\n---@field ConnectedSurfaces integer[][]\n---@type Storage\nstorage={ConnectedSurfaces={}}\n---@type Storage\nother={ConnectedSurfaces={}}");
+        let source = format!(
+            "local function clear() {effect} end\n---@param key integer\n---@param entity_key integer\nlocal function connect(key,entity_key)\n storage.ConnectedSurfaces[key]=storage.ConnectedSurfaces[key] or {{}}\n clear()\n local surface_connections=storage.ConnectedSurfaces[key]\n surface_connections[entity_key]=1\nend\nreturn connect"
+        );
+        let file = ws.def_file("case.lua", &source);
+        let model = ws.analysis.semantic_model(file);
+        let chunk = model.chunk().unwrap();
+        let index = chunk
+            .descendants::<LuaIndexExpr>()
+            .filter(|i| i.get_text() == "storage.ConnectedSurfaces[key]")
+            .last()
+            .unwrap();
+        let call = chunk
+            .descendants::<emmylua_parser::LuaCallExpr>()
+            .find(|call| call.get_text() == "clear()")
+            .unwrap();
+        let access =
+            super::computed_guard::access(&model, &LuaExpr::IndexExpr(index.clone())).unwrap();
+        assert_eq!(
+            computed_effects::calls_conflict(
+                &model,
+                &access,
+                call.syntax(),
+                call.get_range().end()
+            ),
+            nullable,
+            "visible effect: {effect}"
+        );
+        assert_eq!(
+            model
+                .type_of_expr_at(index.get_syntax_id(), index.get_position())
+                .is_nullable(),
+            nullable,
+            "{effect}"
+        );
+    }
+}
