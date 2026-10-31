@@ -286,20 +286,23 @@ fn contextual_callback_unannotated_member_array_stays_unknown() {
 
 fn local_type(ws: &VirtualWorkspace, file: FileId, name: &str) -> LuaType {
     let model = ws.analysis.semantic_model(file);
-    let local = model
-        .chunk()
-        .unwrap()
-        .descendants::<LuaLocalName>()
-        .find(|local| {
-            local
-                .get_name_token()
-                .is_some_and(|token| token.get_name_text() == name)
-        })
-        .unwrap();
+    let chunk = model.chunk().expect("test file has a syntax tree");
+    let mut locals = chunk.descendants::<LuaLocalName>().filter(|local| {
+        local
+            .get_name_token()
+            .is_some_and(|token| token.get_name_text() == name)
+    });
+    let local = locals.next().expect("observed local exists in the fixture");
+    assert!(
+        locals.next().is_none(),
+        "observed local {name} must be unique"
+    );
     let decl = model
         .decl_by_offset(local.get_name_token().unwrap().get_position())
-        .unwrap();
-    model.type_of_decl(&decl).unwrap()
+        .expect("observed local resolves to a declaration");
+    model
+        .type_of_decl(&decl)
+        .expect("observed local has a type")
 }
 
 #[gtest]
@@ -787,6 +790,146 @@ fn contextual_callback_aliases_only_use_callable_alternatives() {
             local_type(&ws, file, "observed"),
             eq(&expected),
             "{annotation}"
+        );
+    }
+}
+
+#[gtest]
+fn contextual_callback_optional_owner_contracts() {
+    for (owner, key, accepted) in [
+        ("table<string,Entry>?", "name", true),
+        ("Entry[]?", "[1]", true),
+        ("table<string,Entry?>", "name", true),
+        ("(Entry?)[]", "[1]", true),
+        ("table<string,Entry>|unknown", "name", false),
+        ("table<string,Entry>|boolean", "name", false),
+        ("table<string,Entry>|table<integer,Entry>", "name", false),
+        ("nil", "name", false),
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(DEFINITIONS);
+        ws.def("---@class Entry\n---@field callback SettingFunction");
+        let file = ws.def(&format!(
+            r#"
+            ---@type {owner}
+            local entries = {{ {key} = {{ callback = function(settings)
+                local observed = settings
+            end }} }}
+        "#
+        ));
+        assert_eq!(local_type(&ws, file, "entries"), ws.ty(owner), "{owner}");
+        if owner == "(Entry?)[]" {
+            assert!(
+                matches!(local_type(&ws, file, "entries"), LuaType::Array(ref array) if array.get_base().is_nullable())
+            );
+        }
+        let expected = if accepted {
+            ws.ty("Settings")
+        } else {
+            LuaType::Unknown
+        };
+        expect_that!(local_type(&ws, file, "observed"), eq(&expected), "{owner}");
+    }
+}
+
+#[gtest]
+fn contextual_callback_optional_member_owner_contract() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def(DEFINITIONS);
+    ws.def(
+        r#"
+        ---@class Entry
+        ---@field callback SettingFunction
+        ---@class Container
+        ---@field entries table<string,Entry>?
+    "#,
+    );
+    let file = ws.def(
+        r#"
+        ---@type Container
+        local container = {}
+        container.entries = { name = { callback = function(settings)
+            local observed = settings
+        end } }
+    "#,
+    );
+    expect_that!(local_type(&ws, file, "observed"), eq(&ws.ty("Settings")));
+}
+
+#[gtest]
+fn contextual_callback_explicit_local_and_assignment_params() {
+    for (doc, expected) in [
+        ("settings boolean", "boolean"),
+        ("settings? boolean", "boolean?"),
+        ("settings unknown", "unknown"),
+        ("settings any", "any"),
+        ("settings T", "T"),
+    ] {
+        for (setup, target) in [
+            ("---@type SettingFunction\n", "local handler"),
+            (
+                "---@type table<string,SettingFunction>\nlocal handlers = {}\n",
+                "handlers.foo",
+            ),
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            ws.def(DEFINITIONS);
+            let file = ws.def(&format!(
+                r#"
+                {setup}---@generic T: string
+                ---@param {doc}
+                {target} = function(settings)
+                    local observed = settings
+                end
+            "#
+            ));
+            let actual = local_type(&ws, file, "observed");
+            let model = ws.analysis.semantic_model(file);
+            let closure = model
+                .chunk()
+                .unwrap()
+                .descendants::<emmylua_parser::LuaClosureExpr>()
+                .next()
+                .unwrap();
+            let signature = model.type_of_signature(closure.get_syntax_id()).unwrap();
+            let signature_param = signature.get_params()[0].1.as_ref().unwrap();
+            expect_that!(
+                signature_param,
+                eq(&actual),
+                "signature/body: {doc}, {target}"
+            );
+            if expected == "T" {
+                expect_true!(
+                    matches!(actual, LuaType::TplRef(ref template)
+                    if template.get_name() == "T" && template.get_constraint() == Some(&LuaType::String)),
+                    "{doc}, {target}: {actual:?}"
+                );
+            } else {
+                expect_that!(actual, eq(&ws.ty(expected)), "{doc}, {target}");
+            }
+        }
+    }
+}
+
+#[gtest]
+fn contextual_callback_unannotated_nested_member_chain_terminates() {
+    for prefix in [
+        "local container = {}; container.entries = ",
+        "local container = { nested = {} }; container.nested.entries = ",
+        "local entries = ",
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def(&format!(
+            r#"
+            {prefix}{{ name = {{ callback = function(settings)
+                local observed = settings
+            end }} }}
+        "#
+        ));
+        let ty = local_type(&ws, file, "observed");
+        assert!(
+            matches!(ty, LuaType::Unknown | LuaType::Any),
+            "{prefix}: {ty:?}"
         );
     }
 }

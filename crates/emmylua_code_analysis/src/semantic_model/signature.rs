@@ -628,6 +628,26 @@ impl<'db> SemanticModel<'db> {
         param_index: usize,
     ) -> Option<LuaType> {
         let expected_signatures = self.expected_member_signatures_for_closure(closure_syntax)?;
+        // Project explicit docs in their function's generic scope before using
+        // an available callback contract, including when the doc says unknown.
+        if !expected_signatures.is_empty()
+            && let Some(signature) = self.file_facts()?.signature_by_closure(closure_syntax)
+            && let Some(name) = signature.param_names.get(param_index)
+            && let Some(docs) = signature.docs.as_ref()
+            && let Some((_, syntax)) = docs
+                .param_types
+                .iter()
+                .find(|(param_name, _)| param_name == name)
+        {
+            let generics = self.generic_tpls_with_metadata(self.file_id(), &docs.generic_params);
+            let ty =
+                infer::vm::bind_signature_generics(&self.doc_type_lua_rich(*syntax), &generics);
+            return Some(if docs.nullable_params.contains(name) {
+                LuaType::from_vec(vec![ty, LuaType::Nil])
+            } else {
+                ty
+            });
+        }
         // Explicit docs override an available contextual contract. Without such
         // a contract, field-level annotations follow table_field_signature_override.
         // Table-field docs are not necessarily attached to the closure's
@@ -975,7 +995,19 @@ impl<'db> SemanticModel<'db> {
             }
             key => key,
         };
-        let owner = self.contextual_alias_target(owner);
+        // The constructor supplies the non-nil value of an optional owner.
+        // Multiple non-nil owner alternatives remain ambiguous here.
+        let owner = match self.contextual_alias_target(owner) {
+            LuaType::Union(union) => {
+                let mut alternatives = union.iter().filter(|ty| !ty.is_nil());
+                let owner = alternatives.next()?.clone();
+                if alternatives.next().is_some() {
+                    return None;
+                }
+                owner
+            }
+            owner => owner,
+        };
         let params = match &owner {
             LuaType::Array(array) => {
                 return self
