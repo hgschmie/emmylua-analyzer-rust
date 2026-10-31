@@ -3,6 +3,134 @@ mod test {
     use crate::{DiagnosticCode, VirtualWorkspace};
 
     #[test]
+    fn test_mutable_capture_unrelated_closures_preserve_diagnostics() {
+        for (code, source) in [
+            (
+                DiagnosticCode::UnnecessaryIf,
+                r#"
+                local value = 0
+                local function unrelated() return 1 end
+                if value == 0 then print(value) end
+            "#,
+            ),
+            (
+                DiagnosticCode::UnnecessaryIf,
+                r#"
+                local value = 0
+                local function unrelated() local value = 1; value = 2 end
+                local function read() if value == 0 then print(value) end end
+            "#,
+            ),
+            (
+                DiagnosticCode::UnnecessaryIf,
+                r#"
+                local value = 0
+                value = 1
+                local function unrelated() return 2 end
+                local function read() if value == 1 then print(value) end end
+            "#,
+            ),
+            (
+                DiagnosticCode::NeedCheckNil,
+                r#"
+                ---@type {name: string}?
+                local value
+                local function unrelated() return 1 end
+                local function read() return value.name end
+            "#,
+            ),
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            assert!(!ws.has_no_diagnostic(code, source), "{source}");
+        }
+    }
+
+    #[test]
+    fn test_mutable_capture_recursive_queries_keep_the_same_types() {
+        use crate::LuaType;
+        use emmylua_parser::{LuaAstNode, LuaAstToken, LuaLocalName};
+        let source = r#"
+            local first, second = 0, 0
+            local function write_first() first = second + 1 end
+            local function write_second() second = first + 1 end
+            local function read()
+                local observed_first = first
+                local observed_second = second
+                if first == 0 then print(first) end
+                if second == 0 then print(second) end
+            end
+        "#;
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def(source);
+        for order in [
+            ["observed_first", "observed_second"],
+            ["observed_second", "observed_first"],
+        ] {
+            let model = ws.analysis.semantic_model(file);
+            let chunk = model.chunk().unwrap();
+            for name in order.into_iter().cycle().take(4) {
+                let local = chunk
+                    .descendants::<LuaLocalName>()
+                    .find(|node| {
+                        node.get_name_token()
+                            .is_some_and(|token| token.get_name_text() == name)
+                    })
+                    .unwrap();
+                let decl = model
+                    .decl_by_offset(local.get_name_token().unwrap().get_position())
+                    .unwrap();
+                assert_eq!(
+                    model.type_of_decl(&decl),
+                    Some(LuaType::from_vec(vec![
+                        LuaType::IntegerConst(0),
+                        LuaType::Integer
+                    ])),
+                    "{name}"
+                );
+            }
+        }
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(DiagnosticCode::UnnecessaryIf, source));
+    }
+
+    #[test]
+    fn test_mutable_capture_annotations_keep_contract_and_check_writes() {
+        for invalid in ["nil", "'wrong'"] {
+            for (setup, finish) in [
+                ("---@type boolean\nlocal state = false", ""),
+                (
+                    "---@param unused integer\n---@param state boolean\nlocal function factory(state, unused)",
+                    "end",
+                ),
+                (
+                    "---@param state boolean\nlocal function factory(unused, state)",
+                    "end",
+                ),
+            ] {
+                let source = format!(
+                    r#"
+                    {setup}
+                    ---@return boolean
+                    local function read() return state end
+                    local function write() state = {invalid} end
+                    {finish}
+                "#
+                );
+                let mut ws = VirtualWorkspace::new();
+                assert!(
+                    !ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
+                    "{source}"
+                );
+                let mut ws = VirtualWorkspace::new();
+                assert!(
+                    ws.has_no_diagnostic(DiagnosticCode::ReturnTypeMismatch, &source),
+                    "{source}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_mutable_capture_named_function_writes_contribute_values() {
         for writer in [
             "function action() return true end",

@@ -339,7 +339,7 @@ impl FlowTree {
     }
 
     /// Whether any flow event that can change the queried value lies in the
-    /// position range: conditions, casts, or a branch merge.
+    /// position range: conditions, closure entries, casts, or a branch merge.
     ///
     /// `include_start` selects `start` inclusion; `end` is always inclusive.
     /// When a merge node has no indexable position, every range conservatively

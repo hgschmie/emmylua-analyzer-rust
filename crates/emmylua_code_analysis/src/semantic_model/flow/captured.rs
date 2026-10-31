@@ -30,6 +30,8 @@ pub(super) fn entry_type(
         .and_then(|(signature, _)| signature.docs.as_ref())
         .is_some_and(|docs| docs.param_types.iter().any(|(name, _)| name == &info.name));
     if info.doc_type_syntax.is_some() || annotated_param {
+        // Assignments must satisfy explicit contracts; the assignment checker
+        // diagnoses incompatible writes rather than widening those contracts.
         return Some(declared);
     }
     let initial = if declared.is_unknown()
