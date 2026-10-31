@@ -672,7 +672,7 @@ impl<'db> SemanticModel<'db> {
                 .iter()
                 .find(|(param_name, _)| param_name == name)
         {
-            let generics = self.generic_tpls_with_metadata(self.file_id(), &docs.generic_params);
+            let generics = self.contextual_signature_generics(self.file_id(), signature);
             let ty =
                 infer::vm::bind_signature_generics(&self.doc_type_lua_rich(*syntax), &generics);
             return Some(if docs.nullable_params.contains(name) {
@@ -936,6 +936,8 @@ impl<'db> SemanticModel<'db> {
             LuaIndexKey::String(value) => {
                 LuaType::StringConst(SmolStr::new(value.get_value()).into())
             }
+            // LuaJIT ULL tokens within i64 range parse as Int; the parser
+            // produces Uint only after signed overflow, outside this key domain.
             LuaIndexKey::Integer(value) => match value.get_number_value() {
                 NumberResult::Int(value) => LuaType::IntegerConst(value),
                 _ => return None,

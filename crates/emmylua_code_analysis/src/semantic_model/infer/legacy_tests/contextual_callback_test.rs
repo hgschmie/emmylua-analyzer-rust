@@ -1447,3 +1447,81 @@ fn contextual_callback_collected_generic_contracts_remain_authoritative() {
         }
     }
 }
+
+#[gtest]
+fn contextual_callback_explicit_signature_params_use_field_generic_scope() {
+    for (outer_generic, constraint) in [
+        ("", LuaType::String),
+        ("---@generic T: integer\n", LuaType::Integer),
+    ] {
+        for optional in ["", "?"] {
+            let mut ws = VirtualWorkspace::new();
+            ws.def(DEFINITIONS);
+            let file = ws.def(&format!(
+                r#"
+                {outer_generic}---@param settings{optional} T
+                ---@type table<string,SettingFunction>
+                local handlers = {{
+                    ---@generic T: string
+                    handler = function(settings)
+                        local observed = settings
+                    end,
+                }}
+            "#
+            ));
+            let foreign_file = ws.def("local unrelated = true");
+            let model = ws.analysis.semantic_model(file);
+            let foreign_model = ws.analysis.semantic_model(foreign_file);
+            let closure = model
+                .chunk()
+                .unwrap()
+                .descendants::<emmylua_parser::LuaClosureExpr>()
+                .next()
+                .unwrap();
+            let docs = model
+                .file_facts()
+                .unwrap()
+                .signature_by_closure(closure.get_syntax_id())
+                .unwrap()
+                .docs
+                .as_ref()
+                .unwrap();
+            assert_eq!(docs.param_types.len(), 1);
+            assert_eq!(
+                docs.generic_params.len(),
+                usize::from(!outer_generic.is_empty())
+            );
+            let body = local_type(&ws, file, "observed");
+            let alternatives = match &body {
+                LuaType::Union(union) => union.into_vec(),
+                ty => vec![ty.clone()],
+            };
+            expect_true!(
+                alternatives
+                    .iter()
+                    .any(|ty| matches!(ty, LuaType::TplRef(template)
+                if template.get_name() == "T" && template.get_constraint() == Some(&constraint))),
+                "{outer_generic:?}, {optional:?}: {body:?}"
+            );
+            expect_that!(body.is_nullable(), eq(!optional.is_empty()));
+            for signature in [
+                model.type_of_signature(closure.get_syntax_id()).unwrap(),
+                model
+                    .type_of_signature_in_file(file, closure.get_syntax_id())
+                    .unwrap(),
+                foreign_model
+                    .type_of_signature_in_file(file, closure.get_syntax_id())
+                    .unwrap(),
+            ] {
+                assert_eq!(signature.get_generic_params().len(), 1);
+                let generic = &signature.get_generic_params()[0];
+                expect_that!(generic.get_constraint(), eq(Some(&constraint)));
+                expect_that!(
+                    signature.get_params()[0].1.as_ref().unwrap(),
+                    eq(&body),
+                    "{outer_generic:?}, {optional:?}"
+                );
+            }
+        }
+    }
+}
