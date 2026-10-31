@@ -54,7 +54,14 @@ pub fn build_semantic_info_hover(
     range: TextRange,
 ) -> Option<Hover> {
     let info = model.semantic_info(token.clone().into())?;
-    let member_call_typ = if matches!(info.decl, Some(SemanticId::Member(_))) {
+    let assignment_context_infos = info
+        .decl
+        .as_ref()
+        .map(|decl| member_assignment_context_infos(model, decl, &token))
+        .unwrap_or_default();
+    let member_call_typ = if assignment_context_infos.is_empty()
+        && matches!(info.decl, Some(SemanticId::Member(_)))
+    {
         let in_call = token
             .parent_ancestors()
             .any(|node| LuaCallExpr::cast(node).is_some());
@@ -98,11 +105,14 @@ pub fn build_semantic_info_hover(
     } else {
         None
     };
-    let member_context_infos = info
-        .decl
-        .as_ref()
-        .map(|decl| member_context_infos(model, decl, &token))
-        .unwrap_or_default();
+    let member_context_infos = if assignment_context_infos.is_empty() {
+        info.decl
+            .as_ref()
+            .map(|decl| member_context_infos(model, decl, &token))
+            .unwrap_or_default()
+    } else {
+        assignment_context_infos
+    };
     let (mut code, description) = if let Some(decl) = info.decl.as_ref() {
         // Alias tracing: `local f = t.func` / `local a = b` show the signature and comments of the real function definition.
         let origin = resolve_alias_origin(model, decl).unwrap_or_else(|| decl.clone());
@@ -266,6 +276,77 @@ fn semantic_type_of(model: &SemanticModel<'_>, id: &SemanticId) -> LuaType {
         SemanticId::TypeDef(_) => LuaType::Unknown,
         _ => LuaType::Unknown,
     }
+}
+
+/// An assignment target displays its declared field contract, with the assigned
+/// literal shown separately by build_member_hover. Resolve through the prefix at
+/// the use site: global/nested owners need not have a declaration-backed member ID.
+fn member_assignment_context_infos(
+    model: &SemanticModel<'_>,
+    decl: &SemanticId,
+    token: &LuaSyntaxToken,
+) -> Vec<MemberContextInfo> {
+    let SemanticId::Member(key) = decl else {
+        return Vec::new();
+    };
+    let Some(index) = token.parent_ancestors().find_map(LuaIndexExpr::cast) else {
+        return Vec::new();
+    };
+    let Some(assign) = index.get_parent::<LuaAssignStat>() else {
+        return Vec::new();
+    };
+    if !assign
+        .get_var_and_expr_list()
+        .0
+        .iter()
+        .any(|var| var.to_expr().get_syntax_id() == index.get_syntax_id())
+    {
+        return Vec::new();
+    }
+    let Some(member) = model
+        .file_facts_of(key.file_id)
+        .and_then(|facts| facts.member_by_id(decl))
+    else {
+        return Vec::new();
+    };
+    // Keep explicit implementation types and function/method signatures intact.
+    if member.doc_type_syntax.is_some()
+        || member.is_method
+        || member_signature(model, &member).is_some()
+    {
+        return Vec::new();
+    }
+    let Some(prefix) = index.get_prefix_expr() else {
+        return Vec::new();
+    };
+    let inferred_prefix = model.type_of_expr_at(prefix.get_syntax_id(), index.get_position());
+    let prefix_ty = if matches!(inferred_prefix, LuaType::TableConst(_) | LuaType::Unknown)
+        && let LuaExpr::NameExpr(name) = &prefix
+        && let Some(decl) = model.resolve_name(name.get_position())
+    {
+        // A global's initializer may project to its anonymous table. The
+        // assignment-target query retains an explicit declaration contract.
+        model.type_of_decl_assign_target_at(&decl, index.get_position())
+    } else {
+        inferred_prefix
+    };
+    model
+        .member_infos_with_key_all(&prefix_ty, &member.key)
+        .into_iter()
+        .filter(|info| {
+            let Some(SemanticId::Member(id)) = &info.id else {
+                return false;
+            };
+            model
+                .file_facts_of(id.file_id)
+                .and_then(|facts| facts.member_by_id(&SemanticId::Member(id.clone())))
+                .is_some_and(|member| matches!(member.owner, SemanticId::TypeDef(_)))
+        })
+        .map(|info| MemberContextInfo {
+            info,
+            show_unknown: false,
+        })
+        .collect()
 }
 
 /// Context projection for member hover: value aliases like `local x = obj.field` or table field
