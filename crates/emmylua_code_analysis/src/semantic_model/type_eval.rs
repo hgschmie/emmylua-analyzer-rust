@@ -21,6 +21,7 @@ use super::infer::unify;
 use super::type_check::{RequiredChecks, TypeCheckFailReason, TypeCheckResult, check_all};
 
 mod alias_expansion;
+mod index_access;
 use alias_expansion::AliasPath;
 pub(crate) use alias_expansion::{expand_alias_branches, expand_alias_head, with_expanded_alias};
 
@@ -157,6 +158,16 @@ pub fn eval_index_access(model: &SemanticModel, base: &LuaType, key: &LuaType) -
             Task::Enter(key) => key,
         };
         match &key {
+            LuaType::Call(call) if call.get_call_kind() != LuaAliasCallKind::KeyOf => {
+                if let Some(expanded) = expand_alias_head(model, &key)
+                    && expanded != key
+                    && path.enter(&key).is_some()
+                {
+                    pending.push(Task::Leave);
+                    pending.push(Task::Enter(expanded));
+                }
+                continue;
+            }
             LuaType::Generic(_) => {
                 let expanded = expand_alias_generic(model, &key);
                 if expanded != key && path.enter(&key).is_some() {
@@ -191,21 +202,46 @@ pub fn eval_index_access(model: &SemanticModel, base: &LuaType, key: &LuaType) -
         keys.push(key);
     }
     // Key expansion is complete. Base lookup follows an independent alias path.
-    let keys = keys.iter().flat_map(|key| match key {
-        LuaType::Call(call) if call.get_call_kind() == LuaAliasCallKind::KeyOf => call
-            .get_operands()
-            .first()
-            .map(|base| keyof_keys(model, base))
-            .unwrap_or_default(),
-        _ => literal_keys(key),
-    });
     let mut types = Vec::new();
-    for (key, _) in keys {
-        let ty = match (base, &key) {
+    let mut member_keys = Vec::new();
+    for key in &keys {
+        let literal = match key {
+            LuaType::Call(call) if call.get_call_kind() == LuaAliasCallKind::KeyOf => call
+                .get_operands()
+                .first()
+                .map(|operand| keyof_keys(model, operand))
+                .unwrap_or_default(),
+            _ => literal_keys(key),
+        };
+        // Unresolved computations/templates do not establish a concrete domain.
+        // KeyOf has its literal path above; substituted templates re-enter as
+        // their concrete key type. Union arms were already expanded separately.
+        if !matches!(key, LuaType::Call(_) | LuaType::TplRef(_))
+            && literal.is_empty()
+            && let Some(ty) = index_access::dynamic_index_type(model, base, key)
+        {
+            types.push(ty);
+        }
+        member_keys.extend(literal);
+    }
+    for (member_key, key_type) in member_keys {
+        let ty = match (base, &member_key) {
             (LuaType::Tuple(tuple), LuaMemberKey::Integer(i)) => {
                 tuple.get_types().get(*i as usize).cloned()
             }
-            _ => model.member_type(base, &key),
+            // An explicit member retains its precise type. Otherwise a literal
+            // key can still select an index signature, without proving existence.
+            _ => model.member_type(base, &member_key).or_else(|| {
+                // Lazy generic bodies can still contain named parameters
+                // such as T before substitution. A missing declaration here
+                // is not a concrete index contract to query.
+                if matches!(base, LuaType::Ref(id) | LuaType::Def(id)
+                        if model.type_def_of(id).is_none())
+                {
+                    return None;
+                }
+                index_access::dynamic_index_type(model, base, &key_type)
+            }),
         };
         if let Some(ty) = ty
             && !types.contains(&ty)
