@@ -327,8 +327,7 @@ pub(super) fn member_write_target(
         if let Some(info) = semantic_model.member_info(&prefix_type, &key)
             && let Some(id) = info.id
         {
-            let value_type = semantic_model
-                .type_of_expr_at(value_expr.get_syntax_id(), value_expr.get_position());
+            let value_type = semantic_model.type_of_expr(value_expr.get_syntax_id());
             if value_type.is_nil() || info.typ.is_nil() {
                 return None;
             }

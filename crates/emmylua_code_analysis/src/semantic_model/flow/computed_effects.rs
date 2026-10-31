@@ -192,7 +192,15 @@ fn call_conflicts(model: &SemanticModel, expected: &Access, call: &LuaCallExpr) 
                 }
             })
             .collect();
-        let path = (expected.root.clone(), keys);
+        // Computed paths retain global names; the shared member-call resolver
+        // uses declaration identities. Bridge those representations at this boundary.
+        let root = match &expected.root {
+            crate::SemanticId::Name(name) => model
+                .global_decl(name)
+                .unwrap_or_else(|| expected.root.clone()),
+            _ => expected.root.clone(),
+        };
+        let path = (root, keys);
         if super::member_call_effects::calls_conflict_with_path(
             model,
             &path,
