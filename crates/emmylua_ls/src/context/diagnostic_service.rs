@@ -423,7 +423,10 @@ async fn run_workspace_batch(
         );
     }
 
-    (result, count == valid_file_count && !incomplete && !cancel_token.is_cancelled())
+    (
+        result,
+        count == valid_file_count && !incomplete && !cancel_token.is_cancelled(),
+    )
 }
 
 #[cfg(test)]

@@ -1447,6 +1447,46 @@ mod member_use_site {
         );
         assert!(result.contains("Count stored items."), "{result}");
     }
+
+    #[test]
+    fn work_optional_field_flow_boundaries() {
+        let definitions = DEFINITIONS.replace("@field train Train?", "@field train? Train");
+        for (body, expected) in [
+            (
+                "if not stop.train then return end\nprint(stop.<??>train)",
+                "train: Train\n",
+            ),
+            (
+                "if stop.train then print(other.<??>train) end",
+                "train: Train?\n",
+            ),
+            (
+                "if stop.train then stop.train = nil\nprint(stop.<??>train) end",
+                "train: nil\n",
+            ),
+        ] {
+            let source = format!(
+                "---@param stop Stop\n---@param other Stop\nlocal function test(stop, other)\n{body}\nend"
+            );
+            for generic in [false, true] {
+                let (definitions, source) = if generic {
+                    (
+                        definitions
+                            .replace("class Stop", "class Stop<T>")
+                            .replace("train? Train", "train? T"),
+                        source.replace(" Stop", " Stop<Train>"),
+                    )
+                } else {
+                    (definitions.clone(), source.clone())
+                };
+                let result = text(&definitions, &source, true);
+                assert!(
+                    result.contains(expected),
+                    "generic={generic} {body}: {result}"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1591,5 +1631,45 @@ fn test_copied_union_member_hover_keeps_projected_nil() {
             },
         )
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod contextual_dictionary_callback_integration {
+    use crate::handlers::hover::hover;
+    use crate::handlers::test_lib::ProviderVirtualWorkspace;
+    use lsp_types::HoverContents;
+
+    #[test]
+    fn strict_dictionary_callback_context_stays_out_of_member_hover() {
+        for strict in [false, true] {
+            for annotation in ["", "---@type Handler"] {
+                let mut ws = ProviderVirtualWorkspace::new();
+                let mut config = ws.analysis.get_emmyrc().as_ref().clone();
+                config.strict.table_index = strict;
+                ws.analysis.update_config(std::sync::Arc::new(config));
+                let source = format!(
+                    r#"
+                    ---@class Settings
+                    ---@field count integer
+                    ---@alias Handler fun(settings: Settings, name: string)
+                    ---@type table<string, Handler>
+                    local handlers = {{
+                        {annotation}
+                        ['example-setting'] = function(settings, name) settings.<??>count = 1 end,
+                    }}
+                "#
+                );
+                let (source, position) =
+                    ProviderVirtualWorkspace::handle_file_content(&source).unwrap();
+                let file = ws.def(&source);
+                let result = hover(&ws.analysis, file, position).unwrap();
+                let HoverContents::Markup(markup) = result.contents else {
+                    panic!("expected markup")
+                };
+                assert!(markup.value.contains("count: integer"), "{}", markup.value);
+                assert!(!markup.value.contains("Handler"), "{}", markup.value);
+            }
+        }
     }
 }

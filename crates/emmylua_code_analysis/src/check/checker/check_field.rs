@@ -278,15 +278,15 @@ fn check_call_args(
     call_expr: &LuaCallExpr,
 ) {
     for (table, target) in table_argument_targets(context, semantic_model, call_expr) {
-            // An explicit assertion replaces this constructor's structural contract.
-            let asserted = crate::semantic_model::flow::type_of_expr_with_cast(
-                semantic_model,
-                table.get_syntax_id(),
-                crate::semantic_model::flow::ExprCastMode::AsOnly,
-            );
-            if matches!(asserted, LuaType::TableConst(_)) {
-                check_against_type(context, semantic_model, &target, &table);
-            }
+        // An explicit assertion replaces this constructor's structural contract.
+        let asserted = crate::semantic_model::flow::type_of_expr_with_cast(
+            semantic_model,
+            table.get_syntax_id(),
+            crate::semantic_model::flow::ExprCastMode::AsOnly,
+        );
+        if matches!(asserted, LuaType::TableConst(_)) {
+            check_against_type(context, semantic_model, &target, &table);
+        }
     }
 }
 

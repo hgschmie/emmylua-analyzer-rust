@@ -13,8 +13,8 @@ mod check_return_count_test;
 mod circle_doc_class_test;
 mod code_style;
 mod code_style_test;
-mod constructor_key_literals_test;
 mod constructor_call_test;
+mod constructor_key_literals_test;
 mod dependent_call_test;
 mod deprecated_test;
 mod disable_line_test;
@@ -30,8 +30,8 @@ mod incomplete_signature_doc_test;
 mod inject_field_test;
 mod length_operator_test;
 mod local_const_reassign_test;
-mod member_self_assignment_test;
 mod local_overload_test;
+mod member_self_assignment_test;
 mod misc_checker_test;
 mod missing_fields_test;
 mod missing_parameter_test;
@@ -192,3 +192,43 @@ fn cancelled_diagnostic_requests_and_lifetimes_recover_independently() {
         Some(expected)
     );
 }
+
+mod array_union_alias_test;
+
+mod composed_overload_test;
+
+#[test]
+fn cancelled_diagnostics_do_not_publish_partial_results_or_poison_later_checks() {
+    use tokio_util::sync::CancellationToken;
+    let mut ws = crate::VirtualWorkspace::new();
+    let source = (0..20000)
+        .map(|index| format!("local value{index} = missing{index}\n"))
+        .collect::<String>();
+    let file = ws.def(&source);
+    let token = CancellationToken::new();
+    let cancel = token.clone();
+    let worker = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        cancel.cancel();
+    });
+    assert!(ws.analysis.diagnose_file(file, token).is_none());
+    worker.join().unwrap();
+    let lifetime = ws.analysis.diagnostic_cancellation_token();
+    lifetime.cancel();
+    assert!(
+        ws.analysis
+            .diagnose_file(file, CancellationToken::new())
+            .is_none()
+    );
+    assert!(!ws.analysis.renew_diagnostic_cancellation().is_cancelled());
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::UndefinedGlobal,
+        "print(missing_after_cancel)"
+    ));
+}
+
+mod nullable_dictionary_arguments_test;
+
+mod nullable_required_arguments_test;
+
+mod variadic_named_types_test;

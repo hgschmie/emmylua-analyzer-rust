@@ -692,7 +692,7 @@ fn dictionary_literal_mismatch(
     semantic_model: &SemanticModel<'_>,
     key_type: &LuaType,
     value_type: &LuaType,
-    table: &emmylua_parser::LuaTableExpr,
+    table: &LuaTableExpr,
 ) -> Option<Mismatch> {
     let fields = table.get_fields_with_keys();
     let last = fields.len().saturating_sub(1);
@@ -1148,7 +1148,12 @@ fn check_arg_pairs(
                         ) {
                             continue;
                         }
-                        out.extend(table_field_mismatches(semantic_model, &slot_ty, arg, &arg_ty));
+                        out.extend(table_field_mismatches(
+                            semantic_model,
+                            &slot_ty,
+                            arg,
+                            &arg_ty,
+                        ));
                         if arg_ty == slot_ty || is_compatible(semantic_model, &arg_ty, &slot_ty) {
                             continue;
                         }
@@ -1191,7 +1196,12 @@ fn check_arg_pairs(
                         ) {
                             continue;
                         }
-                        out.extend(table_field_mismatches(semantic_model, &param_ty, arg, &arg_ty));
+                        out.extend(table_field_mismatches(
+                            semantic_model,
+                            &param_ty,
+                            arg,
+                            &arg_ty,
+                        ));
                         if arg_ty == param_ty
                             || param_generic_base_match(semantic_model, &arg_ty, &param_ty)
                             || is_compatible(semantic_model, &arg_ty, &param_ty)
@@ -1288,7 +1298,12 @@ fn check_arg_pairs(
             ) {
                 continue;
             }
-            out.extend(table_field_mismatches(semantic_model, &param_ty, arg, &arg_ty));
+            out.extend(table_field_mismatches(
+                semantic_model,
+                &param_ty,
+                arg,
+                &arg_ty,
+            ));
             if has_table_literal_shape(&param_ty) {
                 if let Some(mismatch) = table_literal_mismatch(semantic_model, &param_ty, table) {
                     out.push(mismatch);

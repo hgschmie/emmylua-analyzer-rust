@@ -1309,3 +1309,36 @@ fn test_inferred_computed_table_writes_open_empty_tables() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+#[test]
+fn multiple_result_conditions_inspect_first_result() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::UnnecessaryIf,
+        r#"
+        ---@param stops table<integer, string>
+        local function update(stops)
+            if next(stops) then print('nonempty') end
+        end
+        ---@return boolean, string
+        local function test() end
+        if test() then print('yes') end
+    "#
+    ));
+}
+
+#[test]
+fn multiple_result_conditions_keep_constant_first_results() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for first in ["nil", "false", "true", "integer"] {
+        let source = format!(
+            "---@return {first}, string\nlocal function f() end\nif f() then print('branch') end"
+        );
+        assert!(
+            !VirtualWorkspace::new_with_init_std_lib()
+                .has_no_diagnostic(DiagnosticCode::UnnecessaryIf, &source),
+            "{first}"
+        );
+    }
+}

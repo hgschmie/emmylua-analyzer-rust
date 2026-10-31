@@ -3197,6 +3197,11 @@ fn test_length_runtime_member_preserves_declared_contract() {
     }
 }
 
+#[cfg(test)]
+mod annotated_module_export_tests {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+
+    #[test]
     fn test_annotated_module_export_matches_field_contract() {
         let mut ws = VirtualWorkspace::new();
         ws.def_file(

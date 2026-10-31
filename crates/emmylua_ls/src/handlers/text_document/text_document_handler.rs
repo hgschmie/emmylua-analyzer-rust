@@ -4,7 +4,7 @@ use lsp_types::{
     DidSaveTextDocumentParams,
 };
 
-use crate::context::{ServerContextSnapshot, UpdateEvent};
+use crate::context::{ServerContextSnapshot, UpdateEvent, WorkspaceDiagnosticLevel};
 
 pub async fn on_did_open_text_document(
     context: ServerContextSnapshot,
@@ -64,7 +64,7 @@ pub async fn process_did_open_text_document(
     if file_id.is_some() {
         let mut workspace = context.workspace_manager().lock().await;
         workspace.open_file_versions.insert(uri.clone(), version);
-        workspace.update_workspace_version(crate::context::WorkspaceDiagnosticLevel::Slow, true);
+        workspace.update_workspace_version(WorkspaceDiagnosticLevel::Slow, true);
     }
     let supports_pull = context.lsp_features().supports_pull_diagnostic();
 
@@ -158,7 +158,7 @@ pub async fn process_did_change_text_document(
     if file_id.is_some() {
         let mut workspace = context.workspace_manager().lock().await;
         workspace.open_file_versions.insert(uri.clone(), version);
-        workspace.update_workspace_version(crate::context::WorkspaceDiagnosticLevel::Slow, true);
+        workspace.update_workspace_version(WorkspaceDiagnosticLevel::Slow, true);
     }
     let supports_pull = context.lsp_features().supports_pull_diagnostic();
     // Schedule diagnostic task
@@ -341,6 +341,7 @@ mod close_tests {
     use lsp_server::Connection;
     use lsp_types::{ClientCapabilities, TextDocumentIdentifier, Uri};
     use std::path::PathBuf;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     struct TestDirectory(PathBuf);

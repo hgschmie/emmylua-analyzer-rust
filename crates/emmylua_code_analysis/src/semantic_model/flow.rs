@@ -2780,7 +2780,7 @@ fn trace_member_uncached(
                                 .filter(|op| matches!(op, PathOp::Cast(_)))
                                 .cloned()
                                 .collect(),
-                                member_unstable: false,
+                            member_unstable: false,
                         };
                         let mut value_ty = type_of_expr_with_cast(model, *value_syntax, AsOnly);
                         if let Some(annotation) = member_annotation_type(model, member) {
@@ -6694,7 +6694,7 @@ fn indexed_read_at(
                 }
                 FlowNodeKind::TagCast(ptr) => {
                     if let Some(member) = member {
-                        collect_member_cast(model, member, ptr, &mut path);
+                        collect_member_cast(model, member, Some(index), ptr, &mut path);
                     }
                 }
                 FlowNodeKind::AsCast(_) => {}
@@ -6886,7 +6886,9 @@ fn directional_read_at(
                         path.operations.push(PathOp::Guard(narrowing));
                     }
                 }
-                FlowNodeKind::TagCast(ptr) => collect_member_cast(model, member, ptr, &mut path),
+                FlowNodeKind::TagCast(ptr) => {
+                    collect_member_cast(model, member, Some(index), ptr, &mut path)
+                }
                 // Inline assertions apply to their expression, not unrelated member flow.
                 FlowNodeKind::AsCast(_) => {}
                 _ => {}

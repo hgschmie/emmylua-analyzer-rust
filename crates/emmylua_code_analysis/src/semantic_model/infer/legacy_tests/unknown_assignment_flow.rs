@@ -538,3 +538,41 @@ end
         0,
     );
 }
+
+#[test]
+fn unknown_assignment_broad_indexes_do_not_keep_nil_guard() {
+    for rhs in ["values[key]", "values[key] or values[tostring(key)]"] {
+        let source = reassignment(rhs)
+            .replace("table<string,unknown>", "table")
+            .replace(" -- rhs: unknown", "")
+            .replace(" -- expect: string?", "")
+            .replace(" -- expect: string", "");
+        assert_flow(&source, 0);
+    }
+}
+
+#[test]
+fn unknown_assignment_invalidates_nil_guard_in_recursive_tag_map() {
+    assert_flow(
+        r#"
+---@alias Basic boolean|number|string|table<string,Basic>
+---@alias Tags table<string,Basic>
+
+---@param id string?
+---@param tags Tags
+---@param key string
+local function dispatch(id, tags, key)
+    if id then return id
+    elseif type(tags.handler) == 'table' then
+        id = tags.handler[key] or tags.handler[tostring(key)]
+        local after = id
+        if id then
+            local guarded = id
+            return guarded
+        end
+    end
+end
+"#,
+        0,
+    );
+}

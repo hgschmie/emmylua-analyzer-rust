@@ -417,9 +417,7 @@ pub(crate) fn member_info_impl(
                 }
                 let revision = model.cache.borrow().revision();
                 // An alias to an unloaded definition does not prove absence either.
-                let Some(expanded) =
-                    crate::semantic_model::type_eval::expand_alias_head(model, component)
-                else {
+                let Some(expanded) = expand_alias_head(model, component) else {
                     return false;
                 };
                 let unresolved_nominal = match &expanded {
@@ -1729,6 +1727,18 @@ mod tests {
         let map = member_map(&infos);
         assert_eq!(map.get("x"), Some(&LuaType::Number));
         assert_eq!(map.get("y"), Some(&LuaType::String));
+    }
+
+    #[test]
+    fn test_member_infos_array_base() {
+        let env = model_of("---@class C\n---@field x number\nlocal C = {}");
+        let model = env.model();
+        let array = LuaType::Array(Rc::new(crate::LuaArrayType::from_base_type(LuaType::Ref(
+            LuaTypeDeclId::global("C"),
+        ))));
+        let infos = model.member_infos(&array);
+        let map = member_map(&infos);
+        assert_eq!(map.get("x"), Some(&LuaType::Number));
     }
 }
 

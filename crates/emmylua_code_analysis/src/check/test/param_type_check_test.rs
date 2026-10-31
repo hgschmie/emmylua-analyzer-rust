@@ -4373,7 +4373,6 @@ fn test_length_argument_preserves_nullable_member_diagnostic() {
     );
 }
 
-
 #[cfg(test)]
 mod class_index_array_compatibility {
     use crate::check::test::check_source;
@@ -4711,7 +4710,6 @@ local Derived = {}
     }
 }
 
-
 #[test]
 fn constructor_nullable_field_contracts() {
     use crate::{DiagnosticCode, VirtualWorkspace};
@@ -4907,5 +4905,139 @@ fn test_nullable_union_projection_named_aliases() {
             "{annotation}"
         );
         assert!(!accepts, "{annotation}");
+    }
+}
+
+#[test]
+fn test_optional_alias_parameter_preserves_generic_binding() {
+    let source = r#"
+    ---@class Box<T>
+    ---@field value T
+    ---@generic T
+    ---@param box Box<T>?
+    ---@param other T
+    local function accept(box, other) end
+    ---@param box Box<string>?
+    local function test(box)
+        accept--[[@<string>]](box, 'valid')
+        accept--[[@<string>]](box, 42)
+    end
+    "#;
+    let mismatches: Vec<_> = super::check_source(source)
+        .into_iter()
+        .filter(|d| d.code == crate::DiagnosticCode::ParamTypeMismatch)
+        .collect();
+    assert_eq!(mismatches.len(), 1, "{mismatches:#?}");
+}
+
+#[test]
+fn test_optional_alias_parameters_keep_valid_and_invalid_alternatives() {
+    for (parameter, argument, expected) in [
+        ("Filter?", "string?", 0),
+        ("Filter?", "nil", 0),
+        ("Filter?", "string|{name:string}|nil", 0),
+        ("Filter?", "boolean?", 1),
+        ("Filter?", "string|integer|nil", 1),
+        ("Filter", "string?", 1),
+        ("Filter", "nil", 1),
+        ("string?", "integer?", 1),
+        ("string?", "string|integer|nil", 1),
+        ("Filter?", "MaybeString", 0),
+    ] {
+        let source = format!(
+            r#"
+        ---@alias Filter string|{{name:string}}
+        ---@alias MaybeString string|nil
+        ---@param item {parameter}
+        local function accept(item) end
+        ---@param item {argument}
+        local function test(item) accept(item) end
+        "#
+        );
+        if expected == 0 {
+            let mut ws = crate::VirtualWorkspace::new();
+            assert!(
+                ws.has_no_diagnostic(crate::DiagnosticCode::ParamTypeMismatch, &source),
+                "{parameter} <- {argument}"
+            );
+            continue;
+        }
+        let mismatches: Vec<_> = super::check_source(&source)
+            .into_iter()
+            .filter(|d| d.code == crate::DiagnosticCode::ParamTypeMismatch)
+            .collect();
+        assert_eq!(
+            mismatches.len(),
+            expected,
+            "{parameter} <- {argument}: {mismatches:#?}"
+        );
+    }
+}
+
+#[test]
+fn test_optional_union_alias_parameter_accepts_nullable_string() {
+    let source = r#"
+    ---@alias Filter string|{name:string}
+    ---@class Train
+    local Train = {
+        ---@param item? Filter
+        ---@return integer
+        get_count = function(item) end
+    }
+    ---@param train Train
+    ---@param item string?
+    local function test(train, item)
+        train.get_count(item)
+    end
+    "#;
+    let mut ws = crate::VirtualWorkspace::new();
+    assert!(ws.has_no_diagnostic(crate::DiagnosticCode::ParamTypeMismatch, source));
+}
+
+#[cfg(test)]
+mod combined_localised_constructor_tests {
+    use crate::DiagnosticCode;
+    use crate::check::test::check_source;
+
+    #[test]
+    fn union_constructor_checks_respect_assertions_and_other_arguments() {
+        let definitions = r#"
+            ---@class Unit
+            ---@field active boolean
+            ---@alias Message [string, Message...]|{x:number,y:number}|Unit|string|number|boolean
+            ---@param message Message
+            ---@param count integer
+            local function emit(message, count) end
+            ---@type string?
+            local maybe
+        "#;
+        for (call, expected) in [
+            ("emit({'hello', {'nested', 3}, true}, 1)", 0),
+            ("emit({'hello', maybe} --[[@as Message]], 1)", 0),
+            ("emit({'hello', maybe} --[[@as Message]], 'bad')", 1),
+        ] {
+            let diagnostics: Vec<_> = check_source(&format!("{definitions}\n{call}"))
+                .into_iter()
+                .filter(|d| {
+                    matches!(
+                        d.code,
+                        DiagnosticCode::ParamTypeMismatch
+                            | DiagnosticCode::AssignTypeMismatch
+                            | DiagnosticCode::InjectField
+                            | DiagnosticCode::MissingFields
+                    )
+                })
+                .collect();
+            assert_eq!(diagnostics.len(), expected, "{call}: {diagnostics:#?}");
+            if expected == 1 {
+                assert_eq!(diagnostics[0].code, DiagnosticCode::ParamTypeMismatch);
+                assert!(diagnostics[0].message.contains("integer"));
+            }
+        }
+        assert!(
+            check_source(&format!("{definitions}\nemit({{false}}, 1)"))
+                .iter()
+                .any(|d| d.code == DiagnosticCode::ParamTypeMismatch)
+        );
     }
 }
