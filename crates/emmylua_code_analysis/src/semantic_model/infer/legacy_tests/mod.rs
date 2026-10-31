@@ -15,6 +15,7 @@ mod closure_generic;
 mod closure_param_infer_test;
 mod closure_return_test;
 mod contextual_callback_test;
+mod copied_member_calls;
 mod decl_test;
 mod diagnostic_disable_test;
 mod flow;
