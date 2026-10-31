@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use hashbrown::{HashMap, HashSet};
 
-use emmylua_parser::{LuaAstPtr, LuaCallExpr, LuaExpr, LuaSyntaxId};
+use emmylua_parser::{LuaAstPtr, LuaCallExpr, LuaChunk, LuaExpr, LuaSyntaxId};
 use rowan::{TextRange, TextSize};
 
 use super::{FlowAntecedent, FlowEffect, FlowId, FlowNode, FlowNodeKind};
@@ -263,6 +263,58 @@ impl FlowTree {
 
     pub fn get_flow_node(&self, flow_id: FlowId) -> Option<&FlowNode> {
         self.flow_nodes.get(flow_id.0 as usize)
+    }
+
+    /// Marks nodes connected to a chunk entry, pruning only impossible literal guards.
+    /// Unknown conditions retain both edges; closure entries require a reachable definition.
+    pub(crate) fn statically_reachable_nodes(&self, chunk: &LuaChunk) -> Vec<bool> {
+        let mut reachable = vec![false; self.flow_nodes.len()];
+        let mut successors = vec![Vec::new(); self.flow_nodes.len()];
+        let mut queue = VecDeque::new();
+        for node in &self.flow_nodes {
+            let blocked = match &node.kind {
+                FlowNodeKind::Unreachable => true,
+                FlowNodeKind::TrueCondition(cond) => {
+                    cond.to_node(chunk)
+                        .and_then(|expr| super::stats::static_literal_truthiness(&expr))
+                        == Some(false)
+                }
+                FlowNodeKind::FalseCondition(cond) => {
+                    cond.to_node(chunk)
+                        .and_then(|expr| super::stats::static_literal_truthiness(&expr))
+                        == Some(true)
+                }
+                _ => false,
+            };
+            if blocked {
+                continue;
+            }
+            let antecedents: &[FlowId] = match &node.antecedent {
+                Some(FlowAntecedent::Single(previous)) => std::slice::from_ref(previous),
+                Some(FlowAntecedent::Multiple(index)) => {
+                    self.get_multi_antecedents(*index).unwrap_or_default()
+                }
+                None => &[],
+            };
+            for previous in antecedents {
+                if let Some(next) = successors.get_mut(previous.0 as usize) {
+                    next.push(node.id);
+                }
+            }
+            if matches!(node.kind, FlowNodeKind::Start) {
+                reachable[node.id.0 as usize] = true;
+                queue.push_back(node.id);
+            }
+        }
+        while let Some(flow) = queue.pop_front() {
+            for &next in &successors[flow.0 as usize] {
+                if !reachable[next.0 as usize] {
+                    reachable[next.0 as usize] = true;
+                    queue.push_back(next);
+                }
+            }
+        }
+        reachable
     }
 
     /// Effect summaries on flow nodes (declaration assignment / guard / tag cast).

@@ -236,6 +236,8 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) array_length_stable: HashMap<(FileId, SemanticId), bool>,
     /// Values a mutable captured local can hold when any of its closures runs.
     pub(crate) captured_decl: HashMap<(FileId, SemanticId), CacheEntry<LuaType>>,
+    /// Syntax-only reachability for capture summaries, shared across locals in a file.
+    pub(crate) captured_flow_reachability: HashMap<FileId, Rc<Vec<bool>>>,
     /// Memoized declaration/member-trace states for loop-free flow graphs. See
     /// [`TraceStateKey`] for why the path may be omitted from the key.
     pub(crate) trace_state: HashMap<TraceStateKey, CacheEntry<Option<LuaType>>>,

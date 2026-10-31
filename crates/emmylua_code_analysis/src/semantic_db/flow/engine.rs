@@ -1250,6 +1250,11 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                 mut current,
                 mut can_change_flow,
             } => {
+                // A label can resume a terminated path through a forward goto.
+                // Keep its successor chain even before goto edges are resolved.
+                if matches!(&children[idx], LuaAst::LuaLabelStat(_)) {
+                    can_change_flow = true;
+                }
                 if can_change_flow {
                     current = value;
                 }

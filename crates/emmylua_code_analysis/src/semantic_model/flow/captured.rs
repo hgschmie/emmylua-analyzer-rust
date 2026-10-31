@@ -1,5 +1,7 @@
 //! Entry values for locals shared across closure invocations.
 
+use std::rc::Rc;
+
 use super::{FlowEffect, FlowTree, LuaClosureId, LuaType, SemanticId, SemanticModel};
 use crate::DeclKind;
 use crate::semantic_model::cache::CacheEntry;
@@ -19,8 +21,15 @@ pub(super) fn entry_type(
     {
         return None;
     }
-    if assignments_finished_before_capture(model, tree, decl, info.owner_syntax, closure)
-        == Some(true)
+    let reachable = reachable_flows(model, tree)?;
+    if assignments_finished_before_capture(
+        model,
+        tree,
+        decl,
+        info.owner_syntax,
+        closure,
+        &reachable,
+    ) == Some(true)
     {
         return None;
     }
@@ -63,6 +72,9 @@ pub(super) fn entry_type(
     let revision = model.cache.borrow().revision();
     let mut types = vec![initial.clone()];
     for &(position, flow) in tree.decl_assignments(decl) {
+        if !reachable[flow.0 as usize] {
+            continue;
+        }
         for effect in tree.get_flow_effects(flow) {
             if let FlowEffect::AssignDecl {
                 decl: target,
@@ -89,6 +101,24 @@ pub(super) fn entry_type(
     Some(result)
 }
 
+fn reachable_flows(model: &SemanticModel, tree: &FlowTree) -> Option<Rc<Vec<bool>>> {
+    if let Some(reachable) = model
+        .cache
+        .borrow()
+        .captured_flow_reachability
+        .get(&model.file_id())
+    {
+        return Some(reachable.clone());
+    }
+    let reachable = Rc::new(tree.statically_reachable_nodes(&model.chunk()?));
+    model
+        .cache
+        .borrow_mut()
+        .captured_flow_reachability
+        .insert(model.file_id(), reachable.clone());
+    Some(reachable)
+}
+
 /// Retain definition-time flow only when all writes belong to the same invocation
 /// and finish before the closure is created. Deferred writers and repeatable
 /// control flow must still use the mutable-capture summary.
@@ -98,6 +128,7 @@ fn assignments_finished_before_capture(
     decl: &SemanticId,
     owner: Option<LuaSyntaxId>,
     closure: LuaClosureId,
+    reachable: &[bool],
 ) -> Option<bool> {
     let root = model.syntax_tree()?.get_red_root();
     let closure_node = LuaSyntaxId::new(LuaSyntaxKind::ClosureExpr.into(), closure.get_range())
@@ -108,6 +139,9 @@ fn assignments_finished_before_capture(
         return Some(false);
     }
     for &(position, flow) in tree.decl_assignments(decl) {
+        if !reachable[flow.0 as usize] {
+            continue;
+        }
         if position >= closure.get_position() || tree.is_loop_reachable(flow) {
             return Some(false);
         }

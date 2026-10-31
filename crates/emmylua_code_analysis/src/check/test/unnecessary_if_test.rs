@@ -536,4 +536,183 @@ mod test {
         "#
         ));
     }
+
+    fn mutable_capture_observed_type(source: &str) -> Option<crate::LuaType> {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def(source);
+        mutable_capture_observed_type_in_file(&ws, file)
+    }
+
+    fn mutable_capture_observed_type_in_file(
+        ws: &VirtualWorkspace,
+        file: crate::FileId,
+    ) -> Option<crate::LuaType> {
+        use emmylua_parser::{LuaAstNode, LuaAstToken, LuaLocalName};
+        let model = ws.analysis.semantic_model(file);
+        let locals = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaLocalName>()
+            .filter(|node| {
+                node.get_name_token()
+                    .is_some_and(|token| token.get_name_text() == "observed")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(locals.len(), 1, "one observation local is required");
+        let decl = model
+            .decl_by_offset(locals[0].get_name_token().unwrap().get_position())
+            .unwrap();
+        model.type_of_decl(&decl)
+    }
+
+    #[test]
+    fn test_mutable_capture_ignores_unreachable_writes() {
+        let mut failures = Vec::new();
+        for body in [
+            "do return end; value = 1",
+            "do return end; value = 1; value = 2",
+            "if false then value = 1 end",
+            "if nil then value = 1 end",
+            "if not (true) then value = 1 end",
+            "if true then return end; value = 1",
+            "while false do value = 1 end",
+            "goto done; value = 1; ::done::",
+            "do return end; function value() end",
+            "do return end; repeat value = 1 until true",
+            "do return end; local function deferred() value = 1 end",
+            "do return end; ::orphan:: value = 1",
+        ] {
+            let source = format!(
+                "local value = 0; local function writer() {body} end; local function read() local observed = value end"
+            );
+            let actual = mutable_capture_observed_type(&source);
+            if actual != Some(crate::LuaType::IntegerConst(0)) {
+                failures.push(format!("{body}: {actual:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn test_mutable_capture_keeps_reachable_control_flow_writes() {
+        let mut failures = Vec::new();
+        for body in [
+            "value = 1",
+            "if unknown then value = 1 end",
+            "if 0 then value = 1 end",
+            "if '' then value = 1 end",
+            "if not (false) then value = 1 end",
+            "while unknown do value = 1; break end",
+            "repeat value = 1 until unknown",
+            "goto write; ::write:: value = 1",
+            "if unknown then return end; value = 1",
+        ] {
+            let source = format!(
+                "local value = 0; local function writer() {body} end; local function read() local observed = value end"
+            );
+            let actual = mutable_capture_observed_type(&source);
+            let expected = crate::LuaType::from_vec(vec![
+                crate::LuaType::IntegerConst(0),
+                crate::LuaType::IntegerConst(1),
+            ]);
+            if actual != Some(expected) {
+                failures.push(format!("{body}: {actual:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn test_mutable_capture_dead_nil_write_preserves_member_safety() {
+        for (prefix, safe) in [("do return end;", true), ("", false)] {
+            let mut ws = VirtualWorkspace::new();
+            let source = format!(
+                r#"
+                local value = {{ name = 'ready' }}
+                local function writer() {prefix} value = nil end
+                local function read() return value.name end
+            "#
+            );
+            assert_eq!(
+                ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+                safe,
+                "{prefix}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_mutable_capture_dead_writes_do_not_block_completed_assignment() {
+        let mut failures = Vec::new();
+        for body in [
+            "do return end; value = 2",
+            "if false then value = 2 end",
+            "goto done; value = 2; ::done::",
+            "do return end; local function deferred() value = 2 end",
+        ] {
+            let source = format!(
+                "local value; value = 1; local function writer() {body} end; local function read() local observed = value end"
+            );
+            let actual = mutable_capture_observed_type(&source);
+            if actual != Some(crate::LuaType::IntegerConst(1)) {
+                failures.push(format!("{body}: {actual:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn test_mutable_capture_dead_branches_keep_live_alternatives() {
+        let mut failures = Vec::new();
+        for body in [
+            "if false then value = 2 else value = 1 end",
+            "goto live; value = 2; ::dead:: value = 2; ::live:: value = 1",
+            "if true then value = 1 else value = 2 end",
+            "if unknown then if false then value = 2 end; value = 1 else do return end; value = 2 end",
+            "::again:: if unknown then value = 1; goto again end; if false then value = 2 end",
+            "while unknown do if false then value = 2 else value = 1 end; break end",
+        ] {
+            let source = format!(
+                "local value = 0; local function writer() {body} end; local function read() local observed = value end"
+            );
+            let actual = mutable_capture_observed_type(&source);
+            let expected = crate::LuaType::from_vec(vec![
+                crate::LuaType::IntegerConst(0),
+                crate::LuaType::IntegerConst(1),
+            ]);
+            if actual != Some(expected) {
+                failures.push(format!("{body}: {actual:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn test_mutable_capture_reachability_refreshes_after_file_edits() {
+        let mut ws = VirtualWorkspace::new();
+        let mut previous_file = None;
+        for condition in ["false", "true", "false"] {
+            let source = format!(
+                "local value = 0; local function writer() if {condition} then value = 1 end end; local function read() local observed = value end"
+            );
+            let file = ws.def_file("capture.lua", &source);
+            if let Some(previous) = previous_file {
+                assert_eq!(file, previous);
+            }
+            previous_file = Some(file);
+            let expected = if condition == "false" {
+                crate::LuaType::IntegerConst(0)
+            } else {
+                crate::LuaType::from_vec(vec![
+                    crate::LuaType::IntegerConst(0),
+                    crate::LuaType::IntegerConst(1),
+                ])
+            };
+            assert_eq!(
+                mutable_capture_observed_type_in_file(&ws, file),
+                Some(expected),
+                "{condition}"
+            );
+        }
+    }
 }
