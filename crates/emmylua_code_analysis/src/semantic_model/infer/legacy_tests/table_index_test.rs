@@ -883,3 +883,35 @@ fn table_index_constructor_literal_string_keys() {
         }
     }
 }
+
+#[test]
+fn integrated_explicit_nested_field_precedes_class_index_signature() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let mut ws = VirtualWorkspace::new();
+    ws.def(
+        r#"
+---@class Style
+---@field horizontal_align? 'left'|'center'|'right'
+---@class Element
+---@field [string|integer] Element
+---@field style Style|string
+---@field add fun(spec: table): Element
+---@type Element
+root_element = {}
+"#,
+    );
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::AssignTypeMismatch,
+        r#"
+local child = root_element.add { type = 'label' }
+child.style.horizontal_align = 'center'
+"#
+    ));
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::AssignTypeMismatch,
+        r#"
+local child = root_element.add { type = 'label' }
+child.style.horizontal_align = 42
+"#
+    ));
+}

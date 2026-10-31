@@ -315,6 +315,28 @@ pub(super) fn member_write_target(
     index_expr: &LuaIndexExpr,
     value_expr: &LuaExpr,
 ) -> Option<LuaType> {
+    // Nested accesses must use their immediate receiver's field contract. The
+    // synthesized assignment owner can be the root declaration instead.
+    if let Some(prefix @ LuaExpr::IndexExpr(_)) = index_expr.get_prefix_expr()
+        && let Some(key) = index_expr
+            .get_index_key()
+            .and_then(|key| static_member_key(semantic_model, &key))
+    {
+        let prefix_type =
+            semantic_model.type_of_expr_at(prefix.get_syntax_id(), prefix.get_position());
+        if let Some(info) = semantic_model.member_info(&prefix_type, &key)
+            && let Some(id) = info.id
+        {
+            let value_type = semantic_model
+                .type_of_expr_at(value_expr.get_syntax_id(), value_expr.get_position());
+            if value_type.is_nil() || info.typ.is_nil() {
+                return None;
+            }
+            return complete_member_write_target(
+                semantic_model.member_assignment_type(&id, info.typ),
+            );
+        }
+    }
     let Some(member_id) = semantic_model
         .resolve_member(index_expr)
         .and_then(|resolved| resolved.member_id)

@@ -2690,9 +2690,9 @@ fn trace_member(
     path: &mut PathState,
 ) -> Option<LuaType> {
     // A loop summary can be acyclic; real back edges retain the visited walk.
-    // The combined PathState key includes call instability, so stable and
-    // invalidated paths remain distinct without disabling join memoization.
-    if tree.is_cycle_reachable(flow_id) || !path.operations.is_empty() {
+    // The complete PathState key includes guards, casts and call instability,
+    // so these paths remain distinct without disabling join memoization.
+    if tree.is_cycle_reachable(flow_id) {
         return trace_member_uncached(model, member, access, tree, flow_id, visited, path);
     }
     let key = cache::TraceStateKey {
