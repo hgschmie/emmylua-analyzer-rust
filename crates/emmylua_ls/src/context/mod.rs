@@ -120,7 +120,15 @@ impl ServerContext {
                 Ok(Ok(RequestOutcome::Missing)) => {
                     Response::new_ok(req_id.clone(), serde_json::Value::Null)
                 }
-                Ok(Ok(RequestOutcome::Cancelled(_))) => Response::new_err(
+                Ok(Ok(RequestOutcome::Cancelled(CancelSource::DiagnosticRefresh))) => Response {
+                    id: req_id.clone(),
+                    response_result: Err(lsp_server::ResponseError {
+                        code: ErrorCode::ServerCancelled as i32,
+                        message: "diagnostics preempted by an update".to_string(),
+                        data: Some(serde_json::json!({"retriggerRequest": true})),
+                    }),
+                },
+                Ok(Ok(RequestOutcome::Cancelled(CancelSource::Client))) => Response::new_err(
                     req_id.clone(),
                     ErrorCode::RequestCanceled as i32,
                     "cancel".to_string(),
@@ -194,4 +202,37 @@ where
         result = updates_applied => result?,
     }
     Ok(exec(cancel_token).await)
+}
+
+#[cfg(test)]
+mod diagnostic_cancellation_response_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn preempted_diagnostic_requests_request_a_retry() {
+        let (server, client) = Connection::memory();
+        let context = ServerContext::new(Arc::new(server), ClientCapabilities::default());
+        context
+            .task::<(), _, _>(RequestId::from(1), |_| async {
+                RequestOutcome::Cancelled(CancelSource::DiagnosticRefresh)
+            })
+            .await;
+        let response = tokio::task::spawn_blocking(move || {
+            client
+                .receiver
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        let lsp_server::Message::Response(response) = response else {
+            panic!("expected response")
+        };
+        let error = response.response_result.unwrap_err();
+        assert_eq!(error.code, -32802);
+        assert_eq!(
+            error.data,
+            Some(serde_json::json!({"retriggerRequest": true}))
+        );
+    }
 }

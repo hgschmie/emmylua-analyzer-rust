@@ -1237,7 +1237,7 @@ fn member_info_of_projection(
     name_bindings: Option<&HashMap<String, LuaType>>,
     raw_member: Option<&SemanticId>,
 ) -> Option<MemberInfo> {
-    if raw_member.is_some_and(|id| id != &member_ref.id) {
+    if model.is_cancelled() || raw_member.is_some_and(|id| id != &member_ref.id) {
         return None;
     }
     let facts = model.file_facts_of(member_ref.file_id)?;
@@ -1342,6 +1342,9 @@ pub(super) fn projected_member_type(
     bindings: Option<&TplBindings>,
     name_bindings: Option<&HashMap<String, LuaType>>,
 ) -> Option<LuaType> {
+    if model.is_cancelled() {
+        return None;
+    }
     let mut typ = model.type_of_member(&member_ref.id)?;
     // A shell `table` argument may stand for an object annotation, not the
     // unrestricted primitive. Preserve its fields before generic substitution

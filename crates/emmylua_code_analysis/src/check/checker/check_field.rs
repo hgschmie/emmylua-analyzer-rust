@@ -28,7 +28,11 @@ impl Checker for CheckFieldChecker {
             return;
         };
         let root = tree.get_red_root();
-        for node in root.descendants().filter_map(LuaAst::cast) {
+        for node in root
+            .descendants()
+            .take_while(|_| !semantic_model.is_cancelled())
+            .filter_map(LuaAst::cast)
+        {
             match node {
                 LuaAst::LuaLocalStat(local_stat) => {
                     check_local(context, semantic_model, &local_stat);
