@@ -308,6 +308,10 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) flow_decl: HashMap<(FileId, SemanticId, FlowId), LuaType>,
     /// Whole-function, syntax-only check for the local-table last-element proof.
     pub(crate) array_length_stable: HashMap<(FileId, SemanticId), bool>,
+    /// Values a mutable captured local can hold when any of its closures runs.
+    pub(crate) captured_decl: HashMap<(FileId, SemanticId), CacheEntry<LuaType>>,
+    /// Syntax-only reachability for capture summaries, shared across locals in a file.
+    pub(crate) captured_flow_reachability: HashMap<FileId, Rc<Vec<bool>>>,
     /// Memoized declaration/member traces; incoming path facts are part of the key.
     pub(crate) trace_state: HashMap<TraceStateKey, CacheEntry<Option<LuaType>>>,
     /// Fast negative/positive cache for `---@return_cast` lookup by call syntax.
@@ -352,6 +356,7 @@ impl SemanticLocalCache {
         self.expr_type_at.retain(|_, entry| entry.is_ready());
         self.trace_state.retain(|_, entry| entry.is_ready());
         self.loop_carried.retain(|_, entry| entry.is_ready());
+        self.captured_decl.retain(|_, entry| entry.is_ready());
         self.type_check.retain(|_, entry| entry.is_ready());
         self.alias_targets.retain(|_, entry| entry.is_ready());
         self.alias_heads.retain(|_, entry| entry.is_ready());
