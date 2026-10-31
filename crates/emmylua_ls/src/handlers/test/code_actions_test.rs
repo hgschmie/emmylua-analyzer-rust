@@ -55,6 +55,26 @@ mod tests {
     }
 
     #[gtest]
+    fn test_disable_unused_self() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        check!(ws.check_code_action(
+            "local C = {}\nfunction C:run() end",
+            vec![
+                VirtualCodeAction {
+                    title: "Disable current line diagnostic (unused-self)".to_string()
+                },
+                VirtualCodeAction {
+                    title: "Disable all diagnostics in current file (unused-self)".to_string()
+                },
+                VirtualCodeAction {
+                    title: "Disable all diagnostics in current project (unused-self)".to_string()
+                },
+            ]
+        ));
+        Ok(())
+    }
+
+    #[gtest]
     fn test_add_doc_tag() -> Result<()> {
         let mut ws = ProviderVirtualWorkspace::new();
         let mut emmyrc = Emmyrc::default();

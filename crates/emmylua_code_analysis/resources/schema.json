@@ -219,6 +219,11 @@
           "const": "unused"
         },
         {
+          "description": "Unused implicit self parameter",
+          "type": "string",
+          "const": "unused-self"
+        },
+        {
           "description": "Undefined global",
           "type": "string",
           "const": "undefined-global"

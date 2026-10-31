@@ -116,3 +116,38 @@ local json = require("external-json-lib")
 3. **Block-level control**
 4. **Multiple diagnostic handling**
 5. **Fine-grained error management**
+
+
+## Unused variables and implicit self
+
+`unused` controls all unused diagnostics, including unused implicit self.
+`unused-self` reports only the implicit `self` parameter introduced by a colon method definition,
+such as `function C:run() end`. Both diagnostics default to hint severity and mark
+the unused token as unnecessary.
+
+To keep other unused diagnostics while allowing colon methods that do not use
+`self`, add this to `.emmyrc.json`:
+
+```json
+{
+    "diagnostics": {
+        "disable": ["unused-self"]
+    }
+}
+```
+
+For an individual method, use:
+
+```lua
+---@diagnostic disable-next-line: unused-self
+function C:run(argument)
+    -- An unused explicit argument still produces an `unused` diagnostic.
+end
+```
+
+An explicit parameter named `self` in `function C.run(self) end` still uses
+`unused`. Disabling `unused` suppresses both categories, while disabling only
+`unused-self` retains other unused diagnostics. This applies to project settings
+and file/line diagnostic annotations, so existing `unused` suppressions keep
+their behavior. Enabling `unused-self` does not override a disabled `unused`
+category; the parent category must also be enabled.
