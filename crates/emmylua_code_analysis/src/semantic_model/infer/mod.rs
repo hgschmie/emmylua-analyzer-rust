@@ -71,12 +71,46 @@ pub(crate) fn closure_return_lua(model: &SemanticModel, closure_syntax: LuaSynta
     vm.closure_return_type_with_env(closure_syntax)
 }
 
+/// Select the same callable candidates as expression inference, retaining
+/// their generic bindings for call-site presentation.
+pub(crate) fn infer_call_signature(
+    model: &SemanticModel,
+    call_syntax: LuaSyntaxId,
+) -> Option<(crate::LuaFunctionType, unify::TplBindings)> {
+    let tree = model.syntax_tree()?;
+    let call = LuaCallExpr::cast(call_syntax.to_node_from_root(&tree.get_red_root())?)?;
+    let emmylua_parser::LuaExpr::NameExpr(callee) = call.get_prefix_expr()? else {
+        return None;
+    };
+    let owner = model.resolve_name(callee.get_position())?;
+    let candidates = vm::InferVm::new(model, &[]).callable_candidates_for_owner(&owner)?;
+    let analysis = model.call_site_analysis(&call);
+    let expressions = call.get_args_list()?.get_args().collect::<Vec<_>>();
+    let args = analysis
+        .arg_types
+        .iter()
+        .zip(&expressions)
+        .map(|(ty, expr)| overload::CallArg {
+            ty: ty.clone(),
+            closure_syntax: matches!(expr, emmylua_parser::LuaExpr::ClosureExpr(_))
+                .then(|| expr.get_syntax_id()),
+        })
+        .collect::<Vec<_>>();
+    let receiver = analysis.colon_call.then_some(&analysis.receiver_ty);
+    overload::select_callable(model, &candidates, &args, analysis.colon_call, receiver)
+}
+
 /// Call type plus generic bindings (`T -> actual argument type`; consumed by the
 /// generic constraint checker).
 pub fn infer_call_with_bindings(
     model: &SemanticModel,
     call_syntax: LuaSyntaxId,
 ) -> Option<(LuaType, unify::TplBindings)> {
+    if let Some((fun, bindings)) = infer_call_signature(model, call_syntax) {
+        let ret = unify::substitute(fun.get_ret(), &bindings);
+        let ret = eval_conditionals(model, &expand_alias_generic(model, &ret));
+        return Some((ret, bindings));
+    }
     let tree = model.syntax_tree()?;
     let root = tree.get_red_root();
     let node = call_syntax.to_node_from_root(&root)?;
