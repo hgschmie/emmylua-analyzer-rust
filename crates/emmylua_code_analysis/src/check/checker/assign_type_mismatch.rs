@@ -259,6 +259,10 @@ fn check_assign(
                 );
             }
             LuaVarExpr::IndexExpr(index_expr) => {
+                if let Some((_, write)) = semantic_model.directional_index(index_expr) {
+                    check_value_against(context, semantic_model, &write.typ, &expr);
+                    continue;
+                }
                 if let Some(targets) = semantic_model.dictionary_index_write_types(index_expr) {
                     for target in targets {
                         check_value_against(context, semantic_model, &target, &expr);

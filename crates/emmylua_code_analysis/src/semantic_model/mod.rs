@@ -10,6 +10,7 @@ pub mod type_eval;
 mod access;
 mod builtin;
 mod dictionary;
+mod directional;
 mod doc_types;
 mod index_function;
 pub(crate) mod inherited_index;

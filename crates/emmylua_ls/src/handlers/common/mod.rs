@@ -5,3 +5,5 @@ pub(crate) use semantic_alias::*;
 
 mod index_metamethod;
 pub(crate) use index_metamethod::*;
+mod directional;
+pub(crate) use directional::*;
