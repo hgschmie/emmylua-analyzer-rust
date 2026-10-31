@@ -41,6 +41,40 @@ function retry(t)
 end
 ";
 
+#[test]
+fn integrated_member_call_effect_joins_keep_memoization() {
+    use emmylua_parser::LuaIndexExpr;
+    for n in [4, 8, 16] {
+        let mut ws = VirtualWorkspace::new();
+        let mut source = String::from(
+            "---@class State\n---@field value number?\n---@type State\nlocal state = { value = 1 }\nlocal function clear() state.value = nil end\nlocal function read(flag)\n",
+        );
+        for _ in 0..n {
+            source.push_str("if flag then clear() end\n");
+        }
+        source.push_str("return state.value\nend\n");
+        let file = ws.def(&source);
+        let model = ws.analysis.semantic_model(file);
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .last()
+            .unwrap();
+        flow_metrics::reset();
+        let typ = model.type_of_expr_at(index.get_syntax_id(), index.get_position());
+        let steps = flow_metrics::trace_steps();
+        assert!(
+            typ.is_nullable(),
+            "a possible visible write must remain nullable: {typ:?}"
+        );
+        assert!(
+            steps < 100 * n as u64 + 100,
+            "{n} joins took {steps} trace steps"
+        );
+    }
+}
+
 /// Read the flow type of every name, the way checkers do for each reference.
 fn read_every_name(ws: &VirtualWorkspace, file_id: FileId) {
     let model = ws.analysis.semantic_model(file_id);

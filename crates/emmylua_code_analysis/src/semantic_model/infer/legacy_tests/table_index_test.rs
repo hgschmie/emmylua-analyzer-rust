@@ -12,6 +12,36 @@ fn workspace(table_index: bool) -> VirtualWorkspace {
     ws
 }
 
+#[test]
+fn integrated_generated_collection_short_circuit_guard() {
+    let mut ws = workspace(true);
+    ws.def(
+        r#"
+---@class Entry
+---@field localised_name string
+---@class CustomTable<K, V>: userdata, table<K,V>
+---@class Prototypes.entity: CustomTable<string, Entry>, table<string,Entry>
+---@class Prototypes
+---@field entity Prototypes.entity
+---@type Prototypes
+prototypes = {}
+---@type table<string, boolean>
+excluded = {}
+"#,
+    );
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::NeedCheckNil,
+        r#"
+for name, status in pairs(excluded) do
+    if status then
+        local value = prototypes.entity[name] and prototypes.entity[name].localised_name or name
+        print(value)
+    end
+end
+"#
+    ));
+}
+
 #[gtest]
 fn table_index_is_opt_in() {
     assert_that!(Emmyrc::default().strict.table_index, eq(false));

@@ -68,7 +68,11 @@ pub(super) fn guarded_type(
         _ if named_collection(model, &owner_type, true) => {}
         _ => return None,
     }
-    let inferred = model.type_of_expr(index.get_syntax_id());
+    // Inherited dictionaries add absence in the read projection. Narrow that
+    // contract before deciding whether the guard changed the ordinary value type.
+    let inferred = model
+        .dictionary_index_type(index, true)
+        .unwrap_or_else(|| model.type_of_expr(index.get_syntax_id()));
     let base = match (&inferred, &owner_type) {
         // Recursive element inference can be unknown at a loop/write site. The
         // owner's array contract is still available, as in guarded_index_type.

@@ -1,6 +1,43 @@
 #![cfg(test)]
 use crate::{DiagnosticCode, LuaType, VirtualWorkspace};
 
+#[test]
+fn integrated_callback_assignment_keeps_same_file_directional_contract() {
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    let source = r#"
+---@class Holder
+---@field (read) callback fun(value: boolean)
+---@field (write) callback fun(value: string)
+---@field (write) callback fun(value: number)
+---@type Holder
+holder = {}
+holder.callback = function(value)
+    callback_value = value
+end
+local reader_value = holder.callback
+"#;
+    let mut ws = VirtualWorkspace::new();
+    let valid = ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, source);
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def(source);
+    let model = ws.analysis.semantic_model(file);
+    let index = model
+        .chunk()
+        .unwrap()
+        .descendants::<LuaIndexExpr>()
+        .last()
+        .unwrap();
+    let (read, write) = model
+        .directional_index(&index)
+        .expect("directional contract after assignment");
+    assert_eq!(read.typ, ws.ty("fun(value: boolean)"));
+    assert_eq!(
+        write.typ,
+        ws.ty("(fun(value: string))|(fun(value: number))")
+    );
+    assert!(valid);
+}
+
 fn check_inherited_write_projection(
     declarations: &str,
     receiver: &str,
