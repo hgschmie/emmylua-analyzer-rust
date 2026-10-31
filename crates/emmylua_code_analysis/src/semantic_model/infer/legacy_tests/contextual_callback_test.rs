@@ -933,3 +933,252 @@ fn contextual_callback_unannotated_nested_member_chain_terminates() {
         );
     }
 }
+
+#[gtest]
+fn contextual_callback_parenthesized_constructors_keep_context() {
+    for (prefix, value) in [
+        (
+            "---@type table<string,SettingFunction>\nlocal handlers = ",
+            "({ callback = function(settings) local observed = settings end })",
+        ),
+        (
+            "---@type table<string,SettingFunction>\nlocal handlers\nhandlers = ",
+            "(({ callback = function(settings) local observed = settings end }))",
+        ),
+        (
+            "---@class Container\n---@field handlers table<string,SettingFunction>\n---@type Container\nlocal container\ncontainer.handlers = ",
+            "({ callback = function(settings) local observed = settings end })",
+        ),
+        (
+            "---@type table<string,Entry>\nlocal entries = ",
+            "{ name = ({ callback = function(settings) local observed = settings end }) }",
+        ),
+        (
+            "local entries = ",
+            "{\n---@type Entry\nname = ({ callback = function(settings) local observed = settings end }) }",
+        ),
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(DEFINITIONS);
+        ws.def("---@class Entry\n---@field callback SettingFunction");
+        let file = ws.def(&format!("{prefix}{value}"));
+        expect_that!(
+            local_type(&ws, file, "observed"),
+            eq(&ws.ty("Settings")),
+            "{prefix}{value}"
+        );
+    }
+}
+
+#[gtest]
+fn contextual_callback_field_generic_parameters_keep_scope() {
+    for (doc, nullable) in [("settings T", false), ("settings? T", true)] {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(DEFINITIONS);
+        let file = ws.def(&format!(
+            r#"
+            ---@type table<string,SettingFunction>
+            local handlers = {{
+                ---@generic T: string
+                ---@param {doc}
+                handler = function(settings)
+                    local observed = settings
+                end,
+            }}
+        "#
+        ));
+        let actual = local_type(&ws, file, "observed");
+        let alternatives = match &actual {
+            LuaType::Union(union) => union.into_vec(),
+            ty => vec![ty.clone()],
+        };
+        expect_true!(
+            alternatives
+                .iter()
+                .any(|ty| matches!(ty, LuaType::TplRef(template)
+            if template.get_name() == "T" && template.get_constraint() == Some(&LuaType::String))),
+            "{doc}: {actual:?}"
+        );
+        expect_that!(actual.is_nullable(), eq(nullable), "{doc}");
+        let model = ws.analysis.semantic_model(file);
+        let closure = model
+            .chunk()
+            .unwrap()
+            .descendants::<emmylua_parser::LuaClosureExpr>()
+            .next()
+            .unwrap();
+        let signature = model.type_of_signature(closure.get_syntax_id()).unwrap();
+        expect_that!(
+            signature.get_params()[0].1.as_ref().unwrap(),
+            eq(&actual),
+            "signature/body: {doc}"
+        );
+        expect_that!(signature.get_generic_params().len(), eq(1), "{doc}");
+        let cross_file_signature = model
+            .type_of_signature_in_file(file, closure.get_syntax_id())
+            .unwrap();
+        expect_that!(
+            cross_file_signature.get_params()[0].1.as_ref().unwrap(),
+            eq(&actual),
+            "cross-file signature/body: {doc}"
+        );
+        expect_that!(
+            cross_file_signature.get_generic_params(),
+            eq(signature.get_generic_params()),
+            "{doc}"
+        );
+    }
+}
+
+#[gtest]
+fn contextual_callback_array_contract_accepts_integer_keys() {
+    for key in ["0", "-1", "1"] {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(DEFINITIONS);
+        ws.def("---@class Entry\n---@field callback SettingFunction");
+        let file = ws.def(&format!(
+            r#"
+            ---@type Entry[]
+            local entries = {{ [{key}] = {{ callback = function(settings)
+                local observed = settings
+            end }} }}
+        "#
+        ));
+        expect_that!(
+            local_type(&ws, file, "observed"),
+            eq(&ws.ty("Settings")),
+            "key={key}"
+        );
+    }
+}
+
+#[gtest]
+fn contextual_callback_parentheses_do_not_invent_context() {
+    for source in [
+        "local entries = ({ name = ({ callback = function(settings) local observed = settings end }) })",
+        "---@type table<integer,Entry>\nlocal entries = ({ wrong = ({ callback = function(settings) local observed = settings end }) })",
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(DEFINITIONS);
+        ws.def("---@class Entry\n---@field callback SettingFunction");
+        let file = ws.def(source);
+        let actual = local_type(&ws, file, "observed");
+        expect_true!(
+            matches!(actual, LuaType::Unknown | LuaType::Any),
+            "{source}: {actual:?}"
+        );
+    }
+}
+
+#[gtest]
+fn contextual_callback_field_generics_do_not_leak_between_siblings() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def("---@alias T boolean");
+    let file = ws.def(
+        r#"
+        ---@type table<string, fun(value: unknown): unknown>
+        local handlers = {
+            ---@generic T: string
+            ---@param value T
+            ---@return T
+            text = function(value)
+                local observed_text = value
+                return value
+            end,
+            ---@generic T: integer
+            ---@param value T
+            ---@return T
+            number = function(value)
+                local observed_number = value
+                return value
+            end,
+            plain = function(value)
+                local observed_plain = value
+                return value
+            end,
+        }
+    "#,
+    );
+    let model = ws.analysis.semantic_model(file);
+    let closures = model
+        .chunk()
+        .unwrap()
+        .descendants::<emmylua_parser::LuaClosureExpr>()
+        .collect::<Vec<_>>();
+    for (index, (name, constraint)) in [
+        ("observed_text", LuaType::String),
+        ("observed_number", LuaType::Integer),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let actual = local_type(&ws, file, name);
+        expect_true!(
+            matches!(&actual, LuaType::TplRef(template) if template.get_name() == "T" && template.get_constraint() == Some(&constraint)),
+            "{name}: {actual:?}"
+        );
+        for signature in [
+            model
+                .type_of_signature(closures[index].get_syntax_id())
+                .unwrap(),
+            model
+                .type_of_signature_in_file(file, closures[index].get_syntax_id())
+                .unwrap(),
+        ] {
+            expect_that!(signature.get_generic_params().len(), eq(1), "{name}");
+            expect_that!(
+                signature.get_params()[0].1.as_ref().unwrap(),
+                eq(&actual),
+                "{name}"
+            );
+            let generic = &signature.get_generic_params()[0];
+            expect_that!(generic.get_constraint(), eq(Some(&constraint)), "{name}");
+            expect_true!(
+                matches!(signature.get_ret(), LuaType::TplRef(template)
+                if template.get_name() == generic.get_name() && template.get_tpl_id() == generic.get_tpl_id()),
+                "{name}"
+            );
+        }
+    }
+    expect_that!(
+        local_type(&ws, file, "observed_plain"),
+        eq(&LuaType::Unknown)
+    );
+    expect_true!(
+        model
+            .type_of_signature(closures[2].get_syntax_id())
+            .unwrap()
+            .get_generic_params()
+            .is_empty()
+    );
+}
+
+#[gtest]
+fn contextual_callback_named_unknown_and_nil_contracts_stay_authoritative() {
+    for contract in ["unknown", "nil"] {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(DEFINITIONS);
+        ws.def(&format!(
+            r#"
+            ---@class Entry
+            ---@field callback SettingFunction
+            ---@class Container
+            ---@field selected {contract}
+            ---@field [string] Entry
+        "#
+        ));
+        let file = ws.def(
+            r#"
+            ---@type Container
+            local entries = { selected = { callback = function(settings)
+                local observed = settings
+            end } }
+        "#,
+        );
+        let actual = local_type(&ws, file, "observed");
+        expect_true!(
+            matches!(actual, LuaType::Unknown | LuaType::Any),
+            "{contract}: {actual:?}"
+        );
+    }
+}
