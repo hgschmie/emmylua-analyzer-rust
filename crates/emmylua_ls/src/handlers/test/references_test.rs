@@ -324,4 +324,51 @@ mod tests {
         assert!(lines.contains(&4));
         Ok(())
     }
+    #[gtest]
+    fn test_member_references_resolve_implicit_self() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        check!(ws.check_references(
+            r#"
+                local Manager = {}
+                function Manager:st<??>ate() end
+                function Manager:use()
+                    self:state()
+                    local callback = function() self:state() end
+                    local Other = {}
+                    function Other:use() self:state() end
+                    local shadow = function(self) self:state() end
+                    do
+                        local self = {}
+                        self:state()
+                    end
+                end
+                Manager:state()
+                return Manager
+            "#,
+            vec![("use.lua", "local M = require('virtual_0')\nM:state()")],
+            vec![
+                VirtualLocation {
+                    file: "".into(),
+                    line: 2
+                },
+                VirtualLocation {
+                    file: "".into(),
+                    line: 4
+                },
+                VirtualLocation {
+                    file: "".into(),
+                    line: 5
+                },
+                VirtualLocation {
+                    file: "".into(),
+                    line: 14
+                },
+                VirtualLocation {
+                    file: "use.lua".into(),
+                    line: 1
+                },
+            ],
+        ));
+        Ok(())
+    }
 }
