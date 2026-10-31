@@ -7,7 +7,7 @@ use emmylua_parser::{
 };
 
 use crate::DiagnosticCode;
-use crate::semantic_db::def::ModuleExport;
+use crate::semantic_db::def::{ModuleExport, SemanticId};
 use crate::semantic_db::facts::FileFacts;
 use crate::semantic_model::SemanticModel;
 use crate::{FileId, InFiled, LuaMemberKey, LuaType};
@@ -85,16 +85,39 @@ fn check_index_expr(
     let Some(key) = lua_member_key(semantic_model, &index_key) else {
         return;
     };
+    let declared_ty = match &module_facts.module_export {
+        ModuleExport::Decl { decl, .. } => semantic_model.type_of_decl(decl),
+        _ => None,
+    };
     // If the export surface contains the member → valid.
     //
     // Canonical module owners also aggregate mutations contributed by other
     // files (P5 require aliases). Those are visible to semantic resolution but
     // are *not* part of the original export surface: a consumer doing
     // `local a = require("mod"); a.newField = 1` is still an injection.
+    // Declared class fields (including inherited fields in another file) are
+    // part of the contract, even when absent from the initial table literal.
     let is_surface_member = semantic_model
         .member_infos_with_key(&export_ty, &key)
         .into_iter()
-        .any(|info| info.file_id.is_none_or(|file_id| file_id == module_file));
+        .chain(
+            declared_ty
+                .as_ref()
+                .into_iter()
+                .flat_map(|ty| semantic_model.member_infos_with_key(ty, &key)),
+        )
+        .any(|info| {
+            info.file_id.is_none_or(|file_id| file_id == module_file)
+                || info
+                    .file_id
+                    .zip(info.id.as_ref())
+                    .is_some_and(|(file_id, id)| {
+                        semantic_model
+                            .file_facts_of(file_id)
+                            .and_then(|facts| facts.member_by_id(id))
+                            .is_some_and(|member| matches!(member.owner, SemanticId::TypeDef(_)))
+                    })
+        });
     // A function-valued __index supplies readable members without declaring
     // fields on the exported table. It does not authorize injecting new fields.
     let is_index_read = code == DiagnosticCode::UndefinedField
@@ -131,8 +154,8 @@ fn check_index_expr(
     }
 }
 
-/// Table type of a module export surface (`return { ... }` / `local M = {}; return M`).
-/// Non-table exports (functions / named types) return `None` and are left to undefined_field and other checkers.
+/// Runtime surface of a table constructor exported directly or through a local declaration.
+/// Non-table initializers are left to the other field checkers.
 fn export_table_type(module_file: FileId, facts: &FileFacts) -> Option<LuaType> {
     let syntax = match &facts.module_export {
         ModuleExport::Expr { value_syntax } => Some(*value_syntax),
