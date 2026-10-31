@@ -18,6 +18,7 @@ pub struct FlowTree {
     multiple_antecedents: Vec<Vec<FlowId>>,
     // labels: HashMap<LuaClosureId, HashMap<SmolStr, FlowId>>,
     bindings: HashMap<LuaSyntaxId, FlowId>,
+    loop_reentries: HashMap<LuaSyntaxId, [FlowId; 2]>,
     /// Sorted binding ranges; used as a fallback for offsets that are not exactly
     /// the start of a bound syntax node.
     binding_ranges: Vec<(TextRange, FlowId)>,
@@ -60,6 +61,7 @@ impl FlowTree {
         multiple_antecedents: Vec<Vec<FlowId>>,
         // labels: HashMap<LuaClosureId, HashMap<SmolStr, FlowId>>,
         bindings: HashMap<LuaSyntaxId, FlowId>,
+        loop_reentries: HashMap<LuaSyntaxId, [FlowId; 2]>,
     ) -> Self {
         let mut decl_assignments: HashMap<SemanticId, Vec<(TextSize, FlowId)>> = HashMap::new();
         let mut member_assignments: HashMap<SemanticId, Vec<(TextSize, FlowId)>> = HashMap::new();
@@ -159,6 +161,7 @@ impl FlowTree {
             has_tag_cast,
             multiple_antecedents,
             bindings,
+            loop_reentries,
             binding_ranges,
             binding_starts,
             decl_assignments,
@@ -232,6 +235,11 @@ impl FlowTree {
             }
         }
         reachable
+    }
+
+    /// Normal body completion and the entry label carrying explicit continue paths.
+    pub(crate) fn loop_reentries(&self, syntax: LuaSyntaxId) -> Option<&[FlowId; 2]> {
+        self.loop_reentries.get(&syntax)
     }
 
     pub fn get_flow_id(&self, syntax_id: LuaSyntaxId) -> Option<FlowId> {

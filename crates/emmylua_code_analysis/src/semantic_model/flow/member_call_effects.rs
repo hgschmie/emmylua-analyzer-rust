@@ -17,13 +17,13 @@ use std::{
 
 use emmylua_parser::{
     LuaAssignStat, LuaAstNode, LuaCallExpr, LuaClosureExpr, LuaExpr, LuaFuncStat, LuaIndexExpr,
-    LuaSyntaxId, LuaSyntaxNode, LuaVarExpr,
+    LuaLoopStat, LuaSyntaxId, LuaSyntaxNode, LuaVarExpr,
 };
-use rowan::TextSize;
+use rowan::{TextRange, TextSize};
 
 use super::{SemanticModel, guards, index_access_path, path_write_affects, stable_access_path};
 use crate::semantic_db::def::SemanticId;
-use crate::semantic_db::flow::{FlowAntecedent, FlowEffect, FlowNodeKind, LuaClosureId};
+use crate::semantic_db::flow::{FlowAntecedent, FlowEffect, FlowId, FlowNodeKind, LuaClosureId};
 use crate::{LuaMemberKey, LuaType};
 
 type Access = (SemanticId, Vec<LuaMemberKey>);
@@ -436,10 +436,7 @@ fn reaching_values(
     let Some(tree) = model.flow_tree() else {
         return vec![None];
     };
-    if tree
-        .latest_decl_assignment(root, query.get_position())
-        .is_none()
-    {
+    if !tree.has_decl_assignment(root) {
         return vec![None];
     }
     let Some(start) = tree.get_flow_id_at(query.get_position()) else {
@@ -448,6 +445,8 @@ fn reaching_values(
     let Some(chunk) = model.chunk() else {
         return vec![None];
     };
+    let loops = enclosing_loop_reentries(model, root, query);
+    let mut entered = HashSet::new();
     let mut pending = vec![start];
     let mut visited = HashSet::new();
     let mut values = Vec::new();
@@ -459,6 +458,27 @@ fn reaching_values(
             values.push(None);
             continue;
         };
+        // The CFG intentionally omits normal loop backedges. Add them only for
+        // this reaching-value query, when a path exits the current iteration.
+        // A replacement inside the iteration stops before reaching this boundary.
+        let position = match &node.kind {
+            FlowNodeKind::DeclPosition(at) => Some(*at),
+            FlowNodeKind::TrueCondition(ptr) | FlowNodeKind::FalseCondition(ptr) => {
+                Some(ptr.get_syntax_id().get_range().start())
+            }
+            _ => node
+                .kind
+                .assignment_syntax()
+                .map(|id| id.get_range().start()),
+        };
+        for (range, reentries) in &loops {
+            if (matches!(node.kind, FlowNodeKind::Start)
+                || position.is_some_and(|position| position < range.start()))
+                && entered.insert(*range)
+            {
+                pending.extend(reentries);
+            }
+        }
         let replacement = tree.get_flow_effects(flow).iter().find_map(|effect| {
             if let FlowEffect::AssignDecl {
                 decl, value_syntax, ..
@@ -467,7 +487,6 @@ fn reaching_values(
                 && let Some(value) = value_syntax
                     .to_node_from_root(chunk.syntax())
                     .and_then(LuaExpr::cast)
-                && value.get_range().end() < query.get_position()
             {
                 Some(value)
             } else {
@@ -494,6 +513,41 @@ fn reaching_values(
         }
     }
     values
+}
+
+/// Locals declared in a loop are recreated on each iteration. Only enclosing
+/// loops in the same closure can feed an older declaration back into this query.
+fn enclosing_loop_reentries(
+    model: &SemanticModel,
+    root: &SemanticId,
+    query: &LuaExpr,
+) -> Vec<(TextRange, [FlowId; 2])> {
+    let (Some(facts), Some(tree)) = (model.file_facts(), model.flow_tree()) else {
+        return Vec::new();
+    };
+    let Some(decl) = facts.decl_by_id(root) else {
+        return Vec::new();
+    };
+    query
+        .syntax()
+        .ancestors()
+        .take_while(|node| LuaClosureExpr::cast(node.clone()).is_none())
+        .filter_map(LuaLoopStat::cast)
+        .filter(|loop_stat| !loop_stat.get_range().contains_range(decl.name_range))
+        .filter(|loop_stat| match loop_stat {
+            LuaLoopStat::ForStat(stat) => stat
+                .get_block()
+                .is_some_and(|block| block.get_range().contains_range(query.get_range())),
+            LuaLoopStat::ForRangeStat(stat) => stat
+                .get_block()
+                .is_some_and(|block| block.get_range().contains_range(query.get_range())),
+            _ => true,
+        })
+        .filter_map(|loop_stat| {
+            tree.loop_reentries(loop_stat.get_syntax_id())
+                .map(|flows| (loop_stat.get_range(), *flows))
+        })
+        .collect()
 }
 
 fn write_conflicts(
@@ -1338,5 +1392,127 @@ mod rawset_key_tests {
                 "{guarded}; {call_text}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod loop_callee_tests {
+    use super::*;
+
+    fn check(body: &str, conflicts: bool) {
+        let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+        let mut config = ws.get_emmyrc();
+        config.runtime.nonstandard_symbol = serde_json::from_str(r#"["continue"]"#).unwrap();
+        ws.update_emmyrc(config);
+        let file = ws.def(&format!(
+            r#"
+local receiver = {{value = 1}}
+local other = {{value = 1}}
+local function write(target) target.value = nil end
+local harmless = function() end
+local action = harmless
+{body}
+"#
+        ));
+        let model = ws.analysis.semantic_model(file);
+        let chunk = model.chunk().unwrap();
+        let index = chunk
+            .descendants::<LuaIndexExpr>()
+            .find(|index| index.get_text() == "receiver.value")
+            .unwrap();
+        let call = chunk
+            .descendants::<LuaCallExpr>()
+            .find(|call| {
+                call.get_prefix_expr()
+                    .is_some_and(|prefix| prefix.get_text() == "action")
+            })
+            .unwrap();
+        assert_eq!(
+            calls_conflict(&model, &index, call.syntax(), call.get_range().end()),
+            conflicts,
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn loop_carried_name_callee_keeps_visible_writes() {
+        for (start, end) in [
+            ("while flag do", "end"),
+            ("while true do", "end"),
+            ("repeat", "until flag"),
+            ("for i = 1, 2 do", "end"),
+            ("for i = 2, 1, -1 do", "end"),
+            ("for _, item in pairs(items) do", "end"),
+        ] {
+            check(
+                &format!(
+                    "{start} action(receiver) local observed = receiver.value action = write {end}"
+                ),
+                true,
+            );
+        }
+    }
+
+    #[test]
+    fn loop_callee_replacements_stop_old_values() {
+        for body in [
+            "while flag do action = harmless action(receiver) local observed = receiver.value action = write end",
+            "while flag do action(receiver) local observed = receiver.value action = write action = harmless end",
+            "while flag do if choice then action = harmless else action = harmless end action(receiver) local observed = receiver.value action = write end",
+            "while flag do local action = harmless action(receiver) local observed = receiver.value action = write end",
+        ] {
+            check(body, false);
+        }
+    }
+
+    #[test]
+    fn loop_callees_preserve_receiver_and_closure_identity() {
+        for body in [
+            "while flag do action(other) local observed = receiver.value action = write end",
+            "while flag do action(receiver) local observed = receiver.value local function unused() action = write end end",
+            "action(receiver) local observed = receiver.value while flag do action = write end",
+            "action(receiver) local observed = receiver.value action = write",
+            "for i = action(receiver), 10 do local observed = receiver.value action = write end",
+            "for item in action(receiver) do local observed = receiver.value action = write end",
+            "while flag do local function nested() action(receiver) local observed = receiver.value end action = write end",
+        ] {
+            check(body, false);
+        }
+    }
+
+    #[test]
+    fn terminating_loop_paths_do_not_feed_the_next_iteration() {
+        for body in [
+            "while flag do action(receiver) local observed = receiver.value action = write break end",
+            "while flag do action(receiver) local observed = receiver.value action = write return end",
+            "while flag do action(receiver) local observed = receiver.value if choice then action = write break end end",
+            "repeat action(receiver) local observed = receiver.value action = write until true",
+            "for i = 1, 1 do action(receiver) local observed = receiver.value action = write end",
+            "for i = 1, 1, -1 do action(receiver) local observed = receiver.value action = write end",
+        ] {
+            check(body, false);
+        }
+    }
+
+    #[test]
+    fn conditional_and_nested_loop_callees_keep_possible_writes() {
+        for body in [
+            "while flag do if choice then action = harmless end action(receiver) local observed = receiver.value action = write end",
+            "while flag do action(receiver) local observed = receiver.value if choice then action = write end end",
+            "while flag do while other_flag do action(receiver) local observed = receiver.value end action = write end",
+            "while flag do action(receiver) local observed = receiver.value if choice then action = write else action = harmless end end",
+            "while flag do action(receiver) local observed = receiver.value action = write continue end",
+            "while flag do action(receiver) local observed = receiver.value if choice then action = write continue end action = harmless end",
+        ] {
+            check(body, true);
+        }
+    }
+
+    #[test]
+    fn loop_carried_rawset_alias_keeps_visible_writes() {
+        check(
+            "while flag do action(receiver, 'value', nil) local observed = receiver.value action = rawset end",
+            true,
+        );
     }
 }

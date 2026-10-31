@@ -11,7 +11,7 @@
 use emmylua_parser::{
     BinaryOperator, LuaAssignStat, LuaAst, LuaAstNode, LuaBlock, LuaCallExprStat,
     LuaElseIfClauseStat, LuaExpr, LuaForRangeStat, LuaForStat, LuaFuncStat, LuaIfStat,
-    LuaIndexExpr, LuaLocalStat, LuaRepeatStat, LuaWhileStat, UnaryOperator,
+    LuaIndexExpr, LuaLocalStat, LuaLoopStat, LuaRepeatStat, LuaWhileStat, UnaryOperator,
 };
 
 use super::comment::bind_comment;
@@ -45,6 +45,10 @@ enum Task {
 
 /// Suspended parent task state
 enum Continuation {
+    RecordLoopExit {
+        loop_stat: LuaLoopStat,
+        entry: FlowId,
+    },
     /// Execute the remaining tasks in order, passing the result through
     Seq { pending: Vec<Task> },
     /// Condition node creation phase (restore the targets, then create True/False condition nodes)
@@ -238,6 +242,14 @@ impl<'a, 'b> BindEngine<'a, 'b> {
             }
             Task::Node(node, current) => self.evaluate_node(node, current),
             Task::Block(block, current) => {
+                if let Some(loop_stat) = block.syntax().parent().and_then(LuaLoopStat::cast)
+                    && loop_may_repeat(&loop_stat)
+                {
+                    self.stack.push(Continuation::RecordLoopExit {
+                        loop_stat,
+                        entry: self.binder.loop_label,
+                    });
+                }
                 let children = block.children::<LuaAst>().collect::<Vec<_>>();
                 if children.is_empty() {
                     Step::Done(current)
@@ -853,6 +865,12 @@ impl<'a, 'b> BindEngine<'a, 'b> {
 
     fn resume(&mut self, continuation: Continuation, value: FlowId) -> Step {
         match continuation {
+            Continuation::RecordLoopExit { loop_stat, entry } => {
+                self.binder
+                    .loop_reentries
+                    .insert(loop_stat.get_syntax_id(), [value, entry]);
+                Step::Done(value)
+            }
             Continuation::Seq { mut pending } => match pending.pop() {
                 Some(task) => {
                     self.stack.push(Continuation::Seq { pending });
@@ -1284,6 +1302,30 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                 }
             }
         }
+    }
+}
+
+/// Do not synthesize another iteration for statically single-pass loops.
+fn loop_may_repeat(loop_stat: &LuaLoopStat) -> bool {
+    match loop_stat {
+        LuaLoopStat::RepeatStat(stat) => {
+            stat.get_condition_expr()
+                .as_ref()
+                .and_then(static_literal_truthiness)
+                != Some(true)
+        }
+        LuaLoopStat::ForStat(stat) => {
+            let values = stat.get_iter_expr().collect::<Vec<_>>();
+            let start = values.first().and_then(static_number_value);
+            let stop = values.get(1).and_then(static_number_value);
+            let step = values.get(2).map(static_number_value).unwrap_or(Some(1.0));
+            match (start, stop, step) {
+                (Some(start), Some(stop), Some(step)) if step > 0.0 => start + step <= stop,
+                (Some(start), Some(stop), Some(step)) if step < 0.0 => start + step >= stop,
+                _ => true,
+            }
+        }
+        _ => true,
     }
 }
 
