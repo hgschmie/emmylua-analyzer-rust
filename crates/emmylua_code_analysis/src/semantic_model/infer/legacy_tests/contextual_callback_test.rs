@@ -435,6 +435,8 @@ fn contextual_callback_nullable_key_retains_value_contract() {
 
 #[gtest]
 fn contextual_callback_long_plain_alias_keeps_inline_contract() {
+    // Straddle the former 32-alias cap and retain longer finite chains.
+    // The shared evaluator's query-depth limit is not an alias-chain limit.
     for depth in [31, 32, 64, 80] {
         let mut ws = VirtualWorkspace::new();
         let mut definitions = DEFINITIONS.to_string();
@@ -586,5 +588,205 @@ fn contextual_callback_index_key_contract_boundaries() {
             LuaType::Unknown
         };
         expect_that!(local_type(&ws, file, "observed"), eq(&expected), "{setup}");
+    }
+}
+
+#[gtest]
+fn contextual_callback_unknown_union_key_has_no_value_contract() {
+    use emmylua_parser::{LuaIndexKey, LuaTableField};
+    for annotation in ["unknown?", "unknown|string", "MissingKey"] {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(DEFINITIONS);
+        ws.def("---@class Entry\n---@field callback SettingFunction\n---@alias MissingKey\n---| unknown\n---| nil");
+        let file = ws.def(&format!(
+            r#"
+            ---@type {annotation}
+            local index
+            ---@type table<string, Entry>
+            local entries = {{ [index] = {{ callback = function(settings)
+                local observed = settings
+            end }} }}
+        "#
+        ));
+        let model = ws.analysis.semantic_model(file);
+        let key = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaTableField>()
+            .find_map(|field| match field.get_field_key()? {
+                LuaIndexKey::Expr(expr) => Some(expr),
+                _ => None,
+            })
+            .unwrap();
+        let actual = model.type_of_expr_at(key.get_syntax_id(), key.get_position());
+        let expanded = match actual {
+            LuaType::Union(union) => LuaType::Union(union),
+            LuaType::Ref(id) if annotation == "MissingKey" => model
+                .alias_target(&model.type_def_of(&id).unwrap())
+                .unwrap(),
+            other => panic!("expected a composite or alias key, got {other:?}"),
+        };
+        assert!(
+            matches!(expanded, LuaType::Union(ref union) if union.iter().any(LuaType::is_unknown)),
+            "{annotation}: {expanded:?}"
+        );
+        expect_that!(
+            local_type(&ws, file, "observed"),
+            eq(&LuaType::Unknown),
+            "{annotation}"
+        );
+    }
+}
+
+#[gtest]
+fn contextual_callback_unsigned_index_does_not_borrow_negative_contract() {
+    use crate::EmmyrcLuaVersion;
+    use emmylua_parser::{LuaIndexExpr, LuaIndexKey, NumberResult};
+    for (literal, unsigned, value) in [
+        ("18446744073709551615ULL", true, -1),
+        ("0xffffffffffffffff", false, -1),
+        ("3000000000", false, 3_000_000_000),
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        let mut config = ws.get_emmyrc();
+        config.runtime.version = EmmyrcLuaVersion::LuaJIT;
+        ws.update_emmyrc(config);
+        ws.def(DEFINITIONS);
+        ws.def("---@class Entry\n---@field callback SettingFunction");
+        let file = ws.def(&format!(
+            r#"
+            ---@type table<{value},string>
+            local names
+            ---@type table<string,Entry>
+            local entries = {{ [names[{literal}]] = {{ callback = function(settings)
+                local observed = settings
+            end }} }}
+        "#
+        ));
+        let model = ws.analysis.semantic_model(file);
+        let key = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .find_map(|index| match index.get_index_key()? {
+                LuaIndexKey::Integer(value) => Some(value.get_number_value()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            if unsigned {
+                matches!(key, NumberResult::Uint(u64::MAX))
+            } else {
+                matches!(key, NumberResult::Int(actual) if actual == value)
+            },
+            "{literal}: {key:?}"
+        );
+        let expected = if unsigned {
+            LuaType::Unknown
+        } else {
+            ws.ty("Settings")
+        };
+        expect_that!(
+            local_type(&ws, file, "observed"),
+            eq(&expected),
+            "{literal}"
+        );
+    }
+}
+
+#[gtest]
+fn contextual_callback_known_key_domains_survive_normalization() {
+    for (key_type, owner, accepted) in [
+        ("string?", "table<string,Entry>", true),
+        ("integer?", "Entry[]", true),
+        ("any", "table<string,Entry>", true),
+        ("any?", "table<string,Entry>", true),
+        ("boolean?", "table<string,Entry>", false),
+        ("{value: unknown}", "table<{value: unknown},Entry>", true),
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(DEFINITIONS);
+        ws.def("---@class Entry\n---@field callback SettingFunction");
+        let file = ws.def(&format!(
+            r#"
+            ---@type {key_type}
+            local key
+            ---@type {owner}
+            local entries = {{ [key] = {{ callback = function(settings)
+                local observed = settings
+            end }} }}
+        "#
+        ));
+        let expected = if accepted {
+            ws.ty("Settings")
+        } else {
+            LuaType::Unknown
+        };
+        expect_that!(
+            local_type(&ws, file, "observed"),
+            eq(&expected),
+            "{key_type}, {owner}"
+        );
+    }
+}
+
+#[gtest]
+fn contextual_callback_assignment_uses_direct_table_position() {
+    for (targets, prefix) in [("first, entries, last", "many(), "), ("entries, last", "")] {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(DEFINITIONS);
+        let file = ws.def(&format!(
+            r#"
+            ---@return integer, integer
+            local function many() return 1, 2 end
+            ---@type table<string,SettingFunction>
+            local entries
+            local first, last
+            {targets} = {prefix}{{ callback = function(settings)
+                local observed = settings
+            end }}
+        "#
+        ));
+        expect_that!(
+            local_type(&ws, file, "observed"),
+            eq(&ws.ty("Settings")),
+            "{targets}"
+        );
+    }
+}
+
+#[gtest]
+fn contextual_callback_aliases_only_use_callable_alternatives() {
+    for (annotation, expected) in [
+        ("DataAlias", LuaType::Any),
+        (
+            "CallbackAlias|DataAlias|fun(value: boolean)",
+            LuaType::from_vec(vec![LuaType::Integer, LuaType::Boolean]),
+        ),
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@class Data
+            ---@field value string
+            ---@alias DataAlias Data
+            ---@alias CallbackAlias fun(value: integer)
+        "#,
+        );
+        let file = ws.def(&format!(
+            r#"
+            local handlers = {{
+                ---@type {annotation}
+                callback = function(value)
+                    local observed = value
+                end,
+            }}
+        "#
+        ));
+        expect_that!(
+            local_type(&ws, file, "observed"),
+            eq(&expected),
+            "{annotation}"
+        );
     }
 }

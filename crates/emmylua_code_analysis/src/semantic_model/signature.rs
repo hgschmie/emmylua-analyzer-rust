@@ -911,7 +911,7 @@ impl<'db> SemanticModel<'db> {
             LuaIndexKey::String(value) => LuaMemberKey::Name(value.get_value().into()),
             LuaIndexKey::Integer(value) => match value.get_number_value() {
                 NumberResult::Int(value) => LuaMemberKey::Integer(value),
-                NumberResult::Uint(value) => LuaMemberKey::Integer(value as i64),
+                NumberResult::Uint(value) => LuaMemberKey::Integer(i64::try_from(value).ok()?),
                 _ => return None,
             },
             _ => return None,
@@ -960,6 +960,9 @@ impl<'db> SemanticModel<'db> {
             // Unknown compatibility cannot establish an index value contract.
             LuaType::Unknown | LuaType::Nil => return None,
             LuaType::Union(union) => {
+                if union.iter().any(LuaType::is_unknown) {
+                    return None;
+                }
                 let alternatives = union
                     .iter()
                     .filter(|ty| !ty.is_nil())
