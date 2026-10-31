@@ -1738,7 +1738,8 @@ mod tests {
         ))));
         let infos = model.member_infos(&array);
         let map = member_map(&infos);
-        assert_eq!(map.get("x"), Some(&LuaType::Number));
+        // Upstream e1cd626e6 separates array members from element fields.
+        assert_eq!(map.get("x"), None);
     }
 }
 

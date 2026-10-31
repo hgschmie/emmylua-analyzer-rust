@@ -1281,6 +1281,12 @@ fn check_arg_pairs(
                 {
                     out.push(mismatch);
                 }
+                out.extend(table_field_mismatches(
+                    semantic_model,
+                    &param_ty,
+                    arg,
+                    &arg_ty,
+                ));
                 continue;
             }
         }

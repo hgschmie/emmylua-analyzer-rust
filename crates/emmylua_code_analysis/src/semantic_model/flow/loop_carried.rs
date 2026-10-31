@@ -112,7 +112,7 @@ fn compute(
         }
         let typ = rhs
             .map(|(syntax, slot)| {
-                let ty = model.type_of_expr(syntax);
+                let ty = super::type_of_expr_with_cast(model, syntax, super::ExprCastMode::AsOnly);
                 if matches!(ty, LuaType::Unknown | LuaType::Any) {
                     ty
                 } else {

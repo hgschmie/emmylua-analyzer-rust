@@ -2,7 +2,7 @@
 
 use emmylua_code_analysis::{
     DeclKind, FileId, LuaAliasCallKind, LuaFunctionType, LuaGenericType, LuaMemberKey, LuaType,
-    MemberInfo, SemanticId, SemanticModel, TypeDefKind,
+    LuaTypeDeclId, MemberInfo, SemanticId, SemanticModel, TypeDefKind,
 };
 use emmylua_parser::{LuaAstNode, LuaAstToken, LuaIndexExpr, LuaStringToken};
 use lsp_types::{CompletionItem, CompletionItemKind, CompletionItemLabelDetails, InsertTextFormat};
@@ -122,6 +122,9 @@ fn complete_provider(builder: &mut CompletionBuilder) -> Option<()> {
     }
     if members.is_empty() {
         members = match &prefix_type {
+            LuaType::Ref(id) | LuaType::Def(id) => {
+                type_def_member_infos_from_facts(&builder.semantic_model, id.clone())
+            }
             LuaType::Generic(generic) => {
                 let from_type = generic_keyof_member_infos(&builder.semantic_model, generic);
                 if from_type.is_empty() {
@@ -306,6 +309,44 @@ fn generic_keyof_member_infos(
                 is_method: false,
             }),
             _ => None,
+        })
+        .collect()
+}
+
+/// Recover runtime methods of the table attached to this class declaration.
+fn type_def_member_infos_from_facts(
+    model: &SemanticModel<'_>,
+    type_id: LuaTypeDeclId,
+) -> Vec<MemberInfo> {
+    let Some(def) = model.type_def_of(&type_id) else {
+        return Vec::new();
+    };
+    let Some(facts) = model.file_facts_of(def.file_id) else {
+        return Vec::new();
+    };
+    let Some(owner) = def.owner_syntax else {
+        return Vec::new();
+    };
+    let mut owners = vec![def.id.clone()];
+    for decl in facts.decls_by_owner_syntax(owner) {
+        owners.push(decl.id.clone());
+        if matches!(decl.kind, DeclKind::Global) {
+            owners.push(SemanticId::name(decl.name.clone()));
+        }
+        if let Some(value) = decl.value_expr_syntax {
+            owners.push(SemanticId::member(def.file_id, value.get_range()));
+        }
+    }
+    facts
+        .members
+        .iter()
+        .filter(|member| owners.contains(&member.owner) && member.index_key_syntax.is_none())
+        .map(|member| MemberInfo {
+            key: member.key.clone(),
+            typ: model.type_of_member(&member.id).unwrap_or(LuaType::Unknown),
+            id: Some(member.id.clone()),
+            file_id: Some(def.file_id),
+            is_method: member.is_method,
         })
         .collect()
 }

@@ -157,7 +157,6 @@ fn composed_overload_bad_alias_keeps_both_diagnostic_contracts() {
 fn composed_overload_user_table_class_keeps_the_known_field_warning() {
     let source = "---@class table<K, V>\n---@field marker string\nlocal _Table = {}\n---@param values table<string, integer>\nlocal function accept(values) return values end\naccept({marker = 'ok'})";
     let diagnostics = check_source(source);
-    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-    assert_eq!(diagnostics[0].code, DiagnosticCode::AssignTypeMismatch);
-    assert_eq!(&source[diagnostics[0].range], "'ok'");
+    // C02 now distinguishes a user class named table from the builtin dictionary.
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
 }

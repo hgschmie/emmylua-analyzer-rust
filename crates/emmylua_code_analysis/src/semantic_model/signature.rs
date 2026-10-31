@@ -173,6 +173,13 @@ impl<'db> SemanticModel<'db> {
         else {
             return LuaType::Unknown;
         };
+        // Retain the exported factory signature instead of its broad TypeShell.
+        if let Some(facts) = self.file_facts_of(module_file)
+            && let ModuleExport::Expr { value_syntax } = facts.module_export
+            && let Some(signature) = self.type_of_signature_in_file(module_file, value_syntax)
+        {
+            return LuaType::DocFunction(Rc::new(signature));
+        }
         let Some(shell) = self.analysis().module_export_type(module_file) else {
             return LuaType::Unknown;
         };
@@ -495,14 +502,14 @@ impl<'db> SemanticModel<'db> {
                             ))
                     }
                     LuaDocTag::Param(param) => {
-                        if let Some(name) = param.get_name_token()
+                        if let Some(name) = param
+                            .get_name_token()
+                            .map(|token| SmolStr::from(token.get_name_text()))
+                            .or_else(|| param.is_vararg().then(|| SmolStr::new("...")))
                             && let Some(typ) = param.get_type()
                         {
-                            docs.params.push((
-                                name.get_name_text().into(),
-                                typ.get_syntax_id(),
-                                param.is_nullable(),
-                            ));
+                            docs.params
+                                .push((name, typ.get_syntax_id(), param.is_nullable()));
                         }
                     }
                     LuaDocTag::Return(return_tag) => docs
@@ -1059,6 +1066,17 @@ impl<'db> SemanticModel<'db> {
         let field = value.get_parent::<LuaTableField>()?;
         let outer = field.get_parent::<LuaTableExpr>()?;
         let owner = self.contextual_constructor_type(&outer)?;
+        let owner = match self.contextual_alias_target(&owner) {
+            LuaType::Union(union) => {
+                let mut alternatives = union.iter().filter(|ty| !ty.is_nil());
+                let owner = alternatives.next()?.clone();
+                if alternatives.next().is_some() {
+                    return None;
+                }
+                owner
+            }
+            owner => owner,
+        };
         let key_type = match field.get_field_key()? {
             LuaIndexKey::Name(name) => {
                 LuaType::StringConst(SmolStr::new(name.get_name_text()).into())
@@ -1074,6 +1092,12 @@ impl<'db> SemanticModel<'db> {
             },
             LuaIndexKey::Idx(index) => LuaType::IntegerConst(index as i64),
             LuaIndexKey::Expr(expr) => {
+                if let LuaExpr::IndexExpr(index) = &expr
+                    && matches!(index.get_index_key(), Some(LuaIndexKey::Integer(value))
+                        if matches!(value.get_number_value(), NumberResult::Uint(_)))
+                {
+                    return None;
+                }
                 let ty = self.type_of_expr_at(expr.get_syntax_id(), expr.get_position());
                 if matches!(ty, LuaType::Unknown)
                     && let LuaExpr::IndexExpr(index) = &expr

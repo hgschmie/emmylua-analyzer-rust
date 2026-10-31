@@ -46,7 +46,17 @@ fn check_index(
     let Some(resolved) = semantic_model.resolve_member(index_expr) else {
         return;
     };
-    if resolved.member_id.is_some() {
+    if resolved.member_id.as_ref().is_some_and(|id| {
+        // Index navigation can select the signature without proving its domain
+        // accepts this key. Only an explicit field bypasses key validation.
+        match id {
+            SemanticId::Member(key) => semantic_model
+                .file_facts_of(key.file_id)
+                .and_then(|facts| facts.member_by_id(id))
+                .is_none_or(|member| member.index_key_syntax.is_none()),
+            _ => true,
+        }
+    }) {
         return;
     }
     let Some(prefix) = index_expr.get_prefix_expr() else {

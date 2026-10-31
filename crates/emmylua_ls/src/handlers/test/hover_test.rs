@@ -216,8 +216,8 @@ mod tests {
                 "-1",
             ),
             ("return { value = -<??>1 }", "-1"),
-            // Numeric constructor keys keep their member information.
-            ("return { [-<??>1] = true }", "(field) [-1]: boolean = true"),
+            // UP089 keeps computed-key expressions on their own semantic path.
+            ("return { [-<??>1] = true }", "-1"),
         ] {
             let mut ws = ProviderVirtualWorkspace::new();
             check!(ws.check_hover(

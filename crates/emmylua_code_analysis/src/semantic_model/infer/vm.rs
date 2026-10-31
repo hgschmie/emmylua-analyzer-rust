@@ -1254,7 +1254,20 @@ impl<'a> InferVm<'a> {
             .and_then(|info| info.id)
             .is_some()
             && (matches!(member_type_fallback, Some(LuaType::Signature(_)))
-                || (matches!(member_type_fallback, Some(LuaType::Function)) && !is_std_global));
+                || (matches!(member_type_fallback, Some(LuaType::Function)) && !is_std_global)
+                || (matches!(member_type_fallback, Some(LuaType::DocFunction(_)))
+                    && self
+                        .model
+                        .member_info(&owner.ty, &lua_key)
+                        .and_then(|info| info.id)
+                        .and_then(|id| self.signature_candidates(&id))
+                        .is_some_and(|candidates| {
+                            candidates.len() > 1
+                                || (!matches!(owner.ty, LuaType::Generic(_))
+                                    && candidates.iter().any(|candidate| {
+                                        !candidate.get_generic_params().is_empty()
+                                    }))
+                        })));
         if let Some(ty) = &member_type_fallback
             && !matches!(ty, LuaType::Unknown)
             && !needs_member_owner
@@ -3829,6 +3842,14 @@ pub(crate) fn unify_call_bindings(
     use LuaType::*;
     match param {
         Unknown | Any => true,
+        Ref(id) | Def(id)
+            if model
+                .type_def_of(id)
+                .is_some_and(|def| def.kind == TypeDefKind::Alias) =>
+        {
+            // Concrete union alternatives can retain named aliases (uint32|string).
+            model.type_check_subtype(arg, param)
+        }
         TplRef(tpl) => {
             if let TplRef(arg_tpl) = arg
                 && arg_tpl.get_tpl_id() == tpl.get_tpl_id()
@@ -4195,9 +4216,8 @@ pub(crate) fn unify_call_bindings(
                 }
             } else {
                 let pv = param_union.into_vec();
-                // A generic union like `` `T`|T `` allows T to be bound through any generic
-                // component; ordinary unions still require all non-nil components to be
-                // compatible (caller may pass any member).
+                // One actual argument can select any parameter alternative.
+                // Preserve template preference and collection binding selection below.
                 if matches!(arg, Function | DocFunction(_) | Signature(_)) {
                     pv.iter()
                         .any(|p| unify_call_bindings(model, p, arg, bindings))
@@ -4237,12 +4257,16 @@ pub(crate) fn unify_call_bindings(
                     } else {
                         false
                     }
-                } else if pv.contains(&Nil) {
-                    pv.iter()
-                        .filter(|t| !matches!(t, Nil))
-                        .all(|p| unify_call_bindings(model, p, arg, bindings))
                 } else {
-                    false
+                    pv.iter().any(|param| {
+                        let mut candidate = bindings.clone();
+                        if unify_call_bindings(model, param, arg, &mut candidate) {
+                            *bindings = candidate;
+                            true
+                        } else {
+                            false
+                        }
+                    })
                 }
             }
         }

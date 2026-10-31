@@ -231,17 +231,20 @@ pub fn eval_index_access(model: &SemanticModel, base: &LuaType, key: &LuaType) -
             }
             // An explicit member retains its precise type. Otherwise a literal
             // key can still select an index signature, without proving existence.
-            _ => model.member_type(base, &member_key).or_else(|| {
-                // Lazy generic bodies can still contain named parameters
-                // such as T before substitution. A missing declaration here
-                // is not a concrete index contract to query.
-                if matches!(base, LuaType::Ref(id) | LuaType::Def(id)
+            _ => (!super::member::member_infos_with_key(model, base, &member_key).is_empty())
+                .then(|| model.member_type(base, &member_key))
+                .flatten()
+                .or_else(|| {
+                    // Lazy generic bodies can still contain named parameters
+                    // such as T before substitution. A missing declaration here
+                    // is not a concrete index contract to query.
+                    if matches!(base, LuaType::Ref(id) | LuaType::Def(id)
                         if model.type_def_of(id).is_none())
-                {
-                    return None;
-                }
-                index_access::dynamic_index_type(model, base, &key_type)
-            }),
+                    {
+                        return None;
+                    }
+                    index_access::dynamic_index_type(model, base, &key_type)
+                }),
         };
         if let Some(ty) = ty
             && !types.contains(&ty)

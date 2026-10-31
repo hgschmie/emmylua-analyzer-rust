@@ -93,7 +93,9 @@ fn flow_loop_in_other_function_keeps_guard_chain_linear() {
             let entries = flow_metrics::trace_decl_entries();
             measurements.push((n, entries));
 
-            let bound = 32 * (n as u64) + 64;
+            // Combined call-effect analysis adds a constant number of queries per
+            // guard. Keep a linear bound across every doubling, including n=32.
+            let bound = 40 * (n as u64) + 64;
             assert!(
                 entries <= bound,
                 "the declaration walk ran {entries} times for {n} guards (bound {bound}); \

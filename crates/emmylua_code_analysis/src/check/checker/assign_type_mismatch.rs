@@ -442,10 +442,10 @@ fn is_structured_table_target(semantic_model: &SemanticModel<'_>, ty: &LuaType) 
         }
         seen.push(target.clone());
         match &target {
-            LuaType::Array(_) | LuaType::Object(_) => return true,
+            LuaType::Array(_) | LuaType::Object(_) | LuaType::TableGeneric(_) => return true,
             LuaType::Union(union) => pending.extend(union.into_vec().into_iter().rev()),
             LuaType::Generic(generic) => {
-                if generic.get_base_type_id().get_name() == "array" {
+                if matches!(generic.get_base_type_id().get_name(), "array" | "table") {
                     return true;
                 }
                 pending.push(LuaType::Ref(generic.get_base_type_id()));
@@ -495,15 +495,7 @@ pub(super) fn value_tasks(
 ) {
     if let LuaExpr::TableExpr(table) = value_expr {
         // Plain table target without a declared type: keep old behavior — don't check each field or report a type mismatch (same table identity).
-        if matches!(
-            target,
-            LuaType::Table | LuaType::TableConst(_) | LuaType::TableGeneric(_)
-        ) {
-            return;
-        }
-        if let LuaType::Generic(generic) = target
-            && generic.get_base_type_id().get_name() == "table"
-        {
+        if matches!(target, LuaType::Table | LuaType::TableConst(_)) {
             return;
         }
         let expanded = super::check_field::expand_alias_type(semantic_model, target);
@@ -659,6 +651,23 @@ pub(super) fn table_value_tasks(
             table.clone(),
             UnionMode::Values,
         ));
+        return;
+    }
+    if matches!(target, LuaType::TableGeneric(_))
+        || matches!(target, LuaType::Generic(generic)
+            if generic.get_base_type_id() == crate::LuaTypeDeclId::global("table")
+                && semantic_model.type_def_of(generic.get_base_type_id_ref())
+                    .is_none_or(|def| semantic_model.is_std_file(def.file_id)))
+    {
+        for (field, key) in table.get_fields_with_keys() {
+            let Some(value) = field.get_value_expr() else {
+                continue;
+            };
+            let key = index_key_type(semantic_model, &key);
+            if let Some(expected) = semantic_model.dictionary_field_type(target, &key) {
+                tasks.push(Task::EntryValue(expected, value));
+            }
+        }
         return;
     }
     // Array target: check every table-literal element against the element type.

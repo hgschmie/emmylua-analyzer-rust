@@ -48,6 +48,9 @@ pub struct DiagnosticDisable {
 fn doc_owner_has_function_value(owner: &LuaAst) -> bool {
     match owner {
         LuaAst::LuaFuncStat(_) | LuaAst::LuaLocalFuncStat(_) => true,
+        LuaAst::LuaTableField(field) => field
+            .get_value_expr()
+            .is_some_and(|value| matches!(value, LuaExpr::ClosureExpr(_))),
         LuaAst::LuaLocalStat(stat) => stat
             .get_value_exprs()
             .any(|expr| matches!(expr, LuaExpr::ClosureExpr(_))),
@@ -2149,6 +2152,17 @@ impl FactsBuilder {
             self.add_implicit_self_decl(SmolStr::new("self"), self_range);
         }
 
+        // Retain runtime field overloads. Other field docs use the contextual
+        // projection, preserving collected signature generic scope and precedence.
+        let doc_owner = closure
+            .get_parent::<LuaTableField>()
+            .map(|field| field.get_syntax_id())
+            .filter(|owner| {
+                self.signature_doc_map
+                    .get(owner)
+                    .is_some_and(|docs| !docs.overloads.is_empty())
+            })
+            .or(doc_owner);
         let mut docs = doc_owner.and_then(|owner| self.signature_doc_map.remove(&owner));
         if docs.is_none() && doc_owner.is_some_and(|owner| self.doc_comment_owners.contains(&owner))
         {

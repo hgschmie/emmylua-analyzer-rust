@@ -285,7 +285,7 @@ pub fn build_semantic_info_hover(
 fn member_read_type_at_token(
     model: &SemanticModel,
     token: &LuaSyntaxToken,
-    member: Option<&SemanticId>,
+    _member: Option<&SemanticId>,
 ) -> Option<LuaType> {
     let index = LuaIndexExpr::cast(token.parent()?)?;
     if index
@@ -301,24 +301,13 @@ fn member_read_type_at_token(
     {
         return None;
     }
-    let mut ty = model.type_of_expr_at(index.get_syntax_id(), index.get_position());
+    // The combined flow query preserves optionality and exact receiver guards.
+    let ty = model.type_of_expr_at(index.get_syntax_id(), index.get_position());
     if matches!(
-        ty,
+        strip_nullable(&ty),
         LuaType::Unknown | LuaType::Function | LuaType::Signature(_) | LuaType::DocFunction(_)
     ) {
         return None;
-    }
-    if let Some(member) = member.filter(|member| member_is_nullable(model, member)) {
-        // Prefix projection supplies generic arguments, but can omit the `?`
-        // in `@field value? T` or restore it after a guard. Keep that projected
-        // value type while taking optionality from the member's flow state.
-        let flow_ty = model.type_of_member_at(member, index.get_position());
-        ty = match flow_ty {
-            LuaType::Nil => LuaType::Nil,
-            LuaType::Unknown | LuaType::Any => return None,
-            _ if flow_ty.is_nullable() => LuaType::from_vec(vec![ty, LuaType::Nil]),
-            _ => strip_nullable(&ty),
-        };
     }
     Some(ty)
 }
@@ -1114,6 +1103,28 @@ fn build_decl_hover(
     }
 
     let description = decl_description(model, decl);
+    // An open global table keeps its broad contract, but its hover can still
+    // show fields assigned by the workspace (for example Factorio's storage).
+    if matches!(typ, LuaType::Table) && matches!(decl_info.kind, DeclKind::Global) {
+        let fields = model
+            .members_of_owner(&SemanticId::name(decl_info.name.clone()))
+            .iter()
+            .filter_map(|member| {
+                let ty = model.type_of_member(&member.id)?;
+                Some((member.name.to_string(), humanize(model, &ty)))
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        if !fields.is_empty() {
+            let lines = fields
+                .iter()
+                .map(|(name, ty)| format!("    {name}: {ty},"))
+                .collect::<Vec<_>>();
+            return (
+                format!("{prefix}{name}: table {{\n{}\n}}", lines.join("\n")),
+                Some(description),
+            );
+        }
+    }
     // Named type declaration -> expand class member list (`local node: Node { ... }`).
     if let Some(class_lines) = class_member_lines(model, typ)
         && !class_lines.is_empty()

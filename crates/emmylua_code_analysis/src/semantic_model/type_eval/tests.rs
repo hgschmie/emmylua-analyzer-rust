@@ -1112,9 +1112,8 @@ fn dynamic_index_non_rawget_paths_remain_distinct() {
     let call = LuaAliasCallType::new(LuaAliasCallKind::Index, vec![base, LuaType::String]);
     let model = ws.analysis.semantic_model(file);
     assert_eq!(expand_index_call(&model, &call), Some(expected));
-    // Ordinary broad expression indexing currently has a separate precision
-    // limitation. Type-level indexing must not silently change that path.
-    assert_eq!(ws.expr_ty("object[key]"), LuaType::Unknown);
+    // C02 supplies ordinary bracket precision independently of type-level indexing.
+    assert_eq!(ws.expr_ty("object[key]"), LuaType::Integer);
     assert_eq!(ws.expr_ty("record['count']"), LuaType::Integer);
     assert_eq!(ws.expr_ty("rawget(values, key) or 0"), LuaType::Integer);
 }

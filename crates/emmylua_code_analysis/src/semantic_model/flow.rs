@@ -641,7 +641,19 @@ pub(crate) fn type_of_expr_at_node(
                 && let Some(id) = read.id.as_ref()
             {
                 let nullable = apply_field_nullable(model, id, read.typ.clone());
-                if nullable != read.typ {
+                let optional_field = match id {
+                    SemanticId::Member(key) => model
+                        .file_facts_of(key.file_id)
+                        .and_then(|facts| facts.member_by_id(id))
+                        .is_some_and(|member| member.is_nullable),
+                    _ => false,
+                };
+                let optional_generic_field = optional_field
+                    && matches!(
+                        model.type_of_expr(prefix.get_syntax_id()),
+                        LuaType::Generic(_)
+                    );
+                if nullable != read.typ || optional_generic_field {
                     read.typ = nullable;
                     if let Some(typ) = indexed_read_at(model, index_expr, &read, offset) {
                         return apply_casts(typ, All);
@@ -6593,8 +6605,18 @@ fn indexed_read_at(
     let mut budget = 512;
     while let Some((mut current, mut path, mut seen, mut primitive_stable)) = pending.pop() {
         loop {
-            if budget == 0 || !seen.insert(current) {
-                return Some(read.typ.clone());
+            if budget == 0 {
+                results.push(finalize_index_read(model, read.typ.clone(), &path));
+                results.extend(
+                    pending
+                        .into_iter()
+                        .map(|(_, path, _, _)| finalize_index_read(model, read.typ.clone(), &path)),
+                );
+                return Some(LuaType::from_vec(results));
+            }
+            if !seen.insert(current) {
+                results.push(finalize_index_read(model, read.typ.clone(), &path));
+                break;
             }
             budget -= 1;
             let node = tree.get_flow_node(current)?;

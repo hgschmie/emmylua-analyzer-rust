@@ -798,7 +798,13 @@ fn asymmetric_fields_review_union_keeps_ordinary_lookup_policy() {
         ws.def(&format!(
             "{UNION_DEFS}\n---@class Missing\n---@alias Recursive A|Recursive\n---@type {receiver}\nproperty = {{}}"
         ));
-        assert_eq!(ws.expr_ty("property.value"), LuaType::Boolean);
+        // C08 retains nil for a concrete union alternative lacking the field.
+        let expected = if receiver == "A|Missing" {
+            ws.ty("boolean?")
+        } else {
+            LuaType::Boolean
+        };
+        assert_eq!(ws.expr_ty("property.value"), expected, "{receiver}");
         assert!(ws.has_no_diagnostic(
             DiagnosticCode::AssignTypeMismatch,
             "property.value = 'accepted'"
