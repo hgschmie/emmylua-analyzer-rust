@@ -13,7 +13,7 @@ use crate::semantic_db::def::SemanticId;
 use crate::semantic_model::SemanticModel;
 use crate::{
     LuaArrayType, LuaFunctionType, LuaGenericType, LuaMemberKey, LuaObjectType, LuaTupleStatus,
-    LuaTupleType, LuaType, LuaTypeDeclId, TypeDefKind, VariadicType,
+    LuaTupleType, LuaType, LuaTypeDeclId, LuaTypeNode, TypeDefKind, VariadicType,
 };
 
 use super::unify::{self, TplBindings};
@@ -581,6 +581,14 @@ fn match_call_candidate_impl(
             // default/constraint filling, otherwise `---@param a T?` returns would turn
             // `Mock<Procedure>` into `Mock<unknown>`.
             true
+        } else if let Some(arg) = arg
+            && matches!(arg.ty, LuaType::TableConst(_))
+            && !unify_param.contains_tpl_node()
+        {
+            // Concrete table contracts use the original literal identity. The
+            // shallow generic-unification projection loses nested fields and
+            // cannot match empty arrays or unions of named table types.
+            model.type_check_subtype(&arg.ty, unify_param)
         } else if matches!(arg_ty, LuaType::Object(_))
             && matches!(
                 raw_param_ty,
