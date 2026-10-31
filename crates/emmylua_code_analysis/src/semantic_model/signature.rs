@@ -15,6 +15,13 @@ fn needs_rich_doc_type(ty: &LuaType) -> bool {
     }
 }
 
+#[derive(Default)]
+struct ContextualFieldDocs {
+    generics: Vec<DocGenericParam>,
+    params: Vec<(SmolStr, LuaSyntaxId, bool)>,
+    returns: Option<Vec<LuaSyntaxId>>,
+}
+
 impl<'db> SemanticModel<'db> {
     /// Members whose owner is a `SemanticId` (cross-file).
     pub fn members_of_owner(&self, owner: &SemanticId) -> MemberList {
@@ -392,6 +399,61 @@ impl<'db> SemanticModel<'db> {
         )
     }
 
+    /// Locate the value represented by a closure and its transparent parentheses.
+    fn contextual_closure_value(
+        &self,
+        file_id: FileId,
+        closure_syntax: LuaSyntaxId,
+    ) -> Option<LuaExpr> {
+        let tree = self.syntax_tree_of(file_id)?;
+        let mut value = LuaExpr::cast(closure_syntax.to_node_from_root(&tree.get_red_root())?)?;
+        while let Some(LuaExpr::ParenExpr(parent)) = value.syntax().parent().and_then(LuaExpr::cast)
+        {
+            value = LuaExpr::ParenExpr(parent);
+        }
+        Some(value)
+    }
+
+    /// Collect docs only from the field whose value is this closure, possibly wrapped in parentheses.
+    fn contextual_field_docs(
+        &self,
+        file_id: FileId,
+        closure_syntax: LuaSyntaxId,
+    ) -> Option<ContextualFieldDocs> {
+        let value = self.contextual_closure_value(file_id, closure_syntax)?;
+        let field = value.syntax().parent().and_then(LuaTableField::cast)?;
+        let mut docs = ContextualFieldDocs::default();
+        for comment in field.get_comments() {
+            for tag in comment.get_doc_tags() {
+                match tag {
+                    LuaDocTag::Generic(generic) => {
+                        docs.generics
+                            .extend(crate::semantic_db::facts::collect_generics(
+                                generic.get_generic_decl_list(),
+                            ))
+                    }
+                    LuaDocTag::Param(param) => {
+                        if let Some(name) = param.get_name_token()
+                            && let Some(typ) = param.get_type()
+                        {
+                            docs.params.push((
+                                name.get_name_text().into(),
+                                typ.get_syntax_id(),
+                                param.is_nullable(),
+                            ));
+                        }
+                    }
+                    LuaDocTag::Return(return_tag) => docs
+                        .returns
+                        .get_or_insert_with(Vec::new)
+                        .extend(return_tag.get_types().map(|typ| typ.get_syntax_id())),
+                    _ => {}
+                }
+            }
+        }
+        Some(docs)
+    }
+
     /// Preserve field-local generic metadata when its docs are not on the closure signature.
     fn contextual_signature_generics(
         &self,
@@ -403,30 +465,10 @@ impl<'db> SemanticModel<'db> {
         {
             return self.generic_tpls_with_metadata(file_id, &docs.generic_params);
         }
-        let Some(tree) = self.syntax_tree_of(file_id) else {
+        let Some(docs) = self.contextual_field_docs(file_id, signature.closure_syntax) else {
             return Vec::new();
         };
-        let Some(field) = signature
-            .closure_syntax
-            .to_node_from_root(&tree.get_red_root())
-            .and_then(|node| node.parent())
-            .and_then(LuaTableField::cast)
-        else {
-            return Vec::new();
-        };
-        let params = field
-            .get_comments()
-            .into_iter()
-            .flat_map(|comment| comment.get_doc_tags())
-            .filter_map(|tag| match tag {
-                LuaDocTag::Generic(generic) => Some(generic),
-                _ => None,
-            })
-            .flat_map(|generic| {
-                crate::semantic_db::facts::collect_generics(generic.get_generic_decl_list())
-            })
-            .collect::<Vec<_>>();
-        self.generic_tpls_with_metadata(file_id, &params)
+        self.generic_tpls_with_metadata(file_id, &docs.generics)
     }
 
     /// Function signature (by closure syntax location) -> structured function type (`DocFunction`).
@@ -687,32 +729,20 @@ impl<'db> SemanticModel<'db> {
         // signature. Their explicit @param still takes precedence over context.
         if let Some(signature) = self.file_facts()?.signature_by_closure(closure_syntax)
             && let Some(name) = signature.param_names.get(param_index)
-            && let Some(node) =
-                closure_syntax.to_node_from_root(&self.syntax_tree()?.get_red_root())
-            && let Some(field) = node.parent().and_then(LuaTableField::cast)
+            && let Some(docs) = self.contextual_field_docs(self.file_id(), closure_syntax)
+            && let Some((_, syntax, nullable)) = docs
+                .params
+                .iter()
+                .find(|(param_name, _, _)| param_name == name)
         {
-            for comment in field.get_comments() {
-                for tag in comment.get_doc_tags() {
-                    if let LuaDocTag::Param(param) = tag
-                        && param
-                            .get_name_token()
-                            .is_some_and(|token| token.get_name_text() == name)
-                        && let Some(doc_ty) = param.get_type()
-                    {
-                        let generics =
-                            self.contextual_signature_generics(self.file_id(), signature);
-                        let ty = infer::vm::bind_signature_generics(
-                            &self.doc_type_lua_rich(doc_ty.get_syntax_id()),
-                            &generics,
-                        );
-                        return Some(if param.is_nullable() {
-                            LuaType::from_vec(vec![ty, LuaType::Nil])
-                        } else {
-                            ty
-                        });
-                    }
-                }
-            }
+            let generics = self.contextual_signature_generics(self.file_id(), signature);
+            let ty =
+                infer::vm::bind_signature_generics(&self.doc_type_lua_rich(*syntax), &generics);
+            return Some(if *nullable {
+                LuaType::from_vec(vec![ty, LuaType::Nil])
+            } else {
+                ty
+            });
         }
         let is_method = self
             .file_facts()
@@ -766,9 +796,12 @@ impl<'db> SemanticModel<'db> {
     ) -> Option<Vec<LuaFunctionType>> {
         let facts = self.file_facts()?;
         let member_file = self.view.file_id();
+        let value_syntax = self
+            .contextual_closure_value(member_file, closure_syntax)?
+            .get_syntax_id();
         // An annotated function initializer has no member owner. Read its
         // declared contract directly, without inferring the closure itself.
-        if let Some(decl) = facts.decl_by_value_syntax(closure_syntax)
+        if let Some(decl) = facts.decl_by_value_syntax(value_syntax)
             && let Some(doc_syntax) = decl.doc_type_syntax
         {
             let ty = self.doc_type_lua_rich_in(member_file, doc_syntax);
@@ -780,7 +813,7 @@ impl<'db> SemanticModel<'db> {
         let member = facts
             .members
             .iter()
-            .find(|member| member.value_syntax == Some(closure_syntax))?;
+            .find(|member| member.value_syntax == Some(value_syntax))?;
         // 0. Inline `---@type` on a table field (`{ ---@type test A = function(a, b) ... }`) directly gives the function type.
         if let Some(doc_syntax) = member.doc_type_syntax {
             let doc_ty = self.doc_type_lua_rich_in(member_file, doc_syntax);
@@ -1091,58 +1124,39 @@ impl<'db> SemanticModel<'db> {
         mut ret: LuaType,
     ) -> Option<(Vec<(String, Option<LuaType>)>, LuaType)> {
         let facts = self.file_facts_of(file_id)?;
+        let value_syntax = self
+            .contextual_closure_value(file_id, closure_syntax)?
+            .get_syntax_id();
         facts
             .members
             .iter()
-            .find(|member| member.value_syntax == Some(closure_syntax))?;
+            .find(|member| member.value_syntax == Some(value_syntax))?;
         let signature = facts.signature_by_closure(closure_syntax)?;
         let generics = self.contextual_signature_generics(file_id, signature);
-        let tree = self.syntax_tree_of(file_id)?;
-        let node = closure_syntax.to_node_from_root(&tree.get_red_root())?;
-        // Flags on the surrounding statement can create signature docs without
-        // a contract. Only the closure's own field may fill that new fallback.
-        if signature.docs.is_some() && node.parent().and_then(LuaTableField::cast).is_none() {
-            return None;
-        }
-        let field = node.ancestors().find_map(LuaTableField::cast)?;
+        let docs = self.contextual_field_docs(file_id, closure_syntax)?;
         let mut has_param = false;
-        let mut has_return = false;
+        for (name, syntax, nullable) in docs.params {
+            let mut ty = infer::vm::bind_signature_generics(
+                &self.doc_type_lua_rich_in(file_id, syntax),
+                &generics,
+            );
+            if nullable {
+                ty = LuaType::from_vec(vec![ty, LuaType::Nil]);
+            }
+            if let Some(slot) = params.iter_mut().find(|(n, _)| n == name.as_str()) {
+                slot.1 = Some(ty);
+                has_param = true;
+            }
+        }
+        let has_return = docs.returns.is_some();
         let mut returns = Vec::new();
-        for comment in field.get_comments() {
-            for tag in comment.get_doc_tags() {
-                match tag {
-                    LuaDocTag::Param(param) => {
-                        if let Some(name_token) = param.get_name_token()
-                            && let Some(doc_ty) = param.get_type()
-                        {
-                            let mut ty = infer::vm::bind_signature_generics(
-                                &self.doc_type_lua_rich_in(file_id, doc_ty.get_syntax_id()),
-                                &generics,
-                            );
-                            if param.is_nullable() {
-                                ty = LuaType::from_vec(vec![ty, LuaType::Nil]);
-                            }
-                            let name = name_token.get_name_text().to_string();
-                            if let Some(slot) = params.iter_mut().find(|(n, _)| n == &name) {
-                                slot.1 = Some(ty);
-                                has_param = true;
-                            }
-                        }
-                    }
-                    LuaDocTag::Return(return_tag) => {
-                        has_return = true;
-                        for doc_ty in return_tag.get_types() {
-                            let ty = infer::vm::bind_signature_generics(
-                                &self.doc_type_lua_rich_in(file_id, doc_ty.get_syntax_id()),
-                                &generics,
-                            );
-                            if !matches!(ty, LuaType::Unknown) {
-                                returns.push(ty);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
+        for syntax in docs.returns.into_iter().flatten() {
+            let ty = infer::vm::bind_signature_generics(
+                &self.doc_type_lua_rich_in(file_id, syntax),
+                &generics,
+            );
+            if !matches!(ty, LuaType::Unknown) {
+                returns.push(ty);
             }
         }
         if has_return && !returns.is_empty() {

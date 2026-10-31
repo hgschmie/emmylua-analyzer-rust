@@ -1525,3 +1525,192 @@ fn contextual_callback_explicit_signature_params_use_field_generic_scope() {
         }
     }
 }
+
+#[gtest]
+fn contextual_callback_parenthesized_closures_keep_declared_context() {
+    for depth in [0, 1, 2] {
+        let closure = format!(
+            "{}function(settings) local observed = settings end{}",
+            "(".repeat(depth),
+            ")".repeat(depth)
+        );
+        for source in [
+            format!(
+                "---@type table<string,SettingFunction>\nlocal handlers = {{ named = {closure} }}"
+            ),
+            format!("---@type SettingFunction[]\nlocal handlers = {{ {closure} }}"),
+            format!("local handlers = {{\n---@type SettingFunction\nnamed = {closure} }}"),
+            format!("---@type SettingFunction\nlocal handler = {closure}"),
+            format!(
+                "---@type table<string,SettingFunction>\nlocal handlers = {{}}\nhandlers.named = {closure}"
+            ),
+            format!(
+                "---@class Entry\n---@field callback SettingFunction\n---@type table<string,Entry>\nlocal entries = {{ named = {{ callback = {closure} }} }}"
+            ),
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            ws.def(DEFINITIONS);
+            let file = ws.def(&source);
+            expect_that!(
+                local_type(&ws, file, "observed"),
+                eq(&ws.ty("Settings")),
+                "{source}"
+            );
+        }
+    }
+}
+
+#[gtest]
+fn contextual_callback_parenthesized_field_docs_keep_generic_scope() {
+    for (outer_docs, owner_annotation) in [
+        ("", "---@type table<string,SettingFunction>\n"),
+        (
+            "---@deprecated\n",
+            "---@type table<string,SettingFunction>\n",
+        ),
+        ("---@async\n", "---@type table<string,SettingFunction>\n"),
+        ("", ""),
+        ("---@deprecated\n", ""),
+        ("---@async\n", ""),
+    ] {
+        for depth in [0, 1, 2] {
+            for optional in ["", "?"] {
+                let mut ws = VirtualWorkspace::new();
+                ws.def(DEFINITIONS);
+                let open = "(".repeat(depth);
+                let close = ")".repeat(depth);
+                let file = ws.def(&format!(
+                    r#"
+                    {outer_docs}{owner_annotation}
+                    local handlers = {{
+                        ---@generic T: string
+                        ---@param settings{optional} T
+                        ---@return T
+                        named = {open}function(settings)
+                            local observed = settings
+                            return settings
+                        end{close},
+                    }}
+                "#
+                ));
+                let foreign_file = ws.def("local unrelated = true");
+                let model = ws.analysis.semantic_model(file);
+                let foreign_model = ws.analysis.semantic_model(foreign_file);
+                let closure = model
+                    .chunk()
+                    .unwrap()
+                    .descendants::<emmylua_parser::LuaClosureExpr>()
+                    .next()
+                    .unwrap();
+                let actual = local_type(&ws, file, "observed");
+                let parts = match &actual {
+                    LuaType::Union(union) => union.into_vec(),
+                    ty => vec![ty.clone()],
+                };
+                expect_true!(parts.iter().any(|ty| matches!(ty, LuaType::TplRef(template)
+                    if template.get_name() == "T" && template.get_constraint() == Some(&LuaType::String))),
+                    "{outer_docs:?}, owner={owner_annotation:?}, depth={depth}, {optional:?}: {actual:?}");
+                expect_that!(
+                    actual.is_nullable(),
+                    eq(!optional.is_empty()),
+                    "depth={depth}, {optional:?}"
+                );
+                for (index, signature) in [
+                    model.type_of_signature(closure.get_syntax_id()).unwrap(),
+                    model
+                        .type_of_signature_in_file(file, closure.get_syntax_id())
+                        .unwrap(),
+                    foreign_model
+                        .type_of_signature_in_file(file, closure.get_syntax_id())
+                        .unwrap(),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    expect_that!(
+                        signature.get_params()[0].1.as_ref().unwrap(),
+                        eq(&actual),
+                        "{outer_docs:?}, owner={owner_annotation:?}, depth={depth}, {optional:?}, API={index}"
+                    );
+                    expect_that!(signature.get_generic_params().len(), eq(1));
+                    if let Some(generic) = signature.get_generic_params().first() {
+                        expect_that!(generic.get_constraint(), eq(Some(&LuaType::String)));
+                        if index > 0 {
+                            expect_true!(
+                                matches!(signature.get_ret(), LuaType::TplRef(template)
+                                if template.get_name() == "T" && template.get_tpl_id() == generic.get_tpl_id()),
+                                "{outer_docs:?}, owner={owner_annotation:?}, depth={depth}, {optional:?}: {:?}",
+                                signature.get_ret()
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[gtest]
+fn contextual_callback_field_docs_stop_at_non_value_boundaries() {
+    for depth in [0, 2] {
+        let closure = format!(
+            "{}function(value) local observed = value; return nil end{}",
+            "(".repeat(depth),
+            ")".repeat(depth)
+        );
+        for inner in [
+            format!("local nested = {{}}; nested.callback = {closure}"),
+            format!("local nested = {{}}\n---@deprecated\nnested.callback = {closure}"),
+            format!("local nested = {closure}"),
+            format!("consume({closure})"),
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            let file = ws.def(&format!(
+                r#"
+                local handlers = {{
+                    ---@generic T: string
+                    ---@param value T
+                    ---@return T
+                    handler = function(value)
+                        {inner}
+                        return value
+                    end,
+                }}
+            "#
+            ));
+            let foreign_file = ws.def("local unrelated = true");
+            let model = ws.analysis.semantic_model(file);
+            let foreign_model = ws.analysis.semantic_model(foreign_file);
+            let closure = model
+                .chunk()
+                .unwrap()
+                .descendants::<emmylua_parser::LuaClosureExpr>()
+                .nth(1)
+                .unwrap();
+            let actual = local_type(&ws, file, "observed");
+            expect_true!(
+                matches!(actual, LuaType::Unknown | LuaType::Any),
+                "{inner}: {actual:?}"
+            );
+            for signature in [
+                model
+                    .type_of_signature_in_file(file, closure.get_syntax_id())
+                    .unwrap(),
+                foreign_model
+                    .type_of_signature_in_file(file, closure.get_syntax_id())
+                    .unwrap(),
+            ] {
+                expect_that!(
+                    signature.get_params()[0].1.as_ref().unwrap(),
+                    eq(&LuaType::Any),
+                    "{inner}"
+                );
+                expect_true!(signature.get_generic_params().is_empty(), "{inner}");
+                expect_false!(
+                    matches!(signature.get_ret(), LuaType::TplRef(_) | LuaType::Ref(_)),
+                    "{inner}"
+                );
+            }
+        }
+    }
+}
