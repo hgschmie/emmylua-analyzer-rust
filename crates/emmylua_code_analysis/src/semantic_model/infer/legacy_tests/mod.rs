@@ -54,3 +54,5 @@ mod primitive_guard_call_effects;
 mod iterator_non_nil_values;
 
 mod table_literal_call_matching;
+
+mod cast_guarded_member_path;
