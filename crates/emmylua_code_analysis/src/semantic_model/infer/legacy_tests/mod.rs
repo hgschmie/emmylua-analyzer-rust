@@ -17,6 +17,7 @@ mod closure_return_test;
 mod contextual_callback_test;
 mod copied_member_calls;
 mod decl_test;
+mod declaration_result_slots;
 mod diagnostic_disable_test;
 mod flow;
 mod flow_contract;
