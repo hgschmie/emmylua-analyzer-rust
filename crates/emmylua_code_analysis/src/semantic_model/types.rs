@@ -799,6 +799,28 @@ impl<'db> SemanticModel<'db> {
         if let Some(enum_const) = self.enum_member_const(member_file, member) {
             return Some(enum_const);
         }
+        // An explicit member annotation takes precedence over its initializer.
+        // Rich projection retains anonymous object/index-signature contracts.
+        if let Some(facts) = self.file_facts_of(member_file)
+            && let Some(member_def) = facts.member_by_id(member)
+            && !matches!(member_def.owner, SemanticId::TypeDef(_))
+            && let Some(syntax) = member_def.doc_type_syntax
+        {
+            let scopes = crate::semantic_db::query::member_annotation_generic_scopes(
+                self.db(),
+                member_file,
+                member_def,
+            );
+            // Allocate the complete class group before filtering shadowed names,
+            // so remaining class argument indices and constraints stay intact.
+            let generics: Vec<_> = self
+                .generic_tpls_with_metadata(member_file, &scopes.owner)
+                .into_iter()
+                .filter(|generic| !scopes.lexical_names.contains(generic.get_name()))
+                .collect();
+            let ty = self.doc_type_lua_rich_in(member_file, syntax);
+            return Some(infer::vm::bind_signature_generics(&ty, &generics));
+        }
         // Runtime member assignments prefer VM projection: the TypeShell path does not perform higher-order generic call inference,
         // and would keep `E.foo_wrapped = wrap(function(a) ... end)` as `fun(...: T...)`.
         // Cycles/reentry are handled by `CacheEntry::InProgress` in the shared cache.
@@ -906,16 +928,13 @@ impl<'db> SemanticModel<'db> {
     ) -> Option<LuaType> {
         let facts = self.file_facts_of(member_file)?;
         let member_def = facts.member_by_id(member)?;
-        let SemanticId::Member(table_key) = &member_def.owner else {
+        if !matches!(member_def.owner, SemanticId::Member(_)) {
             return None;
-        };
-        let table_range = table_key.key_range;
-        let decl = facts.decl_by_value_range(table_range)?;
-        facts
-            .type_def_by_owner_syntax(decl.owner_syntax?)
+        }
+        let tree = self.syntax_tree_of(member_file)?;
+        crate::semantic_db::query::member_owner_type_def(facts, tree, member_def)
             .filter(|def| matches!(def.kind, TypeDefKind::Enum))?;
         let value_syntax = member_def.value_syntax?;
-        let tree = self.syntax_tree_of(member_file)?;
         let node = value_syntax.to_node_from_root(&tree.get_red_root())?;
         let literal = LuaLiteralExpr::cast(node)?;
         match literal.get_literal()? {
