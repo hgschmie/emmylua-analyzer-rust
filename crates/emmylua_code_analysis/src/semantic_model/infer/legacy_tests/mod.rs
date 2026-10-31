@@ -50,3 +50,5 @@ mod type_check_test;
 mod unpack_test;
 
 mod primitive_guard_call_effects;
+
+mod iterator_non_nil_values;

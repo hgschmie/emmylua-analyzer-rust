@@ -486,7 +486,18 @@ impl<'db> SemanticModel<'db> {
                 }
             }
             // 2. Standard global pairs/ipairs: bind K/V from the parameter structure, then take the return function slot.
-            return self.infer_standard_iter_slot(call.get_prefix_expr()?.clone(), &arg_ty, index);
+            let slot =
+                self.infer_standard_iter_slot(call.get_prefix_expr()?.clone(), &arg_ty, index)?;
+            // Standard table iteration yields existing entries only. A custom
+            // iterator may still yield a nil value alongside a non-nil key.
+            let standard = self.resolve_name(name_expr.get_position()).is_some_and(
+                |id| matches!(id, SemanticId::Decl(key) if self.is_std_file(key.file_id)),
+            );
+            return Some(if standard && index <= 1 {
+                remove_nil_from_type(slot)
+            } else {
+                slot
+            });
         }
 
         // Generic iterator functions: `for k in test()` / `for k in iter_fn`.
@@ -586,7 +597,11 @@ impl<'db> SemanticModel<'db> {
         let docs = signature.docs.as_ref()?;
         let generic_params = &docs.generic_params;
         let (key_id, value_id) = match generic_params.len() {
-            n if n >= 2 => (GenericTplId::Type(0), GenericTplId::Type(1)),
+            // ipairs has a fixed integer key and declares only its value generic.
+            1 if name.as_str() == "ipairs" && self.is_std_file(decl_file) => {
+                (None, GenericTplId::Type(0))
+            }
+            n if n >= 2 => (Some(GenericTplId::Type(0)), GenericTplId::Type(1)),
             _ => return None,
         };
         // alias expansion (`MatchersObject` -> object).
@@ -717,7 +732,9 @@ impl<'db> SemanticModel<'db> {
             _ => return None,
         };
         let mut bindings = infer::unify::TplBindings::new();
-        bindings.insert(key_id, key_ty);
+        if let Some(key_id) = key_id {
+            bindings.insert(key_id, key_ty);
+        }
         bindings.insert(value_id, value_ty);
         // Resolves the inner return slots of `---@return fun(tbl:any):K, V`.
         let return_syntax = docs.returns.first()?;
@@ -1611,6 +1628,7 @@ fn remove_nil_from_type(ty: LuaType) -> LuaType {
                 .into_vec()
                 .into_iter()
                 .filter(|t| !t.is_nil())
+                .map(remove_nil_from_type)
                 .collect();
             match types.len() {
                 0 => LuaType::Unknown,
