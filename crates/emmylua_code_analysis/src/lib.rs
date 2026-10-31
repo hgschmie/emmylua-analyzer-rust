@@ -36,9 +36,9 @@ pub use check::{
 pub use config::*;
 pub use locale::get_locale_code;
 use lsp_types::Uri;
-pub use resources::get_best_resources_dir;
 pub use resources::load_resource_from_include_dir;
 use resources::load_resource_std;
+pub use resources::{get_best_resources_dir, prepare_resources_dir, resource_cache_key};
 pub use semantic_db::*;
 /// Semantic model entry point.
 pub use semantic_model::SemanticModel;

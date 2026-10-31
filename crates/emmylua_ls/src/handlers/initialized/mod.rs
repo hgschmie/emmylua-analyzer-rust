@@ -208,7 +208,14 @@ pub async fn init_std_lib(analysis: &AnalysisState, cmd_args: &CmdArgs, emmyrc: 
         cmd_args.resources_path
     );
     if cmd_args.load_stdlib.0 {
-        try_generate_translated_std();
+        if let Some(path) = &cmd_args.resources_path.0 {
+            let resources_dir = if path.is_empty() {
+                emmylua_code_analysis::get_best_resources_dir()
+            } else {
+                PathBuf::from(path)
+            };
+            try_generate_translated_std(&resources_dir);
+        }
         analysis
             .update(|analysis| {
                 // double update config
