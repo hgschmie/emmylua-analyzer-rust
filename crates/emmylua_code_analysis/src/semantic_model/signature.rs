@@ -17,9 +17,32 @@ fn needs_rich_doc_type(ty: &LuaType) -> bool {
 
 #[derive(Default)]
 struct ContextualFieldDocs {
+    typ: Option<LuaSyntaxId>,
     generics: Vec<DocGenericParam>,
     params: Vec<(SmolStr, LuaSyntaxId, bool)>,
     returns: Option<Vec<LuaSyntaxId>>,
+}
+
+// Trailing names can share the last RHS syntax while referring to later results.
+// A constructor or closure belongs to the declaration consuming its first result.
+fn contextual_initializer_decl(facts: &FileFacts, value: LuaSyntaxId) -> Option<&Decl> {
+    let decl = facts.decl_by_value_syntax(value)?;
+    if decl.multi_return_index.unwrap_or(0) == 0 {
+        return Some(decl);
+    }
+    facts.decls.iter().find(|decl| {
+        decl.value_expr_syntax == Some(value) && decl.multi_return_index.unwrap_or(0) == 0
+    })
+}
+
+fn allows_field_signature_fallback(signature: &Signature) -> bool {
+    signature.docs.as_ref().is_none_or(|docs| {
+        docs.param_types.is_empty()
+            && docs.returns.is_empty()
+            && docs.overloads.is_empty()
+            && docs.return_overloads.is_empty()
+            && docs.return_cast.is_none()
+    })
 }
 
 impl<'db> SemanticModel<'db> {
@@ -426,6 +449,11 @@ impl<'db> SemanticModel<'db> {
         for comment in field.get_comments() {
             for tag in comment.get_doc_tags() {
                 match tag {
+                    LuaDocTag::Type(type_tag) => {
+                        if let Some(typ) = type_tag.get_type_list().next() {
+                            docs.typ = Some(typ.get_syntax_id());
+                        }
+                    }
                     LuaDocTag::Generic(generic) => {
                         docs.generics
                             .extend(crate::semantic_db::facts::collect_generics(
@@ -460,15 +488,24 @@ impl<'db> SemanticModel<'db> {
         file_id: FileId,
         signature: &Signature,
     ) -> Vec<GenericTpl> {
-        if let Some(docs) = signature.docs.as_ref()
-            && !docs.generic_params.is_empty()
+        let mut params = signature
+            .docs
+            .as_ref()
+            .map(|docs| docs.generic_params.clone())
+            .unwrap_or_default();
+        // A collected parameter/return contract owns its existing generic scope.
+        // When field docs supply that contract, retain their additional binders.
+        if (params.is_empty() || allows_field_signature_fallback(signature))
+            && let Some(docs) = self.contextual_field_docs(file_id, signature.closure_syntax)
         {
-            return self.generic_tpls_with_metadata(file_id, &docs.generic_params);
+            for generic in docs.generics {
+                if !params.iter().any(|param| param.name == generic.name) {
+                    params.push(generic);
+                }
+            }
         }
-        let Some(docs) = self.contextual_field_docs(file_id, signature.closure_syntax) else {
-            return Vec::new();
-        };
-        self.generic_tpls_with_metadata(file_id, &docs.generics)
+        // Allocate IDs once so appended binders cannot alias collected ones.
+        self.generic_tpls_with_metadata(file_id, &params)
     }
 
     /// Function signature (by closure syntax location) -> structured function type (`DocFunction`).
@@ -733,6 +770,7 @@ impl<'db> SemanticModel<'db> {
             && let Some((_, syntax, nullable)) = docs
                 .params
                 .iter()
+                .rev()
                 .find(|(param_name, _, _)| param_name == name)
         {
             let generics = self.contextual_signature_generics(self.file_id(), signature);
@@ -743,6 +781,15 @@ impl<'db> SemanticModel<'db> {
             } else {
                 ty
             });
+        }
+        if expected_signatures.is_empty()
+            && self
+                .contextual_field_docs(self.file_id(), closure_syntax)
+                .is_some_and(|docs| docs.typ.is_some())
+        {
+            // Preserve the unconstrained formal of an explicitly non-callable
+            // field, without borrowing parameters from its enclosing owner.
+            return Some(LuaType::Any);
         }
         let is_method = self
             .file_facts()
@@ -801,7 +848,7 @@ impl<'db> SemanticModel<'db> {
             .get_syntax_id();
         // An annotated function initializer has no member owner. Read its
         // declared contract directly, without inferring the closure itself.
-        if let Some(decl) = facts.decl_by_value_syntax(value_syntax)
+        if let Some(decl) = contextual_initializer_decl(facts, value_syntax)
             && let Some(doc_syntax) = decl.doc_type_syntax
         {
             let ty = self.doc_type_lua_rich_in(member_file, doc_syntax);
@@ -818,7 +865,13 @@ impl<'db> SemanticModel<'db> {
         if let Some(doc_syntax) = member.doc_type_syntax {
             let doc_ty = self.doc_type_lua_rich_in(member_file, doc_syntax);
             let docs_out = self.contextual_callback_signatures(&doc_ty);
-            if !docs_out.is_empty() {
+            // Facts may carry an enclosing field's annotation. Only the closure's
+            // own field type excludes outer context when it is non-callable.
+            if !docs_out.is_empty()
+                || self
+                    .contextual_field_docs(member_file, closure_syntax)
+                    .is_some_and(|docs| docs.typ == Some(doc_syntax))
+            {
                 return Some(docs_out);
             }
         }
@@ -937,7 +990,7 @@ impl<'db> SemanticModel<'db> {
         {
             value = parent;
         }
-        if let Some(decl) = facts.decl_by_value_range(value.get_range()) {
+        if let Some(decl) = contextual_initializer_decl(facts, value.get_syntax_id()) {
             return self.type_of_decl(&decl.id);
         }
         if let Some(doc) = facts
@@ -1230,18 +1283,14 @@ impl<'db> SemanticModel<'db> {
                 ret = inferred;
             }
         }
-        if signature.docs.as_ref().is_none_or(|docs| {
-            docs.param_types.is_empty()
-                && docs.returns.is_empty()
-                && docs.overloads.is_empty()
-                && docs.return_overloads.is_empty()
-                && docs.return_cast.is_none()
-        }) && let Some((new_params, new_ret)) = self.table_field_signature_override(
-            file_id,
-            closure_syntax,
-            params.clone(),
-            ret.clone(),
-        ) {
+        if allows_field_signature_fallback(signature)
+            && let Some((new_params, new_ret)) = self.table_field_signature_override(
+                file_id,
+                closure_syntax,
+                params.clone(),
+                ret.clone(),
+            )
+        {
             params = new_params;
             ret = new_ret;
         }
