@@ -9,6 +9,7 @@ pub mod type_eval;
 
 mod access;
 mod builtin;
+mod dictionary;
 mod doc_types;
 pub(crate) mod inherited_index;
 mod prelude;
