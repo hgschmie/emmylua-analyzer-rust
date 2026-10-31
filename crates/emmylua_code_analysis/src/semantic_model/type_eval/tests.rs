@@ -868,10 +868,16 @@ fn recursive_alias_member_queries_keep_concrete_alternatives() {
         assert!(model.member_infos(&cycle).is_empty());
     }
     assert_eq!(model.member_type(&nest, &key), Some(LuaType::String));
-    for tree in [tree, named_tree, branch] {
+    for (tree, has_array_alternative) in [(tree, true), (named_tree, true), (branch, false)] {
         let expanded = expand_alias_generic(&model, &tree);
-        assert_eq!(model.member_type(&expanded, &key), Some(LuaType::String));
-        assert_eq!(model.member_type(&tree, &key), Some(LuaType::String));
+        // Arrays have no named `value`; an unresolved recursive arm alone does not prove absence.
+        let expected = if has_array_alternative {
+            LuaType::from_vec(vec![LuaType::String, LuaType::Nil])
+        } else {
+            LuaType::String
+        };
+        assert_eq!(model.member_type(&expanded, &key), Some(expected.clone()));
+        assert_eq!(model.member_type(&tree, &key), Some(expected));
         let members = model.member_infos(&tree);
         assert_eq!(members.len(), 1);
         assert_eq!(members[0].typ, LuaType::String);
