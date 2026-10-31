@@ -12,9 +12,9 @@ use super::def::Decl;
 use super::def::TypeScope;
 use super::def::{
     AccessPath, ChangedKeys, ConstructorAttribute, DeclKind, DependencyKey, DocGenericParam,
-    ExportKey, LuaMemberKey, MemberPathKey, MemberRef, MemberSource, MemberUse, ModuleExport,
-    ModuleInfo, ModuleNode, ModuleNodeId, ModuleVisibility, OwnerId, SemanticId, TypeDef,
-    TypeDefKind,
+    ExportKey, LuaMemberKey, Member, MemberPathKey, MemberRef, MemberSource, MemberUse,
+    ModuleExport, ModuleInfo, ModuleNode, ModuleNodeId, ModuleVisibility, OwnerId, SemanticId,
+    TypeDef, TypeDefKind,
 };
 use super::exports::{
     FileExports, GlobalExport, MemberExport, module_export_owner_file, owner_id_from_semantic_id,
@@ -28,7 +28,7 @@ use crate::Emmyrc;
 use crate::FileId;
 use emmylua_parser::{
     BinaryOperator, LuaAstNode, LuaCallExpr, LuaClosureExpr, LuaDocType, LuaExpr, LuaIndexExpr,
-    LuaLiteralExpr, LuaLiteralToken, LuaReturnStat, LuaSyntaxId, LuaSyntaxTree,
+    LuaLiteralExpr, LuaLiteralToken, LuaReturnStat, LuaSyntaxId, LuaSyntaxKind, LuaSyntaxTree,
     LuaTypeBinaryOperator, LuaVersionCondition, UnaryOperator,
 };
 use rowan::{TextRange, TextSize};
@@ -2479,6 +2479,103 @@ pub(crate) fn primitive_from_name(name: &str) -> Option<TypeShell> {
     Some(TypeShell::from_primitive(primitive))
 }
 
+/// Resolve a runtime constructor's class without borrowing a trailing result's declaration.
+pub(crate) fn member_owner_type_def<'a>(
+    facts: &'a FileFacts,
+    tree: &LuaSyntaxTree,
+    member: &Member,
+) -> Option<&'a TypeDef> {
+    let decl = match &member.owner {
+        SemanticId::TypeDef(_) => return facts.type_def_by_id(&member.owner),
+        SemanticId::Decl(_) => facts.decl_by_id(&member.owner)?,
+        SemanticId::Member(owner) => {
+            let mut value = [
+                LuaSyntaxKind::TableEmptyExpr,
+                LuaSyntaxKind::TableArrayExpr,
+                LuaSyntaxKind::TableObjectExpr,
+            ]
+            .into_iter()
+            .find_map(|kind| {
+                LuaSyntaxId::new(kind.into(), owner.key_range)
+                    .to_node_from_root(&tree.get_red_root())
+                    .and_then(LuaExpr::cast)
+            })?;
+            while let Some(LuaExpr::ParenExpr(parent)) =
+                value.syntax().parent().and_then(LuaExpr::cast)
+            {
+                value = LuaExpr::ParenExpr(parent);
+            }
+            let syntax = value.get_syntax_id();
+            let decl = facts.decl_by_value_syntax(syntax)?;
+            if decl.multi_return_index.unwrap_or(0) == 0 {
+                decl
+            } else {
+                facts.decls.iter().find(|decl| {
+                    decl.value_expr_syntax == Some(syntax)
+                        && decl.multi_return_index.unwrap_or(0) == 0
+                })?
+            }
+        }
+        _ => return None,
+    };
+    facts.type_def_by_owner_syntax(decl.owner_syntax?)
+}
+
+#[derive(Default)]
+pub(crate) struct MemberAnnotationGenericScopes {
+    pub(crate) owner: Vec<DocGenericParam>,
+    lexical: Vec<DocGenericParam>,
+    nearest_lexical_len: usize,
+    pub(crate) lexical_names: HashSet<SmolStr>,
+}
+
+/// Keep positional class parameters separate from enclosing lexical generic names.
+pub(crate) fn member_annotation_generic_scopes(
+    db: &SemanticDatabase,
+    file: FileId,
+    member: &Member,
+) -> MemberAnnotationGenericScopes {
+    let (Some(facts), Some(tree)) = (db.file_facts_of(file), db.syntax_tree_of(file)) else {
+        return MemberAnnotationGenericScopes::default();
+    };
+    let owner = member_owner_type_def(facts, tree, member)
+        .map(|def| def.generic_params.clone())
+        .unwrap_or_default();
+    let mut lexical = Vec::<DocGenericParam>::new();
+    let mut nearest_lexical_len = 0;
+    let mut lexical_names = HashSet::new();
+    if let Some(node) = member
+        .doc_type_syntax
+        .and_then(|syntax| syntax.to_node_from_root(&tree.get_red_root()))
+    {
+        for closure in node.ancestors().filter_map(LuaClosureExpr::cast) {
+            if let Some(docs) = facts
+                .signature_by_closure(closure.get_syntax_id())
+                .and_then(|signature| signature.docs.as_ref())
+            {
+                if lexical.is_empty() {
+                    lexical = docs.generic_params.clone();
+                    nearest_lexical_len = lexical.len();
+                    lexical_names.extend(lexical.iter().map(|param| param.name.clone()));
+                } else {
+                    lexical.extend(
+                        docs.generic_params
+                            .iter()
+                            .filter(|param| lexical_names.insert(param.name.clone()))
+                            .cloned(),
+                    );
+                }
+            }
+        }
+    }
+    MemberAnnotationGenericScopes {
+        owner,
+        lexical,
+        nearest_lexical_len,
+        lexical_names,
+    }
+}
+
 /// Declared type of a member. Members can be mutually recursive (`T.foo = T.bar`), also converged by semantic's native fixed point.
 pub(crate) fn member_type(
     db: &SemanticDatabase,
@@ -2498,6 +2595,75 @@ pub(crate) fn member_type(
         && let Some(module_file) = module_file_from(db, config, module_path.clone(), file_id)
     {
         return TypeShell::from_module_ref(module_file);
+    }
+
+    // Numeric enum constants retain their value identity in rich projection.
+    // The shell keeps its integer category; initializer diagnostics still check docs.
+    if matches!(member.owner, SemanticId::Member(_))
+        && let Some(tree) = db.syntax_tree_of(file_id)
+        && member_owner_type_def(facts, tree, member)
+            .is_some_and(|def| matches!(def.kind, TypeDefKind::Enum))
+        && let Some(literal) = member
+            .value_syntax
+            .and_then(|syntax| syntax.to_node_from_root(&tree.get_red_root()))
+            .and_then(LuaLiteralExpr::cast)
+        && let Some(LuaLiteralToken::Number(number)) = literal.get_literal()
+        && matches!(
+            number.get_number_value(),
+            emmylua_parser::NumberResult::Int(_) | emmylua_parser::NumberResult::Uint(_)
+        )
+    {
+        return TypeShell::from_primitive(PrimitiveType::Integer);
+    }
+
+    // Runtime annotations are contracts. Ordinary @field members retain their
+    // TypeDef-specific lowering below, and initializer syntax remains available.
+    if !matches!(member.owner, SemanticId::TypeDef(_))
+        && let Some(syntax) = member.doc_type_syntax
+    {
+        let mut scopes = member_annotation_generic_scopes(db, file_id, member);
+        let owner_names: HashSet<_> = scopes
+            .owner
+            .iter()
+            .map(|param| param.name.clone())
+            .collect();
+        // Preserve class slots when lexical names shadow them. Rich binding uses
+        // the original class group and separately excludes those shadowed names.
+        for param in &mut scopes.owner {
+            if scopes.lexical_names.contains(&param.name) {
+                param.name = SmolStr::new("");
+            }
+        }
+        let has_string_template = db
+            .syntax_tree_of(file_id)
+            .and_then(|tree| syntax.to_node_from_root(&tree.get_red_root()))
+            .is_some_and(|node| {
+                node.descendants()
+                    .filter_map(LuaDocType::cast)
+                    .any(|ty| matches!(ty, LuaDocType::StrTpl(_)))
+            });
+        let generics = if has_string_template {
+            // String templates encode positional indices, so use one original
+            // group even when the template occurs inside a composite annotation.
+            if scopes.owner.is_empty() {
+                scopes.lexical.truncate(scopes.nearest_lexical_len);
+                scopes.lexical
+            } else {
+                scopes.owner
+            }
+        } else {
+            // Ordinary generic names remain visible across lexical scopes.
+            // Exclude class collisions: a later shell projection could otherwise
+            // capture the lexical name using the class's positional template ID.
+            scopes.owner.extend(
+                scopes
+                    .lexical
+                    .into_iter()
+                    .filter(|param| !owner_names.contains(&param.name)),
+            );
+            scopes.owner
+        };
+        return lower_doc_type(db, file_id, syntax, &generics);
     }
 
     if let Some(syntax) = member.doc_type_syntax {
