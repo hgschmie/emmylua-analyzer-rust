@@ -624,7 +624,13 @@ fn cached_arg_type(
         return ty.clone();
     }
     args.get(index)
-        .map(|arg| semantic_model.type_of_expr(arg.get_syntax_id()))
+        .map(|arg| {
+            crate::semantic_model::flow::type_of_expr_with_cast(
+                semantic_model,
+                arg.get_syntax_id(),
+                crate::semantic_model::flow::ExprCastMode::AsOnly,
+            )
+        })
         .unwrap_or(LuaType::Unknown)
 }
 
@@ -632,7 +638,12 @@ fn table_field_mismatches(
     semantic_model: &SemanticModel<'_>,
     param_ty: &LuaType,
     arg: &LuaExpr,
+    arg_ty: &LuaType,
 ) -> Vec<Mismatch> {
+    // Assertions replace the constructor contract; check its type, not its old fields.
+    if !matches!(arg_ty, LuaType::TableConst(_)) {
+        return Vec::new();
+    }
     let LuaExpr::TableExpr(table) = arg else {
         return Vec::new();
     };
@@ -783,7 +794,7 @@ fn check_arg_pairs(
                         ) {
                             continue;
                         }
-                        out.extend(table_field_mismatches(semantic_model, &slot_ty, arg));
+                        out.extend(table_field_mismatches(semantic_model, &slot_ty, arg, &arg_ty));
                         if arg_ty == slot_ty || is_compatible(semantic_model, &arg_ty, &slot_ty) {
                             continue;
                         }
@@ -826,7 +837,7 @@ fn check_arg_pairs(
                         ) {
                             continue;
                         }
-                        out.extend(table_field_mismatches(semantic_model, &param_ty, arg));
+                        out.extend(table_field_mismatches(semantic_model, &param_ty, arg, &arg_ty));
                         if arg_ty == param_ty
                             || param_generic_base_match(semantic_model, &arg_ty, &param_ty)
                             || is_compatible(semantic_model, &arg_ty, &param_ty)
@@ -869,7 +880,9 @@ fn check_arg_pairs(
             continue;
         }
         // Table literals targeting object / intersection: check field by field and then fully take over.
-        if let LuaExpr::TableExpr(table) = arg {
+        if let LuaExpr::TableExpr(table) = arg
+            && matches!(arg_ty, LuaType::TableConst(_))
+        {
             if check_union_table_argument(
                 &mut out,
                 semantic_model,
@@ -880,7 +893,7 @@ fn check_arg_pairs(
             ) {
                 continue;
             }
-            out.extend(table_field_mismatches(semantic_model, &param_ty, arg));
+            out.extend(table_field_mismatches(semantic_model, &param_ty, arg, &arg_ty));
             if has_table_literal_shape(&param_ty) {
                 if let Some(mismatch) = table_literal_mismatch(semantic_model, &param_ty, table) {
                     out.push(mismatch);
