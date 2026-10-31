@@ -11,7 +11,7 @@
 use emmylua_parser::{
     BinaryOperator, LuaAssignStat, LuaAst, LuaAstNode, LuaBlock, LuaCallExprStat,
     LuaElseIfClauseStat, LuaExpr, LuaForRangeStat, LuaForStat, LuaFuncStat, LuaIfStat,
-    LuaIndexExpr, LuaLocalStat, LuaRepeatStat, LuaVarExpr, LuaWhileStat, UnaryOperator,
+    LuaIndexExpr, LuaLocalStat, LuaRepeatStat, LuaWhileStat, UnaryOperator,
 };
 
 use super::comment::bind_comment;
@@ -650,7 +650,7 @@ impl<'a, 'b> BindEngine<'a, 'b> {
     }
 
     fn evaluate_while_stat(&mut self, while_stat: LuaWhileStat, current: FlowId) -> Step {
-        let pre_while_label = self.binder.create_loop_label();
+        let pre_while_label = self.binder.create_loop_label(while_stat.get_syntax_id());
         let after_while_label = self.binder.create_branch_label();
         let pre_block_label = self.binder.create_branch_label();
         self.binder.add_antecedent(pre_while_label, current);
@@ -680,8 +680,8 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                     old_break_target_label,
                 });
                 match while_stat.get_block() {
-                    Some(block) => Step::Task(Task::Block(block, current)),
-                    None => Step::Task(Task::Pass(current)),
+                    Some(block) => Step::Task(Task::Block(block, pre_while_label)),
+                    None => Step::Task(Task::Pass(pre_while_label)),
                 }
             }
             None => {
@@ -702,7 +702,7 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                 });
                 Step::Task(Task::Cond(
                     condition_expr,
-                    current,
+                    pre_while_label,
                     pre_block_label,
                     after_while_label,
                 ))
@@ -711,7 +711,7 @@ impl<'a, 'b> BindEngine<'a, 'b> {
     }
 
     fn evaluate_repeat_stat(&mut self, repeat_stat: LuaRepeatStat, current: FlowId) -> Step {
-        let pre_repeat_label = self.binder.create_loop_label();
+        let pre_repeat_label = self.binder.create_loop_label(repeat_stat.get_syntax_id());
         let post_repeat_label = self.binder.create_branch_label();
         self.binder.add_antecedent(pre_repeat_label, current);
 
@@ -771,7 +771,7 @@ impl<'a, 'b> BindEngine<'a, 'b> {
     }
 
     fn evaluate_for_stat(&mut self, for_stat: LuaForStat, current: FlowId) -> Step {
-        let pre_for_label = self.binder.create_loop_label();
+        let pre_for_label = self.binder.create_loop_label(for_stat.get_syntax_id());
         let post_for_label = self.binder.create_branch_label();
         self.binder.add_antecedent(pre_for_label, current);
 
@@ -826,7 +826,9 @@ impl<'a, 'b> BindEngine<'a, 'b> {
         for_range_stat: LuaForRangeStat,
         current: FlowId,
     ) -> Step {
-        let pre_for_range_label = self.binder.create_loop_label();
+        let pre_for_range_label = self
+            .binder
+            .create_loop_label(for_range_stat.get_syntax_id());
         let post_for_range_label = self.binder.create_branch_label();
         self.binder.add_antecedent(pre_for_range_label, current);
 
@@ -1054,17 +1056,32 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                 }
             },
             Continuation::FuncDone { func_stat, current } => match func_stat.get_func_name() {
-                Some(var @ LuaVarExpr::NameExpr(_)) => {
+                Some(var) => {
                     let func_kind = FlowNodeKind::ImplFunc(func_stat.to_ptr());
                     let flow_id = self.binder.create_node(func_kind);
                     self.binder.add_antecedent(flow_id, current);
-                    if let Some(Some(decl)) = get_var_decl_ids(self.binder, &[var]).first()
+                    if let Some(Some(decl)) =
+                        get_var_decl_ids(self.binder, std::slice::from_ref(&var)).first()
                         && let Some(closure) = func_stat.get_closure()
                     {
                         self.binder.add_effect(
                             flow_id,
                             FlowEffect::AssignDecl {
                                 decl: decl.clone(),
+                                value_syntax: closure.get_syntax_id(),
+                            },
+                        );
+                    }
+                    if let Some(Some((owner, key, member))) =
+                        get_var_member_ids(self.binder, &[var]).first()
+                        && let Some(closure) = func_stat.get_closure()
+                    {
+                        self.binder.add_effect(
+                            flow_id,
+                            FlowEffect::AssignMember {
+                                owner: owner.clone(),
+                                key: key.clone(),
+                                member: member.clone(),
                                 value_syntax: closure.get_syntax_id(),
                             },
                         );
