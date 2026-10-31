@@ -1954,6 +1954,18 @@ pub(crate) fn decl_type(
         return TypeShell::from_module_ref(module_file);
     }
 
+    // Match semantic-model declaration inference: a class/enum annotation names
+    // its runtime table even when the local variable has a different name.
+    // Otherwise member values such as `M.__index = M` lose that identity and
+    // expand the initializer into a recursive anonymous table.
+    if let Some(owner_syntax) = decl.owner_syntax
+        && let Some(def) = facts
+            .type_def_by_owner_syntax(owner_syntax)
+            .filter(|def| matches!(def.kind, TypeDefKind::Class | TypeDefKind::Enum))
+    {
+        return TypeShell::from_name(&def.full_name);
+    }
+
     // Parameter declaration: `---@param` annotation (belongs to the closure signature, matched by name).
     if matches!(decl.kind, DeclKind::Param)
         && let Some((sig, _)) = facts.signature_and_param_index_of_decl(decl)
