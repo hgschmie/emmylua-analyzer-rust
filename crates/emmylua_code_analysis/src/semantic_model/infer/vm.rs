@@ -4596,7 +4596,9 @@ pub(crate) fn binary_type(
             }
             // Addition like `integer + 1` (one side is the integer base type, the other is an
             // integer literal) still stays integer.
-            if integer_operand(left) && integer_operand(&right) {
+            let left_is_integer = is_integer_operand(model, left, &mut Vec::new());
+            let right_is_integer = is_integer_operand(model, &right, &mut Vec::new());
+            if left_is_integer && right_is_integer {
                 LuaType::Integer
             } else {
                 LuaType::Number
@@ -4615,8 +4617,8 @@ pub(crate) fn binary_type(
                     .map(LuaType::IntegerConst)
                     .unwrap_or(LuaType::Number)
             } else if matches!(op, OpIDiv | OpMod)
-                && integer_operand(left)
-                && integer_operand(&right)
+                && is_integer_operand(model, left, &mut Vec::new())
+                && is_integer_operand(model, &right, &mut Vec::new())
             {
                 LuaType::Integer
             } else {
@@ -4625,6 +4627,49 @@ pub(crate) fn binary_type(
         }
         _ => LuaType::Unknown,
     }
+}
+
+/// Recognizes integer operands after alias and enum expansion.
+/// Cycle and query limits preserve nullable/mixed alternatives as noninteger;
+/// arithmetic callers resolve operator overloads before this classification.
+pub(crate) fn is_integer_operand(
+    model: &SemanticModel,
+    ty: &LuaType,
+    seen: &mut Vec<LuaType>,
+) -> bool {
+    fn visit(model: &SemanticModel, ty: &LuaType, seen: &mut Vec<LuaType>) -> bool {
+        let Some(evaluation) = crate::semantic_model::cache::TypeEvaluationScope::new(&model.cache)
+        else {
+            return false;
+        };
+        if seen.len() >= 32 || !evaluation.visit(ty) || seen.contains(ty) {
+            return false;
+        }
+        seen.push(ty.clone());
+        let revision = model.cache.borrow().revision();
+        let result =
+            super::super::type_eval::expand_alias_branches(model, ty).is_some_and(|expanded| {
+                if expanded.is_integer() {
+                    return true;
+                }
+                match &expanded {
+                    LuaType::Union(union) => {
+                        !union.into_vec().is_empty()
+                            && union.iter().all(|ty| visit(model, ty, seen))
+                    }
+                    LuaType::MultiLineUnion(union) => visit(model, &union.to_union(), seen),
+                    LuaType::Ref(id) | LuaType::Def(id) => model
+                        .type_def_of(id)
+                        .filter(|def| def.kind == TypeDefKind::Enum)
+                        .and_then(|def| super::super::type_check::enum_value_type(model, &def))
+                        .is_some_and(|values| visit(model, &values, seen)),
+                    _ => false,
+                }
+            });
+        seen.pop();
+        result && model.cache.borrow().is_complete(revision)
+    }
+    visit(model, ty, seen)
 }
 
 /// In short-circuit logical expressions, if the left/right side is a nullable field
@@ -4909,13 +4954,6 @@ fn integer_const_value(ty: &LuaType) -> Option<i64> {
     match ty {
         LuaType::IntegerConst(i) | LuaType::DocIntegerConst(i) => Some(*i),
         _ => None,
-    }
-}
-
-fn integer_operand(ty: &LuaType) -> bool {
-    match ty {
-        LuaType::Union(union) => union.iter().all(LuaType::is_integer),
-        _ => ty.is_integer(),
     }
 }
 

@@ -444,9 +444,10 @@ impl<'db> SemanticModel<'db> {
                 .enumerate()
                 .filter(|(index, _)| *index != 1)
                 .all(|(_, expr)| {
-                    matches!(
-                        self.type_of_expr(expr.get_syntax_id()),
-                        LuaType::Integer | LuaType::IntegerConst(_) | LuaType::DocIntegerConst(_)
+                    infer::vm::is_integer_operand(
+                        self,
+                        &self.type_of_expr(expr.get_syntax_id()),
+                        &mut Vec::new(),
                     )
                 });
             return Some(if all_integer {
