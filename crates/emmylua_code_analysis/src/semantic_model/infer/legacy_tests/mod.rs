@@ -50,6 +50,7 @@ mod syntax_error_test;
 mod table_index_test;
 mod tuple_test;
 mod type_check_test;
+mod unknown_assignment_flow;
 mod unpack_test;
 
 mod primitive_guard_call_effects;
