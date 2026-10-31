@@ -5,7 +5,7 @@
 //! take the RHS type of the target's most recent assignment, or the declared initial type.
 //! At branch merges, take the union. Guards and `---@cast +T` on the backtracked path are
 //! collected into a path state (PathState). After hitting a base type, apply them in
-//! "far → near" order: casts widen first, guards then narrow (the most recent replacement guard wins).
+//! "far → near" execution order, preserving the interleaving of guards and casts.
 //!
 //! Supports:
 //! - Narrowing via `type(x) == 'string'` / `x == literal` / `x ~= nil` / bare `x` / `not x`;
@@ -2013,22 +2013,55 @@ fn local_alias_path(
 }
 
 /// `---@cast` path operation: widen / remove / replace.
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum CastOp {
     Add(LuaType),
     Remove(LuaType),
     Replace(LuaType),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum PathOp {
+    Guard(Narrowing),
+    Cast(CastOp),
+}
+
 /// Guards and cast operations collected along the backtracking path.
-#[derive(Default)]
-struct PathState {
-    /// Most recent guard first.
-    narrowings: Vec<Narrowing>,
-    /// Most recent cast operation first.
-    casts: Vec<CastOp>,
-    /// A visible conflicting call write prevents reuse of older primitive member guards.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub(crate) struct PathState {
+    /// Operations in reverse execution order, as visited while backtracking.
+    operations: Vec<PathOp>,
+    /// A visible conflicting call write prevents reuse of older member guards.
     member_unstable: bool,
+}
+
+impl PathState {
+    fn cache_key(&self) -> Self {
+        let mut key = self.clone_path();
+        // Operations are newest first: only facts older than the first
+        // replacement are irrelevant. Later guards must remain in the key.
+        if let Some(index) = key.operations.iter().position(|op| {
+            matches!(
+                op,
+                PathOp::Cast(CastOp::Replace(_)) | PathOp::Guard(Narrowing::Replace(_))
+            )
+        }) {
+            key.operations.truncate(index + 1);
+        }
+        key.operations.dedup_by(|a, b| {
+            a == b
+                && matches!(
+                    a,
+                    PathOp::Guard(
+                        Narrowing::Remove(_)
+                            | Narrowing::Truthy
+                            | Narrowing::Falsy
+                            | Narrowing::NotNil
+                    )
+                )
+        });
+        key
+    }
 }
 
 /// Checks from an antecedent toward the declaration whether a narrowing node already exists.
@@ -2156,14 +2189,10 @@ fn trace_decl(
     visited: &mut HashSet<FlowId>,
     path: &mut PathState,
 ) -> Option<LuaType> {
-    // On a loop-free graph every route to a flow node crosses the same guards, so
-    // a state's value depends on the node and the options alone — never on the
-    // route. That makes the state cacheable, which matters because a nested
-    // conditional chain otherwise re-derives the same states along exponentially
-    // many routes. Only nodes that can reach a loop backwards keep the uncached
-    // path (see the type note on `cache::TraceStateKey`), so a loop in one function
-    // does not disable memoization for the rest of the file.
-    if tree.is_loop_reachable(flow_id) {
+    // Incoming guard/cast facts are part of the cache key. Only actual cycles
+    // require uncached traversal: acyclic loop exits can use the same memo as
+    // ordinary branches, without affecting unrelated functions in the file.
+    if tree.is_cycle_reachable(flow_id) {
         return trace_decl_uncached(model, decl, tree, flow_id, options, mode, visited, path);
     }
     let key = cache::TraceStateKey {
@@ -2176,6 +2205,7 @@ fn trace_decl(
             merge_branch: matches!(mode, TraceMode::MergeBranch),
         },
         flow_id: flow_id.0,
+        path: path.cache_key(),
     };
     {
         let cache = model.cache.borrow();
@@ -2260,18 +2290,19 @@ fn trace_decl_uncached(
                                 .get_decl_multi_return_ref_on_flow(decl, assign_pos, current)
                                 .and_then(|at| at.reference.as_ref())
                                 .is_some();
-                            let narrowings = if is_multi_return {
-                                path.narrowings.iter().map(|n| n.clone_ref()).collect()
-                            } else {
-                                path.narrowings
-                                    .iter()
-                                    .filter(|n| !matches!(n, Narrowing::Correlated { .. }))
-                                    .map(|n| n.clone_ref())
-                                    .collect()
-                            };
                             let assign_path = PathState {
-                                narrowings,
-                                casts: path.casts.clone(),
+                                operations: path
+                                    .operations
+                                    .iter()
+                                    .filter(|op| {
+                                        is_multi_return
+                                            || !matches!(
+                                                op,
+                                                PathOp::Guard(Narrowing::Correlated { .. })
+                                            )
+                                    })
+                                    .cloned()
+                                    .collect(),
                                 member_unstable: false,
                             };
                             let base_before = model.type_of_decl(decl).unwrap_or(LuaType::Unknown);
@@ -2390,7 +2421,7 @@ fn trace_decl_uncached(
                         antecedent_has_narrowing(tree, node.antecedent.clone()),
                     )
                 {
-                    path.narrowings.push(narrowing);
+                    path.operations.push(PathOp::Guard(narrowing));
                 }
             }
             FlowNodeKind::FalseCondition(cond_ptr) => {
@@ -2410,7 +2441,7 @@ fn trace_decl_uncached(
                         antecedent_has_narrowing(tree, node.antecedent.clone()),
                     )
                 {
-                    path.narrowings.push(narrowing);
+                    path.operations.push(PathOp::Guard(narrowing));
                 }
             }
             FlowNodeKind::TagCast(cast_ptr) => {
@@ -2517,11 +2548,8 @@ fn trace_member(
     visited: &mut HashSet<FlowId>,
     path: &mut PathState,
 ) -> Option<LuaType> {
-    if tree.is_loop_reachable(flow_id)
-        || path.member_unstable
-        || !path.casts.is_empty()
-        || !path.narrowings.is_empty()
-    {
+    // A loop summary can be acyclic; real back edges retain the visited walk.
+    if tree.is_cycle_reachable(flow_id) || path.member_unstable || !path.operations.is_empty() {
         return trace_member_uncached(model, member, access, tree, flow_id, visited, path);
     }
     let key = cache::TraceStateKey {
@@ -2531,6 +2559,7 @@ fn trace_member(
             access: access.map(|access| access.get_syntax_id()),
         },
         flow_id: flow_id.0,
+        path: path.cache_key(),
     };
     {
         let cache = model.cache.borrow();
@@ -2616,9 +2645,13 @@ fn trace_member_uncached(
                         // A fresh assignment replaces older narrowing and clears the
                         // old instability flag; explicit cast widening is retained.
                         let assign_path = PathState {
-                            narrowings: Vec::new(),
-                            casts: path.casts.clone(),
-                            member_unstable: false,
+                            operations: path
+                                .operations
+                                .iter()
+                                .filter(|op| matches!(op, PathOp::Cast(_)))
+                                .cloned()
+                                .collect(),
+                                member_unstable: false,
                         };
                         let mut value_ty = type_of_expr_with_cast(model, *value_syntax, AsOnly);
                         if let Some(annotation) = member_annotation_type(model, member) {
@@ -2654,7 +2687,7 @@ fn trace_member_uncached(
                         before,
                     )
                 {
-                    path.narrowings.push(narrowing);
+                    path.operations.push(PathOp::Guard(narrowing));
                 }
             }
             FlowNodeKind::FalseCondition(cond_ptr) => {
@@ -2668,7 +2701,7 @@ fn trace_member_uncached(
                         before,
                     )
                 {
-                    path.narrowings.push(narrowing);
+                    path.operations.push(PathOp::Guard(narrowing));
                 }
             }
             FlowNodeKind::Start | FlowNodeKind::Unreachable => {
@@ -2778,7 +2811,7 @@ fn member_flow_calls_conflict(
 }
 
 /// Narrowing kinds.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Narrowing {
     /// Replacement: the value is exactly `ty` on this path (type guard / `== literal`).
     Replace(LuaType),
@@ -2817,18 +2850,15 @@ enum Narrowing {
     ArrayMinLen(i64),
 }
 
-/// After hitting a base type, apply the path state: first apply guard narrowing in "far → near" order,
-/// then apply `---@cast +T` widening last — casts are cumulative widening on the declaration and narrowing cannot erase them.
+/// Apply guards and casts in execution order after reaching the path's base value.
 fn finalize(model: &SemanticModel, mut base: LuaType, path: &PathState) -> LuaType {
-    for narrowing in path.narrowings.iter().rev() {
-        base = apply_narrowing(model, base, narrowing);
-    }
-    for cast in path.casts.iter().rev() {
-        match cast {
-            CastOp::Add(ty) => base = merge_types(base, ty.clone()),
-            CastOp::Remove(ty) => base = remove_type(base, ty),
-            CastOp::Replace(ty) => base = ty.clone(),
-        }
+    for operation in path.operations.iter().rev() {
+        base = match operation {
+            PathOp::Guard(narrowing) => apply_narrowing(model, base, narrowing),
+            PathOp::Cast(CastOp::Add(ty)) => merge_types(base, ty.clone()),
+            PathOp::Cast(CastOp::Remove(ty)) => remove_type(base, ty),
+            PathOp::Cast(CastOp::Replace(ty)) => ty.clone(),
+        };
     }
     base
 }
@@ -2924,7 +2954,8 @@ fn collect_decl_cast(
                 .get_op()
                 .is_some_and(|op| op.get_op() == BinaryOperator::OpSub)
             {
-                path.casts.push(CastOp::Remove(LuaType::Nil));
+                path.operations
+                    .push(PathOp::Cast(CastOp::Remove(LuaType::Nil)));
             }
             continue;
         };
@@ -2937,9 +2968,9 @@ fn collect_decl_cast(
             continue;
         }
         match op_type.get_op().map(|op| op.get_op()) {
-            None => path.casts.push(CastOp::Replace(ty)),
-            Some(BinaryOperator::OpAdd) => path.casts.push(CastOp::Add(ty)),
-            Some(BinaryOperator::OpSub) => path.casts.push(CastOp::Remove(ty)),
+            None => path.operations.push(PathOp::Cast(CastOp::Replace(ty))),
+            Some(BinaryOperator::OpAdd) => path.operations.push(PathOp::Cast(CastOp::Add(ty))),
+            Some(BinaryOperator::OpSub) => path.operations.push(PathOp::Cast(CastOp::Remove(ty))),
             _ => {}
         }
     }
@@ -2981,7 +3012,8 @@ fn collect_member_cast(
                 .get_op()
                 .is_some_and(|op| op.get_op() == BinaryOperator::OpSub)
             {
-                path.casts.push(CastOp::Remove(LuaType::Nil));
+                path.operations
+                    .push(PathOp::Cast(CastOp::Remove(LuaType::Nil)));
             }
             continue;
         };
@@ -2994,9 +3026,9 @@ fn collect_member_cast(
             continue;
         }
         match op_type.get_op().map(|op| op.get_op()) {
-            None => path.casts.push(CastOp::Replace(ty)),
-            Some(BinaryOperator::OpAdd) => path.casts.push(CastOp::Add(ty)),
-            Some(BinaryOperator::OpSub) => path.casts.push(CastOp::Remove(ty)),
+            None => path.operations.push(PathOp::Cast(CastOp::Replace(ty))),
+            Some(BinaryOperator::OpAdd) => path.operations.push(PathOp::Cast(CastOp::Add(ty))),
+            Some(BinaryOperator::OpSub) => path.operations.push(PathOp::Cast(CastOp::Remove(ty))),
             _ => {}
         }
     }
@@ -6135,50 +6167,8 @@ fn walk_member(
 impl PathState {
     fn clone_path(&self) -> Self {
         Self {
-            narrowings: self.narrowings.iter().map(|n| n.clone_ref()).collect(),
-            casts: self.casts.clone(),
+            operations: self.operations.clone(),
             member_unstable: self.member_unstable,
-        }
-    }
-}
-
-impl Narrowing {
-    fn clone_ref(&self) -> Self {
-        match self {
-            Narrowing::Replace(ty) => Narrowing::Replace(ty.clone()),
-            Narrowing::Remove(ty) => Narrowing::Remove(ty.clone()),
-            Narrowing::Truthy => Narrowing::Truthy,
-            Narrowing::Falsy => Narrowing::Falsy,
-            Narrowing::NotNil => Narrowing::NotNil,
-            Narrowing::Correlated {
-                matching_target_types,
-                correlated_candidate_types,
-            } => Narrowing::Correlated {
-                matching_target_types: matching_target_types.clone(),
-                correlated_candidate_types: correlated_candidate_types.clone(),
-            },
-            Narrowing::FilterPrimitive {
-                primitive,
-                keep_matching,
-            } => Narrowing::FilterPrimitive {
-                primitive: primitive.clone(),
-                keep_matching: *keep_matching,
-            },
-            Narrowing::MemberDiscriminant {
-                key,
-                literal,
-                keep_matching,
-            } => Narrowing::MemberDiscriminant {
-                key: key.clone(),
-                literal: literal.clone(),
-                keep_matching: *keep_matching,
-            },
-            Narrowing::MemberTruthy { key, keep_matching } => Narrowing::MemberTruthy {
-                key: key.clone(),
-                keep_matching: *keep_matching,
-            },
-            Narrowing::ArrayLen(max) => Narrowing::ArrayLen(*max),
-            Narrowing::ArrayMinLen(min) => Narrowing::ArrayMinLen(*min),
         }
     }
 }
@@ -6487,7 +6477,7 @@ fn indexed_read_at(
                                 offset,
                             )
                         {
-                            path.narrowings.push(narrowing);
+                            path.operations.push(PathOp::Guard(narrowing));
                         }
                     }
                 }
@@ -6584,20 +6574,20 @@ fn indexed_guard(
 }
 
 fn finalize_index_read(model: &SemanticModel, mut base: LuaType, path: &PathState) -> LuaType {
-    for narrowing in path.narrowings.iter().rev() {
-        if (matches!(narrowing, Narrowing::Truthy) && base.is_always_falsy())
-            || (matches!(narrowing, Narrowing::Falsy) && base.is_always_truthy())
-        {
-            return LuaType::Never;
-        }
-        base = apply_narrowing(model, base, narrowing);
-    }
-    for cast in path.casts.iter().rev() {
-        match cast {
-            CastOp::Add(ty) => base = merge_types(base, ty.clone()),
-            CastOp::Remove(ty) => base = remove_type(base, ty),
-            CastOp::Replace(ty) => base = ty.clone(),
-        }
+    for operation in path.operations.iter().rev() {
+        base = match operation {
+            PathOp::Guard(narrowing) => {
+                if (matches!(narrowing, Narrowing::Truthy) && base.is_always_falsy())
+                    || (matches!(narrowing, Narrowing::Falsy) && base.is_always_truthy())
+                {
+                    return LuaType::Never;
+                }
+                apply_narrowing(model, base, narrowing)
+            }
+            PathOp::Cast(CastOp::Add(ty)) => merge_types(base, ty.clone()),
+            PathOp::Cast(CastOp::Remove(ty)) => remove_type(base, ty),
+            PathOp::Cast(CastOp::Replace(ty)) => ty.clone(),
+        };
     }
     base
 }
@@ -6682,7 +6672,7 @@ fn directional_read_at(
                             matches!(node.kind, FlowNodeKind::TrueCondition(_)),
                         )
                     {
-                        path.narrowings.push(narrowing);
+                        path.operations.push(PathOp::Guard(narrowing));
                     }
                 }
                 FlowNodeKind::TagCast(ptr) => collect_member_cast(model, member, ptr, &mut path),
