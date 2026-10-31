@@ -11,6 +11,7 @@ mod access;
 mod builtin;
 mod dictionary;
 mod doc_types;
+mod index_function;
 pub(crate) mod inherited_index;
 mod prelude;
 mod signature;
