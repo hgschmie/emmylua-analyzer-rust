@@ -956,3 +956,340 @@ mod tests {
         assert!(content.value.contains("a: integer"), "{}", content.value);
     }
 }
+
+#[cfg(test)]
+mod member_use_site {
+    use crate::handlers::{hover::hover, test_lib::ProviderVirtualWorkspace};
+    use lsp_types::HoverContents;
+
+    fn text(definitions: &str, source: &str, separate: bool) -> String {
+        let mut ws = ProviderVirtualWorkspace::new();
+        let source = if separate {
+            ws.def(definitions);
+            source.to_owned()
+        } else {
+            format!("{definitions}\n{source}")
+        };
+        let (content, position) = ProviderVirtualWorkspace::handle_file_content(&source).unwrap();
+        let file = ws.def(&content);
+        let result = hover(&ws.analysis, file, position).unwrap();
+        let HoverContents::Markup(markup) = result.contents else {
+            panic!("markup required")
+        };
+        markup.value
+    }
+
+    const DEFINITIONS: &str = r#"
+    ---@class Train
+    local Train = {
+        ---Count stored items.
+        ---@param item? string
+        ---@return integer
+        get_count = function(item) end,
+    }
+    ---@class Stop
+    ---@field train Train? The parked train.
+    "#;
+
+    #[test]
+    fn narrowed_member_hover_uses_read_type() {
+        for separate in [false, true] {
+            let result = text(
+                DEFINITIONS,
+                r#"
+            ---@param stop Stop
+            local function test(stop)
+                if stop.train then
+                    print(stop.<??>train)
+                end
+            end
+            "#,
+                separate,
+            );
+            assert!(result.contains("train: Train\n"), "{separate}: {result}");
+            assert!(result.contains("The parked train."), "{result}");
+        }
+    }
+
+    #[test]
+    fn narrowed_member_hover_preserves_method_documentation() {
+        for separate in [false, true] {
+            let result = text(
+                DEFINITIONS,
+                r#"
+            ---@param stop Stop
+            local function test(stop)
+                if stop.train then
+                    stop.train.<??>get_count('iron')
+                end
+            end
+            "#,
+                separate,
+            );
+            assert!(result.contains("get_count"), "{separate}: {result}");
+            assert!(result.contains("Count stored items."), "{result}");
+            assert!(result.contains("item"), "{result}");
+            assert!(result.contains("integer"), "{result}");
+        }
+    }
+    #[test]
+    fn member_hover_keeps_unguarded_and_write_contracts() {
+        for body in [
+            "print(stop.<??>train)",
+            "if stop.train then stop.<??>train = nil end",
+        ] {
+            let source = format!("---@param stop Stop\nlocal function test(stop)\n{body}\nend");
+            let result = text(DEFINITIONS, &source, true);
+            assert!(result.contains("train: Train?"), "{result}");
+        }
+        let result = text(
+            DEFINITIONS,
+            r#"
+        ---@param stop Stop
+        local function test(stop)
+            if not stop.train then print(stop.<??>train) end
+        end
+        "#,
+            true,
+        );
+        assert!(!result.contains("train: Train\n"), "{result}");
+    }
+
+    #[test]
+    fn nullable_receiver_identity_does_not_remove_nil_diagnostic() {
+        use emmylua_code_analysis::{DiagnosticCode, VirtualWorkspace};
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            &format!(
+                r#"
+        {DEFINITIONS}
+        ---@param stop Stop
+        local function test(stop)
+            stop.train.get_count('iron')
+        end
+        "#
+            )
+        ));
+    }
+
+    #[test]
+    fn optional_field_marker_does_not_override_casts() {
+        let definitions = format!(
+            "{}\n---@class Platform\n",
+            DEFINITIONS.replace("@field train Train?", "@field train? Train|Platform")
+        );
+        for separate in [false, true] {
+            for body in [
+                "---@cast stop.train Train\nprint(stop.<??>train)",
+                "---@cast stop.train Train\nlocal callback = function() print(stop.<??>train) end",
+            ] {
+                let source = format!("---@param stop Stop\nlocal function test(stop)\n{body}\nend");
+                let result = text(&definitions, &source, separate);
+                assert!(
+                    result.contains("train: Train\n"),
+                    "{separate} {body}: {result}"
+                );
+                assert!(result.contains("The parked train."), "{result}");
+            }
+        }
+    }
+
+    #[test]
+    fn optional_field_marker_does_not_override_guards() {
+        let definitions = DEFINITIONS.replace("@field train Train?", "@field train? Train");
+        for separate in [false, true] {
+            for body in [
+                "if stop.train then print(stop.<??>train) end",
+                "assert(stop.train)\nprint(stop.<??>train)",
+                "if stop.train ~= nil then print(stop.<??>train) end",
+            ] {
+                let source = format!("---@param stop Stop\nlocal function test(stop)\n{body}\nend");
+                let result = text(&definitions, &source, separate);
+                assert!(
+                    result.contains("train: Train\n"),
+                    "{separate} {body}: {result}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn optional_field_marker_preserves_nullable_reads() {
+        let definitions = DEFINITIONS.replace("@field train Train?", "@field train? Train");
+        for separate in [false, true] {
+            for body in [
+                "print(stop.<??>train)",
+                "---@cast stop.train Train?\nprint(stop.<??>train)",
+                "if stop.train then print(stop.train) end\nprint(stop.<??>train)",
+            ] {
+                let source = format!("---@param stop Stop\nlocal function test(stop)\n{body}\nend");
+                let result = text(&definitions, &source, separate);
+                assert!(
+                    result.contains("train: Train?\n"),
+                    "{separate} {body}: {result}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn optional_field_declaration_retains_marker() {
+        let definitions = DEFINITIONS.replace("@field train Train?", "@field <??>train? Train");
+        let result = text("", &definitions, false);
+        assert!(result.contains("train: Train?\n"), "{result}");
+    }
+
+    #[test]
+    fn optional_generic_field_uses_read_nullability() {
+        let definitions = format!("{DEFINITIONS}\n---@class Box<T>\n---@field value? T\n");
+        for (body, expected) in [
+            ("print(box.<??>value)", "value: Train?\n"),
+            (
+                "if box.value then print(box.<??>value) end",
+                "value: Train\n",
+            ),
+        ] {
+            let source = format!("---@param box Box<Train>\nlocal function test(box)\n{body}\nend");
+            let result = text(&definitions, &source, true);
+            assert!(result.contains(expected), "{result}");
+        }
+    }
+
+    #[test]
+    fn optional_field_cast_to_nil_does_not_append_question_mark() {
+        let definitions = DEFINITIONS.replace("@field train Train?", "@field train? Train");
+        let result = text(
+            &definitions,
+            "---@param stop Stop\nlocal function test(stop)\n---@cast stop.train nil\nprint(stop.<??>train)\nend",
+            true,
+        );
+        assert!(result.contains("train: nil\n"), "{result}");
+    }
+
+    #[test]
+    fn optional_callable_field_keeps_signature_rendering() {
+        let result = text(
+            "---@class Callbacks\n---@field on_count? fun(): integer Count stored items.",
+            "---@param callbacks Callbacks\nlocal function test(callbacks)\nlocal callback = callbacks.<??>on_count\nend",
+            true,
+        );
+        assert!(
+            result.contains("Callbacks.on_count() -> integer"),
+            "{result}"
+        );
+        assert!(result.contains("Count stored items."), "{result}");
+    }
+}
+
+#[cfg(test)]
+mod dictionary_use_site {
+    use crate::handlers::{
+        hover::{hover, render::humanize},
+        test_lib::ProviderVirtualWorkspace,
+    };
+    use emmylua_code_analysis::LuaType;
+    use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+    use lsp_types::HoverContents;
+
+    const DEFINITIONS: &str = r#"
+    ---@alias HoverDictionaryValue string|boolean|number|table
+    ---@class HoverDictionaryElement
+    ---@field tags table<string, HoverDictionaryValue?>
+    local HoverDictionaryElement = {}
+    "#;
+
+    fn check(body: &str, expected_read: Option<LuaType>, expected_hover: Option<&str>) {
+        let source = format!(
+            "{DEFINITIONS}\n---@param elem HoverDictionaryElement\n---@param other HoverDictionaryElement\nlocal function probe(elem, other)\n{body}\nend"
+        );
+        let mut ws = ProviderVirtualWorkspace::new();
+        let offset = source.find("<??>").unwrap() as u32;
+        let (content, position) = ProviderVirtualWorkspace::handle_file_content(&source).unwrap();
+        let file = ws.def(&content);
+        let model = ws.analysis.semantic_model(file);
+        let token = model
+            .chunk()
+            .unwrap()
+            .syntax()
+            .token_at_offset(offset.into())
+            .right_biased()
+            .unwrap();
+        let index = LuaIndexExpr::cast(token.parent().unwrap()).unwrap();
+        let info = model.semantic_info(token.clone().into()).unwrap();
+        assert!(
+            info.decl.is_none(),
+            "dictionary read must exercise no-member-ID path: {:?}",
+            info.decl
+        );
+        if let Some(expected_read) = expected_read {
+            assert_eq!(
+                model.type_of_expr_at(index.get_syntax_id(), index.get_position()),
+                expected_read,
+                "semantic read must already be narrowed"
+            );
+            assert_ne!(
+                info.typ, expected_read,
+                "raw semantic type must differ from the flow read"
+            );
+        }
+        let expected = expected_hover
+            .map(str::to_owned)
+            .unwrap_or_else(|| humanize(&model, &info.typ));
+        let result = hover(&ws.analysis, file, position).unwrap();
+        let HoverContents::Markup(markup) = result.contents else {
+            panic!("markup required")
+        };
+        assert_eq!(markup.value, format!("```lua\n{expected}\n```"), "{body}");
+    }
+
+    #[test]
+    fn dictionary_index_hover_uses_table_flow_without_member_id() {
+        check(
+            "---@cast elem.tags.handler table\nlocal observed = elem.tags.<??>handler",
+            Some(LuaType::Table),
+            Some("table"),
+        );
+    }
+
+    #[test]
+    fn dictionary_index_hover_uses_number_flow_without_member_id() {
+        check(
+            "---@cast elem.tags.handler number\nlocal observed = elem.tags.<??>handler",
+            Some(LuaType::Number),
+            Some("number"),
+        );
+    }
+
+    #[test]
+    fn dictionary_index_hover_preserves_unrelated_reads() {
+        for body in [
+            "local observed = elem.tags.<??>handler",
+            "---@cast elem.tags.different table\nlocal observed = elem.tags.<??>handler",
+            "---@cast other.tags.handler table\nlocal observed = elem.tags.<??>handler",
+        ] {
+            check(body, None, None);
+        }
+    }
+
+    #[test]
+    fn dictionary_index_write_hover_retains_its_contract() {
+        let mut results = Vec::new();
+        for cast in ["", "---@cast elem.tags.handler table\n"] {
+            let source = format!(
+                "{DEFINITIONS}\n---@param elem HoverDictionaryElement\nlocal function probe(elem)\n{cast}elem.tags.<??>handler = nil\nend"
+            );
+            let mut ws = ProviderVirtualWorkspace::new();
+            let (content, position) =
+                ProviderVirtualWorkspace::handle_file_content(&source).unwrap();
+            let file = ws.def(&content);
+            let HoverContents::Markup(markup) =
+                hover(&ws.analysis, file, position).unwrap().contents
+            else {
+                panic!("markup required")
+            };
+            results.push(markup.value);
+        }
+        assert_eq!(results[0], results[1]);
+    }
+}
