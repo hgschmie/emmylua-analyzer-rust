@@ -488,7 +488,12 @@ impl<'a> InferVm<'a> {
                     "dynamic index needs an owner and key"
                 );
                 let mut key_value = self.stack.pop().unwrap_or(Value::plain(LuaType::Unknown));
-                let owner_value = self.stack.pop().unwrap_or(Value::plain(LuaType::Unknown));
+                let mut owner_value = self.stack.pop().unwrap_or(Value::plain(LuaType::Unknown));
+                if matches!(owner_value.ty, LuaType::TableConst(_))
+                    && let Some(ty) = super::computed_table::receiver_type_at(self.model, syntax)
+                {
+                    owner_value.ty = ty;
+                }
                 // Query the key subtree, not the enclosing index. Results are cached
                 // by syntax/offset; ordinary inference also guards dependency cycles.
                 let flow_ty = self
@@ -500,7 +505,16 @@ impl<'a> InferVm<'a> {
                     key_value.ty = flow_ty;
                 }
                 key_value.ty = key_value.ty.get_result_slot_type(0).unwrap_or(LuaType::Nil);
-                let value = self.index_member_dynamic(owner_value, key_value);
+                let mut value = self.index_member_dynamic(owner_value.clone(), key_value.clone());
+                if let Some(ty) = super::computed_table::read_type(
+                    self.model,
+                    &owner_value.ty,
+                    syntax,
+                    &key_value.ty,
+                    &value.ty,
+                ) {
+                    value.ty = ty;
+                }
                 self.stack.push(value);
             }
             Instr::IndexMember(IndexKey::Static(key)) => {

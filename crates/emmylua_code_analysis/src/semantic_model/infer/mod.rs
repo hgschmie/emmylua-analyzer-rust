@@ -18,6 +18,7 @@
 
 pub(crate) mod call_generics;
 pub(crate) mod callable;
+mod computed_table;
 pub(crate) mod function_solver;
 pub(crate) mod overload;
 pub(crate) mod unify;
