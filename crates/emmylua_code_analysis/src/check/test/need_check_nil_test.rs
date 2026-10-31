@@ -912,3 +912,125 @@ end
         );
     }
 }
+
+#[test]
+fn test_nonempty_array_length_index() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for (guard, index, mutation, expected_warning) in [
+        ("if not a[1] then return end", "a[#a]", "", false),
+        ("if #a > 0 then", "a[#a]", "", false),
+        ("if #a >= 1 then", "a[#a]", "", false),
+        ("if #a == 1 then", "a[#a]", "", false),
+        ("if #a <= 0 then return end", "a[#a]", "", false),
+        ("", "a[#a]", "", true),
+        ("if #a <= 1 then", "a[#a]", "", true),
+        ("if 1 >= #a then", "a[#a]", "", true),
+        ("if 1 > #a then", "a[#a]", "", true),
+        ("if #a == 0 then", "a[#a]", "", true),
+        ("if a[1] then return end", "a[#a]", "", true),
+        ("if not a[1] then return end", "b[#b]", "", true),
+        ("if not a[1] then return end", "a[#b]", "", true),
+        ("if not a[1] then return end", "a[#a]", "a[1] = nil", true),
+        ("if not a[1] then return end", "a[#a]", "a = {}", true),
+        (
+            "if not a[1] then return end",
+            "a[#a]",
+            "local alias = a; alias[1] = nil",
+            true,
+        ),
+        ("if not a[1] then return end", "a[#a]", "mutate(a)", true),
+        (
+            "if not a[1] then return end",
+            "a[#a]",
+            "local ignored = mutate(a)",
+            true,
+        ),
+    ] {
+        let closing = if guard.ends_with("then") { "end" } else { "" };
+        let source = format!(
+            r#"
+            ---@param a string[]
+            ---@param b string[]
+            function example(a, b)
+                {guard}
+                {mutation}
+                ---@type string
+                local s = {index}
+                {closing}
+            end
+        "#
+        );
+        let mut ws = VirtualWorkspace::new();
+        assert_eq!(
+            ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
+            !expected_warning,
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn nonempty_length_guard_survives_unrelated_predicate_calls() {
+    for condition in [
+        "#a > 0",
+        "a and #a > 0 and count() > 0",
+        "count() > 0 and a and #a > 0",
+    ] {
+        let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+        assert!(
+            ws.has_no_diagnostic(
+                crate::DiagnosticCode::ParamTypeMismatch,
+                &format!(
+                    r#"
+            ---@return integer
+            local function count() return 1 end
+            ---@param key string
+            local function consume(key) end
+            ---@param a string[]
+            local function drain(a)
+                while {condition} do
+                    local key = a[#a]
+                    consume(key)
+                    table.remove(a)
+                end
+            end
+        "#
+                )
+            ),
+            "{condition}"
+        );
+    }
+}
+
+#[test]
+fn nonempty_length_guard_rejects_mutating_predicates() {
+    for mutation in [
+        "table.remove(a)",
+        "rawset(a, 1, nil)",
+        "mutate(a)",
+        "change()",
+        "(function() a[1] = nil end)()",
+    ] {
+        let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+        assert!(
+            !ws.has_no_diagnostic(
+                crate::DiagnosticCode::ParamTypeMismatch,
+                &format!(
+                    r#"
+            ---@param key string
+            local function consume(key) end
+            ---@param a string[]
+            local function drain(a)
+                local function change() a[1] = nil end
+                if #a > 0 then
+                    {mutation}
+                    consume(a[#a])
+                end
+            end
+        "#
+                )
+            ),
+            "{mutation}"
+        );
+    }
+}

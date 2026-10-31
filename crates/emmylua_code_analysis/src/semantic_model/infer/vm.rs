@@ -356,8 +356,8 @@ fn compile_expr(expr: &LuaExpr, file_id: FileId, out: &mut Vec<Instr>, stack: &m
             table.get_range(),
         )))),
         LuaExpr::UnaryExpr(unary) => {
-            // M0: `not` -> Boolean; `-x`/`#x` -> operator overload (`---@operator unm/len`),
-            // falling back to the operand type when no overload exists.
+            // `not` -> Boolean; `-x`/`#x` check operator overloads (`---@operator unm/len`).
+            // Built-in lengths return Integer; class operators retain their declared result.
             let op = unary.get_op_token().map(|t| t.get_op());
             if op == Some(emmylua_parser::UnaryOperator::OpNot) {
                 out.push(Instr::PushPrimitive(PrimitiveType::Boolean));
@@ -4967,7 +4967,11 @@ fn length_type(model: &SemanticModel, operand: &LuaType) -> Option<LuaType> {
     while let Some(ty) = pending.pop() {
         if let LuaType::Union(union) = ty {
             pending.extend(union.into_vec());
-        } else if ty.is_table() || ty.is_object() || ty.is_string() {
+        } else if ty.is_table()
+            || ty.is_object()
+            || ty.is_string()
+            || matches!(&ty, LuaType::Generic(generic) if generic.get_base_type_id().get_name() == "table")
+        {
             results.push(LuaType::Integer);
         } else {
             results.push(model.operator_type("len", &ty)?);
