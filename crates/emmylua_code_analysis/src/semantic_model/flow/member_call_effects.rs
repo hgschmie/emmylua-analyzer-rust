@@ -5,8 +5,9 @@
 //! Same-file fixed member paths use reaching assignments and actual dot/colon
 //! receivers. Dynamic callees and interprocedural installation of methods remain
 //! opaque. Factory-returned closures are also opaque: completed calls do not
-//! provide captured closure-creation environments. This includes installing a callable with rawset: its direct write
-//! invalidates the member, but the stored callable is not a value postcondition.
+//! provide captured closure-creation environments. Installing a callable with
+//! rawset invalidates the member directly, but the stored callable is not a
+//! value postcondition.
 //! Captured member replacements without an invocation context are opaque.
 //! A reassigned name callee captured in a different closure is also
 //! opaque; the presence of any declaration assignment triggers that boundary.
@@ -53,7 +54,7 @@ type Access = (SemanticId, Vec<LuaMemberKey>);
 type Bindings = Vec<(SemanticId, Vec<Access>)>;
 // Histories contain each (callee, callsite, caller bindings) state at most once.
 // This bounds recursion without merging replacement order or caller receivers.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Eq)]
 struct Invocation {
     closure: LuaClosureId,
     site: LuaSyntaxId,
@@ -74,6 +75,12 @@ impl Invocation {
             bindings: Rc::new(bindings.clone()),
             bindings_hash: state.finish(),
         }
+    }
+}
+
+impl PartialEq for Invocation {
+    fn eq(&self, other: &Self) -> bool {
+        self.closure == other.closure && self.site == other.site && self.bindings == other.bindings
     }
 }
 

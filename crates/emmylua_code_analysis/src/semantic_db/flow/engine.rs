@@ -11,7 +11,8 @@
 use emmylua_parser::{
     BinaryOperator, LuaAssignStat, LuaAst, LuaAstNode, LuaBlock, LuaCallExprStat,
     LuaElseIfClauseStat, LuaExpr, LuaForRangeStat, LuaForStat, LuaFuncStat, LuaIfStat,
-    LuaIndexExpr, LuaLocalStat, LuaLoopStat, LuaRepeatStat, LuaWhileStat, UnaryOperator,
+    LuaIndexExpr, LuaLiteralToken, LuaLocalStat, LuaLoopStat, LuaRepeatStat, LuaWhileStat,
+    NumberResult, UnaryOperator,
 };
 
 use super::comment::bind_comment;
@@ -1325,26 +1326,100 @@ fn loop_may_repeat(loop_stat: &LuaLoopStat) -> bool {
                 .and_then(static_literal_truthiness)
                 != Some(true)
         }
-        LuaLoopStat::ForStat(stat) => {
-            let values = stat.get_iter_expr().collect::<Vec<_>>();
-            let start = values.first().and_then(static_number_value);
-            let stop = values.get(1).and_then(static_number_value);
-            let step = values.get(2).map(static_number_value).unwrap_or(Some(1.0));
-            // static_number_value accepts literal numbers/signs; bound arithmetic
-            // deliberately uses f64, so very large counters can round. Zero,
-            // negative zero and unresolved/nonliteral steps keep a possible repeat.
-            // If adding a step makes no progress, retain the possible backedge
-            // rather than declaring a potentially repeating loop single-pass:
-            // start + step == start still satisfies the bound for an entered loop.
-            // With finite bounds, overflow to signed infinity passes the bound
-            // in the step direction and therefore cannot produce another iteration.
-            match (start, stop, step) {
-                (Some(start), Some(stop), Some(step)) if step > 0.0 => start + step <= stop,
-                (Some(start), Some(stop), Some(step)) if step < 0.0 => start + step >= stop,
-                _ => true,
-            }
-        }
+        LuaLoopStat::ForStat(stat) => numeric_loop_may_repeat(stat),
         _ => true,
+    }
+}
+
+fn numeric_loop_may_repeat(stat: &LuaForStat) -> bool {
+    let values = stat.get_iter_expr().collect::<Vec<_>>();
+    let (Some(start), Some(stop), Some(step)) = (
+        values.first().and_then(static_loop_number),
+        values.get(1).and_then(static_loop_number),
+        values
+            .get(2)
+            .map(static_loop_number)
+            .unwrap_or(Some(LoopNumber::Integer(1))),
+    ) else {
+        return true;
+    };
+    if let (LoopNumber::Integer(start), LoopNumber::Integer(stop), LoopNumber::Integer(step)) =
+        (start, stop, step)
+    {
+        // Keep a possible backedge on overflow or a zero step. Otherwise compare
+        // exact integer values, including counters above the f64 precision range.
+        return start
+            .checked_add(step)
+            .is_none_or(|next| match step.cmp(&0) {
+                std::cmp::Ordering::Greater => next <= stop,
+                std::cmp::Ordering::Less => next >= stop,
+                std::cmp::Ordering::Equal => true,
+            });
+    }
+    // Float literals already use the runtime's floating-point domain. Mixed
+    // integer conversion must be exact; nonfinite inputs keep a possible repeat.
+    // Finite float overflow passes the bound in the step direction, whereas
+    // rounded addition with no progress can still repeat.
+    match (start.exact_float(), stop.exact_float(), step.exact_float()) {
+        (Some(start), Some(stop), Some(step)) if step > 0.0 => start + step <= stop,
+        (Some(start), Some(stop), Some(step)) if step < 0.0 => start + step >= stop,
+        _ => true,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum LoopNumber {
+    Integer(i64),
+    Float(f64),
+}
+
+impl LoopNumber {
+    fn exact_float(self) -> Option<f64> {
+        let value = match self {
+            Self::Integer(value)
+                if (-9_007_199_254_740_992..=9_007_199_254_740_992).contains(&value) =>
+            {
+                value as f64
+            }
+            Self::Integer(_) => return None,
+            Self::Float(value) => value,
+        };
+        value.is_finite().then_some(value)
+    }
+}
+
+/// Preserve integer literal identity before numeric-loop bound arithmetic.
+/// Unsigned values outside i64 and unrepresentable negation remain unknown.
+fn static_loop_number(expr: &LuaExpr) -> Option<LoopNumber> {
+    let mut expr = expr.clone();
+    let mut negate = false;
+    loop {
+        expr = match expr {
+            LuaExpr::ParenExpr(paren) => paren.get_expr()?,
+            LuaExpr::UnaryExpr(unary) if unary.get_op_token()?.get_op() == UnaryOperator::OpUnm => {
+                negate = !negate;
+                unary.get_expr()?
+            }
+            LuaExpr::LiteralExpr(literal) => {
+                let LuaLiteralToken::Number(number) = literal.get_literal()? else {
+                    return None;
+                };
+                let value = match number.get_number_value() {
+                    NumberResult::Int(value) => value,
+                    NumberResult::Uint(value) => i64::try_from(value).ok()?,
+                    NumberResult::Float(value) => {
+                        return Some(LoopNumber::Float(if negate { -value } else { value }));
+                    }
+                    NumberResult::Number => return None,
+                };
+                return Some(LoopNumber::Integer(if negate {
+                    value.checked_neg()?
+                } else {
+                    value
+                }));
+            }
+            _ => return None,
+        };
     }
 }
 
@@ -1390,6 +1465,16 @@ mod loop_reentry_tests {
             ("for i=0.1,0.3,0.1 do end", true),
             ("for i=0.1,0.3,0.2 do end", false),
             ("for i=1,2,0/0 do end", true),
+            ("for i=9007199254740995,9007199254740997,2 do end", true),
+            ("for i=-9007199254740995,-9007199254740997,-2 do end", true),
+            ("for i=9007199254740995,9007199254740995,1 do end", false),
+            (
+                "for i=9223372036854775807,9223372036854775807,1 do end",
+                true,
+            ),
+            ("for i=1e30,1e30,1.0 do end", true),
+            ("for i=1,18446744073709551615ULL do end", true),
+            ("for i=9007199254740993,9007199254740992.0,1 do end", true),
         ] {
             let mut ws = VirtualWorkspace::new();
             let file = ws.def(source);

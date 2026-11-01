@@ -205,6 +205,7 @@ fn descendant_writes_do_not_replace_the_ancestor_callee() {
 fn mixed_and_sequence_constructor_callees_work_through_local_aliases() {
     for installation in [
         "local methods = {1, clear = writer}; local action = methods.clear",
+        "local methods = {[dynamic] = opaque, clear = writer}; local action = methods.clear",
         "local methods = {writer}; local action = methods[1]",
         "local methods = {}; methods.clear = writer; local action = methods.clear",
     ] {

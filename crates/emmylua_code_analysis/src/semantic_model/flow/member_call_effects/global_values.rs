@@ -1,4 +1,9 @@
 //! Reaching global writes can replace names still resolved to stdlib.
+//!
+//! A nested-body query has no particular invocation context. Enclosing writes
+//! therefore remain possible across all calls to that body, including escaped
+//! callbacks. This conservative summary can retain warnings for a known call
+//! before a later replacement; lexical definition position cannot prove safety.
 
 use super::reaching_values::{callee_reachable_flows, reaching_values};
 use crate::semantic_db::{
