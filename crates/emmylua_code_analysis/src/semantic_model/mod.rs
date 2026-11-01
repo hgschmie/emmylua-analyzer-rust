@@ -77,6 +77,8 @@ pub struct SemanticModel<'db> {
     view: FileView<'db>,
 
     /// Query results and recursion state shared across `model_for` file views.
+    /// FileView immutably borrows the database for this model's lifetime, so edits
+    /// require ending that borrow and constructing a new model with a fresh cache.
     cache: Rc<LazyCache>,
 }
 

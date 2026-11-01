@@ -158,40 +158,43 @@ pub(super) fn iteration_conflicts(
     scan(model, expected, body, before, true)
 }
 
+/// Examine completed calls before upper_bound, optionally including direct writes.
+/// The node supplies the lower boundary; nested closure bodies are not executed.
 fn scan(
     model: &SemanticModel,
     expected: &Access,
     node: &LuaSyntaxNode,
-    before: TextSize,
-    writes: bool,
+    upper_bound: TextSize,
+    include_writes: bool,
 ) -> bool {
     let mut pending = vec![node.clone()];
     while let Some(node) = pending.pop() {
-        if node.text_range().start() >= before || LuaClosureExpr::can_cast(node.kind().into()) {
+        if node.text_range().start() >= upper_bound || LuaClosureExpr::can_cast(node.kind().into())
+        {
             continue;
         }
-        if writes
-            && node.text_range().end() <= before
+        if include_writes
+            && node.text_range().end() <= upper_bound
             && let Some(assign) = LuaAssignStat::cast(node.clone())
             && assign
                 .get_var_and_expr_list()
                 .0
                 .iter()
-                .any(|var| write_conflicts(model, expected, var, before))
+                .any(|var| write_conflicts(model, expected, var, upper_bound))
         {
             return true;
         }
         // A function statement writes its closure into the named target, while
         // the closure body remains unevaluated and is skipped by this walk.
-        if writes
-            && node.text_range().end() <= before
+        if include_writes
+            && node.text_range().end() <= upper_bound
             && let Some(function) = LuaFuncStat::cast(node.clone())
             && let Some(target) = function.get_func_name()
-            && write_conflicts(model, expected, &target, before)
+            && write_conflicts(model, expected, &target, upper_bound)
         {
             return true;
         }
-        if node.text_range().end() <= before
+        if node.text_range().end() <= upper_bound
             && let Some(call) = LuaCallExpr::cast(node.clone())
             && call_conflicts(model, expected, &call)
         {

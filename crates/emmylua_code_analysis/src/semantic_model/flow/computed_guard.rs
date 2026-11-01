@@ -258,6 +258,9 @@ impl<'a, 'db> GuardSearch<'a, 'db> {
                 if predecessors.is_empty() {
                     return Some(base);
                 }
+                // A predecessor without a proof contributes the original base.
+                // Its union absorbs any narrower branch: presence must hold on
+                // every incoming path before the merged read can be narrowed.
                 Some(predecessors.iter().fold(LuaType::Never, |merged, id| {
                     super::merge_types(merged, self.narrow(*id, base.clone()))
                 }))
@@ -567,3 +570,6 @@ mod expression_order_tests;
 
 #[cfg(test)]
 mod numeric_access_tests;
+
+#[cfg(test)]
+mod prerequisite_integration_tests;

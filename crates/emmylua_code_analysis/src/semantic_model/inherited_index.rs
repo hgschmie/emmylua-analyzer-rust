@@ -8,6 +8,8 @@ use super::cache::{CacheEntry, QueryCacheScope, TypeEvaluationScope};
 use super::{SemanticModel, infer::unify, type_check, type_eval};
 use crate::{GenericTplId, LuaType, TypeDefKind};
 
+/// Missing declarations use the native table constructor even without stdlib docs.
+/// A present user declaration is a separate type and does not inherit that identity.
 pub(crate) fn is_standard_table(model: &SemanticModel, id: &crate::LuaTypeDeclId) -> bool {
     *id == crate::LuaTypeDeclId::global("table")
         && model
@@ -185,6 +187,20 @@ fn lookup_key(
         return None;
     }
     seen.push(key.clone());
+    let result = project_key(model, contracts, fields, indexes, key, seen);
+    seen.pop();
+    result
+}
+
+/// Keep early returns inside this computation so lookup_key always restores seen.
+fn project_key(
+    model: &SemanticModel<'_>,
+    contracts: &[LuaType],
+    fields: &[super::member::MemberInfo],
+    indexes: &[crate::IndexInfo],
+    key: &LuaType,
+    seen: &mut Vec<LuaType>,
+) -> Option<LuaType> {
     let expanded = match key {
         LuaType::Ref(id) | LuaType::Def(id) => model
             .type_def_of(id)
@@ -197,7 +213,7 @@ fn lookup_key(
         LuaType::MultiLineUnion(union) => Some(union.to_union()),
         _ => None,
     };
-    let result = if *key == LuaType::Nil {
+    if *key == LuaType::Nil {
         // This is a read projection: nil selects no dictionary entry. Returning
         // Nil preserves absence, not a valid non-nil key or a writable slot.
         Some(LuaType::Nil)
@@ -218,7 +234,6 @@ fn lookup_key(
         if let Some(literal) = type_eval::member_key_from_literal(key)
             && let Some(field) = fields.iter().find(|field| field.key == literal)
         {
-            seen.pop();
             return Some(field.typ.clone());
         }
         let mut values = Vec::new();
@@ -247,7 +262,6 @@ fn lookup_key(
         // contracts for a fully covered key domain. A narrower declaration is
         // still one possible value for a broad key, alongside inherited entries.
         if declared_covers_key {
-            seen.pop();
             return (!values.is_empty()).then(|| LuaType::from_vec(values));
         }
         for contract in contracts {
@@ -272,9 +286,7 @@ fn lookup_key(
             }
         }
         (!values.is_empty()).then(|| LuaType::from_vec(values))
-    };
-    seen.pop();
-    result
+    }
 }
 
 #[cfg(test)]

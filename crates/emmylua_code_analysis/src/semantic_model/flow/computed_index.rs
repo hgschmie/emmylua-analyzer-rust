@@ -12,6 +12,9 @@ use rowan::TextSize;
 
 use super::{FlowAntecedent, FlowEffect, FlowNodeKind, LuaType, SemanticModel, computed_effects};
 
+/// Return a proved assignment contract, or None when no proof is available.
+/// Missing nodes, uncertain joins and budget exhaustion all decline this query;
+/// None is neither proof of absence nor a reusable claim of query completeness.
 pub(super) fn assigned_type(
     model: &SemanticModel,
     index: &LuaIndexExpr,

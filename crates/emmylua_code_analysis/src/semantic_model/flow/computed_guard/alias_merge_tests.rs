@@ -83,3 +83,35 @@ fn computed_alias_guard_does_not_hide_later_deletion_of_entry() {
         true,
     );
 }
+
+#[test]
+fn computed_alias_guards_keep_initializer_and_guard_order() {
+    for body in [
+        "if rows[key] then local delivery=rows[key]; if delivery then print(rows[key].value) end end",
+        "local delivery=rows[key]; if rows[key] then print(rows[key].value) end",
+        "local delivery=rows[key]; if delivery then print(rows[key].value) end",
+    ] {
+        check(body, true);
+    }
+    for body in [
+        "if rows[key] then local delivery=rows[key]; rows[key]=nil; if delivery then print(rows[key].value) end end",
+        "local delivery=rows[key]; rows[key]=nil; if delivery then print(rows[key].value) end",
+    ] {
+        check(body, false);
+    }
+}
+
+#[test]
+fn computed_guards_follow_table_move_destination() {
+    for (call, safe) in [
+        ("table.move(rows, 1, 2, 3)", false),
+        ("table.move(rows, 1, 2, 3, rows)", false),
+        ("table.move(replacement, 1, 2, 3, rows)", false),
+        ("table.move(rows, 1, 2, 3, replacement)", true),
+    ] {
+        check(
+            &format!("if rows[key] then {call}; print(rows[key].value) end"),
+            safe,
+        );
+    }
+}
