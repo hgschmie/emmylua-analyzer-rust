@@ -172,6 +172,8 @@ pub(super) fn calls_conflict_with_path(
     scan(model, expected, node, TextSize::from(0), before)
 }
 
+// Keep this syntax gate aligned with the visible-callee resolver. Values returned
+// by calls remain opaque; enabling receiver discovery cannot resolve their bodies.
 fn may_be_callee_value(value: LuaExpr) -> bool {
     guards::unparenthesized(value).is_some_and(|value| {
         matches!(
@@ -946,6 +948,74 @@ fn table_member_value(mut value: LuaExpr, keys: &[LuaMemberKey]) -> Option<LuaEx
     Some(value)
 }
 
+/// Treat a native member as reassigned only when every reaching path writes it.
+/// Uncalled closures and optional branches do not establish builtin replacement.
+fn member_written_on_all_paths(model: &SemanticModel, expected: &Access, query: &LuaExpr) -> bool {
+    let (Some(tree), Some(chunk)) = (model.flow_tree(), model.chunk()) else {
+        return false;
+    };
+    let Some(start) = tree.get_flow_id_at(query.get_position()) else {
+        return false;
+    };
+    let closure = LuaClosureId::from_node(query.syntax());
+    let mut pending = vec![start];
+    let mut visited = HashSet::new();
+    let mut saw_write = false;
+    while let Some(flow) = pending.pop() {
+        if !visited.insert(flow) {
+            continue;
+        }
+        let Some(node) = tree.get_flow_node(flow) else {
+            return false;
+        };
+        if matches!(node.kind, FlowNodeKind::Unreachable) {
+            continue;
+        }
+        if let Some(syntax) = node.kind.assignment_syntax()
+            && syntax.get_range().end() <= query.get_position()
+        {
+            let Some(statement) = syntax.to_node_from_root(chunk.syntax()) else {
+                return false;
+            };
+            if LuaClosureId::from_node(&statement) != closure {
+                return false;
+            }
+            let Some(vars) = super::flow_written_vars(model, &tree, flow) else {
+                return false;
+            };
+            if vars.iter().any(|var| {
+                LuaExpr::cast(var.syntax().clone())
+                    .and_then(|expr| index_access_path(model, &expr))
+                    .is_some_and(|written| {
+                        // A possible alias (an unknown key) cannot prove replacement.
+                        written.0 == expected.0
+                            && written.1.len() <= expected.1.len()
+                            && written
+                                .1
+                                .iter()
+                                .zip(&expected.1)
+                                .all(|(a, b)| !a.is_none() && a == b)
+                    })
+            }) {
+                saw_write = true;
+                continue;
+            }
+        }
+        match &node.antecedent {
+            Some(FlowAntecedent::Single(previous)) => pending.push(*previous),
+            Some(FlowAntecedent::Multiple(id)) => {
+                let Some(previous) = tree.get_multi_antecedents(*id).filter(|p| !p.is_empty())
+                else {
+                    return false;
+                };
+                pending.extend(previous.iter().copied());
+            }
+            None => return false,
+        }
+    }
+    saw_write
+}
+
 /// Recognize a standard table mutator through visible local aliases. A local
 /// replacement of a library member stops recognition; its body is scanned normally.
 fn whole_table_mutators(model: &SemanticModel, expr: LuaExpr) -> Vec<usize> {
@@ -990,27 +1060,7 @@ fn whole_table_mutators(model: &SemanticModel, expr: LuaExpr) -> Vec<usize> {
                 let Some(path) = index_access_path(model, &expr) else {
                     continue;
                 };
-                let replaced = model.chunk().is_some_and(|chunk| {
-                    chunk.descendants::<LuaAssignStat>().any(|assign| {
-                        assign.get_range().start() < expr.get_position()
-                            && assign.get_var_and_expr_list().0.iter().any(|var| {
-                                LuaExpr::cast(var.syntax().clone())
-                                    .and_then(|expr| index_access_path(model, &expr))
-                                    .is_some_and(|written| {
-                                        path_write_affects(&written, &path.0, &path.1)
-                                    })
-                            })
-                    }) || chunk.descendants::<LuaFuncStat>().any(|func| {
-                        func.get_range().start() < expr.get_position()
-                            && func
-                                .get_func_name()
-                                .and_then(|var| LuaExpr::cast(var.syntax().clone()))
-                                .and_then(|expr| index_access_path(model, &expr))
-                                .is_some_and(|written| {
-                                    path_write_affects(&written, &path.0, &path.1)
-                                })
-                    })
-                });
+                let replaced = member_written_on_all_paths(model, &path, &expr);
                 if !replaced {
                     receivers.push(receiver);
                 }
@@ -1466,6 +1516,101 @@ mod unsigned_key_tests {
                 literal_member_key(index.get_index_key().unwrap()),
                 expected,
                 "{text}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod native_mutator_tests {
+    use super::*;
+
+    #[test]
+    fn native_mutator_still_invalidates_after_an_uncalled_replacement() {
+        for setup in [
+            "local function unused() table.remove = function() end end",
+            "local function unused() function table.remove() end end",
+            "if false then table.remove = function() end end",
+            "if flag then table.remove = function() end end",
+        ] {
+            let source = [
+                "---@param rows integer[][]\n---@param key integer\n---@param flag boolean\nlocal function run(rows, key, flag)\n",
+                setup,
+                "\nif rows[key] then table.remove(rows, key); print(rows[key][1]) end\nend",
+            ].concat();
+            let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+            assert!(
+                !ws.has_no_diagnostic(crate::DiagnosticCode::NeedCheckNil, &source),
+                "{setup}"
+            );
+        }
+    }
+
+    #[test]
+    fn known_member_write_invalidates_a_computed_target_on_the_same_receiver() {
+        for (target, conflicts) in [("rows", true), ("other", false)] {
+            let source = [
+                "local function run(rows, other, key) local function clear() ",
+                target,
+                "[1] = nil end; if rows[key] then clear(); local observed = rows[key] end end",
+            ]
+            .concat();
+            let mut ws = crate::VirtualWorkspace::new();
+            let file = ws.def(&source);
+            let model = ws.analysis.semantic_model(file);
+            let chunk = model.chunk().unwrap();
+            let index = chunk.descendants::<LuaIndexExpr>().last().unwrap();
+            let expected = index_access_path(&model, &LuaExpr::IndexExpr(index.clone())).unwrap();
+            assert!(expected.1.last().unwrap().is_none());
+            let call = chunk
+                .descendants::<LuaCallExpr>()
+                .find(|call| call.get_text() == "clear()")
+                .unwrap();
+            assert_eq!(
+                calls_conflict_with_path(&model, &expected, call.syntax(), index.get_position()),
+                conflicts,
+                "{target}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_table_mutator_replacement_requires_a_reaching_write() {
+        for (setup, native) in [
+            ("", true),
+            (
+                "local function unused() table.remove = function() end end",
+                true,
+            ),
+            (
+                "local function unused() function table.remove() end end",
+                true,
+            ),
+            ("if false then table.remove = function() end end", true),
+            ("if flag then table.remove = function() end end", true),
+            ("table.remove = function() end", false),
+            ("function table.remove() end", false),
+            (
+                "if flag then table.remove = function() end else function table.remove() end end",
+                false,
+            ),
+        ] {
+            let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+            let file = ws.def(&format!(
+                "local function run(rows, flag) {setup}; table.remove(rows) end"
+            ));
+            let model = ws.analysis.semantic_model(file);
+            let call = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaCallExpr>()
+                .find(|call| call.get_text() == "table.remove(rows)")
+                .unwrap();
+            let expected = if native { vec![0] } else { vec![] };
+            assert_eq!(
+                whole_table_mutators(&model, call.get_prefix_expr().unwrap()),
+                expected,
+                "{setup}"
             );
         }
     }

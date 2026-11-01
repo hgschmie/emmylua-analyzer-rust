@@ -341,6 +341,8 @@ pub(crate) fn member_info_impl(
     {
         return Some(info);
     }
+    // Named class contracts do not overlap the anonymous TableConst metatable
+    // fallback below; declared fields were resolved before this inherited lookup.
     if let Some(key_type) = key.to_index_type()
         && let Some(typ) = super::inherited_index::lookup(model, prefix_type, &key_type)
     {

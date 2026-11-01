@@ -68,6 +68,9 @@ pub(super) fn guarded_type(
         _ if named_collection(model, &owner_type, true) => {}
         _ => return None,
     }
+    // This is the raw expression cache, distinct from the flow-sensitive query
+    // that called us. Recursive raw inference can still yield Unknown; only a
+    // concrete owner array contract supplies a conservative element fallback.
     let inferred = model.type_of_expr(index.get_syntax_id());
     let base = match (&inferred, &owner_type) {
         // Recursive element inference can be unknown at a loop/write site. The
@@ -417,6 +420,8 @@ pub(super) fn ordinary_collection(model: &SemanticModel, owner_type: &LuaType) -
 
 // Collection classification is a proof, so partial inherited contracts or
 // member enumeration must never enable a guard or assignment fact.
+// Declared fields admit computed reads only: the caller still needs a concrete
+// value contract and a reaching guard. This predicate does not prove presence.
 fn named_collection(model: &SemanticModel, owner: &LuaType, allow_declared_fields: bool) -> bool {
     let _query = crate::semantic_model::cache::QueryCacheScope::new(&model.cache);
     let revision = model.cache.borrow().revision();

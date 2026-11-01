@@ -35,6 +35,9 @@ pub(super) fn assigned_type(
     if !super::computed_guard::ordinary_collection(model, &owner_type) {
         return None;
     }
+    // This is the raw expression cache, distinct from the flow-sensitive query
+    // that called us. Recursive raw inference can still yield Unknown; only a
+    // concrete owner array contract supplies a conservative element fallback.
     let inferred = model.type_of_expr(index.get_syntax_id());
     let base = match (&inferred, &owner_type) {
         // Recursive element inference can be unknown at a loop/write site. The
@@ -44,6 +47,11 @@ pub(super) fn assigned_type(
         }
         _ => inferred,
     };
+    // An assignment can prove presence only for a usable element contract.
+    // Do not replace normal member resolution with an uninformative proof.
+    if matches!(base, LuaType::Unknown | LuaType::Any | LuaType::Never) {
+        return None;
+    }
     // Keep the assignment proof even when the raw value contract omits nil.
     // A downstream dictionary read can add absence to that same contract.
     if computed_effects::calls_conflict(
@@ -440,6 +448,36 @@ end
                 assigned_type(&model, &index, index.get_position()),
                 expected,
                 "{body}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod uncertain_base_tests {
+    use super::*;
+    use crate::semantic_model::cache::CacheEntry;
+
+    #[test]
+    fn assignment_proof_rejects_an_unusable_raw_element_type() {
+        for raw in [LuaType::Unknown, LuaType::Any, LuaType::Never] {
+            let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+            let file = ws.def("---@param values table<string,integer>\n---@param key string\nlocal function f(values, key) values[key] = 1; local observed = values[key] end");
+            let model = ws.analysis.semantic_model(file);
+            let index = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaIndexExpr>()
+                .last()
+                .unwrap();
+            model.cache.borrow_mut().expr_type.insert(
+                (file, index.get_syntax_id()),
+                CacheEntry::Ready(raw.clone()),
+            );
+            assert_eq!(
+                assigned_type(&model, &index, index.get_position()),
+                None,
+                "{raw:?}"
             );
         }
     }

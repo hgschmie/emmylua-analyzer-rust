@@ -192,6 +192,8 @@ fn lookup_key(
         _ => None,
     };
     let result = if *key == LuaType::Nil {
+        // This is a read projection: nil selects no dictionary entry. Returning
+        // Nil preserves absence, not a valid non-nil key or a writable slot.
         Some(LuaType::Nil)
     } else if let LuaType::Union(union) = key {
         union
@@ -352,6 +354,25 @@ mod contract_boundary_tests {
         let model = ws.analysis.semantic_model(file);
         assert!(dictionaries(&model, &owner).is_empty());
         assert_eq!(lookup(&model, &owner, &LuaType::Integer), None);
+    }
+
+    #[test]
+    fn inherited_dictionary_nil_key_keeps_absence_in_the_read_type() {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def("---@class Values: table<string,integer>");
+        let owner = ws.ty("Values");
+        let model = ws.analysis.semantic_model(file);
+        for _ in 0..2 {
+            assert_eq!(lookup(&model, &owner, &LuaType::Nil), Some(LuaType::Nil));
+            assert_eq!(
+                lookup(
+                    &model,
+                    &owner,
+                    &LuaType::from_vec(vec![LuaType::String, LuaType::Nil])
+                ),
+                Some(LuaType::from_vec(vec![LuaType::Integer, LuaType::Nil]))
+            );
+        }
     }
 
     #[test]
