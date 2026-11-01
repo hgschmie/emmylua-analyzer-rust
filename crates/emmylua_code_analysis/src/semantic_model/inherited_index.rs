@@ -1,4 +1,7 @@
 //! Index contracts inherited from dictionary supertypes, with generic arguments retained.
+// Bound recursive key projection; exhaustion declines a projected contract.
+const MAX_KEY_PROJECTION_DEPTH: usize = 32;
+
 use emmylua_parser::{LuaAstNode, LuaDocTagClass};
 
 use super::cache::{CacheEntry, QueryCacheScope, TypeEvaluationScope};
@@ -178,7 +181,7 @@ fn lookup_key(
     key: &LuaType,
     seen: &mut Vec<LuaType>,
 ) -> Option<LuaType> {
-    if seen.len() >= 32 || seen.contains(key) {
+    if seen.len() >= MAX_KEY_PROJECTION_DEPTH || seen.contains(key) {
         return None;
     }
     seen.push(key.clone());

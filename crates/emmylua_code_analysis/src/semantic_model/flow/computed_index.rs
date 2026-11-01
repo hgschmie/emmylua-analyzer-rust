@@ -4,6 +4,9 @@
 //! table and key instead. Stop at conflicting effects and uncertain joins;
 //! preserve facts across opaque calls and loops without visible conflicting writes.
 
+// Bound backward assignment search; exhaustion leaves presence unproven.
+const MAX_ASSIGNMENT_TRACE_STEPS: usize = 128;
+
 use emmylua_parser::{LuaAstNode, LuaExpr, LuaIndexExpr, LuaStat, LuaVarExpr};
 use rowan::TextSize;
 
@@ -67,7 +70,7 @@ pub(super) fn assigned_type(
     let root = model.chunk()?;
     let mut current = tree.get_flow_id_at(offset)?;
     // Bounded traversal also protects incomplete or cyclic control-flow graphs.
-    for _ in 0..128 {
+    for _ in 0..MAX_ASSIGNMENT_TRACE_STEPS {
         let node = tree.get_flow_node(current)?;
         match &node.kind {
             FlowNodeKind::Assignment(ptr) => {

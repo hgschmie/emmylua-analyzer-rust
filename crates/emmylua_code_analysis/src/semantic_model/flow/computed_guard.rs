@@ -1,7 +1,10 @@
 //! Condition facts for stable computed accesses, which have no static member ID.
+//! Call effects follow visible same-file callees; opaque/inter-file calls preserve
+//! guards unless a known conflicting write is visible. This is not a purity proof.
 
 use emmylua_parser::{
-    BinaryOperator, LuaAstNode, LuaExpr, LuaIndexExpr, LuaIndexKey, LuaLiteralToken, UnaryOperator,
+    BinaryOperator, LuaAssignStat, LuaAstNode, LuaExpr, LuaIndexExpr, LuaIndexKey, LuaLiteralToken,
+    UnaryOperator,
 };
 use rowan::TextSize;
 
@@ -9,6 +12,9 @@ use super::{SemanticModel, computed_effects};
 use crate::semantic_db::def::SemanticId;
 use crate::semantic_db::flow::{FlowAntecedent, FlowEffect, FlowId, FlowNodeKind, LuaClosureId};
 use crate::{LuaMemberKey, LuaType};
+
+// Bound branching guard proofs; exhaustion declines proof and may retain a nil warning.
+const MAX_GUARD_PROOF_STEPS: usize = 256;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) enum Part {
@@ -131,7 +137,7 @@ impl<'a, 'db> GuardSearch<'a, 'db> {
             offset,
             closure,
             initializer: None,
-            remaining: 256,
+            remaining: MAX_GUARD_PROOF_STEPS,
             memo: hashbrown::HashMap::new(),
             typed_memo: hashbrown::HashMap::new(),
         }
@@ -154,6 +160,30 @@ impl<'a, 'db> GuardSearch<'a, 'db> {
         result
     }
 
+    fn condition_invalidates(&self, condition: &LuaExpr) -> bool {
+        LuaClosureId::from_node(condition.syntax()) != self.closure
+            || computed_effects::calls_conflict(
+                self.model,
+                self.access,
+                condition.syntax(),
+                self.offset,
+            )
+    }
+
+    fn assignment_invalidates(&self, assignment: &LuaAssignStat) -> bool {
+        assignment.get_range().end() <= self.offset
+            && (LuaClosureId::from_node(assignment.syntax()) != self.closure
+                || computed_effects::calls_conflict(
+                    self.model,
+                    self.access,
+                    assignment.syntax(),
+                    self.offset,
+                )
+                || assignment.get_var_and_expr_list().0.iter().any(|var| {
+                    computed_effects::write_conflicts(self.model, self.access, var, self.offset)
+                }))
+    }
+
     fn narrow_node(&mut self, current: FlowId, mut base: LuaType) -> Option<LuaType> {
         let model = self.model;
         let tree = model.flow_tree()?;
@@ -164,9 +194,7 @@ impl<'a, 'db> GuardSearch<'a, 'db> {
         match &node.kind {
             FlowNodeKind::TrueCondition(ptr) | FlowNodeKind::FalseCondition(ptr) => {
                 let condition = ptr.to_node(&chunk)?;
-                if LuaClosureId::from_node(condition.syntax()) != self.closure
-                    || computed_effects::calls_conflict(model, access, condition.syntax(), offset)
-                {
+                if self.condition_invalidates(&condition) {
                     return Some(base);
                 }
                 if condition.get_range().end() <= offset {
@@ -186,18 +214,7 @@ impl<'a, 'db> GuardSearch<'a, 'db> {
             }
             FlowNodeKind::Assignment(ptr) => {
                 let assignment = ptr.to_node(&chunk)?;
-                if assignment.get_range().end() <= offset
-                    && (LuaClosureId::from_node(assignment.syntax()) != self.closure
-                        || computed_effects::calls_conflict(
-                            model,
-                            access,
-                            assignment.syntax(),
-                            offset,
-                        )
-                        || assignment.get_var_and_expr_list().0.iter().any(|var| {
-                            computed_effects::write_conflicts(model, access, var, offset)
-                        }))
-                {
+                if self.assignment_invalidates(&assignment) {
                     return Some(base);
                 }
             }
@@ -275,9 +292,7 @@ impl<'a, 'db> GuardSearch<'a, 'db> {
         match &node.kind {
             FlowNodeKind::TrueCondition(ptr) | FlowNodeKind::FalseCondition(ptr) => {
                 let condition = ptr.to_node(&chunk)?;
-                if LuaClosureId::from_node(condition.syntax()) != self.closure
-                    || computed_effects::calls_conflict(model, access, condition.syntax(), offset)
-                {
+                if self.condition_invalidates(&condition) {
                     return Some(false);
                 }
                 if self.initializer.is_none()
@@ -306,20 +321,8 @@ impl<'a, 'db> GuardSearch<'a, 'db> {
             }
             FlowNodeKind::Assignment(ptr) => {
                 let assignment = ptr.to_node(&chunk)?;
-                if assignment.get_range().end() <= offset {
-                    if LuaClosureId::from_node(assignment.syntax()) != self.closure
-                        || computed_effects::calls_conflict(
-                            model,
-                            access,
-                            assignment.syntax(),
-                            offset,
-                        )
-                        || assignment.get_var_and_expr_list().0.iter().any(|var| {
-                            computed_effects::write_conflicts(model, access, var, offset)
-                        })
-                    {
-                        return Some(false);
-                    }
+                if self.assignment_invalidates(&assignment) {
+                    return Some(false);
                 }
             }
             FlowNodeKind::CallExprStat(ptr) => {
