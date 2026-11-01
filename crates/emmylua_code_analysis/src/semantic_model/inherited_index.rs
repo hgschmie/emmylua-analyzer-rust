@@ -448,3 +448,33 @@ mod declared_metamethod_field_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod recursive_lookup_tests {
+    use super::*;
+    use crate::VirtualWorkspace;
+
+    #[test]
+    fn inherited_index_recursive_generic_fields_terminate_on_cold_and_warm_reads() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def("---@class Recursive<T>: Recursive<T>, table<string,T>\n---@field next Recursive<T>?\n---@alias RecursiveAlias<T> Recursive<T>");
+        let owners = [
+            ws.ty("Recursive<integer>"),
+            ws.ty("RecursiveAlias<integer>"),
+        ];
+        let model = ws.analysis.semantic_model(file);
+        for owner in owners {
+            for _ in 0..2 {
+                assert_eq!(
+                    lookup(
+                        &model,
+                        &owner,
+                        &LuaType::StringConst(smol_str::SmolStr::new("entry").into())
+                    ),
+                    Some(LuaType::Integer)
+                );
+                assert!(lookup(&model, &owner, &LuaType::String).is_some());
+            }
+        }
+    }
+}

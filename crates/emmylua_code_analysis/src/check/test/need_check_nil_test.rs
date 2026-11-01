@@ -454,11 +454,13 @@ end
         };
         assert_eq!(
             model.type_of_expr_at(access.get_syntax_id(), access.get_position()),
-            expected
+            expected,
+            "cold query"
         );
         assert_eq!(
             model.type_of_expr_at(access.get_syntax_id(), access.get_position()),
-            expected
+            expected,
+            "warm query reuses completed flow state"
         );
     }
 }
