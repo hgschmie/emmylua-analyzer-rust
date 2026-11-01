@@ -107,6 +107,9 @@ pub fn type_of_decl_at(model: &SemanticModel, decl: &SemanticId, offset: TextSiz
     // No assignment to this decl and no narrowing/merge event after declaration:
     // the flow value is exactly the declared value. This keeps straight-line
     // initialization sections from walking O(offset) CFG nodes for every read.
+    // Complex control can bring a textually later assignment back to this read.
+    // Conservatively trace any assigned declaration in such a tree; the current
+    // assignment index does not distinguish writes inside loops or across labels.
     if let Some(decl_start) = decl_owner_syntax_start(model, decl)
         && (!tree.has_complex_control() || !tree.has_decl_assignment(decl))
         && tree.latest_decl_assignment(decl, offset).is_none()
@@ -1877,9 +1880,9 @@ fn trace_decl_uncached(
         // An independent assignment in this iteration overwrites the loop-entry
         // state. Keep its literal precision instead of widening through the loop.
         if options.assignments
-            && !frames.last().is_some_and(|frame| {
-                !loop_carried::references_decl(model, frame.value_syntax, decl)
-            })
+            && frames
+                .last()
+                .is_none_or(|frame| loop_carried::references_decl(model, frame.value_syntax, decl))
         {
             for effect in tree.get_flow_effects(current) {
                 if let FlowEffect::LoopEntry(syntax) = effect

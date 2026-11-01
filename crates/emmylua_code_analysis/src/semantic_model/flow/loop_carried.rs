@@ -1,4 +1,14 @@
 //! Conservative loop-entry transfer for declarations written by a later iteration.
+//!
+//! Re-entry uses the widened declaration as a cycle seed. An RHS already in
+//! progress is skipped and marks the result incomplete; cycles discovered during
+//! RHS inference are caught by the surrounding incompleteness-revision check.
+//! Incomplete results remain provisional only for the current query. The outer
+//! query scope discards them so a later query can retry with completed inputs.
+
+#[cfg(test)]
+mod tests;
+
 use super::{LuaType, SemanticId, SemanticModel, cache::CacheEntry, widen_const_type};
 use emmylua_parser::{LuaAssignStat, LuaAstNode, LuaClosureExpr, LuaSyntaxId, LuaVarExpr};
 
@@ -13,6 +23,7 @@ pub(super) fn loop_carried_type(
     if let Some(cached) = cached {
         return match cached {
             CacheEntry::Ready(ty) => ty,
+            // A cycle has no completed loop result yet; seed from the declaration.
             CacheEntry::InProgress => model.type_of_decl(decl).map(widen_const_type),
             CacheEntry::Provisional(ty) => {
                 model.cache.borrow().mark_incomplete();
@@ -114,6 +125,8 @@ fn compute(
             .map(|(syntax, slot)| {
                 let ty = model.type_of_expr(syntax);
                 if matches!(ty, LuaType::Unknown | LuaType::Any) {
+                    // An unresolved whole call gives no reliable return slots;
+                    // preserve uncertainty instead of claiming a later slot is nil.
                     ty
                 } else {
                     ty.get_result_slot_type(slot).unwrap_or(LuaType::Nil)
@@ -138,49 +151,4 @@ pub(super) fn references_decl(
                 .filter_map(emmylua_parser::LuaNameExpr::cast)
                 .any(|name| model.resolve_name(name.get_position()).as_ref() == Some(decl))
         })
-}
-
-#[cfg(test)]
-#[test]
-fn loop_cache_keeps_file_view_identity() {
-    use emmylua_parser::LuaNameExpr;
-    let mut ws = crate::VirtualWorkspace::new();
-    let source = "local value = 1\nwhile flag do\n local observed = value\n value = 'text'\nend";
-    let a = ws.def_file("loop-a.lua", source);
-    let b = ws.def_file("loop-b.lua", source);
-    let model_a = ws.analysis.semantic_model(a);
-    let read = model_a
-        .chunk()
-        .unwrap()
-        .descendants::<LuaNameExpr>()
-        .find(|name| name.get_name_text().as_deref() == Some("value"))
-        .unwrap();
-    let decl = model_a.resolve_name(read.get_position()).unwrap();
-    let expected = model_a.type_of_decl_at(&decl, read.get_position());
-    assert_eq!(
-        expected,
-        LuaType::from_vec(vec![LuaType::Integer, LuaType::String])
-    );
-    for foreign_first in [true, false] {
-        let model_b = ws.analysis.semantic_model(b);
-        let shared_a = model_b.model_for(a);
-        if foreign_first {
-            assert_eq!(
-                model_b.type_of_decl_at(&decl, read.get_position()),
-                LuaType::IntegerConst(1)
-            );
-        }
-        assert_eq!(
-            shared_a.type_of_decl_at(&decl, read.get_position()),
-            expected
-        );
-        assert_eq!(
-            model_b.type_of_decl_at(&decl, read.get_position()),
-            LuaType::IntegerConst(1)
-        );
-        assert_eq!(
-            shared_a.type_of_decl_at(&decl, read.get_position()),
-            expected
-        );
-    }
 }
