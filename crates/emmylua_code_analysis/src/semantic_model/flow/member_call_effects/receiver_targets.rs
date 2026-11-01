@@ -10,6 +10,9 @@ use std::{collections::HashSet, rc::Rc};
 pub(super) fn receiver_targets(model: &SemanticModel, expected: &Access) -> Rc<Vec<Access>> {
     let mut targets = fixed_receiver_targets(model);
     if !targets.contains(expected) {
+        // Fixed exact paths are already shared. Unresolved/dynamic targets may
+        // need a query-local extension; retaining each full extension would
+        // multiply cache memory by the number of uncertain access paths.
         Rc::make_mut(&mut targets).push(expected.clone());
     }
     targets

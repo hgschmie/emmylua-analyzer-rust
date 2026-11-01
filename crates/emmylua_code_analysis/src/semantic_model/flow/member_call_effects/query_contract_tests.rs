@@ -127,3 +127,51 @@ fn receiver_targets_share_fixed_paths_across_distinct_guarded_members() {
         "fixed guarded paths share the cached vector without cloning its contents"
     );
 }
+
+#[test]
+fn repeating_flows_exclude_the_pre_loop_boundary() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def("local x=0;while cond do x=x+1 end");
+    let model = ws.analysis.semantic_model(file);
+    let loop_stat = model
+        .chunk()
+        .unwrap()
+        .descendants::<emmylua_parser::LuaLoopStat>()
+        .next()
+        .unwrap();
+    let tree = model.flow_tree().unwrap();
+    let entries = tree.get_loop_reentries(loop_stat.get_syntax_id()).unwrap();
+    let flows = loop_members::repeating_flows(
+        &tree,
+        entries.flows(),
+        &callee_reachable_flows(&model),
+        loop_stat.get_range(),
+    );
+    assert!(!flows.is_empty());
+    assert!(flows.iter().all(|flow| !loop_members::crosses_boundary(
+        tree.get_flow_node(*flow).unwrap(),
+        &[loop_stat.get_range()]
+    )));
+}
+
+#[test]
+fn callback_value_formals_are_not_resolved_as_visible_callees() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let file=ws.def("local elem={};local function apply(cb) cb() end;apply(function() elem.handler=nil end);local observed=elem.handler");
+    let model = ws.analysis.semantic_model(file);
+    let chunk = model.chunk().unwrap();
+    let call = chunk
+        .descendants::<LuaCallExpr>()
+        .find(|call| {
+            call.get_prefix_expr()
+                .is_some_and(|prefix| prefix.get_text() == "apply")
+        })
+        .unwrap();
+    let index = chunk.descendants::<LuaIndexExpr>().last().unwrap();
+    assert!(!calls_conflict(
+        &model,
+        &index,
+        call.syntax(),
+        call.get_range().end()
+    ));
+}

@@ -11,13 +11,13 @@ use crate::semantic_db::def::SemanticId;
 /// Normal body completion and the entry label carrying explicit continue edges.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct LoopReentries {
-    pub(super) exit: FlowId,
+    pub(super) body_exit: FlowId,
     pub(super) entry: FlowId,
 }
 
 impl LoopReentries {
     pub(crate) fn flows(self) -> [FlowId; 2] {
-        [self.exit, self.entry]
+        [self.body_exit, self.entry]
     }
 }
 

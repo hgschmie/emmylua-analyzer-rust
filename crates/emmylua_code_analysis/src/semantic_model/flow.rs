@@ -309,12 +309,8 @@ fn type_of_member_read(
     }
 }
 
-/// A conflicting call removes assignment precision but retains the declared contract.
-// Prefer the resolved declared contract, including cross-file annotations. Only a
-// member with no recoverable contract falls back to Unknown; a stale inferred
-// assignment must not reinstate a guard invalidated by a visible write.
-// Keep the declaration contract after invalidation; if it is unavailable, try
-// the member annotation before admitting Unknown. No old initializer is reused.
+/// After a conflicting write, retain the resolved declared contract or member
+/// annotation, falling back to Unknown. Never restore a stale initializer's guard.
 fn invalidated_member_value_type(
     model: &SemanticModel,
     member: &SemanticId,

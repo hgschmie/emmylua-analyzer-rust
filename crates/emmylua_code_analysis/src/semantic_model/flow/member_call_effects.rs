@@ -1,20 +1,8 @@
-//! Visible call effects for member guards. Opaque calls preserve existing guards.
-//! This traversal detects visible writes; it never propagates callee values.
-//! Passing a receiver to an opaque call alone does not invalidate guards. Writes
-//! behind unresolved alias/receiver resolution may therefore go unreported.
-//! Same-file fixed member paths use reaching assignments and actual dot/colon
-//! receivers. Dynamic callees and interprocedural installation of methods remain
-//! opaque. Factory-returned closures are also opaque: completed calls do not
-//! provide captured closure-creation environments. Installing a callable with
-//! rawset invalidates the member directly, but the stored callable is not a
-//! value postcondition.
-//! Captured member replacements without an invocation context are opaque.
-//! A reassigned name callee captured in a different closure is also
-//! opaque; the presence of any declaration assignment triggers that boundary.
-//!
-//! Syntax-only caches live for the immutable model snapshot. Type-dependent
-//! receiver targets use publish_if_complete so provisional inference is retried;
-//! invocation histories share immutable binding snapshots and retain full equality.
+//! Visible call effects for member guards; opaque calls preserve existing guards.
+//! Actual receiver bindings and invocation order distinguish known write targets.
+//! Syntax caches are snapshot-local; semantic caches publish only complete queries.
+//! Callback-valued formals and closure factories remain opaque. See
+//! `member_call_effects/README.md` for the supported boundaries and limitations.
 
 use std::{
     borrow::Cow,
@@ -150,6 +138,8 @@ pub(super) fn calls_conflict_after(
 ) -> bool {
     let expr = LuaExpr::IndexExpr(index.clone());
     let Some(expected) = member_access_path(model, &expr) else {
+        // Unresolved receiver identity is opaque under the selected call policy;
+        // this is absence of a proved visible write, not proof the call is pure.
         return false;
     };
     scan(model, &expected, node, after, before)

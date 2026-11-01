@@ -251,7 +251,8 @@ fn previous_iteration_nodes<N: LuaAstNode>(
             nodes
                 .iter()
                 .filter(|node| {
-                    range.contains_range(node.get_range())
+                    node.get_range().end() > query.get_position()
+                        && range.contains_range(node.get_range())
                         && LuaClosureId::from_node(node.syntax()) == closure
                         && tree
                             .get_flow_id_at(node.get_position())

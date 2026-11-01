@@ -138,7 +138,7 @@ pub(super) fn repeating_flows(
     let mut pending = entries.to_vec();
     let mut seen = HashSet::new();
     while let Some(flow) = pending.pop() {
-        if !reachable.get(flow.0 as usize).copied().unwrap_or(false) || !seen.insert(flow) {
+        if !reachable.get(flow.0 as usize).copied().unwrap_or(false) || seen.contains(&flow) {
             continue;
         }
         let Some(node) = tree.get_flow_node(flow) else {
@@ -147,6 +147,7 @@ pub(super) fn repeating_flows(
         if crosses_boundary(node, std::slice::from_ref(&range)) {
             continue;
         }
+        seen.insert(flow);
         match &node.antecedent {
             Some(FlowAntecedent::Single(previous)) => pending.push(*previous),
             Some(FlowAntecedent::Multiple(id)) => {

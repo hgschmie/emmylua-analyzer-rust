@@ -139,6 +139,10 @@ pub(super) fn member_values(
         for (written, value) in writes {
             if path_write_affects(&written, &target.0, &target.1) {
                 replaced = true;
+                debug_assert!(
+                    written.1.len() <= target.1.len(),
+                    "matching writes are ancestors or the target itself"
+                );
                 if !written.1.iter().any(LuaMemberKey::is_none)
                     && let Some(value) = value
                         .and_then(|value| table_member_value(value, &target.1[written.1.len()..]))
@@ -176,6 +180,22 @@ pub(super) fn member_values(
 /// Without an invocation, a mutable captured member has no known runtime state.
 /// A single fixed definition is usable; replacement/ancestor writes make it opaque.
 fn mutable_captured_member(model: &SemanticModel, target: &Access) -> bool {
+    let key = (model.file_id(), target.0.clone(), target.1.clone());
+    if let Some(result) = model.cache.borrow().member_captured_mutability.get(&key) {
+        return *result;
+    }
+    let _query = crate::semantic_model::cache::QueryCacheScope::new(&model.cache);
+    let revision = model.cache.borrow().revision();
+    let result = scan_captured_member(model, target);
+    model.cache.publish_if_complete(revision, |cache| {
+        cache.member_captured_mutability.insert(key, result);
+    });
+    result
+}
+
+fn scan_captured_member(model: &SemanticModel, target: &Access) -> bool {
+    #[cfg(test)]
+    CAPTURED_MEMBER_SCANS.with(|count| count.set(count.get() + 1));
     let Some(chunk) = model.chunk() else {
         return true;
     };
@@ -263,6 +283,12 @@ fn table_member_value(mut value: LuaExpr, keys: &[LuaMemberKey]) -> Option<LuaEx
     }
     Some(value)
 }
+
+#[cfg(test)]
+thread_local! { static CAPTURED_MEMBER_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
+mod captured_cache_tests;
 
 #[cfg(test)]
 mod literal_key_tests {

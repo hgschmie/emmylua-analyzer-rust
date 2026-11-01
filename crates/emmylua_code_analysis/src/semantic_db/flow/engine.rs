@@ -872,7 +872,10 @@ impl<'a, 'b> BindEngine<'a, 'b> {
             Continuation::RecordLoopExit { loop_stat, entry } => {
                 self.binder.loop_reentries.insert(
                     loop_stat.get_syntax_id(),
-                    super::LoopReentries { exit: value, entry },
+                    super::LoopReentries {
+                        body_exit: value,
+                        entry,
+                    },
                 );
                 Step::Done(value)
             }
@@ -1347,8 +1350,9 @@ fn numeric_loop_may_repeat(stat: &LuaForStat, integer_runtime: bool) -> bool {
         && let (LoopNumber::Integer(start), LoopNumber::Integer(stop), LoopNumber::Integer(step)) =
             (start, stop, step)
     {
-        // Keep a possible backedge on overflow or a zero step. Otherwise compare
-        // exact integer values, including counters above the f64 precision range.
+        // Runtime-error termination is not modeled: zero steps retain a possible
+        // backedge, as do overflowing bounds. Otherwise compare exact integers,
+        // including counters above the f64 precision range.
         return start
             .checked_add(step)
             .is_none_or(|next| match step.cmp(&0) {
@@ -1513,7 +1517,7 @@ mod loop_reentry_tests {
             "nested loops retain their own entry labels"
         );
         assert_ne!(
-            outer.exit, inner.exit,
+            outer.body_exit, inner.body_exit,
             "outer exit includes the write after the inner loop"
         );
         for reentries in [outer, inner] {

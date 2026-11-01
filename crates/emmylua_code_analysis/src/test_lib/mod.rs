@@ -165,7 +165,7 @@ impl VirtualWorkspace {
     }
 
     /// Run the selected checker and report whether it emits the requested code.
-    /// The checker must register that code in CODES; absent diagnostics return false.
+    /// The checker must register that code in CODES; a failed query panics.
     pub fn has_diagnostic(&mut self, diagnostic_code: DiagnosticCode, block_str: &str) -> bool {
         self.analysis.diagnostic.enable_only(diagnostic_code);
         let file_id = self.def(block_str);
@@ -174,7 +174,9 @@ impl VirtualWorkspace {
         ));
         self.analysis
             .diagnose_file(file_id, CancellationToken::new())
-            .is_some_and(|diagnostics| diagnostics.iter().any(|diagnostic| diagnostic.code == code))
+            .expect("diagnostic query failed for the test fixture")
+            .iter()
+            .any(|diagnostic| diagnostic.code == code)
     }
 
     /// Run the selected registered checker and report whether its code is absent.

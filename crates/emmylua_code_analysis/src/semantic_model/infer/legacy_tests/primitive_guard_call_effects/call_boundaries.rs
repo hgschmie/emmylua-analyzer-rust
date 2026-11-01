@@ -937,3 +937,56 @@ fn global_environment_writes_respect_prior_iteration_boundaries() {
         assert_member_call_boundary("true", "", body, nullable);
     }
 }
+
+#[test]
+fn primitive_guard_loop_function_statement_is_a_prior_iteration_write() {
+    assert_primitive_call_boundary(
+        "for i=1,3 do\nlocal value=elem.handler.name -- observe\nfunction elem.handler() end\nend",
+        true,
+    );
+}
+
+#[test]
+fn primitive_guard_zero_step_keeps_uncertain_backedges() {
+    assert_primitive_call_boundary(
+        "for i=1,2,0 do\nlocal value=elem.handler.name -- observe\nelem.handler=nil\nend",
+        true,
+    );
+}
+
+#[test]
+fn primitive_guard_member_trace_cache_separates_reads_around_one_call() {
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    let source = "---@class OrderedHandler\n---@field name string\nlocal Handler={}\n---@class OrderedReceiver\n---@field handler OrderedHandler?\nlocal Receiver={}\n---@param elem OrderedReceiver\n---@param key string\n---@param flag boolean\nlocal function run(elem,key,flag) local function clear() if flag then elem[key]=nil end end; if type(elem.handler)=='table' then consume(elem.handler, clear(), elem.handler) end end";
+    let expected = ws.ty("OrderedHandler");
+    let optional = ws.ty("OrderedHandler?");
+    let file = ws.def(source);
+    let model = ws.analysis.semantic_model(file);
+    let chunk = model.chunk().unwrap();
+    let reads = chunk
+        .descendants::<LuaIndexExpr>()
+        .filter(|index| {
+            index.get_text() == "elem.handler"
+                && usize::from(index.get_position()) > source.find("consume(").unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(reads.len(), 2);
+    let tree = model.flow_tree().unwrap();
+    assert_eq!(
+        tree.get_flow_id_at(reads[0].get_position()),
+        tree.get_flow_id_at(reads[1].get_position())
+    );
+    for order in [[0, 1], [1, 0], [0, 1]] {
+        for index in order {
+            let read = &reads[index];
+            assert_eq!(
+                model.type_of_expr_at(read.get_syntax_id(), read.get_position()),
+                if index == 0 {
+                    expected.clone()
+                } else {
+                    optional.clone()
+                }
+            );
+        }
+    }
+}
