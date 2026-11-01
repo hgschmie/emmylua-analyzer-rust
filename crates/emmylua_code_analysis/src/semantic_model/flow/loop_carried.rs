@@ -18,6 +18,8 @@ pub(super) fn loop_carried_type(
     syntax: LuaSyntaxId,
     entry: super::FlowId,
 ) -> Option<LuaType> {
+    // Loop syntax and entry belong to this querying file view. A foreign
+    // declaration has no transfer here and must not poison its owning view.
     let key = (model.file_id(), syntax, decl.clone());
     let cached = model.cache.borrow().loop_carried.get(&key).cloned();
     if let Some(cached) = cached {
@@ -84,6 +86,8 @@ fn compute(
                     .get(index)
                     .map(|value| (value.get_syntax_id(), 0))
                     .or_else(|| {
+                        // get(index) failed, so index >= values.len(). Only a
+                        // final call can supply additional nonzero result slots.
                         values
                             .last()
                             .filter(|value| matches!(value, emmylua_parser::LuaExpr::CallExpr(_)))
@@ -149,12 +153,23 @@ pub(super) fn references_decl(
     syntax: LuaSyntaxId,
     decl: &SemanticId,
 ) -> bool {
-    model
+    let key = (model.file_id(), syntax, decl.clone());
+    if let Some(references) = model.cache.borrow().loop_rhs_dependencies.get(&key) {
+        return *references;
+    }
+    // Name identity comes from the immutable file facts, not provisional types.
+    let references = model
         .syntax_tree()
         .and_then(|tree| syntax.to_node_from_root(&tree.get_red_root()))
         .is_some_and(|node| {
             node.descendants()
                 .filter_map(emmylua_parser::LuaNameExpr::cast)
                 .any(|name| model.resolve_name(name.get_position()).as_ref() == Some(decl))
-        })
+        });
+    model
+        .cache
+        .borrow_mut()
+        .loop_rhs_dependencies
+        .insert(key, references);
+    references
 }

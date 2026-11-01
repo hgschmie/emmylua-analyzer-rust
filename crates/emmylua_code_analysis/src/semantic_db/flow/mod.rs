@@ -28,6 +28,7 @@ pub use flow_tree::*;
 fn finish_flow_label(binder: &mut FlowBinder, label: FlowId, default: FlowId) -> FlowId {
     if let Some(flow_node) = binder.get_flow(label) {
         let Some(antecedent) = &flow_node.antecedent else {
+            // With no reachable entry there is no loop transfer to preserve.
             return default;
         };
         // Even a single reachable entry carries loop mutation information.

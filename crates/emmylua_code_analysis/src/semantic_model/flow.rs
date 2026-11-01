@@ -1937,11 +1937,14 @@ fn trace_decl_uncached(
                                     flow_id: current,
                                     assign_pos,
                                     value_syntax: *value_syntax,
-                                    uses_previous_value: loop_carried::references_decl(
-                                        model,
-                                        *value_syntax,
-                                        decl,
-                                    ),
+                                    // This flag is only consumed by LoopEntry.
+                                    // Straight-line trees need no RHS dependency work.
+                                    uses_previous_value: tree.has_complex_control()
+                                        && loop_carried::references_decl(
+                                            model,
+                                            *value_syntax,
+                                            decl,
+                                        ),
                                     assign_path,
                                     base_before,
                                 });

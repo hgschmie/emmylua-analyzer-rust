@@ -449,3 +449,39 @@ end
         LuaType::Integer
     );
 }
+
+#[test]
+fn loop_rhs_dependency_cache_separates_file_views() {
+    use emmylua_parser::{LuaAstNode, LuaBinaryExpr, LuaNameExpr};
+    let mut ws = crate::VirtualWorkspace::new();
+    let source = "local value = 1; while flag do value = value + 1 end";
+    let a = ws.def_file("dependency-a.lua", source);
+    let b = ws.def_file("dependency-b.lua", source);
+    let owner = ws.analysis.semantic_model(a);
+    let rhs = owner
+        .chunk()
+        .unwrap()
+        .descendants::<LuaBinaryExpr>()
+        .next()
+        .unwrap();
+    let read = rhs.descendants::<LuaNameExpr>().next().unwrap();
+    let decl = owner.resolve_name(read.get_position()).unwrap();
+    for foreign_first in [true, false] {
+        let shared = ws.analysis.semantic_model(a);
+        let foreign = shared.model_for(b);
+        if foreign_first {
+            assert!(!super::references_decl(
+                &foreign,
+                rhs.get_syntax_id(),
+                &decl
+            ));
+        }
+        assert!(super::references_decl(&shared, rhs.get_syntax_id(), &decl));
+        assert!(!super::references_decl(
+            &foreign,
+            rhs.get_syntax_id(),
+            &decl
+        ));
+        assert!(super::references_decl(&shared, rhs.get_syntax_id(), &decl));
+    }
+}
