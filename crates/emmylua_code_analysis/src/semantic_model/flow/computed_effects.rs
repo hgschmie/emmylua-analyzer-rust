@@ -3,8 +3,8 @@
 //! Opaque calls preserve facts (as ordinary local narrowing does). Visible writes
 //! and known mutators still invalidate them; this is not a purity guarantee.
 use emmylua_parser::{
-    LuaAssignStat, LuaAstNode, LuaCallExpr, LuaClosureExpr, LuaExpr, LuaIndexExpr, LuaNameExpr,
-    LuaSyntaxKind, LuaSyntaxNode, LuaVarExpr,
+    LuaAssignStat, LuaAstNode, LuaCallExpr, LuaClosureExpr, LuaExpr, LuaFuncStat, LuaIndexExpr,
+    LuaNameExpr, LuaSyntaxKind, LuaSyntaxNode, LuaVarExpr,
 };
 use rowan::TextSize;
 
@@ -167,6 +167,16 @@ fn scan(
         {
             return true;
         }
+        // A function statement writes its closure into the named target, while
+        // the closure body remains unevaluated and is skipped by this walk.
+        if writes
+            && node.text_range().end() <= before
+            && let Some(function) = LuaFuncStat::cast(node.clone())
+            && let Some(target) = function.get_func_name()
+            && write_conflicts(model, expected, &target, before)
+        {
+            return true;
+        }
         if node.text_range().end() <= before
             && let Some(call) = LuaCallExpr::cast(node.clone())
             && call_conflicts(model, expected, &call)
@@ -211,4 +221,44 @@ fn call_conflicts(model: &SemanticModel, expected: &Access, call: &LuaCallExpr) 
         }
     }
     false
+}
+
+#[cfg(test)]
+mod function_statement_tests {
+    use super::*;
+    use crate::VirtualWorkspace;
+
+    #[test]
+    fn function_statements_invalidate_matching_computed_loop_and_iteration_paths() {
+        for (read, target, conflict) in [
+            ("rows[key]", "rows.handler", true),
+            ("rows[key]", "other.handler", false),
+            ("rows.handler", "rows.handler.child", false),
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            let file = ws.def(&format!("local rows={{}}; local other={{}}; local key='handler'; for i=1,10 do local observed={read}; function {target}() end end"));
+            let model = ws.analysis.semantic_model(file);
+            let chunk = model.chunk().unwrap();
+            let index = chunk
+                .descendants::<LuaIndexExpr>()
+                .find(|index| index.get_text() == read)
+                .unwrap();
+            let expected = access(&model, &LuaExpr::IndexExpr(index.clone())).unwrap();
+            let loop_stat = chunk
+                .descendants::<emmylua_parser::LuaForStat>()
+                .next()
+                .unwrap();
+            assert_eq!(
+                loop_conflicts(&model, &expected, loop_stat.syntax()),
+                conflict,
+                "{target}"
+            );
+            let block = loop_stat.get_block().unwrap();
+            assert_eq!(
+                iteration_conflicts(&model, &expected, block.syntax(), block.get_range().end()),
+                conflict,
+                "{target}"
+            );
+        }
+    }
 }
