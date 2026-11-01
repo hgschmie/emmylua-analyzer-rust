@@ -24,7 +24,10 @@ pub(super) fn entry_type(
         if LuaClosureId::from_node(loop_stat.syntax()) != closure {
             break;
         }
-        let first = loop_stat.get_var_name_list().next()?;
+        let Some(first) = loop_stat.get_var_name_list().next() else {
+            // Malformed enclosing loops cannot establish an entry proof.
+            return None;
+        };
         if model.decl_by_offset(first.get_position()).as_ref() != Some(&key_id) {
             continue;
         }
@@ -197,5 +200,74 @@ end
             .find(|index| index.syntax().text() == "rows[key]")
             .unwrap();
         assert!(super::entry_type(&model, &index, index.get_position()).is_none());
+    }
+    #[test]
+    fn inherited_iterator_metamethods_do_not_guarantee_entries() {
+        use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+        for metamethod in ["__pairs", "__ipairs", "__index"] {
+            for iterator in ["pairs", "ipairs"] {
+                let mut ws = VirtualWorkspace::new_with_init_std_lib();
+                let source = format!(
+                    "---@class Entry\n---@field value integer\n\
+                     ---@class Base: table<integer, Entry>\n\
+                     ---@field {metamethod} function\n\
+                     ---@class Child: Base\n\
+                     ---@param rows Child\n\
+                     local function test(rows)\n\
+                     for key in {iterator}(rows) do print(rows[key].value) end\nend"
+                );
+                let file = ws.def(&source);
+                let model = ws.analysis.semantic_model(file);
+                let index = model
+                    .chunk()
+                    .unwrap()
+                    .descendants::<LuaIndexExpr>()
+                    .find(|index| index.get_text() == "rows[key]")
+                    .unwrap();
+                let prefix = index.get_prefix_expr().unwrap();
+                let owner = model.type_of_expr_at(prefix.get_syntax_id(), index.get_position());
+                assert!(
+                    model.member_infos(&owner).iter().any(|member| {
+                        member.key == crate::LuaMemberKey::Name(metamethod.into())
+                    }),
+                    "the inherited {metamethod} must remain visible to the proof gate"
+                );
+                assert!(
+                    super::entry_type(&model, &index, index.get_position()).is_none(),
+                    "{metamethod} inherited by {iterator} receiver"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ipairs_entry_proof_does_not_invent_unknown_dictionary_values() {
+        use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+        // Dictionary index queries currently resolve to Unknown here. Preserve
+        // that boundary for both valid integer keys and incompatible string keys.
+        for (contract, proven) in [
+            ("Entry[]", true),
+            ("table<integer, Entry>", false),
+            ("table<string, Entry>", false),
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            let file = ws.def(&format!(
+                "---@class Entry\n---@field value integer\n\
+                 ---@param rows {contract}\nlocal function test(rows)\n\
+                 for key in ipairs(rows) do print(rows[key].value) end\nend"
+            ));
+            let model = ws.analysis.semantic_model(file);
+            let index = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaIndexExpr>()
+                .find(|index| index.get_text() == "rows[key]")
+                .unwrap();
+            assert_eq!(
+                super::entry_type(&model, &index, index.get_position()).is_some(),
+                proven,
+                "{contract}"
+            );
+        }
     }
 }

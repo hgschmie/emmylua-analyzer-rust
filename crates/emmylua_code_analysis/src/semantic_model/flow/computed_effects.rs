@@ -3,8 +3,8 @@
 //! Opaque calls preserve facts (as ordinary local narrowing does). Visible writes
 //! and known mutators still invalidate them; this is not a purity guarantee.
 use emmylua_parser::{
-    LuaAssignStat, LuaAstNode, LuaCallExpr, LuaExpr, LuaIndexExpr, LuaNameExpr, LuaSyntaxKind,
-    LuaSyntaxNode, LuaVarExpr,
+    LuaAssignStat, LuaAstNode, LuaCallExpr, LuaClosureExpr, LuaExpr, LuaIndexExpr, LuaNameExpr,
+    LuaSyntaxKind, LuaSyntaxNode, LuaVarExpr,
 };
 use rowan::TextSize;
 
@@ -124,7 +124,7 @@ pub(super) fn iteration_conflicts(
 ) -> bool {
     let mut pending = vec![body.clone()];
     while let Some(node) = pending.pop() {
-        if node.text_range().start() >= before || node.kind() == LuaSyntaxKind::ClosureExpr.into() {
+        if node.text_range().start() >= before || LuaClosureExpr::can_cast(node.kind().into()) {
             continue;
         }
         if matches!(
@@ -153,7 +153,7 @@ fn scan(
 ) -> bool {
     let mut pending = vec![node.clone()];
     while let Some(node) = pending.pop() {
-        if node.text_range().start() >= before || node.kind() == LuaSyntaxKind::ClosureExpr.into() {
+        if node.text_range().start() >= before || LuaClosureExpr::can_cast(node.kind().into()) {
             continue;
         }
         if writes

@@ -106,6 +106,8 @@ struct GuardSearch<'a, 'db> {
     offset: TextSize,
     closure: LuaClosureId,
     initializer: Option<FlowId>,
+    // Both proof modes share one query budget. Exhaustion may lose a valid
+    // narrowing but must never manufacture a proof; it bounds their total work.
     remaining: usize,
     memo: hashbrown::HashMap<FlowId, bool>,
     typed_memo: hashbrown::HashMap<(FlowId, LuaType), Option<LuaType>>,
