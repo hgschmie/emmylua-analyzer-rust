@@ -293,3 +293,73 @@ impl SemanticLocalCache {
         self.revision() == revision
     }
 }
+
+#[cfg(test)]
+mod inference_seed_regression_tests {
+    use super::*;
+    use emmylua_parser::{LuaAstNode, LuaBinaryExpr, LuaNameExpr};
+
+    #[test]
+    fn arithmetic_preserves_declared_return_slots_during_initializer_reentry() {
+        for (field_type, expected) in [("integer", LuaType::Integer), ("number", LuaType::Number)] {
+            for second_slot in [false, true] {
+                for recursive_read in [false, true] {
+                    let mut ws = crate::VirtualWorkspace::new();
+                    let returns = if second_slot {
+                        "integer, Counter"
+                    } else {
+                        "Counter"
+                    };
+                    let prefix = if second_slot { "0, " } else { "" };
+                    let names = if second_slot { "ignored, item" } else { "item" };
+                    let source = format!(
+                        r#"---@class Counter
+---@field count {field_type}
+local Counter = {{}}
+---@return {returns}
+local function create() return {prefix}{{count = 1}} end
+local {names} = create()
+local value = 10 - item.count
+"#
+                    );
+                    let file = ws.def(&source);
+                    let model = ws.analysis.semantic_model(file);
+                    let chunk = model.chunk().unwrap();
+                    let read = chunk
+                        .descendants::<LuaNameExpr>()
+                        .find(|name| name.get_text() == "item")
+                        .unwrap();
+                    let decl = model.resolve_name(read.get_position()).unwrap();
+                    let expression = chunk
+                        .descendants::<LuaBinaryExpr>()
+                        .next()
+                        .unwrap()
+                        .get_syntax_id();
+                    let key = (file, decl);
+                    if recursive_read {
+                        // Hold the initializer open while a dependent arithmetic
+                        // query reads a value with an explicit return contract.
+                        model
+                            .cache
+                            .borrow_mut()
+                            .decl_type
+                            .insert(key.clone(), CacheEntry::InProgress);
+                        assert_eq!(
+                            model.type_of_expr(expression),
+                            expected,
+                            "pending {field_type}, second_slot={second_slot}"
+                        );
+                        model.cache.borrow_mut().decl_type.remove(&key);
+                    }
+                    for _ in 0..2 {
+                        assert_eq!(
+                            model.type_of_expr(expression),
+                            expected,
+                            "completed {field_type}, second_slot={second_slot}, recursive_read={recursive_read}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

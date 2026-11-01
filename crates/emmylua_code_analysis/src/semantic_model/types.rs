@@ -127,6 +127,25 @@ impl<'db> SemanticModel<'db> {
         {
             let cache = self.cache.borrow();
             if let Some(entry) = cache.decl_type.get(&key) {
+                // A call's return contract may be available before inference of
+                // its arguments finishes. Use that projection when a dependent
+                // flow query re-enters this local initializer.
+                if matches!(entry, cache::CacheEntry::InProgress)
+                    && self
+                        .file_facts()
+                        .and_then(|facts| facts.decl_by_id(decl))
+                        .is_some_and(|info| {
+                            matches!(info.kind, DeclKind::Local { is_iter: false, .. })
+                                && info.value_expr_syntax.is_some_and(|syntax| {
+                                    syntax.get_kind() == LuaSyntaxKind::CallExpr
+                                })
+                        })
+                    && let Some(ty) = self.analysis().decl_type_lua(cache_file, decl.clone())
+                    && !ty.is_unknown()
+                {
+                    cache.mark_incomplete();
+                    return Some(ty);
+                }
                 return entry.get_inference_seed(&cache).cloned().flatten();
             }
         }
