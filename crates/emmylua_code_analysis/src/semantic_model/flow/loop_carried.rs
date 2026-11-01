@@ -27,6 +27,8 @@ pub(super) fn loop_carried_type(
 ) -> Option<LuaType> {
     // Loop syntax and entry belong to this querying file view. A foreign
     // declaration has no transfer here and must not poison its owning view.
+    // For this immutable CFG, entry is the first antecedent of the unique loop
+    // label for syntax; it cannot vary independently of this cache key.
     let key = (model.file_id(), syntax, decl.clone());
     let cached = model.cache.borrow().loop_carried.get(&key).cloned();
     if let Some(cached) = cached {
@@ -85,6 +87,8 @@ fn compute(
     let flow_tree = model.flow_tree()?;
     let reachable = reachability::reachable_flows(model);
     let mut assigned = Vec::new();
+    // The first query scans this loop body; completed transfers are cached per
+    // declaration/loop, and reachability is shared across declarations in the file.
     for statement in node.descendants().filter_map(LuaStat::cast) {
         if statement
             .ancestors::<LuaClosureExpr>()
@@ -156,8 +160,18 @@ fn compute(
     // A recursively initialized global can have an incomplete declaration.
     // Keep its unknown entry seed while still collecting independent later writes.
     let initial = type_of_decl_at_flow_id(model, decl, entry);
+    let structural_entry = has_structural_shape(&initial);
     let mut types = vec![widen_const_type(initial)];
     for rhs in assigned {
+        let self_dependent = rhs.is_some_and(|(syntax, _)| {
+            references_decl(model, syntax, decl) && !is_identity_write(model, syntax, decl)
+        });
+        // A single transfer cannot enumerate recursively shrinking/growing
+        // structures (for example value = value.next). Keep explicit uncertainty
+        // instead of presenting the first two shapes as the entire loop domain.
+        if self_dependent && structural_entry {
+            types.push(LuaType::Unknown);
+        }
         if let Some((syntax, _)) = rhs
             && matches!(
                 model
@@ -189,9 +203,36 @@ fn compute(
                 }
             })
             .unwrap_or(LuaType::Nil);
+        if self_dependent && has_structural_shape(&typ) {
+            types.push(LuaType::Unknown);
+        }
         types.push(widen_const_type(typ));
     }
     Some(LuaType::from_vec(types))
+}
+
+fn has_structural_shape(typ: &LuaType) -> bool {
+    match typ {
+        LuaType::TableConst(_)
+        | LuaType::Object(_)
+        | LuaType::Array(_)
+        | LuaType::Tuple(_)
+        | LuaType::Instance(_)
+        | LuaType::Generic(_)
+        | LuaType::TableGeneric(_)
+        | LuaType::Intersection(_)
+        | LuaType::Conditional(_)
+        | LuaType::Mapped(_) => true,
+        LuaType::Union(union) => union.into_vec().iter().any(has_structural_shape),
+        _ => false,
+    }
+}
+
+/// Assigning the same receiver unchanged cannot evolve its structural domain.
+fn is_identity_write(model: &SemanticModel, syntax: LuaSyntaxId, decl: &SemanticId) -> bool {
+    model.chunk().and_then(|chunk| syntax.to_node_from_root(chunk.syntax()))
+        .and_then(LuaExpr::cast).and_then(super::guards::unparenthesized)
+        .is_some_and(|expr| matches!(expr, LuaExpr::NameExpr(name) if model.resolve_name(name.get_position()).as_ref() == Some(decl)))
 }
 
 /// Parentheses suppress Lua's final-expression expansion.
@@ -214,7 +255,9 @@ pub(super) fn references_decl(
     if let Some(references) = model.cache.borrow().loop_rhs_dependencies.get(&key) {
         return *references;
     }
-    // Name identity comes from the immutable file facts, not provisional types.
+    // Name identity comes from immutable file facts, not provisional types.
+    // resolve_name does not infer types or re-enter this syntax-only query, so
+    // this cache needs no type-query InProgress sentinel.
     let references = model
         .syntax_tree()
         .and_then(|tree| syntax.to_node_from_root(&tree.get_red_root()))

@@ -78,13 +78,15 @@ end
 fn loop_carried_counter_has_integer_type_and_optional_values_stay_optional() {
     use emmylua_parser::{LuaAstNode, LuaNameExpr};
     let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
-    let file = ws.def("local count = 0; for i = 1, 10 do if count > 0 then print(count) end; count = count + 1 end");
+    let source = "local count = 0; for i = 1, 10 do if count > 0 then print(count) end; count = count + 1 end";
+    let file = ws.def(source);
+    let offset = source.find("if count").unwrap() + "if ".len();
     let model = ws.analysis.semantic_model(file);
     let count = model
         .chunk()
         .unwrap()
         .descendants::<LuaNameExpr>()
-        .find(|name| name.get_name_text().as_deref() == Some("count"))
+        .find(|name| u32::from(name.get_position()) as usize == offset)
         .unwrap();
     assert_eq!(
         model.type_of_expr_at(count.get_syntax_id(), count.get_position()),
@@ -182,12 +184,12 @@ end
     let file = ws.def(source);
     let model = ws.analysis.semantic_model(file);
     use emmylua_parser::{LuaAstNode, LuaNameExpr};
+    let offset = source.find("assert(items[").unwrap() + "assert(".len();
     let items = model
         .chunk()
         .unwrap()
         .descendants::<LuaNameExpr>()
-        .filter(|name| name.get_name_text().as_deref() == Some("items"))
-        .nth(1)
+        .find(|name| u32::from(name.get_position()) as usize == offset)
         .unwrap();
     let LuaType::Array(array) = model.type_of_expr_at(items.get_syntax_id(), items.get_position())
     else {
@@ -879,4 +881,92 @@ fn loop_rhs_dependency_is_lazy_for_assignments_before_a_loop() {
         model.type_of_expr_at(read.get_syntax_id(), read.get_position());
     }
     assert!(model.cache.borrow().loop_rhs_dependencies.is_empty());
+}
+
+#[test]
+fn loop_structural_recurrence_does_not_claim_a_complete_shallow_union() {
+    use emmylua_parser::{LuaAstNode, LuaNameExpr};
+    for assignment in ["value = value.next", "value = {next = value}"] {
+        let mut ws = crate::VirtualWorkspace::new();
+        let source = format!(
+            "local value={{next={{next={{}}}}}}; while flag do local observed=value; {assignment} end"
+        );
+        let file = ws.def(&source);
+        let model = ws.analysis.semantic_model(file);
+        let offset = source.find("observed=value").unwrap() + "observed=".len();
+        let read = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaNameExpr>()
+            .find(|name| u32::from(name.get_position()) as usize == offset)
+            .unwrap();
+        for phase in ["cold", "warm"] {
+            let typ = model.type_of_expr_at(read.get_syntax_id(), read.get_position());
+            let uncertain = match &typ {
+                LuaType::Unknown | LuaType::Any => true,
+                LuaType::Union(union) => union
+                    .into_vec()
+                    .iter()
+                    .any(|part| matches!(part, LuaType::Unknown | LuaType::Any)),
+                _ => false,
+            };
+            assert!(uncertain, "{assignment}: {phase}: {typ:?}");
+        }
+    }
+}
+
+#[test]
+fn loop_conditional_fractional_update_widens_to_number() {
+    let mut ws = crate::VirtualWorkspace::new();
+    assert!(ws.has_diagnostic(crate::DiagnosticCode::AssignTypeMismatch, "local index=0; while flag do if other then index=index+0.5 end end; ---@type integer\nlocal result=index"));
+}
+
+#[test]
+fn statically_unentered_loop_preserves_the_preceding_value() {
+    use emmylua_parser::{LuaAstNode, LuaNameExpr};
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def("local value=0; while false do value='text' end; local observed=value");
+    let model = ws.analysis.semantic_model(file);
+    let read = model
+        .chunk()
+        .unwrap()
+        .descendants::<LuaNameExpr>()
+        .filter(|name| name.get_name_text().as_deref() == Some("value"))
+        .last()
+        .unwrap();
+    assert_eq!(
+        model.type_of_expr_at(read.get_syntax_id(), read.get_position()),
+        LuaType::IntegerConst(0)
+    );
+}
+
+#[test]
+fn loop_structural_identity_and_independent_writes_keep_known_shapes() {
+    use emmylua_parser::{LuaAstNode, LuaNameExpr};
+    for assignment in ["value = value", "value = (value)", "value = {next={}}"] {
+        let mut ws = crate::VirtualWorkspace::new();
+        let source = format!(
+            "local value={{next={{}}}}; while flag do local observed=value; {assignment} end"
+        );
+        let file = ws.def(&source);
+        let model = ws.analysis.semantic_model(file);
+        let offset = source.find("observed=value").unwrap() + "observed=".len();
+        let read = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaNameExpr>()
+            .find(|name| u32::from(name.get_position()) as usize == offset)
+            .unwrap();
+        let typ = model.type_of_expr_at(read.get_syntax_id(), read.get_position());
+        let shapes = match typ {
+            LuaType::Union(union) => union.into_vec(),
+            other => vec![other],
+        };
+        assert!(
+            shapes
+                .iter()
+                .all(|shape| matches!(shape, LuaType::TableConst(_))),
+            "{assignment}: {shapes:?}"
+        );
+    }
 }
