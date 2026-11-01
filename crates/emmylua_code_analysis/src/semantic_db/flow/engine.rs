@@ -700,6 +700,8 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                     label: pre_block_label,
                     default: None,
                 });
+                // The condition sees loop-entry state; ThenFinish/ThenBlock enter
+                // the body through pre_block_label with its true-branch narrowing.
                 Step::Task(Task::Cond(
                     condition_expr,
                     pre_while_label,

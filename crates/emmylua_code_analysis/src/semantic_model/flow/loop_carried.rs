@@ -148,7 +148,8 @@ fn compute(
         {
             // The current RHS asks for its own loop-entry input. Seed that
             // cycle from the entry and other writes, not an unknown RHS value.
-            // Recompute after the outer expression completes.
+            // Leave a provisional result so a later query retries after the outer
+            // expression completes; this does not schedule another query.
             model.cache.borrow().mark_incomplete();
             continue;
         }
@@ -160,6 +161,8 @@ fn compute(
                     // preserve uncertainty instead of claiming a later slot is nil.
                     ty
                 } else {
+                    // Result slots unpack expression values, not callable return
+                    // types: a closure is itself the value at slot zero.
                     ty.get_result_slot_type(slot).unwrap_or(LuaType::Nil)
                 }
             })

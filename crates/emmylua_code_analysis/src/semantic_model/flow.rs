@@ -1881,6 +1881,9 @@ fn trace_decl_uncached(
         let node = tree.get_flow_node(current)?;
         // An independent assignment in this iteration overwrites the loop-entry
         // state. Keep its literal precision instead of widening through the loop.
+        // FLOW_READ enables assignments; ASSIGN_TARGET intentionally retains only
+        // the declaration/cast contract. An empty frame stack is a direct read,
+        // so it also receives loop-entry state.
         if options.assignments && frames.last().is_none_or(|frame| frame.uses_previous_value) {
             for effect in tree.get_flow_effects(current) {
                 if let FlowEffect::LoopEntry(syntax) = effect

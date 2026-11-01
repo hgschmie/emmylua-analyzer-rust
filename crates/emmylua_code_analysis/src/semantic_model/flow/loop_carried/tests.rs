@@ -478,6 +478,17 @@ fn loop_rhs_dependency_cache_separates_file_views() {
     for foreign_first in [true, false] {
         let shared = ws.analysis.semantic_model(a);
         let foreign = shared.model_for(b);
+        let foreign_rhs = foreign
+            .chunk()
+            .unwrap()
+            .descendants::<LuaBinaryExpr>()
+            .next()
+            .unwrap();
+        assert_eq!(foreign_rhs.get_syntax_id(), rhs.get_syntax_id());
+        assert_ne!(
+            foreign.resolve_name(read.get_position()),
+            Some(decl.clone())
+        );
         if foreign_first {
             assert!(!super::references_decl(
                 &foreign,
