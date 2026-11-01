@@ -6133,7 +6133,13 @@ mod member_branch_write_tests {
         let chunk = model.chunk().unwrap();
         let function = chunk.descendants::<LuaFuncStat>().next().unwrap();
         let tree = model.flow_tree().unwrap();
-        let flow = (0..).map(FlowId).take_while(|id| tree.get_flow_node(*id).is_some()).find(|id| matches!(&tree.get_flow_node(*id).unwrap().kind, FlowNodeKind::ImplFunc(ptr) if ptr.get_syntax_id() == function.get_syntax_id())).unwrap();
+        let flow = (0..tree.node_count())
+            .map(FlowId)
+            .find(|id| {
+                matches!(&tree.get_flow_node(*id).unwrap().kind,
+                    FlowNodeKind::ImplFunc(ptr) if ptr.get_syntax_id() == function.get_syntax_id())
+            })
+            .unwrap();
         let node = tree.get_flow_node(flow).unwrap();
         assert!(matches!(node.kind, FlowNodeKind::ImplFunc(_)));
         let Some(FlowAntecedent::Single(stop)) = node.antecedent else {

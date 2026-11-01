@@ -24,10 +24,12 @@ use crate::semantic_db::def::{
 };
 use crate::semantic_db::types::PrimitiveType;
 use crate::semantic_model::flow::{ExprCastMode, type_of_expr_with_cast};
+use crate::semantic_model::inherited_index;
 use crate::semantic_model::member::{MemberInfo, table_const_class_type, table_metatable_type};
 use crate::semantic_model::type_eval::{
     class_generic_map, eval_conditionals, expand_alias_generic, expand_alias_head,
-    sanitize_unresolved_generics, sanitize_unresolved_generics_with_model, substitute_named_refs,
+    member_key_from_literal, sanitize_unresolved_generics, sanitize_unresolved_generics_with_model,
+    substitute_named_refs,
 };
 use crate::{
     AsyncState, FileId, GenericTpl, GenericTplId, InFiled, LuaAliasCallKind, LuaArrayType,
@@ -802,8 +804,8 @@ impl<'a> InferVm<'a> {
     }
 
     fn index_member_dynamic(&mut self, owner: Value, key: Value) -> Value {
-        if super::super::type_eval::member_key_from_literal(&key.ty).is_none()
-            && let Some(typ) = super::super::inherited_index::lookup(self.model, &owner.ty, &key.ty)
+        if member_key_from_literal(&key.ty).is_none()
+            && let Some(typ) = inherited_index::lookup(self.model, &owner.ty, &key.ty)
         {
             return Value::plain(typ);
         }
