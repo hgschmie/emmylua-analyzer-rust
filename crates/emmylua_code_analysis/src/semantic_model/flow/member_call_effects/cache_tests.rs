@@ -264,3 +264,20 @@ fn incomplete_receiver_targets_are_retried_after_the_query() {
         "methods.write(receiver)"
     ));
 }
+
+#[test]
+fn recursive_callees_keep_visible_writes_and_harmless_calls_distinct() {
+    for (effect, writes) in [("target.value = nil", true), ("", false)] {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def(&format!(
+            "local receiver = {{}}; local function effect(target) {effect} end; local function recurse(target) if flag then recurse(target) end; effect(target) end; recurse(receiver); local observed = receiver.value"
+        ));
+        let model = ws.analysis.semantic_model(file);
+        for _ in 0..2 {
+            assert_eq!(
+                conflict(&model, "receiver.value", "recurse(receiver)"),
+                writes
+            );
+        }
+    }
+}

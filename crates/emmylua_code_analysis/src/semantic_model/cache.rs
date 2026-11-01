@@ -17,6 +17,7 @@ use crate::semantic_db::def::SemanticId;
 use crate::semantic_db::flow::FlowId;
 use crate::{FileId, LuaFunctionType, LuaType, LuaTypeDeclId, LuaTypeNode};
 
+use super::flow::member_call_effects::{CalleeCacheKey, ReceiverTargets};
 use super::infer::unify::TplBindings;
 use super::member::MemberInfo;
 use super::{CallSiteAnalysis, ResolvedMember};
@@ -237,13 +238,10 @@ pub(crate) struct SemanticLocalCache {
     /// Syntax-only member-callee presence for this model snapshot; never call effects.
     pub(crate) member_call_resolution: HashMap<FileId, bool>,
     /// Visible call work is scoped to this immutable model and its query completeness.
-    pub(super) member_receiver_targets:
-        HashMap<FileId, CacheEntry<super::flow::member_call_effects::ReceiverTargets>>,
+    pub(super) member_receiver_targets: HashMap<FileId, CacheEntry<ReceiverTargets>>,
     pub(crate) member_call_effects: HashMap<MemberCallEffectKey, CacheEntry<bool>>,
-    pub(super) member_callees: HashMap<
-        super::flow::member_call_effects::CalleeCacheKey,
-        CacheEntry<Vec<emmylua_parser::LuaClosureExpr>>,
-    >,
+    pub(super) member_callees:
+        HashMap<CalleeCacheKey, CacheEntry<Vec<emmylua_parser::LuaClosureExpr>>>,
     pub(crate) resolve_name: HashMap<(FileId, TextSize), Option<SemanticId>>,
     /// Builtin identity at each read and declaration/flow state.
     pub(crate) builtin_function: HashMap<(FileId, BuiltinKey), Option<SmolStr>>,
