@@ -31,7 +31,8 @@ pub struct FlowBinder<'a> {
     labels: HashMap<LuaClosureId, HashMap<SmolStr, FlowId>>,
     goto_stats: Vec<GotoCache>,
     bindings: HashMap<LuaSyntaxId, FlowId>,
-    pub loop_reentries: HashMap<LuaSyntaxId, [FlowId; 2]>,
+    pub(super) loop_reentries: HashMap<LuaSyntaxId, [FlowId; 2]>,
+    pub(super) integer_loop_runtime: bool,
 }
 
 impl<'a> FlowBinder<'a> {
@@ -50,6 +51,7 @@ impl<'a> FlowBinder<'a> {
             break_target_label: FlowId::default(),
             bindings: HashMap::new(),
             loop_reentries: HashMap::new(),
+            integer_loop_runtime: false,
             goto_stats: Vec::new(),
             loop_label: FlowId::default(),
             true_target: FlowId::default(),

@@ -237,7 +237,7 @@ impl FlowTree {
         reachable
     }
 
-    /// Normal body completion and the entry label carrying explicit continue paths.
+    /// Returns [body completion, loop entry]; the entry carries explicit continue paths.
     pub(crate) fn loop_reentries(&self, syntax: LuaSyntaxId) -> Option<&[FlowId; 2]> {
         self.loop_reentries.get(&syntax)
     }

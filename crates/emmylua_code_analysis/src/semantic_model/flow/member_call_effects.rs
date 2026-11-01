@@ -458,6 +458,21 @@ fn reaching_values(
             values.push(None);
             continue;
         };
+        let condition = match &node.kind {
+            FlowNodeKind::TrueCondition(ptr) => Some((ptr, true)),
+            FlowNodeKind::FalseCondition(ptr) => Some((ptr, false)),
+            _ => None,
+        };
+        if let Some((condition, expected)) = condition
+            && let Some(actual) = condition
+                .get_syntax_id()
+                .to_node_from_root(chunk.syntax())
+                .and_then(LuaExpr::cast)
+                .and_then(|expr| crate::semantic_db::flow::static_condition_truthiness(&expr))
+            && actual != expected
+        {
+            continue;
+        }
         // The CFG intentionally omits normal loop backedges. Add them only for
         // this reaching-value query, when a path exits the current iteration.
         // A replacement inside the iteration stops before reaching this boundary.
@@ -1400,9 +1415,14 @@ mod loop_callee_tests {
     use super::*;
 
     fn check(body: &str, conflicts: bool) {
+        check_runtime(body, conflicts, crate::EmmyrcLuaVersion::LuaLatest);
+    }
+
+    fn check_runtime(body: &str, conflicts: bool, runtime: crate::EmmyrcLuaVersion) {
         let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
         let mut config = ws.get_emmyrc();
         config.runtime.nonstandard_symbol = serde_json::from_str(r#"["continue"]"#).unwrap();
+        config.runtime.version = runtime;
         ws.update_emmyrc(config);
         let file = ws.def(&format!(
             r#"
@@ -1509,10 +1529,82 @@ local action = harmless
     }
 
     #[test]
+    fn unreachable_loops_do_not_supply_callees() {
+        check(
+            "if false then while flag do action(receiver) local observed = receiver.value action = write end end",
+            false,
+        );
+        check(
+            "if true then else while flag do action(receiver) local observed = receiver.value action = write end end",
+            false,
+        );
+        check(
+            "if flag then while flag do action(receiver) local observed = receiver.value action = write end end",
+            true,
+        );
+        check(
+            "while false do action(receiver) local observed = receiver.value action = write end",
+            false,
+        );
+        check(
+            "while flag do action(receiver) local observed = receiver.value action = write end",
+            true,
+        );
+    }
+
+    #[test]
+    fn numeric_loop_repetition_respects_runtime_arithmetic() {
+        check(
+            "for i = 0.1, 0.3, 0.1 do action(receiver) local observed = receiver.value action = write end",
+            true,
+        );
+        check(
+            "for i = 9007199254740992, 9007199254740992 do action(receiver) local observed = receiver.value action = write end",
+            false,
+        );
+        check(
+            "for i = -9007199254740992, -9007199254740992, -1 do action(receiver) local observed = receiver.value action = write end",
+            false,
+        );
+        check(
+            "for i = 9007199254740992, 9007199254740993 do action(receiver) local observed = receiver.value action = write end",
+            true,
+        );
+        check_runtime(
+            "for i = 9007199254740992, 9007199254740992 do action(receiver) local observed = receiver.value action = write end",
+            true,
+            crate::EmmyrcLuaVersion::Lua51,
+        );
+    }
+
+    #[test]
     fn loop_carried_rawset_alias_keeps_visible_writes() {
         check(
             "while flag do action(receiver, 'value', nil) local observed = receiver.value action = rawset end",
             true,
         );
+    }
+    #[test]
+    fn loop_carried_global_callee_keeps_visible_write() {
+        let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def("local receiver={value=1}; local function write(target) target.value=nil end; action=function() end; while flag do action(receiver); local observed=receiver.value; action=write end");
+        let model = ws.analysis.semantic_model(file);
+        let chunk = model.chunk().unwrap();
+        let root = model.global_decl("action").unwrap();
+        assert!(model.file_facts().unwrap().decl_by_id(&root).is_some());
+        let index = chunk
+            .descendants::<LuaIndexExpr>()
+            .find(|index| index.get_text() == "receiver.value")
+            .unwrap();
+        let call = chunk
+            .descendants::<LuaCallExpr>()
+            .find(|call| call.get_text() == "action(receiver)")
+            .unwrap();
+        assert!(calls_conflict(
+            &model,
+            &index,
+            call.syntax(),
+            call.get_range().end()
+        ));
     }
 }
