@@ -3,7 +3,7 @@ mod test {
     use lsp_types::NumberOrString;
     use tokio_util::sync::CancellationToken;
 
-    use crate::{DiagnosticCode, VirtualWorkspace};
+    use crate::{DiagnosticCode, LuaType, VirtualWorkspace};
 
     fn check_class_array_guard(element_type: &str, body: &str, expected_codes: &[DiagnosticCode]) {
         let mut ws = VirtualWorkspace::new_with_init_std_lib();
@@ -297,7 +297,6 @@ mod test {
 
     #[test]
     fn primitive_type_guards_narrow_member_reads_and_avoid_nil_warnings() {
-        use crate::{DiagnosticCode, LuaType, VirtualWorkspace};
         use emmylua_parser::{LuaAstNode, LuaIndexExpr};
         for body in [
             "if type(elem.handler) == 'table' then local observed = elem.handler -- observe\n print(elem.handler.name) end",
@@ -387,7 +386,6 @@ mod test {
 
     #[test]
     fn test_member_primitive_guards_filter_other_primitives() {
-        use crate::{DiagnosticCode, LuaType, VirtualWorkspace};
         use emmylua_parser::{LuaAstNode, LuaIndexExpr};
         for (guard, expected) in [
             ("type(elem.value) == 'string'", LuaType::String),

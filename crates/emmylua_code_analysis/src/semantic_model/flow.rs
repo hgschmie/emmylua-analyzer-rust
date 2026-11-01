@@ -1962,6 +1962,8 @@ fn trace_decl_uncached(
                                     .map(|n| n.clone_ref())
                                     .collect()
                             };
+                            // The new value clears old member instability;
+                            // explicit cast contracts still apply to the trace.
                             let assign_path = PathState {
                                 narrowings,
                                 casts: path.casts.clone(),

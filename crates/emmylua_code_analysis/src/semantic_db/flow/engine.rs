@@ -245,6 +245,9 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                 if let Some(loop_stat) = block.syntax().parent().and_then(LuaLoopStat::cast)
                     && loop_may_repeat(&loop_stat)
                 {
+                    // Record the completed body's flow, including unreachable
+                    // exits. Break/return paths resume this continuation with an
+                    // unreachable flow; the reaching-values scan filters it out.
                     self.stack.push(Continuation::RecordLoopExit {
                         loop_stat,
                         entry: self.binder.loop_label,
