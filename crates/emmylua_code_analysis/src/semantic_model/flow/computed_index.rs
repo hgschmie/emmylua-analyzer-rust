@@ -324,20 +324,30 @@ end
 #[cfg(test)]
 #[test]
 fn global_collection_reset_invalidates_prior_write() {
-    for (effect, nullable) in [
-        ("storage.ConnectedSurfaces={}", true),
-        ("storage={ConnectedSurfaces={}}", true),
-        ("other.ConnectedSurfaces={}", false),
-        ("local storage={}; storage.ConnectedSurfaces={}", false),
-        ("", false),
+    for (effect, nullable, local_read) in [
+        ("storage.ConnectedSurfaces={}", true, false),
+        ("storage={ConnectedSurfaces={}}", true, false),
+        ("other.ConnectedSurfaces={}", false, false),
+        (
+            "local storage={}; storage.ConnectedSurfaces={}",
+            false,
+            false,
+        ),
+        ("", false, false),
+        ("storage.ConnectedSurfaces={}", false, true),
     ] {
         let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
         let mut config = ws.get_emmyrc();
         config.strict.array_index = true;
         ws.update_emmyrc(config);
         ws.def_file("types.lua", "---@class Storage\n---@field ConnectedSurfaces integer[][]\n---@type Storage\nstorage={ConnectedSurfaces={}}\n---@type Storage\nother={ConnectedSurfaces={}}");
+        let read_binding = if local_read {
+            "---@type Storage\nlocal storage={ConnectedSurfaces={}}\n"
+        } else {
+            ""
+        };
         let source = format!(
-            "local function clear() {effect} end\n---@param key integer\n---@param entity_key integer\nlocal function connect(key,entity_key)\n storage.ConnectedSurfaces[key]=storage.ConnectedSurfaces[key] or {{}}\n clear()\n local surface_connections=storage.ConnectedSurfaces[key]\n surface_connections[entity_key]=1\nend\nreturn connect"
+            "local function clear() {effect} end\n{read_binding}---@param key integer\n---@param entity_key integer\nlocal function connect(key,entity_key)\n storage.ConnectedSurfaces[key]=storage.ConnectedSurfaces[key] or {{}}\n clear()\n local surface_connections=storage.ConnectedSurfaces[key]\n surface_connections[entity_key]=1\nend\nreturn connect"
         );
         let file = ws.def_file("case.lua", &source);
         let model = ws.analysis.semantic_model(file);
@@ -354,6 +364,10 @@ fn global_collection_reset_invalidates_prior_write() {
         assert!(index.get_position() > call.get_range().end());
         let access =
             super::computed_guard::access(&model, &LuaExpr::IndexExpr(index.clone())).unwrap();
+        if local_read {
+            assert!(matches!(&access.root, crate::SemanticId::Decl(_)));
+            assert_ne!(Some(access.root.clone()), model.global_decl("storage"));
+        }
         assert_eq!(
             computed_effects::calls_conflict(
                 &model,
