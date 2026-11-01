@@ -44,8 +44,8 @@ pub(super) fn assigned_type(
         }
         _ => inferred,
     };
-    // Dictionary read rules can add nil after raw inference returns an element
-    // type. A definite write still establishes the non-nil read in that case.
+    // Later index-read policies can add nil to a non-nullable inference seed.
+    // Prove the write independently of that seed; keep it unchanged if non-nil.
     if computed_effects::calls_conflict(
         model,
         &access,
@@ -200,6 +200,7 @@ mod tests {
     fn definite_assignment_proof_survives_a_nonnullable_inference_seed() {
         let write = "inventory[key] = inventory[key] or {count = 0}";
         for (initialization, effect, proven) in [
+            ("", "", false),
             (write, "", true),
             (write, "inventory[key] = nil", false),
             (write, "inventory = {}", false),
@@ -286,13 +287,15 @@ mod tests {
     fn conditional_and_other_key_writes_do_not_suppress_nil_diagnostics() {
         for (collection, key_type) in [("Item[]", "integer"), ("table<string, Item>", "string")] {
             for write in [
+                "",
                 "if flag then inventory[key] = {count = 0} end",
                 "inventory[other] = {count = 0}",
             ] {
                 let mut ws = VirtualWorkspace::new_with_init_std_lib();
                 let mut config = serde_json::to_value(ws.get_emmyrc()).unwrap();
-                // Dictionary nil checks are a separate contribution; the isolated
-                // base has array checks only. Assert both supported policy states.
+                // The isolated base has no dictionary policy/configuration field.
+                // Its serialized schema identifies whether dictionary nil checks
+                // exist; an unknown tableIndex option is otherwise ignored.
                 let dictionary_checks = config["strict"].get("tableIndex").is_some();
                 config["strict"]["arrayIndex"] = serde_json::json!(true);
                 config["strict"]["tableIndex"] = serde_json::json!(true);
@@ -313,12 +316,18 @@ mod tests {
                     end
                     "#,
                 );
-                let checks_nil = collection == "Item[]" || dictionary_checks;
-                assert_eq!(
-                    ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
-                    !checks_nil,
-                    "{collection}, dictionary checks {dictionary_checks}: {write}"
-                );
+                let no_nil_diagnostic = ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source);
+                if collection == "Item[]" || dictionary_checks {
+                    assert!(
+                        !no_nil_diagnostic,
+                        "missing nil warning: {collection}, {write}"
+                    );
+                } else {
+                    assert!(
+                        no_nil_diagnostic,
+                        "unexpected dictionary policy on isolated base"
+                    );
+                }
             }
         }
     }
