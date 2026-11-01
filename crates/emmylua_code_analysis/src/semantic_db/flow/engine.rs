@@ -1073,7 +1073,7 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                         );
                     }
                     if let Some(Some((owner, key, member))) =
-                        get_var_member_ids(self.binder, &[var]).first()
+                        get_var_member_ids(self.binder, std::slice::from_ref(&var)).first()
                         && let Some(closure) = func_stat.get_closure()
                     {
                         self.binder.add_effect(

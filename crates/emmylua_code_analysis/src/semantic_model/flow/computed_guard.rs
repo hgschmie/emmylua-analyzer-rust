@@ -64,7 +64,7 @@ pub(super) fn guarded_type(
                 && model
                     .type_def_of(&generic.get_base_type_id())
                     .is_some_and(|def| model.is_std_file(def.file_id)) => {}
-        _ if named_collection(model, &owner_type, true) => {}
+        _ if named_collection(model, &owner_type, CollectionUse::ReadGuard) => {}
         _ => return None,
     }
     // This is the raw expression cache, distinct from the flow-sensitive query
@@ -399,7 +399,13 @@ impl<'a, 'db> GuardSearch<'a, 'db> {
 pub(super) fn ordinary_collection(model: &SemanticModel, owner_type: &LuaType) -> bool {
     match &owner_type {
         LuaType::Array(_) | LuaType::TableGeneric(_) => true,
-        LuaType::Object(object) => !object.get_index_access().is_empty(),
+        LuaType::Object(object) => {
+            !object.get_index_access().is_empty()
+                && !object
+                    .get_fields()
+                    .keys()
+                    .any(|key| intercepts_access(key, CollectionUse::Assignment))
+        }
         LuaType::Generic(generic)
             if generic.get_base_type_id() == crate::LuaTypeDeclId::global("table")
                 && model
@@ -408,7 +414,7 @@ pub(super) fn ordinary_collection(model: &SemanticModel, owner_type: &LuaType) -
         {
             true
         }
-        _ => named_collection(model, owner_type, false),
+        _ => named_collection(model, owner_type, CollectionUse::Assignment),
     }
 }
 
@@ -416,7 +422,17 @@ pub(super) fn ordinary_collection(model: &SemanticModel, owner_type: &LuaType) -
 // member enumeration must never enable a guard or assignment fact.
 // Declared fields admit computed reads only: the caller still needs a concrete
 // value contract and a reaching guard. This predicate does not prove presence.
-fn named_collection(model: &SemanticModel, owner: &LuaType, allow_declared_fields: bool) -> bool {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CollectionUse {
+    ReadGuard,
+    Assignment,
+}
+
+fn intercepts_access(key: &LuaMemberKey, purpose: CollectionUse) -> bool {
+    matches!(key, LuaMemberKey::Name(name) if name == "__index" || (purpose == CollectionUse::Assignment && name == "__newindex"))
+}
+
+fn named_collection(model: &SemanticModel, owner: &LuaType, purpose: CollectionUse) -> bool {
     let _query = crate::semantic_model::cache::QueryCacheScope::new(&model.cache);
     let revision = model.cache.borrow().revision();
     let contracts = crate::semantic_model::inherited_index::dictionaries(model, owner);
@@ -425,10 +441,11 @@ fn named_collection(model: &SemanticModel, owner: &LuaType, allow_declared_field
     }
     let members = model.member_infos(owner);
     let collection = (!contracts.is_empty()
-        || (allow_declared_fields && members.iter().any(|member| member.id.is_some())))
+        || (purpose == CollectionUse::ReadGuard
+            && members.iter().any(|member| member.id.is_some())))
         && !members
             .iter()
-            .any(|member| member.key == LuaMemberKey::Name("__index".into()));
+            .any(|member| intercepts_access(&member.key, purpose));
     collection && model.cache.borrow().is_complete(revision)
 }
 
@@ -800,9 +817,17 @@ mod contract_tests {
         let model = ws.analysis.semantic_model(file);
         for _ in 0..2 {
             assert!(!ordinary_collection(&model, &growing));
-            assert!(!named_collection(&model, &growing, true));
+            assert!(!named_collection(
+                &model,
+                &growing,
+                CollectionUse::ReadGuard
+            ));
             assert!(ordinary_collection(&model, &complete));
-            assert!(named_collection(&model, &complete, true));
+            assert!(named_collection(
+                &model,
+                &complete,
+                CollectionUse::ReadGuard
+            ));
         }
     }
 

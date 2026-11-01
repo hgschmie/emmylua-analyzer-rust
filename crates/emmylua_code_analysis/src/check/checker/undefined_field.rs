@@ -268,14 +268,16 @@ fn valid_named_member(
     }
 
     let key_ty = key_type(semantic_model, index_key);
-    if inherited_index::lookup(semantic_model, &prefix_ty, &key_ty).is_some() {
-        return true;
-    }
     // Index signatures on named types: `@field [string]` / `@field [integer]`.
     if semantic_model
         .applicable_index_infos(&prefix_ty, &key_ty)
         .is_ok_and(|infos| !infos.is_empty())
     {
+        return true;
+    }
+
+    // Inherited contracts are the fallback after direct index signatures.
+    if inherited_index::lookup(semantic_model, &prefix_ty, &key_ty).is_some() {
         return true;
     }
 

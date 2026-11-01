@@ -261,4 +261,32 @@ mod function_statement_tests {
             );
         }
     }
+    #[test]
+    fn computed_rawset_keys_terminate_and_invalidate_possible_matches() {
+        for key in ["rows[key]", "rows[key][1]"] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            let source = format!(
+                "---@param rows table<string, string[]>\n---@param key string\nlocal function f(rows,key) if rows[key] then rawset(rows, {key}, nil); local observed=rows[key] end end"
+            );
+            let file = ws.def(&source);
+            let model = ws.analysis.semantic_model(file);
+            let chunk = model.chunk().unwrap();
+            let index = chunk
+                .descendants::<LuaIndexExpr>()
+                .filter(|index| index.get_text() == "rows[key]")
+                .last()
+                .unwrap();
+            let call = chunk
+                .descendants::<LuaCallExpr>()
+                .find(|call| call.get_text().starts_with("rawset("))
+                .unwrap();
+            let expected = access(&model, &LuaExpr::IndexExpr(index)).unwrap();
+            for _ in 0..2 {
+                assert!(
+                    calls_conflict(&model, &expected, call.syntax(), call.get_range().end()),
+                    "{key}"
+                );
+            }
+        }
+    }
 }
