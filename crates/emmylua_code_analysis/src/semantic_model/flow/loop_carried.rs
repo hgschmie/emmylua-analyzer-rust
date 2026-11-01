@@ -15,6 +15,8 @@ use super::{
 };
 use emmylua_parser::{LuaAstNode, LuaClosureExpr, LuaStat, LuaSyntaxId, LuaVarExpr};
 
+mod reachability;
+
 pub(super) fn loop_carried_type(
     model: &SemanticModel,
     decl: &SemanticId,
@@ -66,7 +68,9 @@ fn compute(
     let tree = model.syntax_tree()?;
     let node = syntax.to_node_from_root(&tree.get_red_root())?;
     // A local created inside the loop starts fresh each iteration.
-    if node.text_range().contains_range(info.name_range) {
+    if matches!(info.kind, crate::semantic_db::def::DeclKind::Local { .. })
+        && node.text_range().contains_range(info.name_range)
+    {
         return None;
     }
     let closure = node
@@ -75,6 +79,8 @@ fn compute(
         .map(|c| c.get_syntax_id());
     // Include nested loops in this closure: their writes can reach a later outer
     // iteration. Repeated types collapse during widening; uncalled closures do not.
+    let flow_tree = model.flow_tree()?;
+    let reachable = reachability::reachable_flows(model);
     let mut assigned = Vec::new();
     for statement in node.descendants().filter_map(LuaStat::cast) {
         if statement
@@ -85,6 +91,13 @@ fn compute(
         {
             continue;
         }
+        if flow_tree
+            .get_flow_id_at(statement.get_position())
+            .and_then(|flow| reachable.get(flow.0 as usize))
+            == Some(&false)
+        {
+            continue;
+        }
         let assignment = match statement {
             LuaStat::AssignStat(assignment) => assignment,
             LuaStat::FuncStat(function) => {
@@ -92,8 +105,9 @@ fn compute(
                 // its body is not executed. Qualified members do not rebind a local.
                 if let Some(LuaVarExpr::NameExpr(name)) = function.get_func_name()
                     && model.resolve_name(name.get_position()).as_ref() == Some(decl)
+                    && let Some(body) = function.get_closure()
                 {
-                    assigned.push(function.get_closure().map(|body| (body.get_syntax_id(), 0)));
+                    assigned.push(Some((body.get_syntax_id(), 0)));
                 }
                 continue;
             }
@@ -122,7 +136,6 @@ fn compute(
     if assigned.is_empty() {
         return None;
     }
-    let declared = model.type_of_decl(decl)?;
     // Declared contracts bound all iterations; assignment checking enforces them.
     // Parameter docs are keyed by name, not their order in the comment. A local
     // shadow with the same name must not inherit the parameter's contract.
@@ -132,8 +145,10 @@ fn compute(
             .and_then(|(signature, _)| signature.docs.as_ref())
             .is_some_and(|docs| docs.param_types.iter().any(|(name, _)| name == &info.name));
     if info.doc_type_syntax.is_some() || annotated_param {
-        return Some(declared);
+        return model.type_of_decl(decl);
     }
+    // A recursively initialized global can have an incomplete declaration.
+    // Keep its unknown entry seed while still collecting independent later writes.
     let initial = type_of_decl_at_flow_id(model, decl, entry);
     let mut types = vec![widen_const_type(initial)];
     for rhs in assigned {
@@ -186,15 +201,43 @@ pub(super) fn references_decl(
     let references = model
         .syntax_tree()
         .and_then(|tree| syntax.to_node_from_root(&tree.get_red_root()))
-        .is_some_and(|node| {
-            node.descendants()
-                .filter_map(emmylua_parser::LuaNameExpr::cast)
-                .any(|name| model.resolve_name(name.get_position()).as_ref() == Some(decl))
-        });
+        .is_some_and(|node| reads_decl(model, node, decl));
     model
         .cache
         .borrow_mut()
         .loop_rhs_dependencies
         .insert(key, references);
     references
+}
+
+/// Creating a closure does not evaluate its body. A closure passed to or used as
+/// a call may execute during the RHS, so retain that dependency conservatively.
+fn reads_decl(
+    model: &SemanticModel,
+    root: emmylua_parser::LuaSyntaxNode,
+    decl: &SemanticId,
+) -> bool {
+    let range = root.text_range();
+    let mut pending = vec![root];
+    while let Some(node) = pending.pop() {
+        if LuaClosureExpr::can_cast(node.kind().into())
+            && !node
+                .ancestors()
+                .skip(1)
+                .take_while(|ancestor| {
+                    range.contains_range(ancestor.text_range())
+                        && !LuaClosureExpr::can_cast(ancestor.kind().into())
+                })
+                .any(|ancestor| emmylua_parser::LuaCallExpr::can_cast(ancestor.kind().into()))
+        {
+            continue;
+        }
+        if let Some(name) = emmylua_parser::LuaNameExpr::cast(node.clone())
+            && model.resolve_name(name.get_position()).as_ref() == Some(decl)
+        {
+            return true;
+        }
+        pending.extend(node.children());
+    }
+    false
 }

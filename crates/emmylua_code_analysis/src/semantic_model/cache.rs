@@ -222,6 +222,8 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) closure_return_in_progress: HashSet<(FileId, LuaSyntaxId)>,
     pub(crate) loop_carried:
         HashMap<(FileId, LuaSyntaxId, SemanticId), CacheEntry<Option<LuaType>>>,
+    /// Completed syntax/CFG reachability; shared only within this immutable model.
+    pub(crate) loop_statement_reachable: HashMap<FileId, Rc<Vec<bool>>>,
     /// Syntax/name-identity facts are stable for the shared model snapshot.
     pub(crate) loop_rhs_dependencies: HashMap<(FileId, LuaSyntaxId, SemanticId), bool>,
     pub(crate) expr_type: HashMap<(FileId, LuaSyntaxId), CacheEntry<LuaType>>,

@@ -669,3 +669,134 @@ fn loop_rhs_dependency_cache_is_fresh_after_a_file_edit() {
     assert!(!super::references_decl(&model, syntax, &decl));
     assert!(!super::references_decl(&model, syntax, &decl));
 }
+
+#[test]
+fn loop_globals_keep_values_from_prior_iterations() {
+    use emmylua_parser::{LuaAstNode, LuaNameExpr};
+    let mut ws = crate::VirtualWorkspace::new();
+    let source = "while flag do global_value = global_value or 0; local observed = global_value; global_value = 'text' end";
+    let file = ws.def(source);
+    // The recursive global initializer has an incomplete entry value. Its
+    // unknown seed must not hide the independent write on a later iteration.
+    let expected = LuaType::from_vec(vec![LuaType::Unknown, LuaType::String]);
+    let model = ws.analysis.semantic_model(file);
+    let read_offset = source.find("local observed = ").unwrap() + "local observed = ".len();
+    let read = model
+        .chunk()
+        .unwrap()
+        .descendants::<LuaNameExpr>()
+        .find(|name| u32::from(name.get_position()) as usize == read_offset)
+        .unwrap();
+    for phase in ["cold", "warm"] {
+        assert_eq!(
+            model.type_of_expr_at(read.get_syntax_id(), read.get_position()),
+            expected,
+            "{phase}"
+        );
+    }
+}
+
+#[test]
+fn loop_carried_types_exclude_statically_unreachable_writes() {
+    use emmylua_parser::{LuaAstNode, LuaNameExpr};
+    for tail in [
+        "break; value = 'text'",
+        "return; value = 'text'",
+        "if false then value = 'text' end",
+        "if not true then value = 'text' end",
+    ] {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def(&format!("local function run() local value = 1; while flag do local observed = value; {tail} end end"));
+        let model = ws.analysis.semantic_model(file);
+        let read = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaNameExpr>()
+            .find(|name| name.get_name_text().as_deref() == Some("value"))
+            .unwrap();
+        for phase in ["cold", "warm"] {
+            let actual = model.type_of_expr_at(read.get_syntax_id(), read.get_position());
+            assert!(
+                matches!(actual, LuaType::Integer | LuaType::IntegerConst(1)),
+                "{tail}: {phase}: {actual:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn loop_rhs_dependency_distinguishes_closure_values_from_possible_calls() {
+    use emmylua_parser::{LuaAssignStat, LuaAstNode, LuaVarExpr};
+    for (rhs, references) in [
+        ("function() return value end", false),
+        ("{get = function() return value end}", false),
+        (
+            "(function() return function() return value end end)()",
+            false,
+        ),
+        ("(function() return value end)()", true),
+        (
+            "(function() return (function() return value end)() end)()",
+            true,
+        ),
+        ("fn(function() return value end)", true),
+    ] {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def(&format!(
+            "local function run(fn) local value = 1; while flag do value = {rhs} end end"
+        ));
+        let model = ws.analysis.semantic_model(file);
+        let assignment = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaAssignStat>()
+            .next()
+            .unwrap();
+        let (vars, values) = assignment.get_var_and_expr_list();
+        let LuaVarExpr::NameExpr(target) = &vars[0] else {
+            panic!("expected local assignment");
+        };
+        let decl = model.resolve_name(target.get_position()).unwrap();
+        for phase in ["cold", "warm"] {
+            assert_eq!(
+                super::references_decl(&model, values[0].get_syntax_id(), &decl),
+                references,
+                "{rhs}: {phase}"
+            );
+        }
+    }
+}
+
+#[test]
+fn loop_recursive_call_rhs_does_not_claim_only_the_entry_type() {
+    use emmylua_parser::{LuaAssignStat, LuaAstNode, LuaNameExpr};
+    for rhs_first in [false, true] {
+        let mut ws = crate::VirtualWorkspace::new();
+        let source = "---@param previous integer|string|nil\n---@return string?\nlocal function step(previous) return nil end\nlocal value=1; while flag do local observed=value; value=step(value) end";
+        let file = ws.def(source);
+        let expected = ws.ty("integer|string|nil");
+        let model = ws.analysis.semantic_model(file);
+        let chunk = model.chunk().unwrap();
+        if rhs_first {
+            let assignment = chunk.descendants::<LuaAssignStat>().next().unwrap();
+            let rhs = assignment.get_var_and_expr_list().1.remove(0);
+            let _ = model.type_of_expr(rhs.get_syntax_id());
+        }
+        let offset = source.find("observed=value").unwrap() + "observed=".len();
+        let read = chunk
+            .descendants::<LuaNameExpr>()
+            .find(|name| u32::from(name.get_position()) as usize == offset)
+            .unwrap();
+        for phase in ["cold", "warm"] {
+            let actual = model.type_of_expr_at(read.get_syntax_id(), read.get_position());
+            // Recursive call inference can remain unknown. Either keep that
+            // uncertainty or the complete nullable return union; never claim
+            // only the integer entry while dropping the possible later write.
+            let uncertain = LuaType::from_vec(vec![LuaType::Integer, LuaType::Unknown]);
+            assert!(
+                actual == expected || actual == uncertain,
+                "rhs_first={rhs_first}: {phase}: {actual:?}"
+            );
+        }
+    }
+}
