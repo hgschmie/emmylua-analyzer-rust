@@ -1611,21 +1611,20 @@ local action = harmless
     }
     #[test]
     fn later_assignment_retains_the_unassigned_declaration_sentinel() {
-        let mut ws = crate::VirtualWorkspace::new();
-        let file = ws.def("local x; local y = x; x = 5");
-        let model = ws.analysis.semantic_model(file);
-        let chunk = model.chunk().unwrap();
-        let query = chunk
-            .descendants::<emmylua_parser::LuaNameExpr>()
-            .find(|name| name.get_text() == "x")
-            .unwrap();
-        assert_eq!(
-            usize::from(query.get_position()),
-            "local x; local y = ".len()
-        );
-        let root = model.resolve_name(query.get_position()).unwrap();
-        let values = reaching_values(&model, &root, &LuaExpr::NameExpr(query));
-        assert!(matches!(values.as_slice(), [None]));
+        for prefix in ["local x; local y = ", "local y = "] {
+            let mut ws = crate::VirtualWorkspace::new();
+            let file = ws.def(&format!("{prefix}x; x = 5"));
+            let model = ws.analysis.semantic_model(file);
+            let chunk = model.chunk().unwrap();
+            let query = chunk
+                .descendants::<emmylua_parser::LuaNameExpr>()
+                .find(|name| name.get_text() == "x")
+                .unwrap();
+            assert_eq!(usize::from(query.get_position()), prefix.len());
+            let root = model.resolve_name(query.get_position()).unwrap();
+            let values = reaching_values(&model, &root, &LuaExpr::NameExpr(query));
+            assert!(matches!(values.as_slice(), [None]), "{prefix}");
+        }
     }
 
     #[test]
@@ -1662,5 +1661,20 @@ local action = harmless
                 "{assignments}"
             );
         }
+    }
+    #[test]
+    fn unreachable_nonloop_queries_do_not_supply_callees() {
+        check(
+            "action = write; if false then action(receiver) local observed = receiver.value end",
+            false,
+        );
+        check(
+            "action = write; if true then else action(receiver) local observed = receiver.value end",
+            false,
+        );
+        check(
+            "action = write; if flag then action(receiver) local observed = receiver.value end",
+            true,
+        );
     }
 }
