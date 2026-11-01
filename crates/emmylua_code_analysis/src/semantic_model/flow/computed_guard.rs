@@ -206,6 +206,8 @@ impl<'a, 'db> GuardSearch<'a, 'db> {
                     return Some(base);
                 }
             }
+            // Goto joins and function installations can change reaching values;
+            // this bounded proof does not model those effects across the boundary.
             FlowNodeKind::NamedLabel(_) | FlowNodeKind::ImplFunc(_) => return Some(base),
             FlowNodeKind::Unreachable => return Some(LuaType::Never),
             _ => {}

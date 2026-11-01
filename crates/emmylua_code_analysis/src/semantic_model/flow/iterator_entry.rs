@@ -40,6 +40,8 @@ pub(super) fn entry_type(
             return None;
         };
         if iterators.next().is_some() {
+            // Extra expressions replace the iterator's returned state/control
+            // values, so a yielded key need not belong to this collection.
             return None;
         }
         let LuaExpr::NameExpr(callee) = call.get_prefix_expr()? else {
@@ -169,6 +171,7 @@ end
             "for key in pairs(state.rows) do end; print(state.rows[other_key].value)",
             "local pairs = function(t) return next, t end; for key in pairs(state.rows) do print(state.rows[key].value) end",
             "for key in custom(state.rows) do print(state.rows[key].value) end",
+            "for key in pairs(state.rows), other.rows, nil do print(state.rows[key].value) end",
             "pairs = function(t) return next, t end; for key in pairs(state.rows) do print(state.rows[key].value) end",
             "local _ENV = {}; for key in pairs(state.rows) do print(state.rows[key].value) end",
         ] {
