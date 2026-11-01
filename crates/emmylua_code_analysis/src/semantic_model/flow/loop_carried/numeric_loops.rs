@@ -51,9 +51,13 @@ fn has_empty_range(loop_stat: &LuaForStat, integer_runtime: bool) -> bool {
     }
 }
 
+const MAX_CONTIGUOUS_EXACT_INTEGER: u64 = 1_u64 << 53;
+
 fn exact_float(value: NumberResult) -> Option<f64> {
     match value {
-        NumberResult::Int(value) if value.unsigned_abs() <= (1_u64 << 53) => Some(value as f64),
+        NumberResult::Int(value) if value.unsigned_abs() <= MAX_CONTIGUOUS_EXACT_INTEGER => {
+            Some(value as f64)
+        }
         NumberResult::Float(value) if value.is_finite() => Some(value),
         _ => None,
     }
@@ -75,6 +79,7 @@ fn literal_number(expr: &LuaExpr) -> Option<NumberResult> {
                 };
                 let value = match number.get_number_value() {
                     NumberResult::Int(value) => value,
+                    // Out-of-range unsigned literals cannot certify an empty body.
                     NumberResult::Uint(value) => i64::try_from(value).ok()?,
                     NumberResult::Float(value) => {
                         return Some(NumberResult::Float(if negate { -value } else { value }));

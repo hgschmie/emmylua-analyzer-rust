@@ -94,8 +94,9 @@ fn decl_owner_syntax_start(model: &SemanticModel, decl: &SemanticId) -> Option<T
 // Captured assignments require closure-entry handling even when the current
 // closure has no loop. Keep newly enabled fast reads within the declaration's
 // own closure; text order alone cannot describe an enclosing writer's effects.
-// The public query supplies an offset, not a read node. Ambiguous token/boundary
-// positions conservatively disable this fast path instead of proving identity.
+// The public query selects a lexical offset, not necessarily a read node.
+// At token boundaries the token on the right supplies the scope; missing owner
+// or query syntax declines this shortcut. This does not detect token ambiguity.
 fn declaration_is_in_query_closure(
     model: &SemanticModel,
     decl: &SemanticId,
@@ -123,7 +124,9 @@ fn declaration_is_in_query_closure(
     LuaClosureId::from_node(&owner) == LuaClosureId::from_node(&query)
 }
 
-/// Flow-sensitive type of `decl` at `offset` (assignment-aware + condition narrowing; `Unknown` falls back to the declared type).
+/// Flow-sensitive type of `decl` at the lexical program point `offset`.
+/// Expression readers normally pass the read start; token boundaries select the
+/// scope on their right. Unknown flow results fall back to the declared type.
 ///
 /// When `offset` lies on the assignment flow node for `x = value`, **this assignment does not participate in the target type** —
 /// the query answers "what x was before the assignment" (`---@cast x +T` / narrowing still applies).

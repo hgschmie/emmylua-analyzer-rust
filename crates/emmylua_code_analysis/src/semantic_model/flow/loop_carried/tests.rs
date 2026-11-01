@@ -1009,10 +1009,12 @@ fn captured_assigned_parameters_keep_closure_entry_flow() {
         .find(|name| u32::from(name.get_position()) as usize == offset)
         .unwrap();
     let decl = model.resolve_name(read.get_position()).unwrap();
-    super::super::flow_metrics::reset();
-    assert_eq!(
-        super::super::type_of_decl_at(&model, &decl, read.get_position()),
-        LuaType::Integer
-    );
-    assert_eq!(super::super::flow_metrics::fast_decl_hits(), 0);
+    for position in [read.get_position(), read.get_range().end()] {
+        super::super::flow_metrics::reset();
+        assert_eq!(
+            super::super::type_of_decl_at(&model, &decl, position),
+            LuaType::Integer
+        );
+        assert_eq!(super::super::flow_metrics::fast_decl_hits(), 0);
+    }
 }
