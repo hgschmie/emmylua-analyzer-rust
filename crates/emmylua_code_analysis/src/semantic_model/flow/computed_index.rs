@@ -198,11 +198,14 @@ mod tests {
 
     #[test]
     fn definite_assignment_proof_survives_a_nonnullable_inference_seed() {
-        for (effect, proven) in [
-            ("", true),
-            ("inventory[key] = nil", false),
-            ("inventory = {}", false),
-            ("key = other", false),
+        let write = "inventory[key] = inventory[key] or {count = 0}";
+        for (initialization, effect, proven) in [
+            (write, "", true),
+            (write, "inventory[key] = nil", false),
+            (write, "inventory = {}", false),
+            (write, "key = other", false),
+            ("if flag then inventory[key] = {count = 0} end", "", false),
+            ("inventory[other] = {count = 0}", "", false),
         ] {
             let mut ws = VirtualWorkspace::new_with_init_std_lib();
             let mut config = ws.get_emmyrc();
@@ -218,7 +221,7 @@ mod tests {
                 local function update(key, other)
                     ---@type Item[]
                     local inventory = {{}}
-                    inventory[key] = inventory[key] or {{count = 0}}
+                    {initialization}
                     {effect}
                     local observed = inventory[key]
                 end
@@ -277,6 +280,47 @@ mod tests {
             end
             "#,
         ));
+    }
+
+    #[test]
+    fn conditional_and_other_key_writes_do_not_suppress_nil_diagnostics() {
+        for (collection, key_type) in [("Item[]", "integer"), ("table<string, Item>", "string")] {
+            for write in [
+                "if flag then inventory[key] = {count = 0} end",
+                "inventory[other] = {count = 0}",
+            ] {
+                let mut ws = VirtualWorkspace::new_with_init_std_lib();
+                let mut config = serde_json::to_value(ws.get_emmyrc()).unwrap();
+                // Dictionary nil checks are a separate contribution; the isolated
+                // base has array checks only. Assert both supported policy states.
+                let dictionary_checks = config["strict"].get("tableIndex").is_some();
+                config["strict"]["arrayIndex"] = serde_json::json!(true);
+                config["strict"]["tableIndex"] = serde_json::json!(true);
+                ws.update_emmyrc(serde_json::from_value(config).unwrap());
+                let source = format!(
+                    r#"
+                    ---@class Item
+                    ---@field count integer
+                    local Item = {{}}
+                    ---@param key {key_type}
+                    ---@param other {key_type}
+                    ---@param flag boolean
+                    local function update(key, other, flag)
+                        ---@type {collection}
+                        local inventory = {{}}
+                        {write}
+                        return inventory[key].count
+                    end
+                    "#,
+                );
+                let checks_nil = collection == "Item[]" || dictionary_checks;
+                assert_eq!(
+                    ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+                    !checks_nil,
+                    "{collection}, dictionary checks {dictionary_checks}: {write}"
+                );
+            }
+        }
     }
 
     #[test]
