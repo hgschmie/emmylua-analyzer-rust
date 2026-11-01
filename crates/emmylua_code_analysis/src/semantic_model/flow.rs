@@ -2860,6 +2860,8 @@ fn table_member_type(model: &SemanticModel, ty: &LuaType, key: &LuaMemberKey) ->
 }
 
 /// Return assignment targets, including the member written by a function statement.
+/// Match assignment_syntax: Assignment and ImplFunc install values; a missing
+/// function name cannot certify an unchanged member and leaves the proof unestablished.
 fn flow_written_vars(
     model: &SemanticModel,
     tree: &FlowTree,
@@ -5717,6 +5719,7 @@ fn member_branch_is_pure(
             return false;
         }
         match &node.kind {
+            // A function statement installs a new closure value in its target.
             FlowNodeKind::Assignment(_) | FlowNodeKind::ImplFunc(_) => {
                 if tree.get_flow_effects(current).iter().any(|effect| {
                     matches!(

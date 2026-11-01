@@ -18,7 +18,8 @@ pub struct FlowTree {
     multiple_antecedents: Vec<Vec<FlowId>>,
     // labels: HashMap<LuaClosureId, HashMap<SmolStr, FlowId>>,
     bindings: HashMap<LuaSyntaxId, FlowId>,
-    /// Backedges exposed to the member-callee enclosing-loop query.
+    /// Backedges for member-callee queries: index 0 is normal body exit, index 1
+    /// is the loop entry/backedge target, including body continue edges.
     loop_reentries: HashMap<LuaSyntaxId, [FlowId; 2]>,
     /// Sorted binding ranges; used as a fallback for offsets that are not exactly
     /// the start of a bound syntax node.
@@ -239,6 +240,7 @@ impl FlowTree {
     }
 
     /// Normal body completion and the entry label carrying explicit continue paths.
+    /// Return [normal body exit, loop entry/backedge target] for reaching callees.
     pub(crate) fn loop_reentries(&self, syntax: LuaSyntaxId) -> Option<&[FlowId; 2]> {
         self.loop_reentries.get(&syntax)
     }

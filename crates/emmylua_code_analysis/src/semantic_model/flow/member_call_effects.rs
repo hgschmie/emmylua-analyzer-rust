@@ -129,6 +129,7 @@ fn scan(
     // This flag reads only syntax from the model's immutable database snapshot.
     // Query incompleteness does not change it; receiver paths below also resolve
     // semantic identities, so their cache publication checks completeness.
+    // The root-model lifetime invariant is documented in cache.rs.
     let needs_members = cached.unwrap_or_else(|| {
         let present = model.chunk().is_some_and(|chunk| {
             chunk.descendants::<LuaCallExpr>().any(|call| {
@@ -1483,6 +1484,8 @@ local action = harmless
             "repeat action(receiver) local observed = receiver.value action = write until true",
             "for i = 1, 1 do action(receiver) local observed = receiver.value action = write end",
             "for i = 1, 1, -1 do action(receiver) local observed = receiver.value action = write end",
+            "for i = 1e308, 1e308, 1e308 do action(receiver) local observed = receiver.value action = write end",
+            "for i = -1e308, -1e308, -1e308 do action(receiver) local observed = receiver.value action = write end",
         ] {
             check(body, false);
         }
@@ -1491,6 +1494,7 @@ local action = harmless
     #[test]
     fn conditional_and_nested_loop_callees_keep_possible_writes() {
         for body in [
+            "for i = 1e308, 1e308 do action(receiver) local observed = receiver.value action = write end",
             "while flag do if choice then action = harmless end action(receiver) local observed = receiver.value action = write end",
             "while flag do action(receiver) local observed = receiver.value if choice then action = write end end",
             "while flag do while other_flag do action(receiver) local observed = receiver.value end action = write end",

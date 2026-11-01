@@ -31,7 +31,8 @@ pub struct FlowBinder<'a> {
     labels: HashMap<LuaClosureId, HashMap<SmolStr, FlowId>>,
     goto_stats: Vec<GotoCache>,
     bindings: HashMap<LuaSyntaxId, FlowId>,
-    /// Normal body exit followed by the entry label carrying continue paths.
+    /// Index 0 is the normal body exit; index 1 is the loop entry/backedge target.
+    /// The entry also collects continue edges from the body.
     pub(super) loop_reentries: HashMap<LuaSyntaxId, [FlowId; 2]>,
 }
 

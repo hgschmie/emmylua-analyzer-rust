@@ -1329,6 +1329,8 @@ fn loop_may_repeat(loop_stat: &LuaLoopStat) -> bool {
             // If adding a step makes no progress, retain the possible backedge
             // rather than declaring a potentially repeating loop single-pass:
             // start + step == start still satisfies the bound for an entered loop.
+            // With finite bounds, overflow to signed infinity passes the bound
+            // in the step direction and therefore cannot produce another iteration.
             match (start, stop, step) {
                 (Some(start), Some(stop), Some(step)) if step > 0.0 => start + step <= stop,
                 (Some(start), Some(stop), Some(step)) if step < 0.0 => start + step >= stop,
