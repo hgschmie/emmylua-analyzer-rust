@@ -16,7 +16,10 @@ use emmylua_parser::{
 };
 use std::{collections::HashSet, rc::Rc};
 
+mod environment;
+
 pub(crate) struct GlobalNameValues {
+    pub(crate) has_replacement: bool,
     pub(crate) may_keep_builtin: bool,
     pub(crate) replacements: Vec<LuaExpr>,
 }
@@ -25,6 +28,7 @@ pub(crate) struct GlobalNameValues {
 /// Possible replacements also expose their visible bodies to call-effect scanning.
 pub(crate) fn global_name_values(model: &SemanticModel, name: &LuaNameExpr) -> GlobalNameValues {
     let mut result = GlobalNameValues {
+        has_replacement: false,
         may_keep_builtin: true,
         replacements: Vec::new(),
     };
@@ -44,7 +48,10 @@ pub(crate) fn global_name_values(model: &SemanticModel, name: &LuaNameExpr) -> G
         let syntax = Rc::new(
             chunk
                 .descendants::<LuaStat>()
-                .filter(|statement| written_name(statement, &text).is_some())
+                .filter(|statement| {
+                    written_name(statement, &text).is_some()
+                        || environment::written_values(model, statement, &text).is_some()
+                })
                 .map(|statement| statement.get_syntax_id())
                 .collect::<Vec<_>>(),
         );
@@ -61,19 +68,43 @@ pub(crate) fn global_name_values(model: &SemanticModel, name: &LuaNameExpr) -> G
     let query_closure = LuaClosureId::from_node(name.syntax());
     let called = visible_call_closures(model, name);
     let reachable = callee_reachable_flows(model);
-    for syntax in definitions.iter() {
-        let Some(statement) = syntax
-            .to_node_from_root(chunk.syntax())
-            .and_then(LuaStat::cast)
-        else {
-            continue;
-        };
+    let statements = definitions
+        .iter()
+        .filter_map(|syntax| {
+            syntax
+                .to_node_from_root(chunk.syntax())
+                .and_then(LuaStat::cast)
+        })
+        .collect::<Vec<_>>();
+    let previous = previous_iteration_nodes(model, name, &statements, &reachable);
+    for statement in statements {
         if model
             .flow_tree()
             .and_then(|tree| tree.get_flow_id_at(statement.get_position()))
             .and_then(|flow| reachable.get(flow.0 as usize))
             == Some(&false)
         {
+            continue;
+        }
+        let definition_closure = LuaClosureId::from_node(statement.syntax());
+        if let Some(values) = environment::written_values(model, &statement, &text) {
+            let same_iteration = statement.get_range().end() <= name.get_position();
+            let prior_iteration = previous.contains(&statement.get_syntax_id());
+            let can_precede = if definition_closure == query_closure {
+                same_iteration || prior_iteration
+            } else {
+                definition_closure
+                    .get_range()
+                    .contains_range(query_closure.get_range())
+                    || called.contains(&definition_closure)
+            };
+            if can_precede {
+                // Even a missing RHS replaces the slot with nil. The builtin
+                // remains a possible callee unless a definite replacement is
+                // established; known RHS bodies are also scanned for effects.
+                result.has_replacement = true;
+                result.replacements.extend(values);
+            }
             continue;
         }
         let Some(target) = written_name(&statement, &text) else {
@@ -86,7 +117,6 @@ pub(crate) fn global_name_values(model: &SemanticModel, name: &LuaNameExpr) -> G
         {
             continue;
         }
-        let definition_closure = LuaClosureId::from_node(statement.syntax());
         if definition_closure == query_closure {
             let values = reaching_values(model, &id, &LuaExpr::NameExpr(name.clone()));
             if !values.is_empty() && values.iter().all(Option::is_some) {
@@ -110,6 +140,7 @@ pub(crate) fn global_name_values(model: &SemanticModel, name: &LuaNameExpr) -> G
             );
         }
     }
+    result.has_replacement |= !result.replacements.is_empty();
     result
 }
 
@@ -122,7 +153,7 @@ fn visible_call_closures(model: &SemanticModel, query: &LuaNameExpr) -> HashSet<
     let query_closure = LuaClosureId::from_node(query.syntax());
     let calls: Vec<_> = chunk.descendants::<LuaCallExpr>().collect();
     let reachable = callee_reachable_flows(model);
-    let previous_calls = previous_iteration_calls(model, query, &calls, &reachable);
+    let previous_calls = previous_iteration_nodes(model, query, &calls, &reachable);
     let can_run = |call: &LuaCallExpr| {
         model
             .flow_tree()
@@ -180,13 +211,13 @@ fn visible_call_closures(model: &SemanticModel, query: &LuaNameExpr) -> HashSet<
     called
 }
 
-/// Calls after a query may already have executed in a previous iteration.
+/// Nodes after a query may already have executed in a previous iteration.
 /// Only paths reaching normal completion or continue contribute; terminating
 /// branches and one-time for-loop header expressions cannot create this effect.
-fn previous_iteration_calls(
+fn previous_iteration_nodes<N: LuaAstNode>(
     model: &SemanticModel,
     query: &LuaNameExpr,
-    calls: &[LuaCallExpr],
+    nodes: &[N],
     reachable: &[bool],
 ) -> HashSet<LuaSyntaxId> {
     let Some(tree) = model.flow_tree() else {
@@ -217,13 +248,13 @@ fn previous_iteration_calls(
         let flows =
             super::loop_members::repeating_flows(&tree, reentries.flows(), reachable, range);
         previous.extend(
-            calls
+            nodes
                 .iter()
-                .filter(|call| {
-                    range.contains_range(call.get_range())
-                        && LuaClosureId::from_node(call.syntax()) == closure
+                .filter(|node| {
+                    range.contains_range(node.get_range())
+                        && LuaClosureId::from_node(node.syntax()) == closure
                         && tree
-                            .get_flow_id_at(call.get_position())
+                            .get_flow_id_at(node.get_position())
                             .is_some_and(|flow| flows.contains(&flow))
                 })
                 .map(LuaAstNode::get_syntax_id),

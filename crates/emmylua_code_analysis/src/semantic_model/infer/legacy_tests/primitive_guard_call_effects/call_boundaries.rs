@@ -869,3 +869,71 @@ fn loop_carried_helpers_can_replace_global_builtins() {
         assert_member_call_boundary("true", setup, body, nullable);
     }
 }
+
+#[test]
+fn global_environment_member_writes_invalidate_builtin_type_proofs() {
+    for (setup, nullable) in [
+        ("_G.type=function() return 'table' end", true),
+        ("_ENV.type=function() return 'table' end", true),
+        ("_G['type']=function() return 'table' end", true),
+        ("function _G.type() return 'table' end", true),
+        (
+            "local function replace() _G.type=function() return 'table' end end; replace()",
+            true,
+        ),
+        ("_G.other=function() return 'table' end", false),
+        (
+            "if false then _G.type=function() return 'table' end end",
+            false,
+        ),
+        (
+            "local function unused() _G.type=function() return 'table' end end",
+            false,
+        ),
+    ] {
+        assert_member_call_boundary(
+            "type(elem.handler)=='table'",
+            setup,
+            "local value=elem.handler.name -- observe",
+            nullable,
+        );
+    }
+    assert_member_call_boundary(
+        "type(elem.handler)=='table'",
+        "",
+        "local value=elem.handler.name -- observe\n_G.type=function() return 'table' end",
+        false,
+    );
+}
+
+#[test]
+fn global_environment_writes_respect_prior_iteration_boundaries() {
+    for (setup, nullable) in [
+        ("local dummy; dummy,_G[key]=1", true),
+        ("_G[key]=function() return 'table' end", true),
+        ("_G[1]=function() return 'table' end", false),
+    ] {
+        assert_member_call_boundary(
+            "type(elem.handler)=='table'",
+            setup,
+            "local value=elem.handler.name -- observe",
+            nullable,
+        );
+    }
+    for (body, nullable) in [
+        (
+            "while flag do if type(elem.handler)=='table' then local value=elem.handler.name -- observe\nend; _G.type=function() return 'table' end end",
+            true,
+        ),
+        (
+            "for i=1,1 do if type(elem.handler)=='table' then local value=elem.handler.name -- observe\nend; _G.type=function() return 'table' end end",
+            false,
+        ),
+        (
+            "while flag do if type(elem.handler)=='table' then local value=elem.handler.name -- observe\nend; _G.type=function() return 'table' end; break end",
+            false,
+        ),
+    ] {
+        assert_member_call_boundary("true", "", body, nullable);
+    }
+}

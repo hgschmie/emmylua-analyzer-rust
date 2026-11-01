@@ -230,7 +230,9 @@ pub(super) fn literal_member_key(key: emmylua_parser::LuaIndexKey) -> LuaMemberK
         emmylua_parser::LuaIndexKey::String(name) => LuaMemberKey::Name(name.get_value().into()),
         emmylua_parser::LuaIndexKey::Integer(number) => match number.get_number_value() {
             emmylua_parser::NumberResult::Int(value) => LuaMemberKey::Integer(value),
-            emmylua_parser::NumberResult::Uint(value) => LuaMemberKey::Integer(value as i64),
+            emmylua_parser::NumberResult::Uint(value) => i64::try_from(value)
+                .map(LuaMemberKey::Integer)
+                .unwrap_or(LuaMemberKey::None),
             emmylua_parser::NumberResult::Float(value) => {
                 crate::semantic_db::types::exact_integer(value)
                     .map(LuaMemberKey::Integer)
@@ -260,4 +262,28 @@ fn table_member_value(mut value: LuaExpr, keys: &[LuaMemberKey]) -> Option<LuaEx
         value = selected?;
     }
     Some(value)
+}
+
+#[cfg(test)]
+mod literal_key_tests {
+    use super::*;
+    use emmylua_parser::LuaIndexExpr;
+
+    #[test]
+    fn unsigned_member_keys_do_not_alias_negative_integer_keys() {
+        let mut ws = crate::VirtualWorkspace::new();
+        let mut config = ws.get_emmyrc();
+        config.runtime.version = crate::EmmyrcLuaVersion::LuaJIT;
+        ws.update_emmyrc(config);
+        let file = ws.def("local a=methods[1ULL]; local b=methods[18446744073709551615ULL]");
+        let model = ws.analysis.semantic_model(file);
+        let keys = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .map(|index| literal_member_key(index.get_index_key().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(keys, [LuaMemberKey::Integer(1), LuaMemberKey::None]);
+        assert_ne!(keys[1], LuaMemberKey::Integer(-1));
+    }
 }

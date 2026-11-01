@@ -2877,8 +2877,9 @@ fn table_member_type(model: &SemanticModel, ty: &LuaType, key: &LuaMemberKey) ->
 }
 
 /// Return assignment targets, including the member written by a function statement.
-/// Match assignment_syntax: Assignment and ImplFunc install values; a missing
-/// function name cannot certify an unchanged member and leaves the proof unestablished.
+/// Assignment and ImplFunc install values. The binder creates ImplFunc only
+/// after obtaining its syntactic target; immutable model snapshots preserve it.
+/// None also represents ordinary nodes that do not install an assignment value.
 fn flow_written_vars(
     model: &SemanticModel,
     tree: &FlowTree,
@@ -4145,9 +4146,7 @@ fn primitive_guard_target(
         return None;
     };
     if !model.is_std_file(decl.file_id)
-        || !member_call_effects::global_name_values(model, &callee)
-            .replacements
-            .is_empty()
+        || member_call_effects::global_name_values(model, &callee).has_replacement
     {
         return None;
     }
@@ -6209,5 +6208,33 @@ mod straight_member_definition_tests {
             model.type_of_expr_at(prefix.get_syntax_id(), prefix.get_position()),
             LuaType::TableConst(_)
         ));
+    }
+}
+
+#[cfg(test)]
+mod missing_function_name_tests {
+    use super::*;
+
+    #[test]
+    fn member_function_definition_nodes_keep_targets_after_parser_recovery() {
+        for (statement, expected_writes) in
+            [("function () end", 1), ("function value.field() end", 1)]
+        {
+            let mut ws = crate::VirtualWorkspace::new();
+            let file = ws.def(&format!(
+                "local value={{field=1}}; {statement}; local after=value.field"
+            ));
+            let model = ws.analysis.semantic_model(file);
+            let chunk = model.chunk().unwrap();
+            let tree = model.flow_tree().unwrap();
+            let mut writes = 0;
+            for id in (0..tree.node_count()).map(FlowId) {
+                if let FlowNodeKind::ImplFunc(ptr) = &tree.get_flow_node(id).unwrap().kind {
+                    assert!(ptr.to_node(&chunk).unwrap().get_func_name().is_some());
+                    writes += 1;
+                }
+            }
+            assert_eq!(writes, expected_writes, "{statement}");
+        }
     }
 }

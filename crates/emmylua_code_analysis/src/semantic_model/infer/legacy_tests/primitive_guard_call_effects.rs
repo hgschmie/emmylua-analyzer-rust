@@ -62,11 +62,14 @@ end
         .max_by_key(LuaAstNode::get_position)
         .unwrap();
     let actual = model.type_of_expr_at(field.get_syntax_id(), field.get_position());
-    assert_eq!(actual, expected, "{body}");
+    assert_eq!(
+        actual, expected,
+        "guard={guard}\nsetup={setup}\nbody={body}"
+    );
     assert_eq!(
         model.type_of_expr_at(field.get_syntax_id(), field.get_position()),
         expected,
-        "warm query: {body}"
+        "warm query: guard={guard}\nsetup={setup}\nbody={body}"
     );
     let diagnostics = ws
         .analysis
@@ -78,6 +81,6 @@ end
             .iter()
             .any(|diagnostic| diagnostic.range.start.line == line),
         nullable,
-        "{body}: {diagnostics:#?}"
+        "guard={guard}\nsetup={setup}\nbody={body}: {diagnostics:#?}"
     );
 }
