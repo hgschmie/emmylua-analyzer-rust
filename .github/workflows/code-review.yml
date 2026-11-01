@@ -41,3 +41,6 @@ jobs:
           user-prompt: |
             Please review the following code changes.
             Write all review explanations in English, regardless of the language used in the code or comments.
+            Your job is to review the changes in the PR and those changes only. Do not widen the scope of the review or suggest major refactorings.
+            Focus on the major findings, do not overly polish. Point out parts that are hard to read for a human.
+            Focus on the actual code changes, not the tests. Review the tests for completeness and functionality but do not polish them.
