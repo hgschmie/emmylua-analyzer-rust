@@ -1,8 +1,7 @@
 //! Condition facts for stable computed accesses, which have no static member ID.
 
 use emmylua_parser::{
-    BinaryOperator, LuaAstNode, LuaExpr, LuaIndexExpr, LuaIndexKey, LuaLiteralToken, LuaStat,
-    UnaryOperator,
+    BinaryOperator, LuaAstNode, LuaExpr, LuaIndexExpr, LuaIndexKey, LuaLiteralToken, UnaryOperator,
 };
 use rowan::TextSize;
 
@@ -80,14 +79,9 @@ pub(super) fn guarded_type(
         }
         _ => inferred,
     };
-    if computed_effects::calls_conflict(
-        model,
-        &access,
-        index.ancestors::<LuaStat>().next()?.syntax(),
-        offset,
-    ) {
-        return None;
-    }
+    // GuardSearch walks backwards in evaluation order. A conflicting call before
+    // the guard was established must not erase that newer guard; intervening
+    // conditions and assignment effects still invalidate it during the walk.
     let closure = LuaClosureId::from_node(index.syntax());
     let current = model.flow_tree()?.get_flow_id_at(offset)?;
     let mut search = GuardSearch::new(model, &access, offset, closure);
@@ -855,6 +849,39 @@ end
             assert_eq!(
                 guarded_type(&model, &index, index.get_position()),
                 expected,
+                "{body}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod expression_order_tests {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+
+    #[test]
+    fn computed_guards_start_after_earlier_calls_in_the_same_expression() {
+        for (body, safe) in [
+            ("local value = clear() and rows[key] and rows[key][1]", true),
+            (
+                "local value = rows[key] and clear() and rows[key][1]",
+                false,
+            ),
+            (
+                "local value = clear() and rows[key] and clear() and rows[key][1]",
+                false,
+            ),
+            ("local value = rows[key] and harmless(rows[key][1])", true),
+            ("local value = clear(rows[key] and rows[key][1])", true),
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            let source = [
+                "---@param rows integer[][]\n---@param key integer\nlocal function run(rows, key)\nlocal function clear() rows[key] = nil; return true end\nlocal function harmless(value) return value end\n",
+                body, "\nend",
+            ].concat();
+            assert_eq!(
+                ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+                safe,
                 "{body}"
             );
         }

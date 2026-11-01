@@ -196,6 +196,9 @@ fn lookup_key(
         // Nil preserves absence, not a valid non-nil key or a writable slot.
         Some(LuaType::Nil)
     } else if let LuaType::Union(union) = key {
+        // None also means unresolved aliases, recursion limits or incomplete
+        // contracts, not only a missing runtime entry. Keep this all-branch proof
+        // conservative; read-absence projection needs a distinct failure reason.
         union
             .into_vec()
             .iter()
@@ -373,6 +376,25 @@ mod contract_boundary_tests {
                 Some(LuaType::from_vec(vec![LuaType::Integer, LuaType::Nil]))
             );
         }
+    }
+
+    #[test]
+    fn inherited_dictionary_mixed_key_requires_each_branch_to_have_a_contract() {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def("---@class Values: table<string,integer>");
+        let owner = ws.ty("Values");
+        let model = ws.analysis.semantic_model(file);
+        for unsupported in [
+            LuaType::Integer,
+            LuaType::Ref(crate::LuaTypeDeclId::global("UnresolvedKey")),
+        ] {
+            let key = LuaType::from_vec(vec![LuaType::String, unsupported]);
+            assert_eq!(lookup(&model, &owner, &key), None);
+        }
+        assert_eq!(
+            lookup(&model, &owner, &LuaType::String),
+            Some(LuaType::Integer)
+        );
     }
 
     #[test]
