@@ -44,9 +44,8 @@ pub(super) fn assigned_type(
         }
         _ => inferred,
     };
-    if !base.is_nullable() {
-        return None;
-    }
+    // Keep the assignment proof even when the raw value contract omits nil.
+    // A downstream dictionary read can add absence to that same contract.
     if computed_effects::calls_conflict(
         model,
         &access,
@@ -369,6 +368,76 @@ fn global_collection_reset_invalidates_prior_write() {
                 .is_nullable(),
             nullable,
             "{effect}"
+        );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn local_collection_initializer_in_iterator_keeps_nonnull_entry() {
+    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    let mut config = ws.get_emmyrc();
+    config.strict.array_index = true;
+    ws.update_emmyrc(config);
+    assert!(ws.has_no_diagnostic(
+        crate::DiagnosticCode::NeedCheckNil,
+        r#"
+---@class ItemCount
+---@field count integer
+---@alias InventoryType ItemCount[]
+---@param shipment_items integer[]
+local function test(shipment_items)
+ ---@type InventoryType
+ local inventory = {}
+ for shipment, amount in pairs(shipment_items) do
+   inventory[shipment] = inventory[shipment] or {count = 0} --[[@as ItemCount]]
+   inventory[shipment].count = inventory[shipment].count + amount
+ end
+end
+"#
+    ));
+}
+
+#[cfg(test)]
+#[test]
+fn dictionary_assignment_proof_keeps_declared_element_contract() {
+    for (body, proved) in [
+        ("inventory[key] = inventory[key] or {count=0}", true),
+        ("inventory[key] = {count=0}; harmless()", true),
+        ("", false),
+        ("inventory[key] = nil", false),
+        ("inventory[key] = {count=0}; key = other", false),
+        ("inventory[key] = {count=0}; inventory = {}", false),
+        ("if flag then inventory[key] = {count=0} end", false),
+    ] {
+        let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(&format!(
+            r#"
+---@class ItemCount
+---@field count integer
+---@alias InventoryType table<string,ItemCount>
+---@param key string
+---@param other string
+local function test(key, other)
+ ---@type InventoryType
+ local inventory = {{}}
+ {body}
+ local observed = inventory[key]
+end
+"#
+        ));
+        let model = ws.analysis.semantic_model(file);
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .last()
+            .unwrap();
+        let expected = proved.then(|| LuaType::Ref(crate::LuaTypeDeclId::global("ItemCount")));
+        assert_eq!(
+            assigned_type(&model, &index, index.get_position()),
+            expected,
+            "{body}"
         );
     }
 }

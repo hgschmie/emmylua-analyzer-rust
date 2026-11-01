@@ -87,8 +87,15 @@ pub(super) fn guarded_type(
     }
     let closure = LuaClosureId::from_node(index.syntax());
     let current = model.flow_tree()?.get_flow_id_at(offset)?;
-    let narrowed = GuardSearch::new(model, &access, offset, closure).narrow(current, base.clone());
-    (narrowed != base).then_some(narrowed)
+    let mut search = GuardSearch::new(model, &access, offset, closure);
+    let narrowed = search.narrow(current, base.clone());
+    // A raw dictionary value contract can omit absence, even when its read
+    // projection is nullable. Preserve an explicit non-nil proof in that case.
+    (narrowed != base
+        || (!base.is_nullable()
+            && !matches!(base, LuaType::Any | LuaType::Unknown | LuaType::Never)
+            && search.prove(current)))
+    .then_some(narrowed)
 }
 
 // Search all reaching paths, memoizing joins so nested branches do not duplicate
@@ -266,11 +273,24 @@ impl<'a, 'db> GuardSearch<'a, 'db> {
                 }
                 if self.initializer.is_none()
                     && condition.get_range().end() <= offset
-                    && excludes_nil(
+                    && (excludes_nil(
                         &condition,
                         matches!(node.kind, FlowNodeKind::TrueCondition(_)),
                         &|expr| self.matches_guard(expr, current),
+                    ) || super::primitive_guard_target(
+                        model,
+                        &condition,
+                        matches!(node.kind, FlowNodeKind::TrueCondition(_)),
                     )
+                    .is_some_and(|(target, primitive, keep)| {
+                        self.matches_guard(&target, current)
+                            && super::filter_type_by_primitive(
+                                model,
+                                LuaType::Nil,
+                                &primitive,
+                                keep,
+                            ) == LuaType::Never
+                    }))
                 {
                     return Some(true);
                 }
@@ -766,5 +786,65 @@ fn computed_collection_classification_rejects_partial_contracts() {
         assert!(!named_collection(&model, &growing, true));
         assert!(ordinary_collection(&model, &complete));
         assert!(named_collection(&model, &complete, true));
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn dictionary_guard_proof_keeps_declared_element_contract() {
+    for (body, proved) in [
+        (
+            "if inventory[key] then local observed = inventory[key] end",
+            true,
+        ),
+        (
+            "if inventory[key] ~= nil then local observed = inventory[key] end",
+            true,
+        ),
+        (
+            "if type(inventory[key]) == 'table' then local observed = inventory[key] end",
+            true,
+        ),
+        ("local observed = inventory[key]", false),
+        (
+            "if inventory[key] then inventory[key] = nil; local observed = inventory[key] end",
+            false,
+        ),
+        (
+            "if inventory[key] then inventory = {}; local observed = inventory[key] end",
+            false,
+        ),
+        (
+            "if inventory[key] then key = other; local observed = inventory[key] end",
+            false,
+        ),
+    ] {
+        let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(&format!(
+            r#"
+---@class ItemCount
+---@field count integer
+---@alias InventoryType table<string,ItemCount>
+---@param inventory InventoryType
+---@param key string
+---@param other string
+local function test(inventory, key, other)
+ {body}
+end
+"#
+        ));
+        let model = ws.analysis.semantic_model(file);
+        let index = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .last()
+            .unwrap();
+        let expected = proved.then(|| LuaType::Ref(crate::LuaTypeDeclId::global("ItemCount")));
+        assert_eq!(
+            guarded_type(&model, &index, index.get_position()),
+            expected,
+            "{body}"
+        );
     }
 }
