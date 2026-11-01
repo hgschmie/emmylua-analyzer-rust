@@ -6,7 +6,9 @@ use crate::semantic_db::{
     flow::LuaClosureId,
 };
 use crate::semantic_model::SemanticModel;
-use emmylua_parser::{LuaAstNode, LuaCallExpr, LuaExpr, LuaNameExpr, LuaStat, LuaVarExpr};
+use emmylua_parser::{
+    LuaAstNode, LuaCallExpr, LuaExpr, LuaLoopStat, LuaNameExpr, LuaStat, LuaSyntaxId, LuaVarExpr,
+};
 use std::{collections::HashSet, rc::Rc};
 
 pub(crate) struct GlobalNameValues {
@@ -115,6 +117,7 @@ fn visible_call_closures(model: &SemanticModel, query: &LuaNameExpr) -> HashSet<
     let query_closure = LuaClosureId::from_node(query.syntax());
     let calls: Vec<_> = chunk.descendants::<LuaCallExpr>().collect();
     let reachable = callee_reachable_flows(model);
+    let previous_calls = previous_iteration_calls(model, query, &calls, &reachable);
     let can_run = |call: &LuaCallExpr| {
         model
             .flow_tree()
@@ -129,6 +132,7 @@ fn visible_call_closures(model: &SemanticModel, query: &LuaNameExpr) -> HashSet<
             can_run(call)
                 && if owner == query_closure {
                     call.get_range().end() <= query.get_position()
+                        || previous_calls.contains(&call.get_syntax_id())
                 } else {
                     owner.get_range().contains_range(query_closure.get_range())
                 }
@@ -169,6 +173,58 @@ fn visible_call_closures(model: &SemanticModel, query: &LuaNameExpr) -> HashSet<
         }
     }
     called
+}
+
+/// Calls after a query may already have executed in a previous iteration.
+/// Only paths reaching normal completion or continue contribute; terminating
+/// branches and one-time for-loop header expressions cannot create this effect.
+fn previous_iteration_calls(
+    model: &SemanticModel,
+    query: &LuaNameExpr,
+    calls: &[LuaCallExpr],
+    reachable: &[bool],
+) -> HashSet<LuaSyntaxId> {
+    let Some(tree) = model.flow_tree() else {
+        return HashSet::new();
+    };
+    let closure = LuaClosureId::from_node(query.syntax());
+    let mut previous = HashSet::new();
+    for loop_stat in query.ancestors::<LuaLoopStat>() {
+        if LuaClosureId::from_node(loop_stat.syntax()) != closure {
+            break;
+        }
+        let in_iteration = match &loop_stat {
+            LuaLoopStat::ForStat(stat) => stat
+                .get_block()
+                .is_some_and(|body| body.get_range().contains_range(query.get_range())),
+            LuaLoopStat::ForRangeStat(stat) => stat
+                .get_block()
+                .is_some_and(|body| body.get_range().contains_range(query.get_range())),
+            _ => true,
+        };
+        if !in_iteration {
+            continue;
+        }
+        let Some(reentries) = tree.get_loop_reentries(loop_stat.get_syntax_id()) else {
+            continue;
+        };
+        let range = loop_stat.get_range();
+        let flows =
+            super::loop_members::repeating_flows(&tree, reentries.flows(), reachable, range);
+        previous.extend(
+            calls
+                .iter()
+                .filter(|call| {
+                    range.contains_range(call.get_range())
+                        && LuaClosureId::from_node(call.syntax()) == closure
+                        && tree
+                            .get_flow_id_at(call.get_position())
+                            .is_some_and(|flow| flows.contains(&flow))
+                })
+                .map(LuaAstNode::get_syntax_id),
+        );
+    }
+    previous
 }
 
 fn written_name(statement: &LuaStat, name: &str) -> Option<LuaNameExpr> {

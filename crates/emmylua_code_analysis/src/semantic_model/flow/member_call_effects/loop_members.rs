@@ -129,7 +129,7 @@ pub(in crate::semantic_model::flow) fn crosses_boundary(
 
 /// Only paths reaching normal completion or an explicit continue can repeat.
 /// A write on a returning/breaking branch must not erase the next entry's guard.
-fn repeating_flows(
+pub(super) fn repeating_flows(
     tree: &FlowTree,
     entries: [FlowId; 2],
     reachable: &[bool],

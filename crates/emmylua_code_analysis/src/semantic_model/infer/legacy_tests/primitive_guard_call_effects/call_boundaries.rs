@@ -828,3 +828,44 @@ fn static_member_loop_backedges_preserve_current_iteration_proofs() {
         assert_primitive_call_boundary(body, nullable);
     }
 }
+
+#[test]
+fn loop_carried_helpers_can_replace_global_builtins() {
+    let setup = "local function replace() type=function() return 'table' end end";
+    for (body, nullable) in [
+        (
+            "while flag do if type(elem.handler)=='table' then local value=elem.handler.name -- observe\nend;replace() end",
+            true,
+        ),
+        (
+            "for i=1,3 do if type(elem.handler)=='table' then local value=elem.handler.name -- observe\nend;replace() end",
+            true,
+        ),
+        (
+            "repeat if type(elem.handler)=='table' then local value=elem.handler.name -- observe\nend;replace() until flag",
+            true,
+        ),
+        (
+            "for i=1,1 do if type(elem.handler)=='table' then local value=elem.handler.name -- observe\nend;replace() end",
+            false,
+        ),
+        (
+            "while flag do if type(elem.handler)=='table' then local value=elem.handler.name -- observe\nend;replace();break end",
+            false,
+        ),
+        (
+            "while flag do if type(elem.handler)=='table' then local value=elem.handler.name -- observe\nend;if false then replace() end end",
+            false,
+        ),
+        (
+            "while flag do if type(elem.handler)=='table' then local value=elem.handler.name -- observe\nend;if flag then replace();break end end",
+            false,
+        ),
+        (
+            "for i=1,3 do if type(elem.handler)=='table' then local value=elem.handler.name -- observe\nend;replace();continue end",
+            true,
+        ),
+    ] {
+        assert_member_call_boundary("true", setup, body, nullable);
+    }
+}
