@@ -302,6 +302,8 @@ fn access_paths(
         keys.extend(suffix);
         // Alias expansion can only prepend keys. A longer path cannot affect
         // this member, and pruning it makes recursive descendant aliases finite.
+        // Descendant writes cannot replace their ancestor; each reassignment is
+        // resolved separately before this expansion, so pruning cannot shorten it.
         if targets.iter().all(|target| keys.len() > target.1.len()) {
             continue;
         }
@@ -561,6 +563,7 @@ fn enclosing_loop_reentries(
             LuaLoopStat::ForRangeStat(stat) => stat
                 .get_block()
                 .is_some_and(|block| block.get_range().contains_range(query.get_range())),
+            // While/repeat conditions run again after each body iteration.
             _ => true,
         })
         .filter_map(|loop_stat| {

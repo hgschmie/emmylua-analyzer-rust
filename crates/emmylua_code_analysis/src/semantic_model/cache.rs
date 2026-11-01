@@ -2,6 +2,9 @@
 //!
 //! A root model and its `model_for` views share one cache. Recursion state is
 //! represented by `CacheEntry::InProgress` so re-entry checks stay O(1).
+//! Each root model borrows an immutable database and creates a fresh cache. File
+//! edits require a new model; query incompleteness is not a file revision. Syntax
+//! and completed CFG facts can therefore live for the whole model snapshot.
 
 use hashbrown::{HashMap, HashSet};
 use std::cell::Cell;

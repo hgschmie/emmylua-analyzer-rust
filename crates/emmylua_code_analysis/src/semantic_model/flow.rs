@@ -4113,6 +4113,8 @@ fn primitive_guard_target(
     }
     // A lexical environment can supply its own `type` even when the name
     // resolver still finds the standard declaration. It proves no primitive guard.
+    // Even `_ENV = _G` needs a proof of the active environment's builtin identity.
+    // Without that proof (or file facts), keep the primitive guard unestablished.
     if model
         .file_facts()?
         .find_visible_decl_before_offset("_ENV", callee.get_position())
