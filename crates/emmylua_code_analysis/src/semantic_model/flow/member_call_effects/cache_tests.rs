@@ -6,7 +6,7 @@ thread_local! {
 }
 
 pub(super) fn record_resolution() {
-    RESOLUTIONS.update(|count| count + 1);
+    RESOLUTIONS.set(RESOLUTIONS.get() + 1);
 }
 
 fn index(model: &SemanticModel, text: &str) -> LuaIndexExpr {
@@ -61,8 +61,9 @@ fn many_guarded_members_share_callee_resolution() {
         }
     }
     // Count actual resolver work instead of relying on machine-dependent timings.
-    assert!(
-        RESOLUTIONS.get() <= 2,
+    assert_eq!(
+        RESOLUTIONS.get(),
+        1,
         "resolved one unchanged call {} times",
         RESOLUTIONS.get()
     );
@@ -98,6 +99,7 @@ fn effects_keep_receiver_body_and_time_boundaries() {
 
 #[test]
 fn shared_file_views_and_edits_keep_distinct_effects() {
+    // Equal body widths keep call syntax ranges identical across both files.
     let source = |body| {
         format!(
             "local receiver = {{}}; local methods = {{write = function(target) {body: <24} end}}; methods.write(receiver); local observed = receiver.value"

@@ -24,7 +24,7 @@ use super::{CallSiteAnalysis, ResolvedMember};
 use crate::IndexInfo;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct MemberCallEffectKey {
+pub(super) struct MemberCallEffectKey {
     pub file: FileId,
     pub receiver: SemanticId,
     pub path: Vec<LuaMemberKey>,
@@ -239,7 +239,7 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) member_call_resolution: HashMap<FileId, bool>,
     /// Visible call work is scoped to this immutable model and its query completeness.
     pub(super) member_receiver_targets: HashMap<FileId, CacheEntry<ReceiverTargets>>,
-    pub(crate) member_call_effects: HashMap<MemberCallEffectKey, CacheEntry<bool>>,
+    pub(super) member_call_effects: HashMap<MemberCallEffectKey, CacheEntry<bool>>,
     pub(super) member_callees:
         HashMap<CalleeCacheKey, CacheEntry<Vec<emmylua_parser::LuaClosureExpr>>>,
     pub(crate) resolve_name: HashMap<(FileId, TextSize), Option<SemanticId>>,
