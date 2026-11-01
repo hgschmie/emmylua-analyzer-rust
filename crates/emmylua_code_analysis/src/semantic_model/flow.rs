@@ -1743,7 +1743,8 @@ struct DeclAssignmentFrame {
     flow_id: FlowId,
     assign_pos: TextSize,
     value_syntax: emmylua_parser::LuaSyntaxId,
-    /// Whether this RHS reads the declaration being traced; compute once per frame.
+    /// Whether this RHS reads the declaration being traced; used at LoopEntry.
+    /// Compute once per frame, and skip the scan for trees without complex control.
     uses_previous_value: bool,
     /// Path state after the assignment (closer to the query on the backtracking path).
     assign_path: PathState,

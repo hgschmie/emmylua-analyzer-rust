@@ -561,3 +561,61 @@ end
     }
     assert!(ws.has_diagnostic(crate::DiagnosticCode::AssignTypeMismatch, source));
 }
+
+#[test]
+fn loop_carried_function_statement_replaces_an_outer_local() {
+    use emmylua_parser::{LuaAstNode, LuaFuncStat, LuaNameExpr};
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def(
+        "local action = nil; while flag do local observed = action; function action() end end",
+    );
+    let model = ws.analysis.semantic_model(file);
+    let chunk = model.chunk().unwrap();
+    let read = chunk
+        .descendants::<LuaNameExpr>()
+        .find(|name| name.get_name_text().as_deref() == Some("action"))
+        .unwrap();
+    let closure = chunk
+        .descendants::<LuaFuncStat>()
+        .next()
+        .unwrap()
+        .get_closure()
+        .unwrap();
+    let expected = LuaType::from_vec(vec![
+        LuaType::Nil,
+        model.type_of_expr(closure.get_syntax_id()),
+    ]);
+    assert_ne!(expected, LuaType::Nil);
+    for phase in ["cold", "warm"] {
+        assert_eq!(
+            model.type_of_expr_at(read.get_syntax_id(), read.get_position()),
+            expected,
+            "{phase}"
+        );
+    }
+}
+
+#[test]
+fn loop_function_statements_keep_local_and_closure_boundaries() {
+    use emmylua_parser::{LuaAstNode, LuaNameExpr};
+    for source in [
+        "while flag do local action = nil; local observed = action; function action() end end",
+        "local action = nil; while flag do local observed = action; local function unused() function action() end end end",
+        "local action = nil; local receiver = {}; while flag do local observed = action; function receiver.action() end end",
+    ] {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def(source);
+        let model = ws.analysis.semantic_model(file);
+        let read = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaNameExpr>()
+            .find(|name| name.get_name_text().as_deref() == Some("action"))
+            .unwrap();
+        assert_eq!(
+            model.type_of_expr_at(read.get_syntax_id(), read.get_position()),
+            LuaType::Nil,
+            "{source}"
+        );
+    }
+}

@@ -13,7 +13,7 @@ use super::{
     FlowId, LuaType, SemanticId, SemanticModel, cache::CacheEntry, type_of_decl_at_flow_id,
     widen_const_type,
 };
-use emmylua_parser::{LuaAssignStat, LuaAstNode, LuaClosureExpr, LuaSyntaxId, LuaVarExpr};
+use emmylua_parser::{LuaAstNode, LuaClosureExpr, LuaStat, LuaSyntaxId, LuaVarExpr};
 
 pub(super) fn loop_carried_type(
     model: &SemanticModel,
@@ -47,6 +47,8 @@ pub(super) fn loop_carried_type(
     let revision = model.cache.borrow().revision();
     let value = compute(model, decl, syntax, entry);
     let mut cache = model.cache.borrow_mut();
+    // A nested incomplete dependency keeps even a None result provisional; the
+    // query must retry rather than publish that temporary absence as a ready fact.
     let result = CacheEntry::finish(value.clone(), cache.is_complete(revision));
     cache.loop_carried.insert(key, result);
     value
@@ -73,8 +75,8 @@ fn compute(
     // Include nested loops in this closure: their writes can reach a later outer
     // iteration. Repeated types collapse during widening; uncalled closures do not.
     let mut assigned = Vec::new();
-    for assignment in node.descendants().filter_map(LuaAssignStat::cast) {
-        if assignment
+    for statement in node.descendants().filter_map(LuaStat::cast) {
+        if statement
             .ancestors::<LuaClosureExpr>()
             .next()
             .map(|c| c.get_syntax_id())
@@ -82,6 +84,20 @@ fn compute(
         {
             continue;
         }
+        let assignment = match statement {
+            LuaStat::AssignStat(assignment) => assignment,
+            LuaStat::FuncStat(function) => {
+                // A function statement installs its closure in the named target;
+                // its body is not executed. Qualified members do not rebind a local.
+                if let Some(LuaVarExpr::NameExpr(name)) = function.get_func_name()
+                    && model.resolve_name(name.get_position()).as_ref() == Some(decl)
+                {
+                    assigned.push(function.get_closure().map(|body| (body.get_syntax_id(), 0)));
+                }
+                continue;
+            }
+            _ => continue,
+        };
         let (vars, values) = assignment.get_var_and_expr_list();
         for (index, var) in vars.iter().enumerate() {
             if let LuaVarExpr::NameExpr(name) = var
