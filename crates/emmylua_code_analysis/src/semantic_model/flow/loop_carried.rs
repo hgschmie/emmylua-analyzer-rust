@@ -11,7 +11,11 @@
 //! interprocedural value effects beyond this loop-entry approximation.
 
 #[cfg(test)]
+mod scale_tests;
+#[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod zero_iteration_tests;
 
 use super::{
     FlowId, LuaType, SemanticId, SemanticModel, cache::CacheEntry, type_of_decl_at_flow_id,
@@ -314,6 +318,3 @@ fn reads_decl(
     }
     false
 }
-
-#[cfg(test)]
-mod zero_iteration_tests;

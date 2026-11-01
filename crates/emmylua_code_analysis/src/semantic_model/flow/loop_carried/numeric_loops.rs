@@ -17,6 +17,8 @@ pub(super) fn is_in_unentered_body(model: &super::SemanticModel, statement: &Lua
 }
 
 fn has_empty_range(loop_stat: &LuaForStat, integer_runtime: bool) -> bool {
+    // A zero step does not establish a value proof: runtime-error control flow
+    // is outside this transfer, and older numeric-loop runtimes differ here.
     let mut expressions = loop_stat.get_iter_expr();
     let Some(start) = expressions.next().and_then(|value| literal_number(&value)) else {
         return false;

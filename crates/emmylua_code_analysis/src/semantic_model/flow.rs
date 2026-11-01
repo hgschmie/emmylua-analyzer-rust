@@ -94,6 +94,8 @@ fn decl_owner_syntax_start(model: &SemanticModel, decl: &SemanticId) -> Option<T
 // Captured assignments require closure-entry handling even when the current
 // closure has no loop. Keep newly enabled fast reads within the declaration's
 // own closure; text order alone cannot describe an enclosing writer's effects.
+// The public query supplies an offset, not a read node. Ambiguous token/boundary
+// positions conservatively disable this fast path instead of proving identity.
 fn declaration_is_in_query_closure(
     model: &SemanticModel,
     decl: &SemanticId,
@@ -1912,6 +1914,8 @@ fn trace_decl_uncached(
         // state. Keep its literal precision instead of widening through the loop.
         // Backtracking pushes frames in reverse execution order, so last() is
         // the earliest reached assignment and decides whether entry is needed.
+        // See frames.push(DeclAssignmentFrame) in the Assignment arm below:
+        // it records the write before continuing to its antecedent.
         // FLOW_READ enables assignments; ASSIGN_TARGET intentionally retains only
         // the declaration/cast contract. An empty frame stack is a direct read,
         // so it also receives loop-entry state.
