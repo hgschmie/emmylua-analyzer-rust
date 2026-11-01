@@ -109,3 +109,7 @@ mod loop_label_tests {
         );
     }
 }
+
+pub(crate) fn static_condition_truthiness(expr: &emmylua_parser::LuaExpr) -> Option<bool> {
+    stats::static_literal_truthiness(expr)
+}

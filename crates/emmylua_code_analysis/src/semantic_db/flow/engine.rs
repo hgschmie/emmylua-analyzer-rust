@@ -11,7 +11,8 @@
 use emmylua_parser::{
     BinaryOperator, LuaAssignStat, LuaAst, LuaAstNode, LuaBlock, LuaCallExprStat,
     LuaElseIfClauseStat, LuaExpr, LuaForRangeStat, LuaForStat, LuaFuncStat, LuaIfStat,
-    LuaIndexExpr, LuaLocalStat, LuaRepeatStat, LuaWhileStat, UnaryOperator,
+    LuaIndexExpr, LuaLiteralToken, LuaLocalStat, LuaLoopStat, LuaRepeatStat, LuaWhileStat,
+    NumberResult, UnaryOperator,
 };
 
 use super::comment::bind_comment;
@@ -45,6 +46,10 @@ enum Task {
 
 /// Suspended parent task state
 enum Continuation {
+    RecordLoopExit {
+        loop_stat: LuaLoopStat,
+        entry: FlowId,
+    },
     /// Execute the remaining tasks in order, passing the result through
     Seq { pending: Vec<Task> },
     /// Condition node creation phase (restore the targets, then create True/False condition nodes)
@@ -239,6 +244,14 @@ impl<'a, 'b> BindEngine<'a, 'b> {
             }
             Task::Node(node, current) => self.evaluate_node(node, current),
             Task::Block(block, current) => {
+                if let Some(loop_stat) = block.syntax().parent().and_then(LuaLoopStat::cast)
+                    && loop_may_repeat(&loop_stat, self.binder.integer_loop_runtime)
+                {
+                    self.stack.push(Continuation::RecordLoopExit {
+                        loop_stat,
+                        entry: self.binder.loop_label,
+                    });
+                }
                 let children = block.children::<LuaAst>().collect::<Vec<_>>();
                 if children.is_empty() {
                     Step::Done(current)
@@ -877,6 +890,12 @@ impl<'a, 'b> BindEngine<'a, 'b> {
 
     fn resume(&mut self, continuation: Continuation, value: FlowId) -> Step {
         match continuation {
+            Continuation::RecordLoopExit { loop_stat, entry } => {
+                self.binder
+                    .loop_reentries
+                    .insert(loop_stat.get_syntax_id(), [value, entry]);
+                Step::Done(value)
+            }
             Continuation::Seq { mut pending } => match pending.pop() {
                 Some(task) => {
                     self.stack.push(Continuation::Seq { pending });
@@ -1323,6 +1342,77 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                 }
             }
         }
+    }
+}
+
+/// Do not synthesize another iteration for statically single-pass loops.
+fn loop_may_repeat(loop_stat: &LuaLoopStat, integer_runtime: bool) -> bool {
+    match loop_stat {
+        LuaLoopStat::RepeatStat(stat) => {
+            stat.get_condition_expr()
+                .as_ref()
+                .and_then(static_literal_truthiness)
+                != Some(true)
+        }
+        LuaLoopStat::ForStat(stat) => {
+            let values = stat.get_iter_expr().collect::<Vec<_>>();
+            if integer_runtime
+                && let (Some(start), Some(stop), Some(step)) = (
+                    values.first().and_then(static_integer_bound),
+                    values.get(1).and_then(static_integer_bound),
+                    values.get(2).map(static_integer_bound).unwrap_or(Some(1)),
+                )
+            {
+                // Integer counters must not be rounded through f64. Unknown
+                // overflow and zero-step behavior keep a possible backedge.
+                return start
+                    .checked_add(step)
+                    .is_none_or(|next| match step.cmp(&0) {
+                        std::cmp::Ordering::Greater => next <= stop,
+                        std::cmp::Ordering::Less => next >= stop,
+                        std::cmp::Ordering::Equal => true,
+                    });
+            }
+            let start = values.first().and_then(static_number_value);
+            let stop = values.get(1).and_then(static_number_value);
+            let step = values.get(2).map(static_number_value).unwrap_or(Some(1.0));
+            match (start, stop, step) {
+                (Some(start), Some(stop), Some(step)) if step > 0.0 => start + step <= stop,
+                (Some(start), Some(stop), Some(step)) if step < 0.0 => start + step >= stop,
+                _ => true,
+            }
+        }
+        _ => true,
+    }
+}
+
+fn static_integer_bound(expr: &LuaExpr) -> Option<i64> {
+    let mut expr = expr.clone();
+    let mut negate = false;
+    loop {
+        expr = match expr {
+            LuaExpr::ParenExpr(paren) => paren.get_expr()?,
+            LuaExpr::UnaryExpr(unary) if unary.get_op_token()?.get_op() == UnaryOperator::OpUnm => {
+                negate = !negate;
+                unary.get_expr()?
+            }
+            LuaExpr::LiteralExpr(literal) => {
+                let LuaLiteralToken::Number(number) = literal.get_literal()? else {
+                    return None;
+                };
+                let value = match number.get_number_value() {
+                    NumberResult::Int(value) => value,
+                    NumberResult::Uint(value) => i64::try_from(value).ok()?,
+                    _ => return None,
+                };
+                return if negate {
+                    value.checked_neg()
+                } else {
+                    Some(value)
+                };
+            }
+            _ => return None,
+        };
     }
 }
 
