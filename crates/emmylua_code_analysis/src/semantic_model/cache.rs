@@ -23,6 +23,9 @@ use super::member::MemberInfo;
 use super::{CallSiteAnalysis, ResolvedMember};
 use crate::IndexInfo;
 
+/// Identifies an outer scan, which always starts with empty bindings and invocation history.
+/// Nested callees are expanded inside that scan with their substituted context;
+/// they use `CalleeCacheKey` and never re-enter this cache under those bindings.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct MemberCallEffectKey {
     pub(super) file: FileId,
@@ -237,7 +240,7 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) expr_cast_flows: HashMap<(FileId, LuaSyntaxId), Rc<Vec<FlowId>>>,
     /// Syntax-only member-callee presence for this model snapshot; never call effects.
     pub(crate) member_call_resolution: HashMap<FileId, bool>,
-    /// Visible call work is scoped to this immutable model and its query completeness.
+    /// Fixed targets are isolated per file when model views share this query cache.
     pub(super) member_receiver_targets: HashMap<FileId, CacheEntry<ReceiverTargets>>,
     pub(super) member_call_effects: HashMap<MemberCallEffectKey, CacheEntry<bool>>,
     pub(super) member_callees:
