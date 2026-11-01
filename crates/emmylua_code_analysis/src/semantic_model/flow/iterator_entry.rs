@@ -12,6 +12,14 @@ pub(super) fn entry_type(
     index: &LuaIndexExpr,
     offset: TextSize,
 ) -> Option<LuaType> {
+    // Static members have their own assignment-aware flow. An iterator proves
+    // entry presence only; it must not replace a resolved member's value type.
+    if model
+        .resolve_member(index)
+        .is_some_and(|member| member.member_id.is_some())
+    {
+        return None;
+    }
     let LuaIndexKey::Expr(LuaExpr::NameExpr(key)) = index.get_index_key()? else {
         return None;
     };

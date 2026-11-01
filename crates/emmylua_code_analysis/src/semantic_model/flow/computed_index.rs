@@ -97,14 +97,13 @@ pub(super) fn assigned_type(
                         }
                         let assigned =
                             model.type_of_expr_at(value.get_syntax_id(), value.get_position());
-                        // Preserve the declared element type, not the narrower
-                        // shape of a constructor used to initialize that element.
-                        return (!assigned.is_nullable()
-                            && !matches!(
-                                assigned,
-                                LuaType::Any | LuaType::Unknown | LuaType::Never
-                            ))
-                        .then(|| super::remove_type(base, &LuaType::Nil));
+                        // Preserve a compatible declared element contract instead
+                        // of narrowing to the constructor's initialization shape.
+                        // An invalid write is diagnosed separately and cannot
+                        // establish a valid collection-element proof here.
+                        let contract = super::remove_type(base, &LuaType::Nil);
+                        return assignment_proves_contract(model, &assigned, &contract)
+                            .then_some(contract);
                     }
                     if vars
                         .iter()
@@ -158,6 +157,22 @@ pub(super) fn assigned_type(
         current = next;
     }
     None
+}
+
+/// Every possible assigned value must be present and satisfy the element contract.
+fn assignment_proves_contract(
+    model: &SemanticModel,
+    assigned: &LuaType,
+    contract: &LuaType,
+) -> bool {
+    match assigned {
+        LuaType::Nil | LuaType::Any | LuaType::Unknown | LuaType::Never => false,
+        LuaType::Union(union) => union
+            .into_vec()
+            .iter()
+            .all(|value| assignment_proves_contract(model, value, contract)),
+        _ => model.type_check(assigned, contract),
+    }
 }
 
 #[cfg(test)]
@@ -407,6 +422,38 @@ local function test(shipment_items)
 end
 "#
         ));
+    }
+
+    #[test]
+    fn incompatible_assignment_does_not_prove_the_element_contract() {
+        for value in ["'oops'", "42", "false", "flag and 'oops' or {values={}}"] {
+            let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+            let source = format!(
+                "---@class Group\n---@field values integer[]\n\
+                 ---@param groups Group[]\n---@param key integer\n---@param flag boolean\n\
+                 local function test(groups, key, flag) groups[key] = {value}; local observed = groups[key].values end"
+            );
+            let file = ws.def(&source);
+            let model = ws.analysis.semantic_model(file);
+            let index = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaIndexExpr>()
+                .filter(|index| index.get_text() == "groups[key]")
+                .last()
+                .unwrap();
+            for phase in ["cold", "warm"] {
+                assert_eq!(
+                    assigned_type(&model, &index, index.get_position()),
+                    None,
+                    "{value}: {phase}"
+                );
+            }
+            assert!(
+                !ws.has_no_diagnostic(crate::DiagnosticCode::NeedCheckNil, &source),
+                "{value}"
+            );
+        }
     }
 
     #[test]
