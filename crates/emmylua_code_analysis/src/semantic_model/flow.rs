@@ -14,7 +14,7 @@
 
 mod array;
 mod guards;
-mod member_call_effects;
+pub(super) mod member_call_effects;
 
 use std::collections::HashSet;
 use std::rc::Rc;

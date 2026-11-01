@@ -27,10 +27,11 @@ use crate::semantic_db::flow::{FlowAntecedent, FlowEffect, FlowId, FlowNodeKind,
 use crate::{LuaMemberKey, LuaType};
 
 type Access = (SemanticId, Vec<LuaMemberKey>);
+pub(in crate::semantic_model) type ReceiverTargets = Rc<Vec<Access>>;
 type Bindings = Vec<(SemanticId, Vec<Access>)>;
 // Histories contain each (callee, callsite, caller bindings) state at most once.
 // This bounds recursion without merging replacement order or caller receivers.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Invocation {
     closure: LuaClosureId,
     site: LuaSyntaxId,
@@ -64,14 +65,51 @@ impl Hash for Invocation {
 type Invocations = Vec<Invocation>;
 type CalleeValue = (LuaExpr, Bindings, Invocations);
 
+// File views share a cache. Calls with different argument bindings or invocation
+// histories must retain their own resolution, even at the same syntax position.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(in crate::semantic_model) struct CalleeCacheKey {
+    file: crate::FileId,
+    call: LuaSyntaxId,
+    bindings: Bindings,
+    targets: ReceiverTargets,
+    invocations: Invocations,
+}
+
 fn relevant(path: &Access, targets: &[Access]) -> bool {
     targets
         .iter()
         .any(|target| path_write_affects(path, &target.0, &target.1))
 }
 
-fn receiver_targets(model: &SemanticModel, expected: &Access) -> Vec<Access> {
-    let mut targets = vec![expected.clone()];
+fn receiver_targets(model: &SemanticModel, expected: &Access) -> ReceiverTargets {
+    let fixed = fixed_receiver_targets(model);
+    if fixed.contains(expected) {
+        return fixed;
+    }
+    let mut targets = fixed.as_ref().clone();
+    targets.push(expected.clone());
+    Rc::new(targets)
+}
+
+/// Collect file paths once per immutable model; queries may add their own target.
+fn fixed_receiver_targets(model: &SemanticModel) -> ReceiverTargets {
+    use super::super::cache::{CacheEntry, QueryCacheScope};
+    let file = model.file_id();
+    {
+        let cache = model.cache.borrow();
+        if let Some(entry) = cache.member_receiver_targets.get(&file) {
+            return entry.get(&cache).cloned().unwrap_or_default();
+        }
+    }
+    let _query = QueryCacheScope::new(&model.cache);
+    model
+        .cache
+        .borrow_mut()
+        .member_receiver_targets
+        .insert(file, CacheEntry::InProgress);
+    let revision = model.cache.borrow().revision();
+    let mut targets = Vec::new();
     if let Some(chunk) = model.chunk() {
         // Syntax fixes the finite set of roots and path lengths. Include callable
         // paths separately from the guarded-write target, so helper(methods) can
@@ -133,6 +171,10 @@ fn receiver_targets(model: &SemanticModel, expected: &Access) -> Vec<Access> {
             }
         }
     }
+    let targets = Rc::new(targets);
+    let mut cache = model.cache.borrow_mut();
+    let entry = CacheEntry::finish(targets.clone(), cache.is_complete(revision));
+    cache.member_receiver_targets.insert(file, entry);
     targets
 }
 
@@ -181,6 +223,42 @@ fn scan(
     after: TextSize,
     before: TextSize,
 ) -> bool {
+    use super::super::cache::{CacheEntry, MemberCallEffectKey, QueryCacheScope};
+    let key = MemberCallEffectKey {
+        file: model.file_id(),
+        receiver: expected.0.clone(),
+        path: expected.1.clone(),
+        body: LuaSyntaxId::from_node(node),
+        after,
+        before,
+    };
+    {
+        let cache = model.cache.borrow();
+        if let Some(entry) = cache.member_call_effects.get(&key) {
+            return entry.get(&cache).copied().unwrap_or(false);
+        }
+    }
+    let _query = QueryCacheScope::new(&model.cache);
+    model
+        .cache
+        .borrow_mut()
+        .member_call_effects
+        .insert(key.clone(), CacheEntry::InProgress);
+    let revision = model.cache.borrow().revision();
+    let result = scan_uncached(model, expected, node, after, before);
+    let mut cache = model.cache.borrow_mut();
+    let entry = CacheEntry::finish(result, cache.is_complete(revision));
+    cache.member_call_effects.insert(key, entry);
+    result
+}
+
+fn scan_uncached(
+    model: &SemanticModel,
+    expected: &Access,
+    node: &LuaSyntaxNode,
+    after: TextSize,
+    before: TextSize,
+) -> bool {
     let cached = model
         .cache
         .borrow()
@@ -216,7 +294,7 @@ fn scan(
     let targets = if needs_members {
         receiver_targets(model, expected)
     } else {
-        vec![expected.clone()]
+        Rc::new(vec![expected.clone()])
     };
     let mut bodies = vec![(
         node.clone(),
@@ -600,9 +678,46 @@ fn local_callees(
     model: &SemanticModel,
     call: &LuaCallExpr,
     bindings: &Bindings,
+    targets: &ReceiverTargets,
+    invocations: &Invocations,
+) -> Vec<LuaClosureExpr> {
+    use super::super::cache::{CacheEntry, QueryCacheScope};
+    let key = CalleeCacheKey {
+        file: model.file_id(),
+        call: call.get_syntax_id(),
+        bindings: bindings.clone(),
+        targets: targets.clone(),
+        invocations: invocations.clone(),
+    };
+    {
+        let cache = model.cache.borrow();
+        if let Some(entry) = cache.member_callees.get(&key) {
+            return entry.get(&cache).cloned().unwrap_or_default();
+        }
+    }
+    let _query = QueryCacheScope::new(&model.cache);
+    model
+        .cache
+        .borrow_mut()
+        .member_callees
+        .insert(key.clone(), CacheEntry::InProgress);
+    let revision = model.cache.borrow().revision();
+    let result = local_callees_uncached(model, call, bindings, targets, invocations);
+    let mut cache = model.cache.borrow_mut();
+    let entry = CacheEntry::finish(result.clone(), cache.is_complete(revision));
+    cache.member_callees.insert(key, entry);
+    result
+}
+
+fn local_callees_uncached(
+    model: &SemanticModel,
+    call: &LuaCallExpr,
+    bindings: &Bindings,
     targets: &[Access],
     invocations: &Invocations,
 ) -> Vec<LuaClosureExpr> {
+    #[cfg(test)]
+    cache_tests::record_resolution();
     let Some(prefix) = call.get_prefix_expr() else {
         return Vec::new();
     };
@@ -1678,3 +1793,6 @@ local action = harmless
         );
     }
 }
+
+#[cfg(test)]
+mod cache_tests;

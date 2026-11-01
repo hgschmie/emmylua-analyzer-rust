@@ -23,6 +23,16 @@ use super::{CallSiteAnalysis, ResolvedMember};
 use crate::IndexInfo;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct MemberCallEffectKey {
+    pub file: FileId,
+    pub receiver: SemanticId,
+    pub path: Vec<LuaMemberKey>,
+    pub body: LuaSyntaxId,
+    pub after: TextSize,
+    pub before: TextSize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum BuiltinKey {
     Expression(LuaSyntaxId),
     Flow(SemanticId, FlowId),
@@ -226,6 +236,14 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) expr_cast_flows: HashMap<(FileId, LuaSyntaxId), Rc<Vec<FlowId>>>,
     /// Syntax-only member-callee presence for this model snapshot; never call effects.
     pub(crate) member_call_resolution: HashMap<FileId, bool>,
+    /// Visible call work is scoped to this immutable model and its query completeness.
+    pub(super) member_receiver_targets:
+        HashMap<FileId, CacheEntry<super::flow::member_call_effects::ReceiverTargets>>,
+    pub(crate) member_call_effects: HashMap<MemberCallEffectKey, CacheEntry<bool>>,
+    pub(super) member_callees: HashMap<
+        super::flow::member_call_effects::CalleeCacheKey,
+        CacheEntry<Vec<emmylua_parser::LuaClosureExpr>>,
+    >,
     pub(crate) resolve_name: HashMap<(FileId, TextSize), Option<SemanticId>>,
     /// Builtin identity at each read and declaration/flow state.
     pub(crate) builtin_function: HashMap<(FileId, BuiltinKey), Option<SmolStr>>,
@@ -271,6 +289,10 @@ impl SemanticLocalCache {
     }
 
     fn discard_provisional(&mut self) {
+        self.member_receiver_targets
+            .retain(|_, entry| entry.is_ready());
+        self.member_callees.retain(|_, entry| entry.is_ready());
+        self.member_call_effects.retain(|_, entry| entry.is_ready());
         self.expr_type.retain(|_, entry| entry.is_ready());
         self.decl_type.retain(|_, entry| entry.is_ready());
         self.index_infos.retain(|_, entry| entry.is_ready());
