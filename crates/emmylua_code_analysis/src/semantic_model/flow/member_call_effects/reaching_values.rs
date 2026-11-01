@@ -214,7 +214,7 @@ fn enclosing_loop_reentries(
         })
         .filter_map(|loop_stat| {
             tree.get_loop_reentries(loop_stat.get_syntax_id())
-                .map(|flows| (loop_stat.get_range(), *flows))
+                .map(|flows| (loop_stat.get_range(), flows.flows()))
         })
         .collect()
 }

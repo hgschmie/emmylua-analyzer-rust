@@ -313,6 +313,8 @@ fn type_of_member_read(
 // Prefer the resolved declared contract, including cross-file annotations. Only a
 // member with no recoverable contract falls back to Unknown; a stale inferred
 // assignment must not reinstate a guard invalidated by a visible write.
+// Keep the declaration contract after invalidation; if it is unavailable, try
+// the member annotation before admitting Unknown. No old initializer is reused.
 fn invalidated_member_value_type(
     model: &SemanticModel,
     member: &SemanticId,
@@ -2258,6 +2260,7 @@ fn trace_member_uncached(
     path: &mut PathState,
 ) -> Option<LuaType> {
     let before = access.map(LuaAstNode::get_position);
+    let loop_boundaries = member_call_effects::loop_write_boundaries(model, tree, member, access);
     let mut current = flow_id;
     loop {
         #[cfg(test)]
@@ -2266,6 +2269,13 @@ fn trace_member_uncached(
             return None;
         }
         let node = tree.get_flow_node(current)?;
+        if member_call_effects::crosses_loop_write_boundary(node, &loop_boundaries) {
+            return Some(finalize(
+                model,
+                invalidated_member_value_type(model, member, access),
+                path,
+            ));
+        }
         // Calls on this node occur before its completed assignment. Preserve
         // later invalidation separately so an RHS call cannot erase the value
         // that this very assignment installs after all RHS evaluation finishes.
@@ -4136,7 +4146,7 @@ fn primitive_guard_target(
     };
     if !model.is_std_file(decl.file_id)
         || !member_call_effects::global_name_values(model, &callee)
-            .values
+            .replacements
             .is_empty()
     {
         return None;

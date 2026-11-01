@@ -869,9 +869,10 @@ impl<'a, 'b> BindEngine<'a, 'b> {
     fn resume(&mut self, continuation: Continuation, value: FlowId) -> Step {
         match continuation {
             Continuation::RecordLoopExit { loop_stat, entry } => {
-                self.binder
-                    .loop_reentries
-                    .insert(loop_stat.get_syntax_id(), [value, entry]);
+                self.binder.loop_reentries.insert(
+                    loop_stat.get_syntax_id(),
+                    super::LoopReentries { exit: value, entry },
+                );
                 Step::Done(value)
             }
             Continuation::Seq { mut pending } => match pending.pop() {
@@ -1386,6 +1387,8 @@ mod loop_reentry_tests {
             ("for i=2,1,-1 do end", true),
             ("for i=1,2,0 do end", true),
             ("for i=1,2,-0.0 do end", true),
+            ("for i=0.1,0.3,0.1 do end", true),
+            ("for i=0.1,0.3,0.2 do end", false),
             ("for i=1,2,0/0 do end", true),
         ] {
             let mut ws = VirtualWorkspace::new();
@@ -1420,16 +1423,16 @@ mod loop_reentry_tests {
             .get_loop_reentries(loops[1].get_syntax_id())
             .expect("inner loop reentries");
         assert_ne!(
-            outer[1], inner[1],
+            outer.entry, inner.entry,
             "nested loops retain their own entry labels"
         );
         assert_ne!(
-            outer[0], inner[0],
+            outer.exit, inner.exit,
             "outer exit includes the write after the inner loop"
         );
         for reentries in [outer, inner] {
-            for flow in reentries {
-                assert!(tree.get_flow_node(*flow).is_some());
+            for flow in reentries.flows() {
+                assert!(tree.get_flow_node(flow).is_some());
             }
         }
     }

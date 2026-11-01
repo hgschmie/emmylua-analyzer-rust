@@ -8,6 +8,19 @@ use rowan::{TextRange, TextSize};
 use super::{FlowAntecedent, FlowEffect, FlowId, FlowNode, FlowNodeKind};
 use crate::semantic_db::def::SemanticId;
 
+/// Normal body completion and the entry label carrying explicit continue edges.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LoopReentries {
+    pub exit: FlowId,
+    pub entry: FlowId,
+}
+
+impl LoopReentries {
+    pub(crate) fn flows(self) -> [FlowId; 2] {
+        [self.exit, self.entry]
+    }
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct FlowTree {
     decl_bind_expr_ref: HashMap<SemanticId, LuaAstPtr<LuaExpr>>,
@@ -18,9 +31,8 @@ pub struct FlowTree {
     multiple_antecedents: Vec<Vec<FlowId>>,
     // labels: HashMap<LuaClosureId, HashMap<SmolStr, FlowId>>,
     bindings: HashMap<LuaSyntaxId, FlowId>,
-    /// Backedges for member-callee queries: index 0 is normal body exit, index 1
-    /// is the loop entry/backedge target, including body continue edges.
-    loop_reentries: HashMap<LuaSyntaxId, [FlowId; 2]>,
+    /// Normal completion and continue paths used for virtual backedges.
+    loop_reentries: HashMap<LuaSyntaxId, LoopReentries>,
     /// Sorted binding ranges; used as a fallback for offsets that are not exactly
     /// the start of a bound syntax node.
     binding_ranges: Vec<(TextRange, FlowId)>,
@@ -63,7 +75,7 @@ impl FlowTree {
         multiple_antecedents: Vec<Vec<FlowId>>,
         // labels: HashMap<LuaClosureId, HashMap<SmolStr, FlowId>>,
         bindings: HashMap<LuaSyntaxId, FlowId>,
-        loop_reentries: HashMap<LuaSyntaxId, [FlowId; 2]>,
+        loop_reentries: HashMap<LuaSyntaxId, LoopReentries>,
     ) -> Self {
         let mut decl_assignments: HashMap<SemanticId, Vec<(TextSize, FlowId)>> = HashMap::new();
         let mut member_assignments: HashMap<SemanticId, Vec<(TextSize, FlowId)>> = HashMap::new();
@@ -241,7 +253,7 @@ impl FlowTree {
 
     /// Normal body completion and the entry label carrying explicit continue paths.
     /// Return [normal body exit, loop entry/backedge target] for reaching callees.
-    pub(crate) fn get_loop_reentries(&self, syntax: LuaSyntaxId) -> Option<&[FlowId; 2]> {
+    pub(crate) fn get_loop_reentries(&self, syntax: LuaSyntaxId) -> Option<&LoopReentries> {
         self.loop_reentries.get(&syntax)
     }
 

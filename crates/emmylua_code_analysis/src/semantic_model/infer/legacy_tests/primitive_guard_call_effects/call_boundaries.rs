@@ -766,3 +766,65 @@ fn visible_sibling_global_replacements_disable_primitive_guards() {
         );
     }
 }
+
+#[test]
+fn static_member_loop_backedges_see_later_conflicting_writes() {
+    for (tail, nullable) in [("elem.handler=nil", true), ("other.handler=nil", false)] {
+        assert_primitive_call_boundary(
+            &format!("for i=1,3 do\nlocal value=elem.handler.name -- observe\n{tail}\nend"),
+            nullable,
+        );
+    }
+}
+
+#[test]
+fn static_member_loop_backedges_preserve_current_iteration_proofs() {
+    for (body, nullable) in [
+        (
+            "for i=1,3 do local value=elem.handler.name -- observe\nlocal result=clear() end",
+            true,
+        ),
+        (
+            "for i=1,3 do local value=elem.handler.name -- observe\nelem.handler=nil; continue end",
+            true,
+        ),
+        (
+            "for i=1,1 do local value=elem.handler.name -- observe\nelem.handler=nil end",
+            false,
+        ),
+        (
+            "for i=1,3 do local value=elem.handler.name -- observe\nelem.handler=nil; break end",
+            false,
+        ),
+        (
+            "for i=1,3 do local value=elem.handler.name -- observe\nif flag then elem.handler=nil; break end end",
+            false,
+        ),
+        (
+            "while flag do local value=elem.handler.name -- observe\nelem.handler=nil end",
+            true,
+        ),
+        (
+            "repeat local value=elem.handler.name -- observe\nelem.handler=nil until flag",
+            true,
+        ),
+        (
+            "for i=1,3 do if type(elem.handler)=='table' then local value=elem.handler.name -- observe\nend;elem.handler=nil end",
+            false,
+        ),
+        (
+            "---@type CallBoundaryHandler\nlocal fresh={}\nfor i=1,3 do elem.handler=fresh; local value=elem.handler.name -- observe\nelem.handler=nil end",
+            false,
+        ),
+        (
+            "for i=1,3 do local value=elem.handler.name -- observe\nopaque(elem) end",
+            false,
+        ),
+        (
+            "for i=1,3 do local value=elem.handler.name -- observe\nclear() end",
+            true,
+        ),
+    ] {
+        assert_primitive_call_boundary(body, nullable);
+    }
+}

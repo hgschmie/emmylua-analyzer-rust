@@ -15,6 +15,9 @@ fn assert_primitive_call_boundary(body: &str, nullable: bool) {
 
 fn assert_member_call_boundary(guard: &str, setup: &str, body: &str, nullable: bool) {
     let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    let mut config = ws.get_emmyrc();
+    config.runtime.nonstandard_symbol = serde_json::from_str(r#"["continue"]"#).unwrap();
+    ws.update_emmyrc(config);
     ws.analysis
         .diagnostic
         .enable_only(DiagnosticCode::NeedCheckNil);

@@ -164,7 +164,8 @@ impl VirtualWorkspace {
         self.analysis.diagnostic.update_config(Arc::new(emmyrc));
     }
 
-    /// Run only the selected diagnostic check and report whether it finds a diagnostic.
+    /// Positive wrapper for `has_no_diagnostic`, using the same selected-check execution.
+    /// Returns false when that diagnostic is absent.
     pub fn has_diagnostic(&mut self, diagnostic_code: DiagnosticCode, block_str: &str) -> bool {
         !self.has_no_diagnostic(diagnostic_code, block_str)
     }

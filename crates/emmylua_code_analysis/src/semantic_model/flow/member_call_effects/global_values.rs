@@ -11,7 +11,7 @@ use std::{collections::HashSet, rc::Rc};
 
 pub(crate) struct GlobalNameValues {
     pub(crate) may_keep_builtin: bool,
-    pub(crate) values: Vec<LuaExpr>,
+    pub(crate) replacements: Vec<LuaExpr>,
 }
 
 /// Keep the builtin possible unless a single definition reaches every path.
@@ -19,7 +19,7 @@ pub(crate) struct GlobalNameValues {
 pub(crate) fn global_name_values(model: &SemanticModel, name: &LuaNameExpr) -> GlobalNameValues {
     let mut result = GlobalNameValues {
         may_keep_builtin: true,
-        values: Vec::new(),
+        replacements: Vec::new(),
     };
     let (Some(text), Some(chunk), Some(facts)) =
         (name.get_name_text(), model.chunk(), model.file_facts())
@@ -85,7 +85,7 @@ pub(crate) fn global_name_values(model: &SemanticModel, name: &LuaNameExpr) -> G
             if !values.is_empty() && values.iter().all(Option::is_some) {
                 result.may_keep_builtin = false;
             }
-            result.values.extend(values.into_iter().flatten());
+            result.replacements.extend(values.into_iter().flatten());
         } else if definition_closure
             .get_range()
             .contains_range(query_closure.get_range())
@@ -94,7 +94,7 @@ pub(crate) fn global_name_values(model: &SemanticModel, name: &LuaNameExpr) -> G
             // Invocation order, not definition position, decides captured global
             // state. Enclosing writes and writes in visible called siblings are
             // possible replacements; they do not prove the builtin impossible.
-            result.values.extend(
+            result.replacements.extend(
                 facts
                     .decl_by_id(&id)
                     .and_then(|decl| decl.value_expr_syntax)
@@ -236,7 +236,7 @@ mod tests {
                 })
                 .unwrap();
             assert_eq!(
-                !global_name_values(&model, &name).values.is_empty(),
+                !global_name_values(&model, &name).replacements.is_empty(),
                 replaced,
                 "{source}"
             );
