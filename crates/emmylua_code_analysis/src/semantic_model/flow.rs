@@ -19,7 +19,7 @@ mod computed_index;
 mod guards;
 mod iterator_entry;
 mod loop_carried;
-mod member_call_effects;
+pub(super) mod member_call_effects;
 
 use std::collections::HashSet;
 use std::rc::Rc;
