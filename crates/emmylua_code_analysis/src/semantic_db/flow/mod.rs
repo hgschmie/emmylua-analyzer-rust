@@ -57,7 +57,11 @@ pub(super) fn build_flow_tree(db: &SemanticDatabase, file: FileId) -> FlowTree {
         .get_syntax_tree(&file)
         .expect("syntax tree must exist");
     let chunk: LuaChunk = tree.get_chunk_node();
+    let integer_runtime = db
+        .lua_version()
+        .is_some_and(|version| version >= emmylua_parser::LuaVersionNumber::new(5, 3, 0));
     let mut binder = FlowBinder::new(file_id, facts);
+    binder.integer_loop_runtime = integer_runtime;
     let start = binder.start;
     if let Some(block) = chunk.get_block() {
         engine::run_bind_block(&mut binder, block, start);

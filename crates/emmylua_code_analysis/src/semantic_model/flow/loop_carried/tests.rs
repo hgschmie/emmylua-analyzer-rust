@@ -976,7 +976,7 @@ fn loop_structural_identity_and_independent_writes_keep_known_shapes() {
 fn unrelated_function_loop_keeps_a_straight_line_read_on_the_fast_path() {
     use emmylua_parser::{LuaAstNode, LuaNameExpr};
     let mut ws = crate::VirtualWorkspace::new();
-    let source = "local function unrelated() while flag do break end end;\n---@param value integer\nlocal function plain(value) local observed=value; value=1 end";
+    let source = "local function unrelated() while flag do break end end;\nlocal function plain() local value=1; local observed=value; value=2 end";
     let file = ws.def(source);
     let model = ws.analysis.semantic_model(file);
     let offset = source.find("observed=value").unwrap() + "observed=".len();
@@ -990,7 +990,7 @@ fn unrelated_function_loop_keeps_a_straight_line_read_on_the_fast_path() {
     super::super::flow_metrics::reset();
     assert_eq!(
         super::super::type_of_decl_at(&model, &decl, read.get_position()),
-        LuaType::Integer
+        LuaType::IntegerConst(1)
     );
     assert!(super::super::flow_metrics::fast_decl_hits() > 0);
 }
