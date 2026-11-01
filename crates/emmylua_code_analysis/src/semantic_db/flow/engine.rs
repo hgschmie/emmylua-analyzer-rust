@@ -244,7 +244,7 @@ impl<'a, 'b> BindEngine<'a, 'b> {
             Task::Node(node, current) => self.evaluate_node(node, current),
             Task::Block(block, current) => {
                 if let Some(loop_stat) = block.syntax().parent().and_then(LuaLoopStat::cast)
-                    && loop_may_repeat(&loop_stat)
+                    && loop_may_repeat(&loop_stat, self.binder.integer_loop_runtime)
                 {
                     // Record the completed body's flow, including unreachable
                     // exits. Break/return paths resume this continuation with an
@@ -1312,7 +1312,7 @@ impl<'a, 'b> BindEngine<'a, 'b> {
 }
 
 /// Do not synthesize another iteration for statically single-pass loops.
-fn loop_may_repeat(loop_stat: &LuaLoopStat) -> bool {
+fn loop_may_repeat(loop_stat: &LuaLoopStat, integer_runtime: bool) -> bool {
     match loop_stat {
         LuaLoopStat::WhileStat(stat) => {
             stat.get_condition_expr()
@@ -1326,12 +1326,12 @@ fn loop_may_repeat(loop_stat: &LuaLoopStat) -> bool {
                 .and_then(static_literal_truthiness)
                 != Some(true)
         }
-        LuaLoopStat::ForStat(stat) => numeric_loop_may_repeat(stat),
+        LuaLoopStat::ForStat(stat) => numeric_loop_may_repeat(stat, integer_runtime),
         _ => true,
     }
 }
 
-fn numeric_loop_may_repeat(stat: &LuaForStat) -> bool {
+fn numeric_loop_may_repeat(stat: &LuaForStat, integer_runtime: bool) -> bool {
     let values = stat.get_iter_expr().collect::<Vec<_>>();
     let (Some(start), Some(stop), Some(step)) = (
         values.first().and_then(static_loop_number),
@@ -1343,8 +1343,9 @@ fn numeric_loop_may_repeat(stat: &LuaForStat) -> bool {
     ) else {
         return true;
     };
-    if let (LoopNumber::Integer(start), LoopNumber::Integer(stop), LoopNumber::Integer(step)) =
-        (start, stop, step)
+    if integer_runtime
+        && let (LoopNumber::Integer(start), LoopNumber::Integer(stop), LoopNumber::Integer(step)) =
+            (start, stop, step)
     {
         // Keep a possible backedge on overflow or a zero step. Otherwise compare
         // exact integer values, including counters above the f64 precision range.
@@ -1485,7 +1486,7 @@ mod loop_reentry_tests {
                 .descendants::<LuaLoopStat>()
                 .next()
                 .unwrap();
-            assert_eq!(loop_may_repeat(&loop_stat), repeats, "{source}");
+            assert_eq!(loop_may_repeat(&loop_stat, true), repeats, "{source}");
         }
     }
 
@@ -1519,6 +1520,46 @@ mod loop_reentry_tests {
             for flow in reentries.flows() {
                 assert!(tree.get_flow_node(flow).is_some());
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod runtime_loop_reentry_tests {
+    use super::*;
+    use crate::{EmmyrcLuaVersion, VirtualWorkspace};
+
+    #[test]
+    fn loop_reentry_bounds_follow_runtime_integer_support_and_config_edits() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def("for i=9007199254740993,9007199254740993,1 do local marker=i end");
+        for (version, repeats) in [
+            (EmmyrcLuaVersion::Lua51, true),
+            (EmmyrcLuaVersion::Lua52, true),
+            (EmmyrcLuaVersion::LuaJIT, true),
+            (EmmyrcLuaVersion::Lua53, false),
+            (EmmyrcLuaVersion::Lua54, false),
+            (EmmyrcLuaVersion::Lua51, true),
+        ] {
+            let mut config = ws.get_emmyrc();
+            config.runtime.version = version;
+            ws.update_emmyrc(config);
+            let model = ws.analysis.semantic_model(file);
+            let loop_stat = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaLoopStat>()
+                .next()
+                .unwrap();
+            assert_eq!(
+                model
+                    .flow_tree()
+                    .unwrap()
+                    .get_loop_reentries(loop_stat.get_syntax_id())
+                    .is_some(),
+                repeats,
+                "{version:?}"
+            );
         }
     }
 }

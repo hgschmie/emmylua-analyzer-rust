@@ -50,7 +50,7 @@ pub(crate) fn global_name_values(model: &SemanticModel, name: &LuaNameExpr) -> G
                 .descendants::<LuaStat>()
                 .filter(|statement| {
                     written_name(statement, &text).is_some()
-                        || environment::written_values(model, statement, &text).is_some()
+                        || environment::may_write_name(statement, &text)
                 })
                 .map(|statement| statement.get_syntax_id())
                 .collect::<Vec<_>>(),

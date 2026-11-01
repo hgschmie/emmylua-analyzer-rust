@@ -35,6 +35,7 @@ pub struct FlowBinder<'a> {
     bindings: HashMap<LuaSyntaxId, FlowId>,
     /// Normal completion and continue-edge entry, captured per loop syntax.
     pub(super) loop_reentries: HashMap<LuaSyntaxId, LoopReentries>,
+    pub(super) integer_loop_runtime: bool,
 }
 
 impl<'a> FlowBinder<'a> {
@@ -53,6 +54,7 @@ impl<'a> FlowBinder<'a> {
             break_target_label: FlowId::default(),
             bindings: HashMap::new(),
             loop_reentries: HashMap::new(),
+            integer_loop_runtime: false,
             goto_stats: Vec::new(),
             loop_label: FlowId::default(),
             true_target: FlowId::default(),
@@ -67,6 +69,12 @@ impl<'a> FlowBinder<'a> {
         binder.false_target = binder.unreachable;
 
         binder
+    }
+
+    /// Unknown/older runtimes retain uncertain floating-point loop backedges.
+    pub(super) fn with_integer_loop_runtime(mut self, enabled: bool) -> Self {
+        self.integer_loop_runtime = enabled;
+        self
     }
 
     pub fn create_node(&mut self, kind: FlowNodeKind) -> FlowId {
@@ -219,8 +227,8 @@ impl<'a> FlowBinder<'a> {
             self.multiple_antecedents,
             // self.labels,
             self.bindings,
-            self.loop_reentries,
         )
+        .with_loop_reentries(self.loop_reentries)
     }
 }
 

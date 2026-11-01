@@ -10,9 +10,9 @@ use crate::semantic_db::def::SemanticId;
 
 /// Normal body completion and the entry label carrying explicit continue edges.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LoopReentries {
-    pub exit: FlowId,
-    pub entry: FlowId,
+pub(crate) struct LoopReentries {
+    pub(super) exit: FlowId,
+    pub(super) entry: FlowId,
 }
 
 impl LoopReentries {
@@ -75,7 +75,6 @@ impl FlowTree {
         multiple_antecedents: Vec<Vec<FlowId>>,
         // labels: HashMap<LuaClosureId, HashMap<SmolStr, FlowId>>,
         bindings: HashMap<LuaSyntaxId, FlowId>,
-        loop_reentries: HashMap<LuaSyntaxId, LoopReentries>,
     ) -> Self {
         let mut decl_assignments: HashMap<SemanticId, Vec<(TextSize, FlowId)>> = HashMap::new();
         let mut member_assignments: HashMap<SemanticId, Vec<(TextSize, FlowId)>> = HashMap::new();
@@ -175,7 +174,7 @@ impl FlowTree {
             has_tag_cast,
             multiple_antecedents,
             bindings,
-            loop_reentries,
+            loop_reentries: HashMap::new(),
             binding_ranges,
             binding_starts,
             decl_assignments,
@@ -249,6 +248,15 @@ impl FlowTree {
             }
         }
         reachable
+    }
+
+    /// Attach binder-owned backedges without exposing them in the public constructor.
+    pub(super) fn with_loop_reentries(
+        mut self,
+        reentries: HashMap<LuaSyntaxId, LoopReentries>,
+    ) -> Self {
+        self.loop_reentries = reentries;
+        self
     }
 
     /// Normal body completion and the entry label carrying explicit continue paths.

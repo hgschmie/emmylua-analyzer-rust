@@ -164,32 +164,22 @@ impl VirtualWorkspace {
         self.analysis.diagnostic.update_config(Arc::new(emmyrc));
     }
 
-    /// Positive wrapper for `has_no_diagnostic`, using the same selected-check execution.
-    /// Returns false when that diagnostic is absent.
+    /// Run the selected checker and report whether it emits the requested code.
+    /// The checker must register that code in CODES; absent diagnostics return false.
     pub fn has_diagnostic(&mut self, diagnostic_code: DiagnosticCode, block_str: &str) -> bool {
-        !self.has_no_diagnostic(diagnostic_code, block_str)
-    }
-
-    /// Only run the check for the corresponding diagnostic code; the corresponding `Checker` must add that code to its `const CODES`.
-    pub fn has_no_diagnostic(&mut self, diagnostic_code: DiagnosticCode, block_str: &str) -> bool {
-        // Only enable the corresponding diagnostic.
         self.analysis.diagnostic.enable_only(diagnostic_code);
         let file_id = self.def(block_str);
-        let result = self
-            .analysis
-            .diagnose_file(file_id, CancellationToken::new());
-        if let Some(diagnostics) = result {
-            let code_string = Some(NumberOrString::String(
-                diagnostic_code.get_name().to_string(),
-            ));
-            for diagnostic in diagnostics {
-                if diagnostic.code == code_string {
-                    return false;
-                }
-            }
-        }
+        let code = Some(NumberOrString::String(
+            diagnostic_code.get_name().to_string(),
+        ));
+        self.analysis
+            .diagnose_file(file_id, CancellationToken::new())
+            .is_some_and(|diagnostics| diagnostics.iter().any(|diagnostic| diagnostic.code == code))
+    }
 
-        true
+    /// Run the selected registered checker and report whether its code is absent.
+    pub fn has_no_diagnostic(&mut self, diagnostic_code: DiagnosticCode, block_str: &str) -> bool {
+        !self.has_diagnostic(diagnostic_code, block_str)
     }
 
     pub fn has_no_diagnostic_in_namespace(

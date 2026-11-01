@@ -5,7 +5,7 @@ use super::RECEIVER_TARGET_SCANS;
 use super::{Access, SemanticModel, guards, literal_member_key, member_access_path};
 use crate::{LuaMemberKey, SemanticId};
 use emmylua_parser::{LuaAssignStat, LuaAstNode, LuaExpr, LuaIndexExpr};
-use std::rc::Rc;
+use std::{collections::HashSet, rc::Rc};
 
 pub(super) fn receiver_targets(model: &SemanticModel, expected: &Access) -> Rc<Vec<Access>> {
     let mut targets = fixed_receiver_targets(model);
@@ -29,6 +29,9 @@ fn fixed_receiver_targets(model: &SemanticModel) -> Rc<Vec<Access>> {
     #[cfg(test)]
     RECEIVER_TARGET_SCANS.with(|count| count.set(count.get() + 1));
     let mut targets = Vec::new();
+    // Preserve deterministic discovery order without repeated structural scans
+    // of every previously discovered receiver path.
+    let mut seen = HashSet::new();
     if let Some(chunk) = model.chunk() {
         // Syntax fixes the finite set of roots and path lengths. Include callable
         // paths separately from the guarded-write target, so helper(methods) can
@@ -37,7 +40,7 @@ fn fixed_receiver_targets(model: &SemanticModel) -> Rc<Vec<Access>> {
             let expr = LuaExpr::IndexExpr(index);
             if let Some(path) = member_access_path(model, &expr)
                 && !path.1.iter().any(LuaMemberKey::is_none)
-                && !targets.contains(&path)
+                && seen.insert(path.clone())
             {
                 targets.push(path);
             }
@@ -80,7 +83,7 @@ fn fixed_receiver_targets(model: &SemanticModel) -> Rc<Vec<Access>> {
                 };
                 let mut child = path.clone();
                 child.1.push(key);
-                if !targets.contains(&child) {
+                if seen.insert(child.clone()) {
                     targets.push(child.clone());
                 }
                 if let Some(value) = field.get_value_expr() {

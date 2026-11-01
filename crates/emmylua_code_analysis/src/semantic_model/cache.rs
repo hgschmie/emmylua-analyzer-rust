@@ -229,7 +229,7 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) expr_cast_flows: HashMap<(FileId, LuaSyntaxId), Rc<Vec<FlowId>>>,
     /// Calls or member function definitions requiring path-aware member flow.
     pub(crate) member_file_requires_flow: HashMap<FileId, bool>,
-    /// Global-name write syntax for builtin replacement checks in this immutable snapshot.
+    /// Syntax-only global-name candidates; environment identity is checked per query.
     pub(crate) member_global_name_writes: HashMap<(FileId, SmolStr), Rc<Vec<LuaSyntaxId>>>,
     /// Syntax-only member-callee presence for this model snapshot; never call effects.
     pub(crate) member_call_resolution: HashMap<FileId, bool>,
