@@ -18,6 +18,7 @@ pub struct FlowTree {
     multiple_antecedents: Vec<Vec<FlowId>>,
     // labels: HashMap<LuaClosureId, HashMap<SmolStr, FlowId>>,
     bindings: HashMap<LuaSyntaxId, FlowId>,
+    /// Backedges exposed to the member-callee enclosing-loop query.
     loop_reentries: HashMap<LuaSyntaxId, [FlowId; 2]>,
     /// Sorted binding ranges; used as a fallback for offsets that are not exactly
     /// the start of a bound syntax node.

@@ -308,6 +308,9 @@ fn type_of_member_read(
 }
 
 /// A conflicting call removes assignment precision but retains the declared contract.
+// Prefer the resolved declared contract, including cross-file annotations. Only a
+// member with no recoverable contract falls back to Unknown; a stale inferred
+// assignment must not reinstate a guard invalidated by a visible write.
 fn invalidated_member_value_type(
     model: &SemanticModel,
     member: &SemanticId,
@@ -3981,6 +3984,8 @@ fn narrow_member_condition(
 ) -> Option<Narrowing> {
     let chunk = model.chunk()?;
     let cond = LuaExpr::cast(cond_ptr.to_node(&chunk)?.syntax().clone())?;
+    // Normalize once for all member guard forms. The primitive helper also accepts
+    // raw conditions from other callers, but skips normalization for binary input.
     let (cond, branch_is_true) = normalize_condition(cond, branch_is_true)?;
     if let LuaExpr::CallExpr(call) = &cond {
         if let Some((arg, guard_ty)) = type_guard_call_target(model, call)
