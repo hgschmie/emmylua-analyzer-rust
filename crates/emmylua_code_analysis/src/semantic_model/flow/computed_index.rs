@@ -236,10 +236,47 @@ mod tests {
             assert!(!seed.is_nullable(), "{seed:?}");
             let proof = assigned_type(&model, &read, read.get_position());
             assert_eq!(proof.is_some(), proven, "{effect}: {proof:?}");
+            assert_eq!(
+                model.type_of_expr_at(read.get_syntax_id(), read.get_position()),
+                seed,
+                "ordinary non-nullable read changed after {effect}"
+            );
             if let Some(proof) = proof {
                 assert_eq!(ws.humanize_type(proof), "Item");
             }
         }
+    }
+
+    #[test]
+    fn local_dictionary_initialization_has_no_nil_diagnostic() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        // Use public configuration so this fixture also covers the separately
+        // maintained dictionary-read policy when the fixes are combined.
+        let mut config = serde_json::to_value(ws.get_emmyrc()).unwrap();
+        config["strict"]["tableIndex"] = serde_json::json!(true);
+        ws.update_emmyrc(serde_json::from_value(config).unwrap());
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@class Item
+            ---@field count integer
+            local Item = {}
+            ---@alias Inventory table<string, Item>
+            ---@param amounts table<string, integer>
+            local function update(amounts)
+                ---@type Inventory
+                local inventory = {}
+                for key, amount in pairs(amounts) do
+                    if amount > 0 then
+                        inventory[key] = inventory[key] or {count = 0} --[[@as Item]]
+                        inventory[key].count = inventory[key].count + amount
+                    else
+                        inventory[key] = nil
+                    end
+                end
+            end
+            "#,
+        ));
     }
 
     #[test]
