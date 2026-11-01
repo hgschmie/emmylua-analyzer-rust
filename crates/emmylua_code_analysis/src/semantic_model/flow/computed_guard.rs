@@ -902,6 +902,14 @@ mod expression_order_tests {
         for (body, safe) in [
             ("local value = clear() and rows[key] and rows[key][1]", true),
             (
+                "if clear() and rows[key] then local value=rows[key][1] end",
+                true,
+            ),
+            (
+                "if rows[key] and clear() then local value=rows[key][1] end",
+                false,
+            ),
+            (
                 "local value = rows[key] and clear() and rows[key][1]",
                 false,
             ),
