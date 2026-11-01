@@ -919,7 +919,38 @@ fn loop_structural_recurrence_does_not_claim_a_complete_shallow_union() {
 #[test]
 fn loop_conditional_fractional_update_widens_to_number() {
     let mut ws = crate::VirtualWorkspace::new();
-    assert!(ws.has_diagnostic(crate::DiagnosticCode::AssignTypeMismatch, "local index=0; while flag do if other then index=index+0.5 end end; ---@type integer\nlocal result=index"));
+    // Read at loop entry, before the conditional write from this iteration.
+    let source = "local index=0; while flag do\n---@type integer\nlocal result=index\nif other then index=index+0.5 end end";
+    ws.analysis
+        .diagnostic
+        .enable_only(crate::DiagnosticCode::AssignTypeMismatch);
+    let file = ws.def(source);
+    let model = ws.analysis.semantic_model(file);
+    let result = model
+        .decl_by_offset((source.find("result=index").unwrap() as u32).into())
+        .unwrap();
+    let declaration = model.file_facts().unwrap().decl_by_id(&result).unwrap();
+    assert!(
+        declaration.doc_type_syntax.is_some(),
+        "the result must own the integer annotation"
+    );
+    assert_eq!(model.type_of_decl(&result), Some(LuaType::Integer));
+    let diagnostics = ws
+        .analysis
+        .diagnose_file(file, tokio_util::sync::CancellationToken::new())
+        .unwrap();
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.range.start.line == 2
+                && diagnostic.code
+                    == Some(lsp_types::NumberOrString::String(
+                        crate::DiagnosticCode::AssignTypeMismatch
+                            .get_name()
+                            .to_string()
+                    ))),
+        "the fractional result must be rejected: {diagnostics:?}"
+    );
 }
 
 #[test]
@@ -976,7 +1007,7 @@ fn loop_structural_identity_and_independent_writes_keep_known_shapes() {
 fn unrelated_function_loop_keeps_a_straight_line_read_on_the_fast_path() {
     use emmylua_parser::{LuaAstNode, LuaNameExpr};
     let mut ws = crate::VirtualWorkspace::new();
-    let source = "local function unrelated() while flag do break end end;\n---@param value integer\nlocal function plain(value) local observed=value; value=1 end";
+    let source = "local function unrelated() while flag do break end end;\nlocal function plain() local value=1; local observed=value; value=2 end";
     let file = ws.def(source);
     let model = ws.analysis.semantic_model(file);
     let offset = source.find("observed=value").unwrap() + "observed=".len();
@@ -990,7 +1021,7 @@ fn unrelated_function_loop_keeps_a_straight_line_read_on_the_fast_path() {
     super::super::flow_metrics::reset();
     assert_eq!(
         super::super::type_of_decl_at(&model, &decl, read.get_position()),
-        LuaType::Integer
+        LuaType::IntegerConst(1)
     );
     assert!(super::super::flow_metrics::fast_decl_hits() > 0);
 }
