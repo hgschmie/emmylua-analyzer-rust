@@ -38,9 +38,9 @@ pub struct FlowTree {
     cast_nodes: Vec<(TextSize, FlowId)>,
     /// Sorted `(position, flow id)` for nodes with a merge (`Multiple`) antecedent.
     branch_nodes: Vec<(TextSize, FlowId)>,
-    /// True when a merge node has no AST range to index safely.
+    /// File-wide fallback: some merge has no AST range to index safely.
     unpositioned_branch: bool,
-    /// Unpositioned merge reachability, so unrelated closures do not block ranges.
+    /// Per-flow reachability: only merges on a read's CFG predecessors block it.
     unpositioned_branch_reachable: Vec<bool>,
     /// True when the tree has loops / labels / break / continue. These can create
     /// backward edges whose source positions are not monotonic, so the member

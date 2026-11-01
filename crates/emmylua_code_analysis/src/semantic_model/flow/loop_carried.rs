@@ -10,6 +10,9 @@
 //! captured-local mutations performed by called nested closures; that requires
 //! interprocedural value effects beyond this loop-entry approximation.
 
+mod numeric_loops;
+mod reachability;
+
 #[cfg(test)]
 mod scale_tests;
 #[cfg(test)]
@@ -24,9 +27,6 @@ use super::{
 use emmylua_parser::{
     LuaAstNode, LuaClosureExpr, LuaExpr, LuaLiteralToken, LuaStat, LuaSyntaxId, LuaVarExpr,
 };
-
-mod numeric_loops;
-mod reachability;
 
 pub(super) fn loop_carried_type(
     model: &SemanticModel,

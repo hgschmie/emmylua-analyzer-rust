@@ -514,6 +514,7 @@ fn loop_carried_conditional_self_updates_keep_integer_read_type() {
     for update in [
         "if flag then count = count + 1 end",
         "if flag then count = count + 1 else count = 0 end",
+        "if flag then count = 1 end; count = count + 1",
     ] {
         let mut ws = crate::VirtualWorkspace::new();
         let file = ws.def(&format!(
