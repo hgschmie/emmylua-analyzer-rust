@@ -33,6 +33,7 @@ pub(super) fn loop_carried_type(
                 model.cache.borrow().mark_incomplete();
                 model.type_of_decl(decl).map(widen_const_type)
             }
+            // A provisional value is usable as a seed, never as a completed fact.
             CacheEntry::Provisional(ty) => {
                 model.cache.borrow().mark_incomplete();
                 ty

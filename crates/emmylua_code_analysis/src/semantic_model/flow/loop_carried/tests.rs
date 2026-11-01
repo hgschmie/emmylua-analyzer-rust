@@ -630,3 +630,42 @@ fn loop_function_statements_keep_local_and_closure_boundaries() {
         );
     }
 }
+
+#[test]
+fn loop_rhs_dependency_cache_is_fresh_after_a_file_edit() {
+    use emmylua_parser::{LuaAstNode, LuaBinaryExpr, LuaNameExpr};
+    let mut ws = crate::VirtualWorkspace::new();
+    let source = "local value = 1; local other = 0; while flag do value = value + 1 end";
+    let file = ws.def_file("edited-dependency.lua", source);
+    let (syntax, decl) = {
+        let model = ws.analysis.semantic_model(file);
+        let rhs = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaBinaryExpr>()
+            .next()
+            .unwrap();
+        let read = rhs.descendants::<LuaNameExpr>().next().unwrap();
+        let decl = model.resolve_name(read.get_position()).unwrap();
+        assert!(super::references_decl(&model, rhs.get_syntax_id(), &decl));
+        (rhs.get_syntax_id(), decl)
+    };
+    assert_eq!(
+        ws.def_file(
+            "edited-dependency.lua",
+            &source.replace("value + 1", "other + 1")
+        ),
+        file
+    );
+    let model = ws.analysis.semantic_model(file);
+    let rhs = model
+        .chunk()
+        .unwrap()
+        .descendants::<LuaBinaryExpr>()
+        .next()
+        .unwrap();
+    assert_eq!(rhs.get_syntax_id(), syntax);
+    assert!(model.cache.borrow().loop_rhs_dependencies.is_empty());
+    assert!(!super::references_decl(&model, syntax, &decl));
+    assert!(!super::references_decl(&model, syntax, &decl));
+}

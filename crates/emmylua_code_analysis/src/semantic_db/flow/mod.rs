@@ -85,6 +85,13 @@ mod loop_label_tests {
         let mut binder = FlowBinder::new(file, model.file_facts().unwrap());
         let label = binder.create_loop_label(syntax);
         let entry = binder.start;
+        let unreachable = binder.unreachable;
+        binder.add_antecedent(label, unreachable);
+        assert!(binder.get_flow(label).unwrap().antecedent.is_none());
+        assert_eq!(
+            finish_flow_label(&mut binder, label, unreachable),
+            unreachable
+        );
         assert_eq!(finish_flow_label(&mut binder, label, entry), entry);
         binder.add_antecedent(label, entry);
         assert_eq!(finish_flow_label(&mut binder, label, entry), label);
