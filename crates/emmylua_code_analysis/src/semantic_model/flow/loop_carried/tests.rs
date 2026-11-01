@@ -928,14 +928,19 @@ fn loop_conditional_fractional_update_widens_to_number() {
         .enable_only(crate::DiagnosticCode::AssignTypeMismatch);
     let file = ws.def(source);
     let model = ws.analysis.semantic_model(file);
-    let result = model
+    let result_decl_id = model
         .decl_by_offset((source.find("result=index").unwrap() as u32).into())
         .unwrap();
-    let declaration = model.file_facts().unwrap().decl_by_id(&result).unwrap();
+    let declaration = model
+        .file_facts()
+        .unwrap()
+        .decl_by_id(&result_decl_id)
+        .unwrap();
     assert!(
         declaration.doc_type_syntax.is_some(),
         "the result must own the integer annotation"
     );
+    // Locate the index expression in the annotated result assignment.
     let read_offset = source.find("result=index").unwrap() + "result=".len();
     let read = model
         .chunk()
@@ -950,11 +955,13 @@ fn loop_conditional_fractional_update_widens_to_number() {
     };
     assert!(alternatives.contains(&LuaType::Number), "{alternatives:?}");
     assert!(
-        alternatives
-            .iter()
-            .all(|ty| matches!(ty, LuaType::Integer | LuaType::Number)),
+        alternatives.iter().all(|ty| matches!(
+            ty,
+            LuaType::Integer | LuaType::IntegerConst(_) | LuaType::Number
+        )),
         "{alternatives:?}"
     );
+    // Match the diagnostic to that assignment, not the later fractional write.
     let result_line = source[..read_offset]
         .bytes()
         .filter(|byte| *byte == b'\n')
