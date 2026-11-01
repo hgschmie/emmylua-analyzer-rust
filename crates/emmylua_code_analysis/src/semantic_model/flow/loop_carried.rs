@@ -21,6 +21,7 @@ use emmylua_parser::{
     LuaAstNode, LuaClosureExpr, LuaExpr, LuaLiteralToken, LuaStat, LuaSyntaxId, LuaVarExpr,
 };
 
+mod numeric_loops;
 mod reachability;
 
 pub(super) fn loop_carried_type(
@@ -108,6 +109,11 @@ fn compute(
             .and_then(|flow| reachable.get(flow.0 as usize))
             == Some(&false)
         {
+            continue;
+        }
+        // Numeric loops with a statically empty range retain a possible body in
+        // the CFG. Its writes cannot contribute to this outer loop transfer.
+        if numeric_loops::is_in_unentered_body(model, &statement) {
             continue;
         }
         let assignment = match statement {
@@ -308,3 +314,6 @@ fn reads_decl(
     }
     false
 }
+
+#[cfg(test)]
+mod zero_iteration_tests;
