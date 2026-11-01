@@ -531,7 +531,7 @@ fn reaching_values(
 }
 
 /// Locals declared in a loop are recreated on each iteration. Only enclosing
-/// loops in the same closure can feed an older declaration back into this query.
+/// loops in the same closure can feed an older local or any global back into this query.
 fn enclosing_loop_reentries(
     model: &SemanticModel,
     root: &SemanticId,
@@ -548,7 +548,9 @@ fn enclosing_loop_reentries(
         .ancestors()
         .take_while(|node| LuaClosureExpr::cast(node.clone()).is_none())
         .filter_map(LuaLoopStat::cast)
-        .filter(|loop_stat| !loop_stat.get_range().contains_range(decl.name_range))
+        .filter(|loop_stat| {
+            !decl.kind.is_local() || !loop_stat.get_range().contains_range(decl.name_range)
+        })
         .filter(|loop_stat| match loop_stat {
             LuaLoopStat::ForStat(stat) => stat
                 .get_block()
@@ -1617,6 +1619,10 @@ local action = harmless
             .descendants::<emmylua_parser::LuaNameExpr>()
             .find(|name| name.get_text() == "x")
             .unwrap();
+        assert_eq!(
+            usize::from(query.get_position()),
+            "local x; local y = ".len()
+        );
         let root = model.resolve_name(query.get_position()).unwrap();
         let values = reaching_values(&model, &root, &LuaExpr::NameExpr(query));
         assert!(matches!(values.as_slice(), [None]));
@@ -1628,5 +1634,33 @@ local action = harmless
             "for i = 0xffdfffffffffffff, 0xffe0000000000001, 2 do action(receiver) local observed = receiver.value action = write end",
             true,
         );
+    }
+    #[test]
+    fn global_first_assigned_in_loop_keeps_carried_writes() {
+        for (assignments, conflicts) in [
+            ("action = write", true),
+            ("action = harmless; action = write", true),
+            ("action = harmless", false),
+        ] {
+            let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+            let file = ws.def(&format!(
+                "local receiver = {{value = 1}}; local function write(target) target.value = nil end; local harmless = function() end; while flag do action(receiver); local observed = receiver.value; {assignments} end"
+            ));
+            let model = ws.analysis.semantic_model(file);
+            let chunk = model.chunk().unwrap();
+            let index = chunk
+                .descendants::<LuaIndexExpr>()
+                .find(|index| index.get_text() == "receiver.value")
+                .unwrap();
+            let call = chunk
+                .descendants::<LuaCallExpr>()
+                .find(|call| call.get_text() == "action(receiver)")
+                .unwrap();
+            assert_eq!(
+                calls_conflict(&model, &index, call.syntax(), call.get_range().end()),
+                conflicts,
+                "{assignments}"
+            );
+        }
     }
 }
