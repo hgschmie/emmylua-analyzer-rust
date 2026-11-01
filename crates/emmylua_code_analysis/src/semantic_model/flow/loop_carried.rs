@@ -13,7 +13,9 @@ use super::{
     FlowId, LuaType, SemanticId, SemanticModel, cache::CacheEntry, type_of_decl_at_flow_id,
     widen_const_type,
 };
-use emmylua_parser::{LuaAstNode, LuaClosureExpr, LuaStat, LuaSyntaxId, LuaVarExpr};
+use emmylua_parser::{
+    LuaAstNode, LuaClosureExpr, LuaExpr, LuaLiteralToken, LuaStat, LuaSyntaxId, LuaVarExpr,
+};
 
 mod reachability;
 
@@ -64,6 +66,7 @@ fn compute(
     entry: FlowId,
 ) -> Option<LuaType> {
     let facts = model.file_facts()?;
+    // Foreign declarations have no transfer in this file view.
     let info = facts.decl_by_id(decl)?;
     let tree = model.syntax_tree()?;
     let node = syntax.to_node_from_root(&tree.get_red_root())?;
@@ -123,10 +126,10 @@ fn compute(
                     .map(|value| (value.get_syntax_id(), 0))
                     .or_else(|| {
                         // get(index) failed, so index >= values.len(). Only a
-                        // final call can supply additional nonzero result slots.
+                        // final call or bare vararg can supply additional result slots.
                         values
                             .last()
-                            .filter(|value| matches!(value, emmylua_parser::LuaExpr::CallExpr(_)))
+                            .filter(|value| expands_result_slots(value))
                             .map(|value| (value.get_syntax_id(), index + 1 - values.len()))
                     });
                 assigned.push(value);
@@ -147,6 +150,9 @@ fn compute(
     if info.doc_type_syntax.is_some() || annotated_param {
         return model.type_of_decl(decl);
     }
+    // This transfer widens syntactic writes; it is not a general iterative
+    // solver for recursively evolving structural types. Unresolved RHS queries
+    // retain uncertainty and keep their result provisional for later queries.
     // A recursively initialized global can have an incomplete declaration.
     // Keep its unknown entry seed while still collecting independent later writes.
     let initial = type_of_decl_at_flow_id(model, decl, entry);
@@ -186,6 +192,17 @@ fn compute(
         types.push(widen_const_type(typ));
     }
     Some(LuaType::from_vec(types))
+}
+
+/// Parentheses suppress Lua's final-expression expansion.
+fn expands_result_slots(value: &LuaExpr) -> bool {
+    match value {
+        LuaExpr::CallExpr(_) => true,
+        LuaExpr::LiteralExpr(literal) => {
+            matches!(literal.get_literal(), Some(LuaLiteralToken::Dots(_)))
+        }
+        _ => false,
+    }
 }
 
 pub(super) fn references_decl(

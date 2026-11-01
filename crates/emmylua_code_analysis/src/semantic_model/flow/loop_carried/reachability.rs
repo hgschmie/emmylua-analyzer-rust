@@ -60,6 +60,8 @@ pub(super) fn reachable_flows(model: &SemanticModel) -> Rc<Vec<bool>> {
                 next.push(index);
             }
         }
+        // Start marks each CFG entry, including closure entries. Seed every
+        // such node; this does not assume a single entry per file.
         if matches!(&node.kind, FlowNodeKind::Start) {
             pending.push(index);
         }

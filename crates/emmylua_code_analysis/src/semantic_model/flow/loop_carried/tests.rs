@@ -800,3 +800,83 @@ fn loop_recursive_call_rhs_does_not_claim_only_the_entry_type() {
         }
     }
 }
+
+#[test]
+fn loop_carried_assignments_expand_only_bare_final_varargs() {
+    use emmylua_parser::{LuaAstNode, LuaNameExpr};
+    for (assignment, expected) in [
+        ("first, value = ...", "integer|string"),
+        ("first, second, value = 0, ...", "integer|string"),
+        ("first, value = (...) ", "integer|nil"),
+    ] {
+        let mut ws = crate::VirtualWorkspace::new();
+        let source = format!(
+            "---@param ... string\nlocal function run(...) local value=1; local first,second; while flag do local observed=value; {assignment} end end"
+        );
+        let file = ws.def(&source);
+        let expected = ws.ty(expected);
+        let model = ws.analysis.semantic_model(file);
+        let offset = source.find("observed=value").unwrap() + "observed=".len();
+        let read = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaNameExpr>()
+            .find(|name| u32::from(name.get_position()) as usize == offset)
+            .unwrap();
+        for phase in ["cold", "warm"] {
+            assert_eq!(
+                model.type_of_expr_at(read.get_syntax_id(), read.get_position()),
+                expected,
+                "{assignment}: {phase}"
+            );
+        }
+    }
+}
+
+#[test]
+fn loop_entry_keeps_unassigned_guards_and_constant_true_diagnostics() {
+    let header =
+        "---@class Item\n---@field name string\n---@param item Item?\nlocal function f(item)\n";
+    for body in [
+        "while item do print(item.name); break end",
+        "while true do if item then print(item.name) end; break end",
+    ] {
+        let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+        assert!(
+            ws.has_no_diagnostic(
+                crate::DiagnosticCode::NeedCheckNil,
+                &format!("{header}{body} end")
+            ),
+            "{body}"
+        );
+    }
+    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    assert!(ws.has_diagnostic(
+        crate::DiagnosticCode::NeedCheckNil,
+        &format!("{header}while true do print(item.name); break end end")
+    ));
+    assert!(ws.has_diagnostic(
+        crate::DiagnosticCode::UnnecessaryIf,
+        "local count=0; while true do if count == 0 then print(count) end; break; count=1 end"
+    ));
+}
+
+#[test]
+fn loop_rhs_dependency_is_lazy_for_assignments_before_a_loop() {
+    use emmylua_parser::{LuaAstNode, LuaNameExpr};
+    let mut ws = crate::VirtualWorkspace::new();
+    let source = "local count=0; count=count+1; local observed=count; while flag do break end";
+    let file = ws.def(source);
+    let model = ws.analysis.semantic_model(file);
+    let offset = source.find("observed=count").unwrap() + "observed=".len();
+    let read = model
+        .chunk()
+        .unwrap()
+        .descendants::<LuaNameExpr>()
+        .find(|name| u32::from(name.get_position()) as usize == offset)
+        .unwrap();
+    for _ in 0..2 {
+        model.type_of_expr_at(read.get_syntax_id(), read.get_position());
+    }
+    assert!(model.cache.borrow().loop_rhs_dependencies.is_empty());
+}

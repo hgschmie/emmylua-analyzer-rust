@@ -1743,9 +1743,6 @@ struct DeclAssignmentFrame {
     flow_id: FlowId,
     assign_pos: TextSize,
     value_syntax: emmylua_parser::LuaSyntaxId,
-    /// Whether this RHS reads the declaration being traced; used at LoopEntry.
-    /// Compute once per frame, and skip the scan for trees without complex control.
-    uses_previous_value: bool,
     /// Path state after the assignment (closer to the query on the backtracking path).
     assign_path: PathState,
     base_before: LuaType,
@@ -1886,9 +1883,14 @@ fn trace_decl_uncached(
         // FLOW_READ enables assignments; ASSIGN_TARGET intentionally retains only
         // the declaration/cast contract. An empty frame stack is a direct read,
         // so it also receives loop-entry state.
-        if options.assignments && frames.last().is_none_or(|frame| frame.uses_previous_value) {
+        if options.assignments {
             for effect in tree.get_flow_effects(current) {
                 if let FlowEffect::LoopEntry(syntax) = effect
+                    // Inspect an RHS only when backtracking actually reaches a
+                    // loop entry. The syntax dependency is cached across traces.
+                    && frames.last().is_none_or(|frame| {
+                        loop_carried::references_decl(model, frame.value_syntax, decl)
+                    })
                     && let Some(entry) = first_antecedent(tree, node.antecedent.as_ref())
                     && let Some(typ) = loop_carried::loop_carried_type(model, decl, *syntax, entry)
                 {
@@ -1943,14 +1945,6 @@ fn trace_decl_uncached(
                                     flow_id: current,
                                     assign_pos,
                                     value_syntax: *value_syntax,
-                                    // This flag is only consumed by LoopEntry.
-                                    // Straight-line trees need no RHS dependency work.
-                                    uses_previous_value: tree.has_complex_control()
-                                        && loop_carried::references_decl(
-                                            model,
-                                            *value_syntax,
-                                            decl,
-                                        ),
                                     assign_path,
                                     base_before,
                                 });
