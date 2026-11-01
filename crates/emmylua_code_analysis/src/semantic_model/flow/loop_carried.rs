@@ -67,6 +67,8 @@ fn compute(
         .ancestors()
         .find_map(LuaClosureExpr::cast)
         .map(|c| c.get_syntax_id());
+    // Include nested loops in this closure: their writes can reach a later outer
+    // iteration. Repeated types collapse during widening; uncalled closures do not.
     let mut assigned = Vec::new();
     for assignment in node.descendants().filter_map(LuaAssignStat::cast) {
         if assignment

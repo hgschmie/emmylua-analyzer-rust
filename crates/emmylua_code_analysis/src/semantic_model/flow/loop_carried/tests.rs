@@ -485,3 +485,70 @@ fn loop_rhs_dependency_cache_separates_file_views() {
         assert!(super::references_decl(&shared, rhs.get_syntax_id(), &decl));
     }
 }
+
+#[test]
+fn loop_carried_conditional_self_updates_keep_integer_read_type() {
+    use emmylua_parser::{LuaAstNode, LuaNameExpr};
+    for update in [
+        "if flag then count = count + 1 end",
+        "if flag then count = count + 1 else count = 0 end",
+    ] {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def(&format!(
+            "local count = 0; for i = 1, 10 do {update}; local observed = count end"
+        ));
+        let model = ws.analysis.semantic_model(file);
+        let read = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaNameExpr>()
+            .filter(|name| name.get_name_text().as_deref() == Some("count"))
+            .last()
+            .unwrap();
+        for phase in ["cold", "warm"] {
+            assert_eq!(
+                model.type_of_expr_at(read.get_syntax_id(), read.get_position()),
+                LuaType::Integer,
+                "{update}, {phase}"
+            );
+        }
+    }
+}
+
+#[test]
+fn loop_parameter_contract_does_not_hide_direct_invalid_write() {
+    use emmylua_parser::{LuaAstNode, LuaNameExpr};
+    let source = r#"
+---@param value integer
+local function consume(value)
+    while flag do
+        local before_write = value
+        value = nil
+        local after_write = value
+    end
+end
+"#;
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def(source);
+    let model = ws.analysis.semantic_model(file);
+    let reads: Vec<_> = model
+        .chunk()
+        .unwrap()
+        .descendants::<LuaNameExpr>()
+        .filter(|name| name.get_name_text().as_deref() == Some("value"))
+        .collect();
+    assert_eq!(reads.len(), 3);
+    for phase in ["cold", "warm"] {
+        assert_eq!(
+            model.type_of_expr_at(reads[0].get_syntax_id(), reads[0].get_position()),
+            LuaType::Integer,
+            "entry contract, {phase}"
+        );
+        assert_eq!(
+            model.type_of_expr_at(reads[2].get_syntax_id(), reads[2].get_position()),
+            LuaType::Nil,
+            "direct violating assignment, {phase}"
+        );
+    }
+    assert!(ws.has_diagnostic(crate::DiagnosticCode::AssignTypeMismatch, source));
+}
