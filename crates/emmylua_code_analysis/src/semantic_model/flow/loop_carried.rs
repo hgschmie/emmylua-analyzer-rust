@@ -219,7 +219,9 @@ fn compute(
                 }
             })
             .unwrap_or(LuaType::Nil);
-        if self_dependent && has_structural_shape(&typ) {
+        // The structural entry already contributed Unknown before a possible
+        // InProgress RHS skip; avoid adding the same uncertainty a second time.
+        if self_dependent && !structural_entry && has_structural_shape(&typ) {
             types.push(LuaType::Unknown);
         }
         types.push(widen_const_type(typ));

@@ -141,10 +141,15 @@ pub fn type_of_decl_at(model: &SemanticModel, decl: &SemanticId, offset: TextSiz
     // A reachable loop/label can bring a textually later assignment back to
     // this read. Unrelated loops elsewhere in the file must not disable this
     // fast path; use the existing per-node CFG reachability index.
-    if let Some(decl_start) = decl_owner_syntax_start(model, decl)
-        && (!tree.has_decl_assignment(decl)
+    // Only assigned declarations pay for the closure lookup. Keep this lazy so
+    // missing declaration metadata still takes the normal fallback immediately.
+    let can_skip_assignment_trace = || {
+        !tree.has_decl_assignment(decl)
             || (!tree.is_loop_reachable(flow_id)
-                && declaration_is_in_query_closure(model, decl, offset)))
+                && declaration_is_in_query_closure(model, decl, offset))
+    };
+    if let Some(decl_start) = decl_owner_syntax_start(model, decl)
+        && can_skip_assignment_trace()
         && tree.latest_decl_assignment(decl, offset).is_none()
         && !tree.has_flow_event_between_at(flow_id, decl_start, offset, true)
     {
