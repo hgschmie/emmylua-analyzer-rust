@@ -228,6 +228,8 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) member_call_resolution: HashMap<FileId, bool>,
     /// Fixed syntax receiver paths only; invocation bindings remain query-local.
     pub(crate) member_receiver_targets: HashMap<FileId, Rc<Vec<(SemanticId, Vec<LuaMemberKey>)>>>,
+    /// Syntax-only reachability for name-callee assignments in this model snapshot.
+    pub(crate) member_callee_reachable: HashMap<FileId, Rc<Vec<bool>>>,
     pub(crate) resolve_name: HashMap<(FileId, TextSize), Option<SemanticId>>,
     /// Builtin identity at each read and declaration/flow state.
     pub(crate) builtin_function: HashMap<(FileId, BuiltinKey), Option<SmolStr>>,

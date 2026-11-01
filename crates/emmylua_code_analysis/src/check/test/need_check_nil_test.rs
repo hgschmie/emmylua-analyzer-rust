@@ -297,7 +297,7 @@ mod test {
 }
 
 #[test]
-fn test_member_primitive_guards() {
+fn primitive_type_guards_narrow_member_reads_and_avoid_nil_warnings() {
     use crate::{DiagnosticCode, LuaType, VirtualWorkspace};
     use emmylua_parser::{LuaAstNode, LuaIndexExpr};
     for body in [
@@ -321,11 +321,15 @@ fn test_member_primitive_guards() {
         "#
         );
         let mut ws = VirtualWorkspace::new_with_init_std_lib();
-        assert!(
-            ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
-            "{body}"
-        );
+        ws.analysis
+            .diagnostic
+            .enable_only(DiagnosticCode::NeedCheckNil);
         let file = ws.def(&source);
+        let diagnostics = ws
+            .analysis
+            .diagnose_file(file, tokio_util::sync::CancellationToken::new())
+            .expect("the diagnostic query must complete");
+        assert!(diagnostics.is_empty(), "{body}: {diagnostics:#?}");
         let model = ws.analysis.semantic_model(file);
         let marker = source.find("-- observe").unwrap();
         let pos = source[..marker].rfind("elem.handler").unwrap() as u32;
@@ -454,11 +458,13 @@ end
         };
         assert_eq!(
             model.type_of_expr_at(access.get_syntax_id(), access.get_position()),
-            expected
+            expected,
+            "cold query"
         );
         assert_eq!(
             model.type_of_expr_at(access.get_syntax_id(), access.get_position()),
-            expected
+            expected,
+            "warm query"
         );
     }
 }

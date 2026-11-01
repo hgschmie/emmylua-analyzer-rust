@@ -1089,7 +1089,7 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                         );
                     }
                     if let Some(Some((owner, key, member))) =
-                        get_var_member_ids(self.binder, &[var]).first()
+                        get_var_member_ids(self.binder, std::slice::from_ref(&var)).first()
                         && let Some(closure) = func_stat.get_closure()
                     {
                         self.binder.add_effect(
@@ -1308,6 +1308,12 @@ impl<'a, 'b> BindEngine<'a, 'b> {
 /// Do not synthesize another iteration for statically single-pass loops.
 fn loop_may_repeat(loop_stat: &LuaLoopStat) -> bool {
     match loop_stat {
+        LuaLoopStat::WhileStat(stat) => {
+            stat.get_condition_expr()
+                .as_ref()
+                .and_then(static_literal_truthiness)
+                != Some(false)
+        }
         LuaLoopStat::RepeatStat(stat) => {
             stat.get_condition_expr()
                 .as_ref()
@@ -1319,6 +1325,9 @@ fn loop_may_repeat(loop_stat: &LuaLoopStat) -> bool {
             let start = values.first().and_then(static_number_value);
             let stop = values.get(1).and_then(static_number_value);
             let step = values.get(2).map(static_number_value).unwrap_or(Some(1.0));
+            // Literal arithmetic uses f64, so very large counters can round.
+            // If adding a step makes no progress, retain the possible backedge
+            // rather than declaring a potentially repeating loop single-pass.
             match (start, stop, step) {
                 (Some(start), Some(stop), Some(step)) if step > 0.0 => start + step <= stop,
                 (Some(start), Some(stop), Some(step)) if step < 0.0 => start + step >= stop,

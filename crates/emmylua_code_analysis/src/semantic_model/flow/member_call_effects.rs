@@ -21,10 +21,13 @@ use emmylua_parser::{
 };
 use rowan::{TextRange, TextSize};
 
-use super::{SemanticModel, guards, index_access_path, path_write_affects, stable_access_path};
+use super::{SemanticModel, guards, index_access_path, member_access_path, path_write_affects};
 use crate::semantic_db::def::SemanticId;
 use crate::semantic_db::flow::{FlowAntecedent, FlowEffect, FlowId, FlowNodeKind, LuaClosureId};
 use crate::{LuaMemberKey, LuaType};
+
+mod receiver_targets;
+use receiver_targets::receiver_targets;
 
 type Access = (SemanticId, Vec<LuaMemberKey>);
 type Bindings = Vec<(SemanticId, Vec<Access>)>;
@@ -74,98 +77,6 @@ fn relevant(path: &Access, targets: &[Access]) -> bool {
 #[cfg(test)]
 thread_local! { static RECEIVER_TARGET_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
-fn receiver_targets(model: &SemanticModel, expected: &Access) -> Rc<Vec<Access>> {
-    let mut targets = fixed_receiver_targets(model);
-    if !targets.contains(expected) {
-        Rc::make_mut(&mut targets).push(expected.clone());
-    }
-    targets
-}
-
-fn fixed_receiver_targets(model: &SemanticModel) -> Rc<Vec<Access>> {
-    if let Some(targets) = model
-        .cache
-        .borrow()
-        .member_receiver_targets
-        .get(&model.file_id())
-    {
-        return targets.clone();
-    }
-    let _query = crate::semantic_model::cache::QueryCacheScope::new(&model.cache);
-    let revision = model.cache.borrow().revision();
-    #[cfg(test)]
-    RECEIVER_TARGET_SCANS.with(|count| count.set(count.get() + 1));
-    let mut targets = Vec::new();
-    if let Some(chunk) = model.chunk() {
-        // Syntax fixes the finite set of roots and path lengths. Include callable
-        // paths separately from the guarded-write target, so helper(methods) can
-        // retain a method table unrelated to the guarded receiver.
-        for index in chunk.descendants::<LuaIndexExpr>() {
-            let expr = LuaExpr::IndexExpr(index);
-            if let Some(path) =
-                stable_access_path(model, &expr).or_else(|| index_access_path(model, &expr))
-                && !path.1.iter().any(LuaMemberKey::is_none)
-                && !targets.contains(&path)
-            {
-                targets.push(path);
-            }
-        }
-    }
-    if let Some(chunk) = model.chunk() {
-        let mut tables = Vec::new();
-        for local in chunk.descendants::<emmylua_parser::LuaLocalStat>() {
-            for (name, value) in local.get_local_name_list().zip(local.get_value_exprs()) {
-                tables.push((
-                    (
-                        SemanticId::decl(model.file_id(), name.get_range()),
-                        Vec::new(),
-                    ),
-                    value,
-                ));
-            }
-        }
-        for assign in chunk.descendants::<LuaAssignStat>() {
-            let (vars, values) = assign.get_var_and_expr_list();
-            for (var, value) in vars.into_iter().zip(values) {
-                if let Some(path) = LuaExpr::cast(var.syntax().clone()).and_then(|expr| {
-                    stable_access_path(model, &expr).or_else(|| index_access_path(model, &expr))
-                }) {
-                    tables.push((path, value));
-                }
-            }
-        }
-        while let Some((path, value)) = tables.pop() {
-            let Some(LuaExpr::TableExpr(table)) = guards::unparenthesized(value) else {
-                continue;
-            };
-            for field in table.get_fields() {
-                let Some(key) = field
-                    .get_field_key()
-                    .map(literal_member_key)
-                    .filter(|key| !key.is_none())
-                else {
-                    continue;
-                };
-                let mut child = path.clone();
-                child.1.push(key);
-                if !targets.contains(&child) {
-                    targets.push(child.clone());
-                }
-                if let Some(value) = field.get_value_expr() {
-                    tables.push((child, value));
-                }
-            }
-        }
-    }
-    let targets = Rc::new(targets);
-    model.cache.publish_if_complete(revision, |cache| {
-        cache
-            .member_receiver_targets
-            .insert(model.file_id(), targets.clone());
-    });
-    targets
-}
-
 pub(super) fn calls_conflict(
     model: &SemanticModel,
     index: &LuaIndexExpr,
@@ -183,9 +94,7 @@ pub(super) fn calls_conflict_after(
     before: TextSize,
 ) -> bool {
     let expr = LuaExpr::IndexExpr(index.clone());
-    let Some(expected) =
-        stable_access_path(model, &expr).or_else(|| index_access_path(model, &expr))
-    else {
+    let Some(expected) = member_access_path(model, &expr) else {
         return false;
     };
     scan(model, &expected, node, after, before)
@@ -217,6 +126,9 @@ fn scan(
         .member_call_resolution
         .get(&model.file_id())
         .copied();
+    // This flag reads only syntax from the model's immutable database snapshot.
+    // Query incompleteness does not change it; receiver paths below also resolve
+    // semantic identities, so their cache publication checks completeness.
     let needs_members = cached.unwrap_or_else(|| {
         let present = model.chunk().is_some_and(|chunk| {
             chunk.descendants::<LuaCallExpr>().any(|call| {
@@ -384,9 +296,7 @@ fn access_paths(
         if !seen.insert((expr.get_syntax_id(), suffix.clone())) {
             continue;
         }
-        let Some((root, mut keys)) =
-            stable_access_path(model, &expr).or_else(|| index_access_path(model, &expr))
-        else {
+        let Some((root, mut keys)) = member_access_path(model, &expr) else {
             continue;
         };
         keys.extend(suffix);
@@ -457,6 +367,82 @@ fn formal_alias_value(
     None
 }
 
+/// Prune literal-impossible paths before accepting a replacement. Backtracking
+/// stops at the replacement itself, so checking only later predecessor visits
+/// would accept a write before ever inspecting its enclosing false condition.
+fn callee_reachable_flows(model: &SemanticModel) -> Rc<Vec<bool>> {
+    if let Some(reachable) = model
+        .cache
+        .borrow()
+        .member_callee_reachable
+        .get(&model.file_id())
+    {
+        return reachable.clone();
+    }
+    let (Some(tree), Some(chunk)) = (model.flow_tree(), model.chunk()) else {
+        return Rc::new(Vec::new());
+    };
+    let count = tree.node_count() as usize;
+    let mut allowed = vec![true; count];
+    let mut successors = vec![Vec::new(); count];
+    let mut pending = Vec::new();
+    for (index, allowed_node) in allowed.iter_mut().enumerate() {
+        let Some(node) = tree.get_flow_node(FlowId(index as u32)) else {
+            continue;
+        };
+        if matches!(node.kind, FlowNodeKind::Unreachable) {
+            *allowed_node = false;
+        }
+        if let FlowNodeKind::TrueCondition(ptr) | FlowNodeKind::FalseCondition(ptr) = &node.kind
+            && let Some(condition) = ptr.to_node(&chunk)
+            && let Some((LuaExpr::LiteralExpr(literal), truthy)) = guards::normalize_condition(
+                condition,
+                matches!(node.kind, FlowNodeKind::TrueCondition(_)),
+            )
+        {
+            let actual = match literal.get_literal() {
+                Some(emmylua_parser::LuaLiteralToken::Bool(value)) => Some(value.is_true()),
+                Some(emmylua_parser::LuaLiteralToken::Nil(_)) => Some(false),
+                Some(
+                    emmylua_parser::LuaLiteralToken::String(_)
+                    | emmylua_parser::LuaLiteralToken::Number(_),
+                ) => Some(true),
+                _ => None,
+            };
+            *allowed_node = actual.is_none_or(|actual| actual == truthy);
+        }
+        let previous = match &node.antecedent {
+            Some(FlowAntecedent::Single(previous)) => std::slice::from_ref(previous),
+            Some(FlowAntecedent::Multiple(id)) => {
+                tree.get_multi_antecedents(*id).unwrap_or_default()
+            }
+            None => &[],
+        };
+        for previous in previous {
+            if let Some(next) = successors.get_mut(previous.0 as usize) {
+                next.push(index);
+            }
+        }
+        if matches!(node.kind, FlowNodeKind::Start) {
+            pending.push(index);
+        }
+    }
+    let mut reachable = vec![false; count];
+    while let Some(index) = pending.pop() {
+        if allowed[index] && !reachable[index] {
+            reachable[index] = true;
+            pending.extend(successors[index].iter().copied());
+        }
+    }
+    let reachable = Rc::new(reachable);
+    model
+        .cache
+        .borrow_mut()
+        .member_callee_reachable
+        .insert(model.file_id(), reachable.clone());
+    reachable
+}
+
 /// Return possible reaching assignments in the current file. `None` retains the
 /// original declaration value or bound formal when no replacement reaches it.
 fn reaching_values(
@@ -476,13 +462,14 @@ fn reaching_values(
     let Some(chunk) = model.chunk() else {
         return vec![None];
     };
+    let reachable = callee_reachable_flows(model);
     let loops = enclosing_loop_reentries(model, root, query);
     let mut entered = HashSet::new();
     let mut pending = vec![start];
     let mut visited = HashSet::new();
     let mut values = Vec::new();
     while let Some(flow) = pending.pop() {
-        if !visited.insert(flow) {
+        if !reachable.get(flow.0 as usize).copied().unwrap_or(false) || !visited.insert(flow) {
             continue;
         }
         let Some(node) = tree.get_flow_node(flow) else {
@@ -964,9 +951,7 @@ fn mutable_captured_member(model: &SemanticModel, target: &Access) -> bool {
         };
         let path = match var {
             LuaVarExpr::NameExpr(_) => index_access_path(model, &expr),
-            LuaVarExpr::IndexExpr(_) => {
-                stable_access_path(model, &expr).or_else(|| index_access_path(model, &expr))
-            }
+            LuaVarExpr::IndexExpr(_) => member_access_path(model, &expr),
         };
         if let Some(path) = path
             && path_write_affects(&path, &target.0, &target.1)
@@ -1292,33 +1277,8 @@ local observed = receiver.value
         ));
     }
 
-    #[test]
-    fn deep_known_callees_do_not_hide_conflicting_writes() {
-        let mut definitions = "local methods = {}; function methods.unrelated() end\nlocal function step0(target) target.value = nil end\n".to_string();
-        for step in 1..2050 {
-            definitions.push_str(&format!(
-                "local function step{step}(target) step{}(target) end\n",
-                step - 1
-            ));
-        }
-        assert_known_call_conflicts(&definitions, "step2049(receiver)");
-    }
-
-    #[test]
-    fn wide_known_callees_do_not_hide_conflicting_writes() {
-        let mut definitions = "local function write(target) target.value = nil end\n".to_string();
-        for step in 0..2048 {
-            definitions.push_str(&format!(
-                "local function harmless{step}(target) return target end\n"
-            ));
-        }
-        definitions.push_str("local function outer(target)\nwrite(target)\n");
-        for step in 0..2048 {
-            definitions.push_str(&format!("harmless{step}(target)\n"));
-        }
-        definitions.push_str("end");
-        assert_known_call_conflicts(&definitions, "outer(receiver)");
-    }
+    // Keep stress cases identifiable without disabling their regression coverage.
+    mod stress;
 
     #[test]
     fn long_callee_aliases_retain_visible_writes() {
@@ -1591,4 +1551,24 @@ fn primitive_guard_without_standard_type_binding_is_opaque() {
         .next()
         .unwrap();
     assert!(super::primitive_guard_target(&model, &LuaExpr::BinaryExpr(condition), true).is_none());
+}
+
+#[cfg(test)]
+#[test]
+fn statically_unreachable_callee_assignments_do_not_invalidate_guards() {
+    for condition in ["false", "nil", "not true", "not 1", "not ''"] {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def(&format!("local receiver = {{value=1}}\nlocal action = function() end\nif {condition} then action = function(target) target.value = nil end end\naction(receiver)\nlocal observed = receiver.value"));
+        let model = ws.analysis.semantic_model(file);
+        let chunk = model.chunk().unwrap();
+        let index = chunk
+            .descendants::<LuaIndexExpr>()
+            .find(|index| index.get_text() == "receiver.value")
+            .unwrap();
+        let call = chunk.descendants::<LuaCallExpr>().next().unwrap();
+        assert!(
+            !calls_conflict(&model, &index, call.syntax(), call.get_range().end()),
+            "{condition}"
+        );
+    }
 }

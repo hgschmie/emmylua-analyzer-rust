@@ -1364,3 +1364,19 @@ mod call_guard_followups {
         }
     }
 }
+
+#[test]
+fn assignment_lhs_calls_invalidate_later_rhs_member_guards() {
+    for (write, nullable) in [
+        ("if flag then elem[key] = nil end", true),
+        ("if flag then other[key] = nil end", false),
+        ("", false),
+    ] {
+        assert_member_call_boundary(
+            "type(elem.handler) == 'table'",
+            &format!("local function index() {write}; return 'slot' end\nlocal destination = {{}}"),
+            "destination[index()] = elem.handler.name -- observe",
+            nullable,
+        );
+    }
+}
