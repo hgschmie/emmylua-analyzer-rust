@@ -132,6 +132,9 @@ fn collect(
     seen.pop();
 }
 
+/// Project declared index contracts, independently of runtime metatable dispatch.
+/// Named fields, including metamethod-named fields, remain possible broad-key reads.
+/// Presence/stability proofs apply their own exclusions for custom lookup behavior.
 pub(crate) fn lookup(model: &SemanticModel<'_>, owner: &LuaType, key: &LuaType) -> Option<LuaType> {
     // This fallback supplies inherited contracts for named classes. Objects and
     // native tables keep their ordinary index-inference paths; dictionaries also
@@ -415,6 +418,33 @@ mod contract_boundary_tests {
         assert_eq!(
             lookup(&model, &overridden, &LuaType::String),
             Some(LuaType::Boolean)
+        );
+    }
+}
+
+#[cfg(test)]
+mod declared_metamethod_field_tests {
+    use super::*;
+
+    #[test]
+    fn inherited_dictionary_keeps_declared_metamethod_named_fields() {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file =
+            ws.def("---@class Declared: table<string,integer>\n---@field __index fun():string");
+        let owner = ws.ty("Declared");
+        let method = ws.ty("fun():string");
+        let model = ws.analysis.semantic_model(file);
+        assert_eq!(
+            lookup(&model, &owner, &LuaType::String),
+            Some(LuaType::from_vec(vec![LuaType::Integer, method.clone()]))
+        );
+        assert_eq!(
+            lookup(
+                &model,
+                &owner,
+                &LuaType::StringConst(smol_str::SmolStr::new("__index").into())
+            ),
+            Some(method)
         );
     }
 }

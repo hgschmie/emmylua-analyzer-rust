@@ -640,6 +640,17 @@ end
     }
 
     #[test]
+    fn computed_guards_reestablished_inside_loops_survive_later_writes() {
+        for body in [
+            "for i=1,10 do if rows[key] then print(rows[key][1]); rows[key]=nil end end",
+            "while predicate() do if rows[key] then print(rows[key][1]); rows[key]=nil end end",
+            "repeat if rows[key] then print(rows[key][1]); rows[key]=nil end until predicate()",
+        ] {
+            check(body, true);
+        }
+    }
+
+    #[test]
     fn computed_facts_cross_nonconflicting_nested_loop() {
         check(
             r#"
