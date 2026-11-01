@@ -200,3 +200,21 @@ fn descendant_writes_do_not_replace_the_ancestor_callee() {
         true,
     );
 }
+
+#[test]
+fn mixed_and_sequence_constructor_callees_work_through_local_aliases() {
+    for installation in [
+        "local methods = {1, clear = writer}; local action = methods.clear",
+        "local methods = {writer}; local action = methods[1]",
+        "local methods = {}; methods.clear = writer; local action = methods.clear",
+    ] {
+        for (receiver, nullable) in [("elem", true), ("other", false)] {
+            assert_member_call_boundary(
+                "type(elem.handler) == 'table'",
+                &format!("local function writer(target) target.handler = nil end\n{installation}"),
+                &format!("action({receiver})\nlocal value = elem.handler.name -- observe"),
+                nullable,
+            );
+        }
+    }
+}

@@ -4,7 +4,9 @@
 //! behind unresolved alias/receiver resolution may therefore go unreported.
 //! Same-file fixed member paths use reaching assignments and actual dot/colon
 //! receivers. Dynamic callees and interprocedural installation of methods remain
-//! opaque. Captured member replacements without an invocation context are opaque.
+//! opaque. This includes installing a callable with rawset: its direct write
+//! invalidates the member, but the stored callable is not a value postcondition.
+//! Captured member replacements without an invocation context are opaque.
 //! A reassigned name callee captured in a different closure is also
 //! opaque; the presence of any declaration assignment triggers that boundary.
 //!
