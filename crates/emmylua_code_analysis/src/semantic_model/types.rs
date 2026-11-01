@@ -127,22 +127,11 @@ impl<'db> SemanticModel<'db> {
         {
             let cache = self.cache.borrow();
             if let Some(entry) = cache.decl_type.get(&key) {
-                // A call's return contract may be available before inference of
-                // its arguments finishes. Use that projection when a dependent
-                // flow query re-enters this local initializer.
                 if matches!(entry, cache::CacheEntry::InProgress)
-                    && self
-                        .file_facts()
-                        .and_then(|facts| facts.decl_by_id(decl))
-                        .is_some_and(|info| {
-                            matches!(info.kind, DeclKind::Local { is_iter: false, .. })
-                                && info.value_expr_syntax.is_some_and(|syntax| {
-                                    syntax.get_kind() == LuaSyntaxKind::CallExpr
-                                })
-                        })
-                    && let Some(ty) = self.analysis().decl_type_lua(cache_file, decl.clone())
-                    && !ty.is_unknown()
+                    && let Some(ty) = self.call_initializer_seed(decl)
                 {
+                    // Derived answers must stay provisional until the initializer
+                    // finishes; the outer query discards only unfinished entries.
                     cache.mark_incomplete();
                     return Some(ty);
                 }
@@ -161,6 +150,21 @@ impl<'db> SemanticModel<'db> {
         cache.decl_type.insert(key, entry);
         result
     }
+    fn call_initializer_seed(&self, decl: &SemanticId) -> Option<LuaType> {
+        let facts = self.file_facts()?;
+        let info = facts.decl_by_id(decl)?;
+        if !matches!(info.kind, DeclKind::Local { is_iter: false, .. })
+            || info.value_expr_syntax?.get_kind() != LuaSyntaxKind::CallExpr
+        {
+            return None;
+        }
+        // This shell projection has its own expression-cycle guard and does not
+        // enter SemanticModel inference or borrow its request-local cache.
+        self.analysis()
+            .decl_type_lua(self.file_id(), decl.clone())
+            .filter(|ty| !ty.is_unknown())
+    }
+
     pub(crate) fn type_of_decl_impl(&self, decl: &SemanticId) -> Option<LuaType> {
         if let Some(facts) = self.file_facts()
             && let Some(decl) = facts.decl_by_id(decl)

@@ -349,6 +349,13 @@ local value = 10 - item.count
                             expected,
                             "pending {field_type}, second_slot={second_slot}"
                         );
+                        assert!(
+                            !model
+                                .cache
+                                .borrow()
+                                .expr_type
+                                .contains_key(&(file, expression))
+                        );
                         model.cache.borrow_mut().decl_type.remove(&key);
                     }
                     for _ in 0..2 {
@@ -361,5 +368,125 @@ local value = 10 - item.count
                 }
             }
         }
+    }
+
+    #[test]
+    fn other_recursive_declarations_keep_empty_seeds() {
+        for source in [
+            "local item = missing(); print(item)",
+            "---@return integer\nlocal function create() return 1 end\nlocal item = (create()); print(item)",
+            "local item = 1; print(item)",
+            "for _, item in pairs({}) do print(item) end",
+            "---@return integer\nlocal function create() return 1 end\nitem = create(); print(item)",
+        ] {
+            let mut ws = crate::VirtualWorkspace::new();
+            let file = ws.def(source);
+            let model = ws.analysis.semantic_model(file);
+            let read = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaNameExpr>()
+                .filter(|name| name.get_text() == "item")
+                .last()
+                .unwrap();
+            let decl = model.resolve_name(read.get_position()).unwrap();
+            if source.starts_with("local item = missing()") {
+                assert!(
+                    model
+                        .analysis()
+                        .decl_type_lua(file, decl.clone())
+                        .unwrap()
+                        .is_unknown()
+                );
+            }
+            model
+                .cache
+                .borrow_mut()
+                .decl_type
+                .insert((file, decl.clone()), CacheEntry::InProgress);
+            let revision = model.cache.borrow().revision();
+            assert_eq!(model.type_of_decl(&decl), None, "{source}");
+            assert_eq!(model.cache.borrow().revision(), revision, "{source}");
+        }
+    }
+
+    #[test]
+    fn completed_value_replaces_provisional_arithmetic() {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def("---@return integer\nlocal function create() return 1 end\nlocal item = create()\nlocal value = 10 - item");
+        let model = ws.analysis.semantic_model(file);
+        let chunk = model.chunk().unwrap();
+        let read = chunk
+            .descendants::<LuaNameExpr>()
+            .find(|name| name.get_text() == "item")
+            .unwrap();
+        let decl = model.resolve_name(read.get_position()).unwrap();
+        let expression = chunk
+            .descendants::<LuaBinaryExpr>()
+            .next()
+            .unwrap()
+            .get_syntax_id();
+        let key = (file, decl);
+        model
+            .cache
+            .borrow_mut()
+            .decl_type
+            .insert(key.clone(), CacheEntry::InProgress);
+        assert_eq!(model.type_of_expr(expression), LuaType::Integer);
+        assert!(
+            !model
+                .cache
+                .borrow()
+                .expr_type
+                .contains_key(&(file, expression))
+        );
+        // Model completion with a broader result: the prior arithmetic must be
+        // recomputed, while subsequent complete reads remain cached.
+        model
+            .cache
+            .borrow_mut()
+            .decl_type
+            .insert(key, CacheEntry::Ready(Some(LuaType::Number)));
+        let revision = model.cache.borrow().revision();
+        for _ in 0..2 {
+            assert_eq!(model.type_of_expr(expression), LuaType::Number);
+        }
+        assert_eq!(model.cache.borrow().revision(), revision);
+    }
+
+    #[test]
+    fn captured_call_initializer_keeps_integer_arithmetic() {
+        let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(
+            r#"---@class NumericLoad
+---@field stacks integer
+local NumericLoad = {}
+---@param capacity integer
+---@return NumericLoad
+local function limit(capacity) return {stacks = 1} end
+---@return integer
+local function consume()
+    local remaining = 100
+    while remaining > 0 do
+        local item = limit(remaining)
+        remaining = remaining - item.stacks
+        print(function() return item.stacks end)
+    end
+    return remaining
+end
+"#,
+        );
+        let diagnostics = ws
+            .analysis
+            .diagnose_file(file, tokio_util::sync::CancellationToken::new())
+            .unwrap();
+        assert!(
+            !diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.code,
+                Some(lsp_types::NumberOrString::String(code))
+                    if code == "assign-type-mismatch" || code == "return-type-mismatch"
+            )),
+            "{diagnostics:?}"
+        );
     }
 }
