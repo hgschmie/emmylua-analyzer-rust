@@ -165,6 +165,7 @@ impl VirtualWorkspace {
     }
 
     /// Check whether the source reports the selected diagnostic, with other checks disabled.
+    /// Reruns the check through `has_no_diagnostic` and returns its logical inverse.
     pub fn has_diagnostic(&mut self, diagnostic_code: DiagnosticCode, block_str: &str) -> bool {
         !self.has_no_diagnostic(diagnostic_code, block_str)
     }

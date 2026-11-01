@@ -9,14 +9,17 @@
 #[cfg(test)]
 mod tests;
 
-use super::{LuaType, SemanticId, SemanticModel, cache::CacheEntry, widen_const_type};
+use super::{
+    FlowId, LuaType, SemanticId, SemanticModel, cache::CacheEntry, type_of_decl_at_flow_id,
+    widen_const_type,
+};
 use emmylua_parser::{LuaAssignStat, LuaAstNode, LuaClosureExpr, LuaSyntaxId, LuaVarExpr};
 
 pub(super) fn loop_carried_type(
     model: &SemanticModel,
     decl: &SemanticId,
     syntax: LuaSyntaxId,
-    entry: super::FlowId,
+    entry: FlowId,
 ) -> Option<LuaType> {
     // Loop syntax and entry belong to this querying file view. A foreign
     // declaration has no transfer here and must not poison its owning view.
@@ -53,7 +56,7 @@ fn compute(
     model: &SemanticModel,
     decl: &SemanticId,
     syntax: LuaSyntaxId,
-    entry: super::FlowId,
+    entry: FlowId,
 ) -> Option<LuaType> {
     let facts = model.file_facts()?;
     let info = facts.decl_by_id(decl)?;
@@ -114,7 +117,7 @@ fn compute(
     if info.doc_type_syntax.is_some() || annotated_param {
         return Some(declared);
     }
-    let initial = super::type_of_decl_at_flow_id(model, decl, entry);
+    let initial = type_of_decl_at_flow_id(model, decl, entry);
     let mut types = vec![widen_const_type(initial)];
     for rhs in assigned {
         if let Some((syntax, _)) = rhs

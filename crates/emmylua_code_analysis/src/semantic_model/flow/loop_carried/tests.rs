@@ -256,11 +256,20 @@ fn loop_cycle_seed_propagates_incompleteness() {
         .unwrap();
     let decl = model.resolve_name(read.get_position()).unwrap();
     let syntax = loop_stat.get_syntax_id();
-    let entry = model
-        .flow_tree()
-        .unwrap()
-        .get_flow_id_at(read.get_position())
+    let tree = model.flow_tree().unwrap();
+    let loop_flow = (0..tree.node_count())
+        .map(crate::semantic_db::flow::FlowId)
+        .find(|flow| {
+            tree.get_flow_effects(*flow).iter().any(|effect| {
+                matches!(effect, crate::semantic_db::flow::FlowEffect::LoopEntry(id) if *id == syntax)
+            })
+        })
         .unwrap();
+    let entry = super::super::first_antecedent(
+        &tree,
+        tree.get_flow_node(loop_flow).unwrap().antecedent.as_ref(),
+    )
+    .expect("the loop has a pre-loop predecessor before any continue edge");
     model
         .cache
         .borrow_mut()

@@ -1,6 +1,6 @@
 use emmylua_parser::{
     LuaAssignStat, LuaAstNode, LuaAstPtr, LuaCallExprStat, LuaChunk, LuaClosureExpr, LuaDocTagAs,
-    LuaDocTagCast, LuaExpr, LuaForStat, LuaFuncStat, LuaSyntaxKind, LuaSyntaxNode,
+    LuaDocTagCast, LuaExpr, LuaForStat, LuaFuncStat, LuaSyntaxId, LuaSyntaxKind, LuaSyntaxNode,
 };
 use internment::ArcIntern;
 use rowan::{TextRange, TextSize};
@@ -12,18 +12,19 @@ use crate::semantic_db::def::{LuaMemberKey, SemanticId};
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FlowEffect {
     /// Loop entry: writes in the body may have happened in a previous iteration.
-    LoopEntry(emmylua_parser::LuaSyntaxId),
+    /// Its syntax identifies the loop body and the containing closure boundary.
+    LoopEntry(LuaSyntaxId),
     /// Variable assignment: decl <- value expression.
     AssignDecl {
         decl: SemanticId,
-        value_syntax: emmylua_parser::LuaSyntaxId,
+        value_syntax: LuaSyntaxId,
     },
     /// Member assignment: `owner[key] = value` / `owner.key = value`.
     AssignMember {
         owner: SemanticId,
         key: LuaMemberKey,
         member: SemanticId,
-        value_syntax: emmylua_parser::LuaSyntaxId,
+        value_syntax: LuaSyntaxId,
     },
     /// Condition guard: the true/false branch for cond.
     Guard {
@@ -99,7 +100,7 @@ pub enum FlowNodeKind {
 #[allow(unused)]
 impl FlowNodeKind {
     /// Statements that replace a declaration's value.
-    pub(crate) fn assignment_syntax(&self) -> Option<emmylua_parser::LuaSyntaxId> {
+    pub(crate) fn assignment_syntax(&self) -> Option<LuaSyntaxId> {
         match self {
             Self::Assignment(ptr) => Some(ptr.get_syntax_id()),
             Self::ImplFunc(ptr) => Some(ptr.get_syntax_id()),
