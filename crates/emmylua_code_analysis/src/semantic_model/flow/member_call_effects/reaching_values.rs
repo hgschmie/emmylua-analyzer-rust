@@ -16,7 +16,7 @@ use super::guards;
 /// would accept a write before ever inspecting its enclosing false condition.
 // FlowTree is fully built before the immutable SemanticModel snapshot is
 // exposed. Type-query incompleteness cannot add nodes or antecedents to it.
-fn callee_reachable_flows(model: &SemanticModel) -> Rc<Vec<bool>> {
+pub(super) fn callee_reachable_flows(model: &SemanticModel) -> Rc<Vec<bool>> {
     if let Some(reachable) = model
         .cache
         .borrow()
@@ -181,6 +181,7 @@ pub(super) fn reaching_values(
 
 /// Locals declared in a loop are recreated on each iteration. Only enclosing
 /// loops in the same closure can feed an older declaration back into this query.
+/// A global function definition reassigns a binding; it is not a fresh loop local.
 fn enclosing_loop_reentries(
     model: &SemanticModel,
     root: &SemanticId,
@@ -197,7 +198,10 @@ fn enclosing_loop_reentries(
         .ancestors()
         .take_while(|node| LuaClosureExpr::cast(node.clone()).is_none())
         .filter_map(LuaLoopStat::cast)
-        .filter(|loop_stat| !loop_stat.get_range().contains_range(decl.name_range))
+        .filter(|loop_stat| {
+            matches!(decl.kind, crate::semantic_db::def::DeclKind::Global)
+                || !loop_stat.get_range().contains_range(decl.name_range)
+        })
         .filter(|loop_stat| match loop_stat {
             LuaLoopStat::ForStat(stat) => stat
                 .get_block()

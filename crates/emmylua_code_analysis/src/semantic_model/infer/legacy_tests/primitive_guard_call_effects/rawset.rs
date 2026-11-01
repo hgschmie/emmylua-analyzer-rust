@@ -54,3 +54,31 @@ fn rawset_dynamic_and_constant_keys_invalidate_the_same_receiver() {
         );
     }
 }
+
+#[test]
+fn global_rawset_replacements_do_not_invent_native_writes() {
+    for setup in ["rawset = function(...) end", "function rawset(...) end"] {
+        assert_member_call_boundary(
+            "type(elem.handler) == 'table'",
+            setup,
+            "rawset(elem, 'handler', nil)\nlocal value = elem.handler.name -- observe",
+            false,
+        );
+    }
+}
+
+#[test]
+fn named_rawset_replacements_keep_possible_native_and_visible_custom_writes() {
+    assert_member_call_boundary(
+        "type(elem.handler) == 'table'",
+        "if flag then function rawset(...) end end",
+        "rawset(elem, 'handler', nil)\nlocal value = elem.handler.name -- observe",
+        true,
+    );
+    assert_member_call_boundary(
+        "type(elem.handler) == 'table'",
+        "function rawset(target, key, value) target.handler = nil end",
+        "rawset(elem, 'unrelated', nil)\nlocal value = elem.handler.name -- observe",
+        true,
+    );
+}

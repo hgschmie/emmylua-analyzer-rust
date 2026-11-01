@@ -26,9 +26,11 @@ use crate::semantic_db::def::SemanticId;
 use crate::semantic_db::flow::{FlowAntecedent, FlowEffect, FlowNodeKind, LuaClosureId};
 use crate::{LuaMemberKey, LuaType};
 
+mod global_functions;
 mod reaching_values;
 mod receiver_targets;
-use reaching_values::reaching_values;
+pub(super) use global_functions::global_function_values;
+use reaching_values::{callee_reachable_flows, reaching_values};
 use receiver_targets::receiver_targets;
 
 type Access = (SemanticId, Vec<LuaMemberKey>);
@@ -78,6 +80,27 @@ fn relevant(path: &Access, targets: &[Access]) -> bool {
 
 #[cfg(test)]
 thread_local! { static RECEIVER_TARGET_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+/// A cached syntax gate keeps no-call straight-line files on their indexed path.
+pub(super) fn file_has_calls(model: &SemanticModel) -> bool {
+    if let Some(present) = model
+        .cache
+        .borrow()
+        .member_file_has_calls
+        .get(&model.file_id())
+    {
+        return *present;
+    }
+    let present = model
+        .chunk()
+        .is_some_and(|chunk| chunk.descendants::<LuaCallExpr>().next().is_some());
+    model
+        .cache
+        .borrow_mut()
+        .member_file_has_calls
+        .insert(model.file_id(), present);
+    present
+}
 
 pub(super) fn calls_conflict(
     model: &SemanticModel,
@@ -171,6 +194,8 @@ fn scan(
         Invocations::new(),
         false,
     )];
+    let reachable = callee_reachable_flows(model);
+    let tree = model.flow_tree();
     let mut seen = HashSet::new();
     while let Some((body, after, before, bindings, invocations, writes)) = bodies.pop() {
         let mut pending = vec![body];
@@ -179,6 +204,19 @@ fn scan(
             if node.text_range().start() >= before
                 || node.text_range().end() <= after
                 || LuaClosureExpr::can_cast(node.kind().into())
+            {
+                continue;
+            }
+            // Prune only bound statements/expressions. Missing bindings do not
+            // prove unreachability and must retain the visible-effect scan.
+            if (LuaAssignStat::can_cast(node.kind().into())
+                || LuaFuncStat::can_cast(node.kind().into())
+                || LuaCallExpr::can_cast(node.kind().into()))
+                && tree
+                    .as_ref()
+                    .and_then(|tree| tree.get_flow_id_at(node.text_range().start()))
+                    .and_then(|flow| reachable.get(flow.0 as usize))
+                    == Some(&false)
             {
                 continue;
             }
@@ -426,6 +464,9 @@ fn local_name_values(model: &SemanticModel, expr: &LuaExpr) -> Vec<LuaExpr> {
     let Some(SemanticId::Decl(key)) = model.resolve_name(name.get_position()) else {
         return Vec::new();
     };
+    if model.is_std_file(key.file_id) {
+        return global_function_values(model, name).values;
+    }
     if key.file_id != model.file_id() {
         return Vec::new();
     }
@@ -479,6 +520,7 @@ fn may_call_rawset(model: &SemanticModel, expr: LuaExpr) -> bool {
         if name.get_name_text().as_deref() == Some("rawset")
             && let Some(SemanticId::Decl(decl)) = model.resolve_name(name.get_position())
             && model.is_std_file(decl.file_id)
+            && global_function_values(model, name).may_keep_builtin
         {
             return true;
         }

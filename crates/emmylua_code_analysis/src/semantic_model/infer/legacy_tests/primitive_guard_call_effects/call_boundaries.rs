@@ -605,3 +605,105 @@ fn primitive_guards_require_type_from_the_active_environment() {
         false,
     );
 }
+
+#[test]
+fn fresh_member_assignment_commits_after_its_rhs_calls() {
+    for statement in [
+        "elem.handler = make_handler()",
+        "elem.handler, ignored = replacement, clear()",
+    ] {
+        let setup = "---@type CallBoundaryHandler\nlocal replacement = {name='fresh'}\n---@return CallBoundaryHandler\nlocal function make_handler() elem.handler = nil; return replacement end\nlocal function clear() elem.handler = nil end\nlocal ignored";
+        let body = [statement, "\nlocal name = elem.handler.name -- observe"].concat();
+        assert_member_call_boundary("type(elem.handler) == 'table'", setup, &body, false);
+    }
+}
+
+#[test]
+fn straight_line_member_assignment_expires_after_a_visible_call() {
+    for call in ["clear()", "local ignored = clear()", "ignored = clear()"] {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let source = [
+            "---@class StraightHandler\n---@field name string\n---@class StraightReceiver\n---@field handler StraightHandler?\n---@param elem StraightReceiver\n---@param replacement StraightHandler\n---@param key string\nlocal function run(elem, replacement, key)\nlocal function clear() elem[key] = nil end\nlocal ignored\nelem.handler = replacement\n",
+            call,
+            "\nlocal value = elem.handler.name\nend",
+        ].concat();
+        let expected = ws.ty("StraightHandler?");
+        let file = ws.def(&source);
+        let model = ws.analysis.semantic_model(file);
+        assert!(!model.flow_tree().unwrap().has_condition());
+        assert!(!model.flow_tree().unwrap().has_complex_control());
+        let field = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaIndexExpr>()
+            .filter(|expr| expr.get_text() == "elem.handler")
+            .last()
+            .unwrap();
+        for phase in ["cold", "warm"] {
+            assert_eq!(
+                model.type_of_expr_at(field.get_syntax_id(), field.get_position()),
+                expected,
+                "{call}: {phase}"
+            );
+        }
+        assert!(
+            ws.has_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+            "{call}"
+        );
+    }
+}
+
+#[test]
+fn statically_unreachable_callee_writes_preserve_member_guards() {
+    for body in [
+        "if false then elem.handler = nil end",
+        "if true then return end; elem.handler = nil",
+        "if not true then elem.handler = nil end",
+    ] {
+        let setup = ["local function harmless(elem) ", body, " end"].concat();
+        assert_member_call_boundary(
+            "type(elem.handler) == 'table'",
+            &setup,
+            "harmless(elem)\nlocal value = elem.handler.name -- observe",
+            false,
+        );
+    }
+}
+
+#[test]
+fn global_replacements_do_not_establish_primitive_builtin_guards() {
+    for setup in [
+        "type = function() return 'table' end",
+        "function type() return 'table' end",
+        "_ENV = {type = function() return 'table' end}",
+    ] {
+        assert_member_call_boundary(
+            "type(elem.handler) == 'table'",
+            setup,
+            "local value = elem.handler.name -- observe",
+            true,
+        );
+    }
+}
+
+#[test]
+fn named_global_builtin_replacements_respect_reaching_paths() {
+    for (setup, nullable) in [
+        ("if flag then function type() return 'table' end end", true),
+        (
+            "if false then function type() return 'table' end end",
+            false,
+        ),
+        (
+            "local function unused() function type() return 'table' end end",
+            false,
+        ),
+    ] {
+        assert_member_call_boundary(
+            "type(elem.handler) == 'table'",
+            setup,
+            "local value = elem.handler.name -- observe",
+            nullable,
+        );
+    }
+}

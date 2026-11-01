@@ -289,7 +289,9 @@ fn type_of_member_read(
     offset: TextSize,
 ) -> LuaType {
     if let Some(tree) = model.flow_tree()
-        && (tree.has_condition() || tree.has_complex_control())
+        && (tree.has_condition()
+            || tree.has_complex_control()
+            || member_call_effects::file_has_calls(model))
         && let Some(flow) = tree.get_flow_id_at(offset)
     {
         trace_member(
@@ -2261,8 +2263,10 @@ fn trace_member_uncached(
             return None;
         }
         let node = tree.get_flow_node(current)?;
-        // Once a later write invalidates this path, older call scans cannot
-        // restore it. A subsequent assignment is handled separately below.
+        // Calls on this node occur before its completed assignment. Preserve
+        // later invalidation separately so an RHS call cannot erase the value
+        // that this very assignment installs after all RHS evaluation finishes.
+        let unstable_after_node = path.member_unstable;
         path.member_unstable = path.member_unstable
             || member_flow_calls_conflict(model, tree, current, access, before);
         match &node.kind {
@@ -2291,11 +2295,11 @@ fn trace_member_uncached(
                             }
                             MemberWrite::Exact => {}
                         }
-                        if path.member_unstable
+                        if unstable_after_node
                             || member_calls_after(
                                 model,
                                 access,
-                                value_syntax.get_range().end(),
+                                node.kind.assignment_syntax()?.get_range().end(),
                                 before,
                             )
                         {
@@ -4127,7 +4131,11 @@ fn primitive_guard_target(
     let SemanticId::Decl(decl) = model.resolve_name(callee.get_position())? else {
         return None;
     };
-    if !model.is_std_file(decl.file_id) {
+    if !model.is_std_file(decl.file_id)
+        || !member_call_effects::global_function_values(model, &callee)
+            .values
+            .is_empty()
+    {
         return None;
     }
     let mut args = call.get_args_list()?.get_args();
