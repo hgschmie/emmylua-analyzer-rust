@@ -351,6 +351,7 @@ fn global_collection_reset_invalidates_prior_write() {
             .descendants::<emmylua_parser::LuaCallExpr>()
             .find(|call| call.get_text() == "clear()")
             .unwrap();
+        assert!(index.get_position() > call.get_range().end());
         let access =
             super::computed_guard::access(&model, &LuaExpr::IndexExpr(index.clone())).unwrap();
         assert_eq!(
@@ -368,6 +369,49 @@ fn global_collection_reset_invalidates_prior_write() {
                 .type_of_expr_at(index.get_syntax_id(), index.get_position())
                 .is_nullable(),
             nullable,
+            "{effect}"
+        );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn unresolved_global_call_effect_has_no_declaration_identity() {
+    for (effect, conflicts) in [
+        ("storage.ConnectedSurfaces = {}", false),
+        ("other.ConnectedSurfaces = {}", false),
+        ("local storage = {}; storage.ConnectedSurfaces = {}", false),
+        ("", false),
+    ] {
+        let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(&format!(
+            "local function clear() {effect} end\nlocal key = 'x'\nclear()\nlocal observed = storage.ConnectedSurfaces[key]"
+        ));
+        let model = ws.analysis.semantic_model(file);
+        // Without an indexed declaration, the resolver cannot identify this owner.
+        assert!(model.global_decl("storage").is_none());
+        let chunk = model.chunk().unwrap();
+        let index = chunk
+            .descendants::<LuaIndexExpr>()
+            .find(|index| index.get_text() == "storage.ConnectedSurfaces[key]")
+            .unwrap();
+        let call = chunk
+            .descendants::<emmylua_parser::LuaCallExpr>()
+            .find(|call| call.get_text() == "clear()")
+            .unwrap();
+        assert!(index.get_position() > call.get_range().end());
+        let access = super::computed_guard::access(&model, &LuaExpr::IndexExpr(index)).unwrap();
+        assert!(
+            matches!(&access.root, crate::SemanticId::Name(name) if name.as_str() == "storage")
+        );
+        assert_eq!(
+            computed_effects::calls_conflict(
+                &model,
+                &access,
+                call.syntax(),
+                call.get_range().end()
+            ),
+            conflicts,
             "{effect}"
         );
     }
