@@ -44,9 +44,8 @@ pub(super) fn assigned_type(
         }
         _ => inferred,
     };
-    if !base.is_nullable() {
-        return None;
-    }
+    // Later index-read policies can add nil to a non-nullable inference seed.
+    // Still require a definite write; its proof removes only nil from the seed.
     if computed_effects::calls_conflict(
         model,
         &access,
@@ -194,6 +193,149 @@ mod tests {
             "groups[key] = { values = {} }; return groups[key].values",
         ] {
             check(body, true);
+        }
+    }
+
+    #[test]
+    fn definite_assignment_proof_survives_a_nonnullable_inference_seed() {
+        let write = "inventory[key] = inventory[key] or {count = 0}";
+        for (initialization, effect, proven) in [
+            ("", "", false),
+            (write, "", true),
+            (write, "inventory[key] = nil", false),
+            (write, "inventory = {}", false),
+            (write, "key = other", false),
+            ("if flag then inventory[key] = {count = 0} end", "", false),
+            ("inventory[other] = {count = 0}", "", false),
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            let mut config = ws.get_emmyrc();
+            config.strict.array_index = false;
+            ws.update_emmyrc(config);
+            let file = ws.def(&format!(
+                r#"
+                ---@class Item
+                ---@field count integer
+                local Item = {{}}
+                ---@param key integer
+                ---@param other integer
+                local function update(key, other)
+                    ---@type Item[]
+                    local inventory = {{}}
+                    {initialization}
+                    {effect}
+                    local observed = inventory[key]
+                end
+                "#
+            ));
+            let model = ws.analysis.semantic_model(file);
+            let read = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaIndexExpr>()
+                .filter(|index| index.get_text() == "inventory[key]")
+                .last()
+                .unwrap();
+            let seed = model.type_of_expr(read.get_syntax_id());
+            assert!(!seed.is_nullable(), "{seed:?}");
+            let proof = assigned_type(&model, &read, read.get_position());
+            assert_eq!(
+                proof.is_some(),
+                proven,
+                "initialization={initialization:?}, effect={effect:?}: {proof:?}"
+            );
+            assert_eq!(
+                model.type_of_expr_at(read.get_syntax_id(), read.get_position()),
+                seed,
+                "ordinary read changed: initialization={initialization:?}, effect={effect:?}"
+            );
+            if let Some(proof) = proof {
+                assert_eq!(ws.humanize_type(proof), "Item");
+            }
+        }
+    }
+
+    #[test]
+    fn local_dictionary_initialization_has_no_nil_diagnostic() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        // Use public configuration so this fixture also covers the separately
+        // maintained dictionary-read policy when the fixes are combined.
+        let mut config = serde_json::to_value(ws.get_emmyrc()).unwrap();
+        config["strict"]["tableIndex"] = serde_json::json!(true);
+        ws.update_emmyrc(serde_json::from_value(config).unwrap());
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@class Item
+            ---@field count integer
+            local Item = {}
+            ---@alias Inventory table<string, Item>
+            ---@param amounts table<string, integer>
+            local function update(amounts)
+                ---@type Inventory
+                local inventory = {}
+                for key, amount in pairs(amounts) do
+                    if amount > 0 then
+                        inventory[key] = inventory[key] or {count = 0} --[[@as Item]]
+                        inventory[key].count = inventory[key].count + amount
+                    else
+                        inventory[key] = nil
+                    end
+                end
+            end
+            "#,
+        ));
+    }
+
+    #[test]
+    fn conditional_and_other_key_writes_do_not_suppress_nil_diagnostics() {
+        for (collection, key_type) in [("Item[]", "integer"), ("table<string, Item>", "string")] {
+            for write in [
+                "",
+                "if flag then inventory[key] = {count = 0} end",
+                "inventory[other] = {count = 0}",
+            ] {
+                let mut ws = VirtualWorkspace::new_with_init_std_lib();
+                let mut config = ws.get_emmyrc();
+                config.strict.array_index = true;
+                let mut config = serde_json::to_value(config).unwrap();
+                // The isolated base has no dictionary policy/configuration field.
+                // Its serialized schema identifies whether dictionary nil checks
+                // exist; an unknown tableIndex option is otherwise ignored.
+                let dictionary_checks = config["strict"].get("tableIndex").is_some();
+                if collection != "Item[]" {
+                    config["strict"]["tableIndex"] = serde_json::json!(true);
+                }
+                ws.update_emmyrc(serde_json::from_value(config).unwrap());
+                let source = format!(
+                    r#"
+                    ---@class Item
+                    ---@field count integer
+                    local Item = {{}}
+                    ---@param key {key_type}
+                    ---@param other {key_type}
+                    ---@param flag boolean
+                    local function update(key, other, flag)
+                        ---@type {collection}
+                        local inventory = {{}}
+                        {write}
+                        return inventory[key].count
+                    end
+                    "#,
+                );
+                let no_nil_diagnostic = ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source);
+                if collection == "Item[]" || dictionary_checks {
+                    assert!(
+                        !no_nil_diagnostic,
+                        "missing nil warning: {collection}, {write}"
+                    );
+                } else {
+                    assert!(
+                        no_nil_diagnostic,
+                        "unexpected dictionary policy on isolated base"
+                    );
+                }
+            }
         }
     }
 
