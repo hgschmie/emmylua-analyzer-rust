@@ -370,6 +370,8 @@ fn formal_alias_value(
 /// Prune literal-impossible paths before accepting a replacement. Backtracking
 /// stops at the replacement itself, so checking only later predecessor visits
 /// would accept a write before ever inspecting its enclosing false condition.
+// FlowTree is fully built before the immutable SemanticModel snapshot is
+// exposed. Type-query incompleteness cannot add nodes or antecedents to it.
 fn callee_reachable_flows(model: &SemanticModel) -> Rc<Vec<bool>> {
     if let Some(reachable) = model
         .cache
@@ -1571,4 +1573,43 @@ fn statically_unreachable_callee_assignments_do_not_invalidate_guards() {
             "{condition}"
         );
     }
+}
+
+#[test]
+fn primitive_guard_target_accepts_raw_negated_conditions() {
+    use emmylua_parser::LuaIfStat;
+    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    let file = ws.def("if not (type(receiver.value) ~= 'number') then end");
+    let model = ws.analysis.semantic_model(file);
+    let condition = model
+        .chunk()
+        .unwrap()
+        .descendants::<LuaIfStat>()
+        .next()
+        .unwrap()
+        .get_condition_expr()
+        .unwrap();
+    let (_, primitive, keep_matching) = super::primitive_guard_target(&model, &condition, true)
+        .expect("raw negation and parentheses must normalize at the helper boundary");
+    assert_eq!(primitive, LuaType::Number);
+    assert!(keep_matching);
+}
+
+#[test]
+fn member_access_path_retains_an_uninitialized_name_root() {
+    use emmylua_parser::LuaNameExpr;
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def("local receiver; local observed = receiver");
+    let model = ws.analysis.semantic_model(file);
+    let name = model
+        .chunk()
+        .unwrap()
+        .descendants::<LuaNameExpr>()
+        .next()
+        .unwrap();
+    let decl = model.resolve_name(name.get_position()).unwrap();
+    assert_eq!(
+        member_access_path(&model, &LuaExpr::NameExpr(name)),
+        Some((decl, vec![]))
+    );
 }

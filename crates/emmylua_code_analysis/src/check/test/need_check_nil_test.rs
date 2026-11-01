@@ -285,7 +285,7 @@ mod test {
     #[test]
     fn test_different_asserted_index_assignment_prefix_still_needs_nil_check() {
         let mut ws = VirtualWorkspace::new();
-        assert!(!ws.has_no_diagnostic(
+        assert!(ws.has_diagnostic(
             DiagnosticCode::NeedCheckNil,
             r#"
         ---@type integer[][]
@@ -375,7 +375,7 @@ fn test_member_primitive_guards_preserve_invalidations() {
         );
         let mut ws = VirtualWorkspace::new_with_init_std_lib();
         assert!(
-            !ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
+            ws.has_diagnostic(DiagnosticCode::NeedCheckNil, &source),
             "{body}"
         );
     }

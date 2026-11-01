@@ -1327,7 +1327,8 @@ fn loop_may_repeat(loop_stat: &LuaLoopStat) -> bool {
             let step = values.get(2).map(static_number_value).unwrap_or(Some(1.0));
             // Literal arithmetic uses f64, so very large counters can round.
             // If adding a step makes no progress, retain the possible backedge
-            // rather than declaring a potentially repeating loop single-pass.
+            // rather than declaring a potentially repeating loop single-pass:
+            // start + step == start still satisfies the bound for an entered loop.
             match (start, stop, step) {
                 (Some(start), Some(stop), Some(step)) if step > 0.0 => start + step <= stop,
                 (Some(start), Some(stop), Some(step)) if step < 0.0 => start + step >= stop,

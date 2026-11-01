@@ -812,6 +812,8 @@ fn guarded_index_type(
             if syntax.get_range().contains(offset) {
                 return Some(());
             }
+            // An unresolved assignment cannot certify that the guarded path
+            // was left untouched, so the proof fails closed.
             for var in flow_written_vars(model, tree, current)? {
                 if let Some(written) = LuaExpr::cast(var.syntax().clone())
                     .and_then(|expr| member_access_path(model, &expr))
@@ -2256,7 +2258,10 @@ fn trace_member_uncached(
             return None;
         }
         let node = tree.get_flow_node(current)?;
-        path.member_unstable |= member_flow_calls_conflict(model, tree, current, access, before);
+        // Once a later write invalidates this path, older call scans cannot
+        // restore it. A subsequent assignment is handled separately below.
+        path.member_unstable = path.member_unstable
+            || member_flow_calls_conflict(model, tree, current, access, before);
         match &node.kind {
             FlowNodeKind::Assignment(_) | FlowNodeKind::ImplFunc(_) => {
                 for effect in tree.get_flow_effects(current) {
@@ -2429,6 +2434,8 @@ fn member_flow_calls_conflict(
     let Some((access, before)) = access.zip(before) else {
         return false;
     };
+    // Missing source/flow data cannot justify retaining a guard. This is a
+    // conservative fallback, not evidence that an opaque call writes the member.
     let Some(chunk) = model.chunk() else {
         return true;
     };
@@ -4066,13 +4073,18 @@ fn rawget_member_narrowing(
 }
 
 /// Identify a built-in `type(value)` comparison without treating a shadowed function as a guard.
-/// Inspect the binary comparison accepted by `direct_narrow_member_condition`.
-/// Parentheses and negation are handled at the condition-query boundary.
+/// Accept raw conditions as well as comparisons already normalized by member tracing.
+/// Computed-access proofs also call this helper directly with parentheses or negation.
 fn primitive_guard_target(
     model: &SemanticModel,
     cond: &LuaExpr,
     branch_is_true: bool,
 ) -> Option<(LuaExpr, LuaType, bool)> {
+    let (cond, branch_is_true) = if matches!(cond, LuaExpr::BinaryExpr(_)) {
+        (cond.clone(), branch_is_true)
+    } else {
+        normalize_condition(cond.clone(), branch_is_true)?
+    };
     let LuaExpr::BinaryExpr(binary) = cond else {
         return None;
     };
@@ -4092,6 +4104,15 @@ fn primitive_guard_target(
         return None;
     };
     if callee.get_name_text().as_deref() != Some("type") {
+        return None;
+    }
+    // A lexical environment can supply its own `type` even when the name
+    // resolver still finds the standard declaration. It proves no primitive guard.
+    if model
+        .file_facts()?
+        .find_visible_decl_before_offset("_ENV", callee.get_position())
+        .is_some()
+    {
         return None;
     }
     let SemanticId::Decl(decl) = model.resolve_name(callee.get_position())? else {
