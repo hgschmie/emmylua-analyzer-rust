@@ -1441,28 +1441,32 @@ mod rawset_key_tests {
 }
 
 #[cfg(test)]
-#[test]
-fn dictionary_effect_unsigned_keys_do_not_wrap() {
-    for (text, expected) in [
-        ("1ULL", LuaMemberKey::Integer(1)),
-        ("18446744073709551615ULL", LuaMemberKey::None),
-    ] {
-        let mut ws = crate::VirtualWorkspace::new();
-        let mut config = ws.get_emmyrc();
-        config.runtime.version = crate::EmmyrcLuaVersion::LuaJIT;
-        ws.update_emmyrc(config);
-        let file = ws.def(&format!("local observed=items[{text}]"));
-        let model = ws.analysis.semantic_model(file);
-        let index = model
-            .chunk()
-            .unwrap()
-            .descendants::<LuaIndexExpr>()
-            .next()
-            .unwrap();
-        assert_eq!(
-            literal_member_key(index.get_index_key().unwrap()),
-            expected,
-            "{text}"
-        );
+mod unsigned_key_tests {
+    use super::*;
+
+    #[test]
+    fn dictionary_effect_unsigned_keys_do_not_wrap() {
+        for (text, expected) in [
+            ("1ULL", LuaMemberKey::Integer(1)),
+            ("18446744073709551615ULL", LuaMemberKey::None),
+        ] {
+            let mut ws = crate::VirtualWorkspace::new();
+            let mut config = ws.get_emmyrc();
+            config.runtime.version = crate::EmmyrcLuaVersion::LuaJIT;
+            ws.update_emmyrc(config);
+            let file = ws.def(&format!("local observed=items[{text}]"));
+            let model = ws.analysis.semantic_model(file);
+            let index = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaIndexExpr>()
+                .next()
+                .unwrap();
+            assert_eq!(
+                literal_member_key(index.get_index_key().unwrap()),
+                expected,
+                "{text}"
+            );
+        }
     }
 }

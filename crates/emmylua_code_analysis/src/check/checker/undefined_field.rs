@@ -16,8 +16,8 @@ use crate::DiagnosticCode;
 use crate::semantic_db::def::{
     Decl, DeclKind, ModuleExport, SemanticId, TypeDef, TypeDefKind, TypeVisibility,
 };
-use crate::semantic_model::SemanticModel;
 use crate::semantic_model::type_check::is_compatible;
+use crate::semantic_model::{SemanticModel, inherited_index};
 use crate::{FileId, InFiled, LuaMemberKey, LuaType, LuaTypeDeclId};
 
 use super::{CheckContext, Checker};
@@ -268,8 +268,7 @@ fn valid_named_member(
     }
 
     let key_ty = key_type(semantic_model, index_key);
-    if crate::semantic_model::inherited_index::lookup(semantic_model, &prefix_ty, &key_ty).is_some()
-    {
+    if inherited_index::lookup(semantic_model, &prefix_ty, &key_ty).is_some() {
         return true;
     }
     // Index signatures on named types: `@field [string]` / `@field [integer]`.

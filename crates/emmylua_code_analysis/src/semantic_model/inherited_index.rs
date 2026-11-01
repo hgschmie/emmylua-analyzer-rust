@@ -133,7 +133,9 @@ fn collect(
 }
 
 pub(crate) fn lookup(model: &SemanticModel<'_>, owner: &LuaType, key: &LuaType) -> Option<LuaType> {
-    // This fallback is for named classes. Native tables keep their existing inference path.
+    // This fallback supplies inherited contracts for named classes. Objects and
+    // native tables keep their ordinary index-inference paths; dictionaries also
+    // accepts those types as terminal contracts inherited by a named class.
     if !matches!(
         owner,
         LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_)
@@ -328,46 +330,48 @@ mod field_contract_tests {
 }
 
 #[cfg(test)]
-#[test]
-fn inherited_fixed_fields_do_not_create_dictionary_contracts() {
-    let mut ws = crate::VirtualWorkspace::new();
-    let file =
-        ws.def("---@alias Fields {foo:string}\n---@class Fixed: Fields\n---@field bar integer");
-    let ty = ws.ty("Fixed");
-    let model = ws.analysis.semantic_model(file);
-    assert!(dictionaries(&model, &ty).is_empty());
-    assert_eq!(lookup(&model, &ty, &LuaType::String), None);
-}
+mod contract_boundary_tests {
+    use super::*;
 
-#[cfg(test)]
-#[test]
-fn inherited_dictionary_named_table_requires_standard_identity() {
-    let mut ws = crate::VirtualWorkspace::new();
-    let file = ws.def("---@class table<K,V>\n---@field fixed string");
-    let owner = ws.ty("table<integer,boolean>");
-    let model = ws.analysis.semantic_model(file);
-    assert!(dictionaries(&model, &owner).is_empty());
-    assert_eq!(lookup(&model, &owner, &LuaType::Integer), None);
-}
+    #[test]
+    fn inherited_fixed_fields_do_not_create_dictionary_contracts() {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file =
+            ws.def("---@alias Fields {foo:string}\n---@class Fixed: Fields\n---@field bar integer");
+        let ty = ws.ty("Fixed");
+        let model = ws.analysis.semantic_model(file);
+        assert!(dictionaries(&model, &ty).is_empty());
+        assert_eq!(lookup(&model, &ty, &LuaType::String), None);
+    }
 
-#[cfg(test)]
-#[test]
-fn inherited_dictionary_keeps_declared_index_signatures() {
-    let mut ws = crate::VirtualWorkspace::new();
-    let file=ws.def("---@class Child: table<string,integer>\n---@field [integer] boolean\n---@class Override: table<string,integer>\n---@field [string] boolean");
-    let child = ws.ty("Child");
-    let overridden = ws.ty("Override");
-    let model = ws.analysis.semantic_model(file);
-    assert_eq!(
-        lookup(&model, &child, &LuaType::Integer),
-        Some(LuaType::Boolean)
-    );
-    assert_eq!(
-        lookup(&model, &child, &LuaType::String),
-        Some(LuaType::Integer)
-    );
-    assert_eq!(
-        lookup(&model, &overridden, &LuaType::String),
-        Some(LuaType::Boolean)
-    );
+    #[test]
+    fn inherited_dictionary_named_table_requires_standard_identity() {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def("---@class table<K,V>\n---@field fixed string");
+        let owner = ws.ty("table<integer,boolean>");
+        let model = ws.analysis.semantic_model(file);
+        assert!(dictionaries(&model, &owner).is_empty());
+        assert_eq!(lookup(&model, &owner, &LuaType::Integer), None);
+    }
+
+    #[test]
+    fn inherited_dictionary_keeps_declared_index_signatures() {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file=ws.def("---@class Child: table<string,integer>\n---@field [integer] boolean\n---@class Override: table<string,integer>\n---@field [string] boolean");
+        let child = ws.ty("Child");
+        let overridden = ws.ty("Override");
+        let model = ws.analysis.semantic_model(file);
+        assert_eq!(
+            lookup(&model, &child, &LuaType::Integer),
+            Some(LuaType::Boolean)
+        );
+        assert_eq!(
+            lookup(&model, &child, &LuaType::String),
+            Some(LuaType::Integer)
+        );
+        assert_eq!(
+            lookup(&model, &overridden, &LuaType::String),
+            Some(LuaType::Boolean)
+        );
+    }
 }
