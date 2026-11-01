@@ -15,7 +15,6 @@
 mod array;
 mod guards;
 mod loop_carried;
-use loop_carried::loop_carried_type;
 
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -1744,6 +1743,8 @@ struct DeclAssignmentFrame {
     flow_id: FlowId,
     assign_pos: TextSize,
     value_syntax: emmylua_parser::LuaSyntaxId,
+    /// Whether this RHS reads the declaration being traced; compute once per frame.
+    uses_previous_value: bool,
     /// Path state after the assignment (closer to the query on the backtracking path).
     assign_path: PathState,
     base_before: LuaType,
@@ -1879,15 +1880,11 @@ fn trace_decl_uncached(
         let node = tree.get_flow_node(current)?;
         // An independent assignment in this iteration overwrites the loop-entry
         // state. Keep its literal precision instead of widening through the loop.
-        if options.assignments
-            && frames
-                .last()
-                .is_none_or(|frame| loop_carried::references_decl(model, frame.value_syntax, decl))
-        {
+        if options.assignments && frames.last().is_none_or(|frame| frame.uses_previous_value) {
             for effect in tree.get_flow_effects(current) {
                 if let FlowEffect::LoopEntry(syntax) = effect
                     && let Some(entry) = first_antecedent(tree, node.antecedent.as_ref())
-                    && let Some(typ) = loop_carried_type(model, decl, *syntax, entry)
+                    && let Some(typ) = loop_carried::loop_carried_type(model, decl, *syntax, entry)
                 {
                     return finish_decl_frames(
                         model,
@@ -1940,6 +1937,11 @@ fn trace_decl_uncached(
                                     flow_id: current,
                                     assign_pos,
                                     value_syntax: *value_syntax,
+                                    uses_previous_value: loop_carried::references_decl(
+                                        model,
+                                        *value_syntax,
+                                        decl,
+                                    ),
                                     assign_path,
                                     base_before,
                                 });

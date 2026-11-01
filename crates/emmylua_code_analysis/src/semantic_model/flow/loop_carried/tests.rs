@@ -52,7 +52,7 @@ fn loop_carried_values_keep_iteration_guards_and_constant_diagnostics() {
     ] {
         let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
         assert!(
-            !ws.has_no_diagnostic(crate::DiagnosticCode::UnnecessaryIf, body),
+            ws.has_diagnostic(crate::DiagnosticCode::UnnecessaryIf, body),
             "{body}"
         );
     }
@@ -90,7 +90,7 @@ fn loop_carried_counter_has_integer_type_and_optional_values_stay_optional() {
         model.type_of_expr_at(count.get_syntax_id(), count.get_position()),
         LuaType::Integer
     );
-    assert!(!ws.has_no_diagnostic(
+    assert!(ws.has_diagnostic(
         crate::DiagnosticCode::NeedCheckNil,
         r#"
 ---@class Item
@@ -239,4 +239,213 @@ fn loop_cache_keeps_file_view_identity() {
             expected
         );
     }
+}
+
+#[test]
+fn loop_cycle_seed_propagates_incompleteness() {
+    use super::{CacheEntry, loop_carried_type};
+    use emmylua_parser::{LuaAstNode, LuaNameExpr, LuaWhileStat};
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def("local value = 1; while flag do local read = value; value = value + 1 end");
+    let model = ws.analysis.semantic_model(file);
+    let chunk = model.chunk().unwrap();
+    let loop_stat = chunk.descendants::<LuaWhileStat>().next().unwrap();
+    let read = chunk
+        .descendants::<LuaNameExpr>()
+        .find(|name| name.get_name_text().as_deref() == Some("value"))
+        .unwrap();
+    let decl = model.resolve_name(read.get_position()).unwrap();
+    let syntax = loop_stat.get_syntax_id();
+    let entry = model
+        .flow_tree()
+        .unwrap()
+        .get_flow_id_at(read.get_position())
+        .unwrap();
+    model
+        .cache
+        .borrow_mut()
+        .loop_carried
+        .insert((file, syntax, decl.clone()), CacheEntry::InProgress);
+    let revision = model.cache.borrow().revision();
+    assert_eq!(
+        loop_carried_type(&model, &decl, syntax, entry),
+        Some(LuaType::Integer)
+    );
+    assert!(
+        !model.cache.borrow().is_complete(revision),
+        "a cycle seed must not make its dependent query eligible for a Ready result"
+    );
+}
+
+#[test]
+fn loop_local_shadow_does_not_inherit_parameter_annotation() {
+    use emmylua_parser::{LuaAstNode, LuaNameExpr};
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def(
+        r#"
+---@param value integer
+local function update(value)
+    do
+        local value = 1
+        while flag do
+            local observed = value
+            value = 'text'
+        end
+    end
+end
+"#,
+    );
+    let model = ws.analysis.semantic_model(file);
+    let read = model
+        .chunk()
+        .unwrap()
+        .descendants::<LuaNameExpr>()
+        .find(|name| name.get_name_text().as_deref() == Some("value"))
+        .unwrap();
+    assert_eq!(
+        model.type_of_expr_at(read.get_syntax_id(), read.get_position()),
+        LuaType::from_vec(vec![LuaType::Integer, LuaType::String])
+    );
+}
+
+#[test]
+fn loop_generic_integer_seed_does_not_hide_noninteger_writes() {
+    for (rhs, other_write) in [
+        ("identity(index + 0.5)", ""),
+        ("identity(index)", "index = 0.5"),
+    ] {
+        let mut ws = crate::VirtualWorkspace::new();
+        assert!(
+            ws.has_diagnostic(
+                crate::DiagnosticCode::AssignTypeMismatch,
+                &format!(
+                    r#"
+            ---@generic T
+            ---@param value T
+            ---@return T
+            local function identity(value) return value end
+            ---@param initial integer
+            ---@param items integer[]
+            local function update(initial, items)
+                local index = initial
+                for _, item in ipairs(items) do
+                    index = {rhs}
+                    {other_write}
+                end
+                ---@type integer
+                local result = index
+            end
+        "#
+                )
+            ),
+            "{rhs}"
+        );
+    }
+}
+
+#[test]
+fn loop_continue_and_goto_paths_keep_pre_loop_seed() {
+    use emmylua_parser::{LuaAstNode, LuaNameExpr};
+    for tail in ["continue", "if flag then goto again end"] {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def(&format!(
+            "local value = 1; while flag do ::again:: local observed = value; value = 'text'; {tail} end"
+        ));
+        let model = ws.analysis.semantic_model(file);
+        let read = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaNameExpr>()
+            .find(|name| name.get_name_text().as_deref() == Some("value"))
+            .unwrap();
+        assert_eq!(
+            model.type_of_expr_at(read.get_syntax_id(), read.get_position()),
+            LuaType::from_vec(vec![LuaType::Integer, LuaType::String]),
+            "{tail}"
+        );
+    }
+}
+
+#[test]
+fn while_condition_still_narrows_loop_carried_optional_values() {
+    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    assert!(ws.has_no_diagnostic(
+        crate::DiagnosticCode::NeedCheckNil,
+        r#"
+---@class LoopItem
+---@field name string
+---@return LoopItem?
+local function next_item() end
+---@param item LoopItem?
+local function consume(item)
+    while item ~= nil do
+        print(item.name)
+        item = next_item()
+    end
+end
+"#
+    ));
+}
+
+#[test]
+fn repeat_condition_reads_loop_carried_values() {
+    use emmylua_parser::{LuaAstNode, LuaNameExpr};
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def(
+        r#"
+---@return string
+local function next_text() end
+---@param flag boolean
+local function consume(flag)
+    local value = 0
+    repeat
+        if flag then value = next_text() end
+    until value == 'done'
+end
+"#,
+    );
+    let model = ws.analysis.semantic_model(file);
+    let condition_read = model
+        .chunk()
+        .unwrap()
+        .descendants::<LuaNameExpr>()
+        .filter(|name| name.get_name_text().as_deref() == Some("value"))
+        .last()
+        .unwrap();
+    assert_eq!(
+        model.type_of_expr_at(
+            condition_read.get_syntax_id(),
+            condition_read.get_position()
+        ),
+        LuaType::from_vec(vec![LuaType::Integer, LuaType::String])
+    );
+}
+
+#[test]
+fn loop_parameter_contract_uses_doc_name_not_doc_order() {
+    use emmylua_parser::{LuaAstNode, LuaNameExpr};
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def(
+        r#"
+---@param other string
+---@param value integer
+local function consume(value, other)
+    while flag do
+        local observed = value
+        value = 'invalid'
+    end
+end
+"#,
+    );
+    let model = ws.analysis.semantic_model(file);
+    let read = model
+        .chunk()
+        .unwrap()
+        .descendants::<LuaNameExpr>()
+        .find(|name| name.get_name_text().as_deref() == Some("value"))
+        .unwrap();
+    assert_eq!(
+        model.type_of_expr_at(read.get_syntax_id(), read.get_position()),
+        LuaType::Integer
+    );
 }

@@ -164,6 +164,11 @@ impl VirtualWorkspace {
         self.analysis.diagnostic.update_config(Arc::new(emmyrc));
     }
 
+    /// Check whether the source reports the selected diagnostic, with other checks disabled.
+    pub fn has_diagnostic(&mut self, diagnostic_code: DiagnosticCode, block_str: &str) -> bool {
+        !self.has_no_diagnostic(diagnostic_code, block_str)
+    }
+
     /// Only run the check for the corresponding diagnostic code; the corresponding `Checker` must add that code to its `const CODES`.
     pub fn has_no_diagnostic(&mut self, diagnostic_code: DiagnosticCode, block_str: &str) -> bool {
         // Only enable the corresponding diagnostic.

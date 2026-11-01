@@ -24,7 +24,10 @@ pub(super) fn loop_carried_type(
         return match cached {
             CacheEntry::Ready(ty) => ty,
             // A cycle has no completed loop result yet; seed from the declaration.
-            CacheEntry::InProgress => model.type_of_decl(decl).map(widen_const_type),
+            CacheEntry::InProgress => {
+                model.cache.borrow().mark_incomplete();
+                model.type_of_decl(decl).map(widen_const_type)
+            }
             CacheEntry::Provisional(ty) => {
                 model.cache.borrow().mark_incomplete();
                 ty
@@ -95,10 +98,13 @@ fn compute(
     }
     let declared = model.type_of_decl(decl)?;
     // Declared contracts bound all iterations; assignment checking enforces them.
-    let annotated_param = facts
-        .signature_and_param_index_of_decl(info)
-        .and_then(|(signature, _)| signature.docs.as_ref())
-        .is_some_and(|docs| docs.param_types.iter().any(|(name, _)| name == &info.name));
+    // Parameter docs are keyed by name, not their order in the comment. A local
+    // shadow with the same name must not inherit the parameter's contract.
+    let annotated_param = matches!(info.kind, crate::semantic_db::def::DeclKind::Param)
+        && facts
+            .signature_and_param_index_of_decl(info)
+            .and_then(|(signature, _)| signature.docs.as_ref())
+            .is_some_and(|docs| docs.param_types.iter().any(|(name, _)| name == &info.name));
     if info.doc_type_syntax.is_some() || annotated_param {
         return Some(declared);
     }
