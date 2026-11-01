@@ -69,6 +69,10 @@ pub(super) fn build_flow_tree(db: &SemanticDatabase, file: FileId) -> FlowTree {
     binder.finish()
 }
 
+pub(crate) fn static_condition_truthiness(expr: &emmylua_parser::LuaExpr) -> Option<bool> {
+    stats::static_literal_truthiness(expr)
+}
+
 #[cfg(test)]
 mod loop_label_tests {
     use super::*;
@@ -112,8 +116,4 @@ mod loop_label_tests {
             &[entry, continued]
         );
     }
-}
-
-pub(crate) fn static_condition_truthiness(expr: &emmylua_parser::LuaExpr) -> Option<bool> {
-    stats::static_literal_truthiness(expr)
 }
