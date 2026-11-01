@@ -241,6 +241,8 @@ fn scan(
     {
         let cache = model.cache.borrow();
         if let Some(entry) = cache.member_call_effects.get(&key) {
+            // `get` propagates incompleteness: this recursive seed and dependent
+            // semantic results must remain provisional until the query ends.
             return entry.get(&cache).copied().unwrap_or(false);
         }
     }

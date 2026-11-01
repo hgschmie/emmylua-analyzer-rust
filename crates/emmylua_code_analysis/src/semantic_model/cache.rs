@@ -25,12 +25,12 @@ use crate::IndexInfo;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct MemberCallEffectKey {
-    pub file: FileId,
-    pub receiver: SemanticId,
-    pub path: Vec<LuaMemberKey>,
-    pub body: LuaSyntaxId,
-    pub after: TextSize,
-    pub before: TextSize,
+    pub(super) file: FileId,
+    pub(super) receiver: SemanticId,
+    pub(super) path: Vec<LuaMemberKey>,
+    pub(super) body: LuaSyntaxId,
+    pub(super) after: TextSize,
+    pub(super) before: TextSize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

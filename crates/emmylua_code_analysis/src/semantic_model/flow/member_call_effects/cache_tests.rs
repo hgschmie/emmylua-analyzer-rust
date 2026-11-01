@@ -283,3 +283,34 @@ fn recursive_callees_keep_visible_writes_and_harmless_calls_distinct() {
         }
     }
 }
+
+#[test]
+fn incomplete_effect_scan_is_retried_after_the_query() {
+    use crate::semantic_model::cache::{CacheEntry, QueryCacheScope};
+
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def("local receiver = {}; local function write(target) target.value = nil end; write(receiver); local observed = receiver.value");
+    let model = ws.analysis.semantic_model(file);
+    assert!(conflict(&model, "receiver.value", "write(receiver)"));
+    let key = model
+        .cache
+        .borrow()
+        .member_call_effects
+        .keys()
+        .next()
+        .unwrap()
+        .clone();
+    {
+        let _outer = QueryCacheScope::new(&model.cache);
+        let revision = model.cache.borrow().revision();
+        model
+            .cache
+            .borrow_mut()
+            .member_call_effects
+            .insert(key.clone(), CacheEntry::InProgress);
+        assert!(!conflict(&model, "receiver.value", "write(receiver)"));
+        assert!(!model.cache.borrow().is_complete(revision));
+    }
+    assert!(!model.cache.borrow().member_call_effects.contains_key(&key));
+    assert!(conflict(&model, "receiver.value", "write(receiver)"));
+}
