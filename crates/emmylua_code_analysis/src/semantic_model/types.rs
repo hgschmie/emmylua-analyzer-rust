@@ -127,6 +127,14 @@ impl<'db> SemanticModel<'db> {
         {
             let cache = self.cache.borrow();
             if let Some(entry) = cache.decl_type.get(&key) {
+                if matches!(entry, cache::CacheEntry::InProgress)
+                    && let Some(ty) = self.call_initializer_seed(decl)
+                {
+                    // Derived answers must stay provisional until the initializer
+                    // finishes; the outer query discards only unfinished entries.
+                    cache.mark_incomplete();
+                    return Some(ty);
+                }
                 return entry.get_inference_seed(&cache).cloned().flatten();
             }
         }
@@ -142,6 +150,27 @@ impl<'db> SemanticModel<'db> {
         cache.decl_type.insert(key, entry);
         result
     }
+    /// Available call projection in this model's file; Unknown keeps the empty seed.
+    /// Declared Any remains a valid dynamic contract.
+    /// `type_of_decl` dispatches cross-file declarations before consulting its cache.
+    fn call_initializer_seed(&self, decl: &SemanticId) -> Option<LuaType> {
+        let facts = self.file_facts()?;
+        let info = facts.decl_by_id(decl)?;
+        // Parenthesized and other initializers retain the existing empty-seed policy.
+        if !matches!(info.kind, DeclKind::Local { is_iter: false, .. })
+            || info.value_expr_syntax?.get_kind() != LuaSyntaxKind::CallExpr
+        {
+            return None;
+        }
+        // This shell projection has its own expression-cycle guard and does not
+        // enter SemanticModel inference or borrow its request-local cache.
+        // Recompute while the initializer is active: storing this seed as Ready
+        // would hide a different final type. Completed declarations use the cache.
+        self.analysis()
+            .decl_type_lua(self.file_id(), decl.clone())
+            .filter(|ty| !ty.is_unknown())
+    }
+
     pub(crate) fn type_of_decl_impl(&self, decl: &SemanticId) -> Option<LuaType> {
         if let Some(facts) = self.file_facts()
             && let Some(decl) = facts.decl_by_id(decl)
