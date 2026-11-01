@@ -35,6 +35,7 @@ struct Invocation {
     closure: LuaClosureId,
     site: LuaSyntaxId,
     bindings: Rc<Bindings>,
+    // A deterministic function of bindings; derived equality relies on this invariant.
     bindings_hash: u64,
 }
 
@@ -70,8 +71,31 @@ fn relevant(path: &Access, targets: &[Access]) -> bool {
         .any(|target| path_write_affects(path, &target.0, &target.1))
 }
 
-fn receiver_targets(model: &SemanticModel, expected: &Access) -> Vec<Access> {
-    let mut targets = vec![expected.clone()];
+#[cfg(test)]
+thread_local! { static RECEIVER_TARGET_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+fn receiver_targets(model: &SemanticModel, expected: &Access) -> Rc<Vec<Access>> {
+    let mut targets = fixed_receiver_targets(model);
+    if !targets.contains(expected) {
+        Rc::make_mut(&mut targets).push(expected.clone());
+    }
+    targets
+}
+
+fn fixed_receiver_targets(model: &SemanticModel) -> Rc<Vec<Access>> {
+    if let Some(targets) = model
+        .cache
+        .borrow()
+        .member_receiver_targets
+        .get(&model.file_id())
+    {
+        return targets.clone();
+    }
+    let _query = crate::semantic_model::cache::QueryCacheScope::new(&model.cache);
+    let revision = model.cache.borrow().revision();
+    #[cfg(test)]
+    RECEIVER_TARGET_SCANS.with(|count| count.set(count.get() + 1));
+    let mut targets = Vec::new();
     if let Some(chunk) = model.chunk() {
         // Syntax fixes the finite set of roots and path lengths. Include callable
         // paths separately from the guarded-write target, so helper(methods) can
@@ -133,6 +157,12 @@ fn receiver_targets(model: &SemanticModel, expected: &Access) -> Vec<Access> {
             }
         }
     }
+    let targets = Rc::new(targets);
+    model.cache.publish_if_complete(revision, |cache| {
+        cache
+            .member_receiver_targets
+            .insert(model.file_id(), targets.clone());
+    });
     targets
 }
 
@@ -216,7 +246,7 @@ fn scan(
     let targets = if needs_members {
         receiver_targets(model, expected)
     } else {
-        vec![expected.clone()]
+        Rc::new(vec![expected.clone()])
     };
     let mut bodies = vec![(
         node.clone(),
@@ -427,7 +457,8 @@ fn formal_alias_value(
     None
 }
 
-/// Return possible reaching assignments; `None` denotes the original declaration value.
+/// Return possible reaching assignments in the current file. `None` retains the
+/// original declaration value or bound formal when no replacement reaches it.
 fn reaching_values(
     model: &SemanticModel,
     root: &SemanticId,
@@ -1515,4 +1546,49 @@ local action = harmless
             true,
         );
     }
+}
+
+#[cfg(test)]
+#[test]
+fn repeated_call_effect_queries_scan_receiver_paths_once_per_file() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let source = "local receiver = {value=1}\nlocal other = {value=1}\nlocal methods = {}\nfunction methods.clear(target) target.value = nil end\nmethods.clear(receiver)\nlocal observed = receiver.value\nlocal unrelated = other.value";
+    let a = ws.def_file("receiver-a.lua", source);
+    let b = ws.def_file("receiver-b.lua", source);
+    let root_model = ws.analysis.semantic_model(a);
+    RECEIVER_TARGET_SCANS.with(|count| count.set(0));
+    for file in [a, b, a] {
+        let model = root_model.model_for(file);
+        let chunk = model.chunk().unwrap();
+        let call = chunk.descendants::<LuaCallExpr>().next().unwrap();
+        for (target, conflicts) in [("receiver.value", true), ("other.value", false)] {
+            let index = chunk
+                .descendants::<LuaIndexExpr>()
+                .find(|index| index.get_text() == target)
+                .unwrap();
+            for _ in 0..16 {
+                assert_eq!(
+                    calls_conflict(&model, &index, call.syntax(), call.get_range().end()),
+                    conflicts
+                );
+            }
+        }
+    }
+    assert_eq!(RECEIVER_TARGET_SCANS.with(|count| count.get()), 2);
+}
+
+#[cfg(test)]
+#[test]
+fn primitive_guard_without_standard_type_binding_is_opaque() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let file =
+        ws.def("local value = {}\nif type(value) == 'table' then local observed = value end");
+    let model = ws.analysis.semantic_model(file);
+    let condition = model
+        .chunk()
+        .unwrap()
+        .descendants::<emmylua_parser::LuaBinaryExpr>()
+        .next()
+        .unwrap();
+    assert!(super::primitive_guard_target(&model, &LuaExpr::BinaryExpr(condition), true).is_none());
 }
