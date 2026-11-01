@@ -707,3 +707,18 @@ fn named_global_builtin_replacements_respect_reaching_paths() {
         );
     }
 }
+
+#[test]
+fn assigned_global_type_aliases_do_not_prove_primitive_guards() {
+    for setup in [
+        "local fake = function() return 'table' end; type = fake",
+        "local fake = function() return 'table' end; if flag then type = fake end",
+    ] {
+        assert_member_call_boundary(
+            "type(elem.handler) == 'table'",
+            setup,
+            "local value = elem.handler.name -- observe",
+            true,
+        );
+    }
+}

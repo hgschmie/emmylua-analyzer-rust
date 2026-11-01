@@ -4132,7 +4132,7 @@ fn primitive_guard_target(
         return None;
     };
     if !model.is_std_file(decl.file_id)
-        || !member_call_effects::global_function_values(model, &callee)
+        || !member_call_effects::global_name_values(model, &callee)
             .values
             .is_empty()
     {

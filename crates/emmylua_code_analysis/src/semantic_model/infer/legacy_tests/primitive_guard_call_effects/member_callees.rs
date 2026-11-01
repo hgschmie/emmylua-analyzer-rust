@@ -190,3 +190,13 @@ fn fixed_member_callees_forward_tables_at_the_invocation_state() {
         );
     }
 }
+
+#[test]
+fn descendant_writes_do_not_replace_the_ancestor_callee() {
+    assert_member_call_boundary(
+        "type(elem.handler) == 'table'",
+        "local methods = {}; function methods.clear(receiver) receiver[key] = nil end",
+        "methods.clear.child = opaque; methods.clear(elem)\nlocal value = elem.handler.name -- observe",
+        true,
+    );
+}

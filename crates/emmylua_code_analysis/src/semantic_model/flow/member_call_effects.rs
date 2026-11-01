@@ -26,10 +26,10 @@ use crate::semantic_db::def::SemanticId;
 use crate::semantic_db::flow::{FlowAntecedent, FlowEffect, FlowNodeKind, LuaClosureId};
 use crate::{LuaMemberKey, LuaType};
 
-mod global_functions;
+mod global_values;
 mod reaching_values;
 mod receiver_targets;
-pub(super) use global_functions::global_function_values;
+pub(super) use global_values::global_name_values;
 use reaching_values::{callee_reachable_flows, reaching_values};
 use receiver_targets::receiver_targets;
 
@@ -465,7 +465,7 @@ fn local_name_values(model: &SemanticModel, expr: &LuaExpr) -> Vec<LuaExpr> {
         return Vec::new();
     };
     if model.is_std_file(key.file_id) {
-        return global_function_values(model, name).values;
+        return global_name_values(model, name).values;
     }
     if key.file_id != model.file_id() {
         return Vec::new();
@@ -520,7 +520,7 @@ fn may_call_rawset(model: &SemanticModel, expr: LuaExpr) -> bool {
         if name.get_name_text().as_deref() == Some("rawset")
             && let Some(SemanticId::Decl(decl)) = model.resolve_name(name.get_position())
             && model.is_std_file(decl.file_id)
-            && global_function_values(model, name).may_keep_builtin
+            && global_name_values(model, name).may_keep_builtin
         {
             return true;
         }
