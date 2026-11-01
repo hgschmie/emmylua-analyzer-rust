@@ -78,10 +78,6 @@ pub(super) fn assigned_type(
                     {
                         return None;
                     }
-                    if computed_effects::calls_conflict(model, &access, assignment.syntax(), offset)
-                    {
-                        return None;
-                    }
                     let (vars, values) = assignment.get_var_and_expr_list();
                     if vars.len() == 1
                         && values.len() == 1
@@ -91,8 +87,15 @@ pub(super) fn assigned_type(
                             == Some(&access)
                     {
                         let value = &values[0];
-                        if computed_effects::calls_conflict(model, &access, value.syntax(), offset)
-                        {
+                        // The completed write replaces effects on the entry itself.
+                        // Receiver/key changes during RHS evaluation still prevent
+                        // this write from proving the later syntactic access.
+                        if computed_effects::assignment_inputs_conflict(
+                            model,
+                            &access,
+                            assignment.syntax(),
+                            offset,
+                        ) {
                             return None;
                         }
                         let assigned =
@@ -104,6 +107,10 @@ pub(super) fn assigned_type(
                         let contract = super::remove_type(base, &LuaType::Nil);
                         return assignment_proves_contract(model, &assigned, &contract)
                             .then_some(contract);
+                    }
+                    if computed_effects::calls_conflict(model, &access, assignment.syntax(), offset)
+                    {
+                        return None;
                     }
                     if vars
                         .iter()
@@ -585,6 +592,35 @@ mod metamethod_tests {
                     }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod rhs_order_tests {
+    use super::*;
+    #[test]
+    fn computed_assignment_survives_mutation_in_its_own_rhs() {
+        for (effect, safe) in [
+            ("rows[key]=nil", true),
+            ("key=key+1", false),
+            ("rows={}", false),
+        ] {
+            let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+            let file=ws.def(&format!("---@param rows integer[][]\n---@param key integer\nlocal function f(rows,key)\n---@return integer[]\nlocal function make() {effect}; return {{}} end\nrows[key]=make(); local observed=rows[key] end"));
+            let model = ws.analysis.semantic_model(file);
+            let index = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaIndexExpr>()
+                .filter(|index| index.get_text() == "rows[key]")
+                .last()
+                .unwrap();
+            assert_eq!(
+                assigned_type(&model, &index, index.get_position()).is_some(),
+                safe,
+                "{effect}"
+            );
         }
     }
 }

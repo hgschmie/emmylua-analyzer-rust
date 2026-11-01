@@ -908,7 +908,7 @@ fn mutable_captured_member(model: &SemanticModel, target: &Access) -> bool {
     false
 }
 
-fn literal_member_key(key: emmylua_parser::LuaIndexKey) -> LuaMemberKey {
+pub(super) fn literal_member_key(key: emmylua_parser::LuaIndexKey) -> LuaMemberKey {
     match key {
         emmylua_parser::LuaIndexKey::Name(name) => LuaMemberKey::Name(name.get_name_text().into()),
         emmylua_parser::LuaIndexKey::String(name) => LuaMemberKey::Name(name.get_value().into()),

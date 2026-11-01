@@ -10,19 +10,27 @@ use crate::semantic_db::def::SemanticId;
 use crate::semantic_db::flow::{FlowAntecedent, FlowEffect, FlowId, FlowNodeKind, LuaClosureId};
 use crate::{LuaMemberKey, LuaType};
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) enum Part {
     Member(LuaMemberKey),
     Key(Box<Access>),
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct Access {
     pub(super) root: SemanticId,
     pub(super) parts: Vec<Part>,
 }
 
 impl Access {
+    pub(super) fn depends_on_globals(&self) -> bool {
+        matches!(self.root, SemanticId::Name(_))
+            || self
+                .parts
+                .iter()
+                .any(|part| matches!(part, Part::Key(key) if key.depends_on_globals()))
+    }
+
     pub(super) fn depends_on(&self, decl: &SemanticId) -> bool {
         &self.root == decl
             || self
@@ -483,20 +491,14 @@ pub(super) fn access(model: &SemanticModel, expr: &LuaExpr) -> Option<Access> {
         LuaExpr::IndexExpr(index) => {
             let mut result = access(model, &index.get_prefix_expr()?)?;
             let part = match index.get_index_key()? {
-                LuaIndexKey::Name(name) => {
-                    Part::Member(LuaMemberKey::Name(name.get_name_text().into()))
-                }
-                LuaIndexKey::String(string) => {
-                    Part::Member(LuaMemberKey::Name(string.get_value().into()))
-                }
-                LuaIndexKey::Integer(number) => match number.get_number_value() {
-                    emmylua_parser::NumberResult::Int(value) => {
-                        Part::Member(LuaMemberKey::Integer(value))
-                    }
-                    _ => return None,
-                },
                 LuaIndexKey::Expr(expr) => Part::Key(Box::new(access(model, &expr)?)),
-                _ => return None,
+                key => {
+                    let key = super::member_call_effects::literal_member_key(key);
+                    if key.is_none() {
+                        return None;
+                    }
+                    Part::Member(key)
+                }
             };
             result.parts.push(part);
             Some(result)
@@ -919,6 +921,33 @@ mod expression_order_tests {
                 ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &source),
                 safe,
                 "{body}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod numeric_access_tests {
+    use super::*;
+    #[test]
+    fn exact_numeric_literal_accesses_share_integer_identity() {
+        for key in ["1", "1.0", "1ULL", "0x1p0"] {
+            let mut ws = crate::VirtualWorkspace::new();
+            let file = ws.def(&format!("local rows={{}}; local observed=rows[{key}]"));
+            let model = ws.analysis.semantic_model(file);
+            let index = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaIndexExpr>()
+                .next()
+                .unwrap();
+            let found = access(&model, &LuaExpr::IndexExpr(index));
+            assert!(
+                found.is_some_and(|path| matches!(
+                    path.parts.as_slice(),
+                    [Part::Member(LuaMemberKey::Integer(1))]
+                )),
+                "{key}"
             );
         }
     }

@@ -21,7 +21,7 @@ pub(super) fn write_conflicts(
 ) -> bool {
     match var {
         LuaVarExpr::NameExpr(name) => {
-            name.get_name_text().as_deref() == Some("_ENV")
+            (name.get_name_text().as_deref() == Some("_ENV") && expected.depends_on_globals())
                 || reference(model, name).is_some_and(|decl| expected.depends_on(&decl))
         }
         LuaVarExpr::IndexExpr(index) => {
@@ -103,6 +103,20 @@ pub(super) fn calls_conflict(
     before: TextSize,
 ) -> bool {
     scan(model, expected, node, before, false)
+}
+
+/// Lua evaluates the target table/key before the RHS. A call may overwrite the
+/// assigned entry, but it must not change the receiver or key used by later reads.
+pub(super) fn assignment_inputs_conflict(
+    model: &SemanticModel,
+    expected: &Access,
+    node: &LuaSyntaxNode,
+    before: TextSize,
+) -> bool {
+    let mut owner = expected.clone();
+    let last = owner.parts.pop();
+    calls_conflict(model, &owner, node, before)
+        || matches!(last, Some(Part::Key(key)) if calls_conflict(model, &key, node, before))
 }
 
 pub(super) fn loop_conflicts(
@@ -287,6 +301,35 @@ mod function_statement_tests {
                     "{key}"
                 );
             }
+        }
+    }
+    #[test]
+    fn environment_replacement_only_affects_global_computed_dependencies() {
+        for (read, conflict) in [
+            ("rows[key]", false),
+            ("storage[key]", true),
+            ("rows[global_key]", true),
+            ("rows[local_key.name]", false),
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            let source = format!(
+                "local rows={{}}; local key='x'; local local_key={{name='x'}}; local observed={read}; _ENV={{}}"
+            );
+            let file = ws.def(&source);
+            let model = ws.analysis.semantic_model(file);
+            let chunk = model.chunk().unwrap();
+            let index = chunk
+                .descendants::<LuaIndexExpr>()
+                .find(|index| index.get_text() == read)
+                .unwrap();
+            let expected = access(&model, &LuaExpr::IndexExpr(index)).unwrap();
+            let assignment = chunk.descendants::<LuaAssignStat>().last().unwrap();
+            let vars = assignment.get_var_and_expr_list().0;
+            assert_eq!(
+                write_conflicts(&model, &expected, &vars[0], assignment.get_range().end()),
+                conflict,
+                "{read}"
+            );
         }
     }
 }
