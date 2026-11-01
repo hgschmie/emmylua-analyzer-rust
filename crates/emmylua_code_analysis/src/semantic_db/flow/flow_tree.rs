@@ -40,8 +40,10 @@ pub struct FlowTree {
     cast_nodes: Vec<(TextSize, FlowId)>,
     /// Sorted `(position, flow id)` for nodes with a merge (`Multiple`) antecedent.
     branch_nodes: Vec<(TextSize, FlowId)>,
-    /// True when a merge node has no AST range to index safely.
+    /// File-wide fallback: some merge has no AST range to index safely.
     unpositioned_branch: bool,
+    /// Per-flow reachability: only merges on a read's CFG predecessors block it.
+    unpositioned_branch_reachable: Vec<bool>,
     /// True when the tree has loops / labels / break / continue. These can create
     /// backward edges whose source positions are not monotonic, so the member
     /// assignment-position fast path is conservatively disabled.
@@ -85,7 +87,16 @@ impl FlowTree {
             )
         });
         let loop_reachable = if has_complex_control {
-            Self::compute_loop_reachable(&flow_nodes, &multiple_antecedents)
+            Self::compute_reachable(&flow_nodes, &multiple_antecedents, |node| {
+                matches!(
+                    node.kind,
+                    FlowNodeKind::LoopLabel
+                        | FlowNodeKind::NamedLabel(_)
+                        | FlowNodeKind::ForIStat(_)
+                        | FlowNodeKind::Break
+                        | FlowNodeKind::Continue
+                )
+            })
         } else {
             vec![false; flow_nodes.len()]
         };
@@ -161,6 +172,15 @@ impl FlowTree {
             binding_starts.entry(range.start()).or_insert(*flow_id);
         }
         let cycle_reachable = cycle_reachable_nodes(&flow_nodes, &multiple_antecedents);
+        let unpositioned_branch_reachable = if unpositioned_branch {
+            Self::compute_reachable(&flow_nodes, &multiple_antecedents, |node| {
+                matches!(node.antecedent, Some(FlowAntecedent::Multiple(_)))
+                    && flow_node_position(&node.kind).is_none()
+            })
+        } else {
+            vec![false; flow_nodes.len()]
+        };
+
         Self {
             cycle_reachable,
             decl_bind_expr_ref,
@@ -181,17 +201,17 @@ impl FlowTree {
             cast_nodes,
             branch_nodes,
             unpositioned_branch,
+            unpositioned_branch_reachable,
             has_complex_control,
             loop_reachable,
         }
     }
 
-    /// Marks every node that a loop / label / break / continue node can reach by
-    /// following antecedent edges. Computed by propagating forward from those nodes
-    /// along successor edges, so each node is visited once.
-    fn compute_loop_reachable(
+    /// Propagate selected entry nodes along successor edges, visiting each once.
+    fn compute_reachable(
         flow_nodes: &[FlowNode],
         multiple_antecedents: &[Vec<FlowId>],
+        is_entry: impl Fn(&FlowNode) -> bool,
     ) -> Vec<bool> {
         let mut reachable = vec![false; flow_nodes.len()];
         let mut successors: Vec<Vec<u32>> = vec![Vec::new(); flow_nodes.len()];
@@ -216,14 +236,8 @@ impl FlowTree {
                     list.push(id);
                 }
             }
-            if matches!(
-                node.kind,
-                FlowNodeKind::LoopLabel
-                    | FlowNodeKind::NamedLabel(_)
-                    | FlowNodeKind::ForIStat(_)
-                    | FlowNodeKind::Break
-                    | FlowNodeKind::Continue
-            ) && let Some(slot) = reachable.get_mut(id as usize)
+            if is_entry(node)
+                && let Some(slot) = reachable.get_mut(id as usize)
                 && !*slot
             {
                 *slot = true;
@@ -409,6 +423,31 @@ impl FlowTree {
         if self.unpositioned_branch {
             return true;
         }
+        self.has_positioned_event_between(start, end, include_start)
+    }
+
+    /// Range events relevant to a specific read. Unpositioned merges block it
+    /// only when they can reach its CFG node; unknown nodes remain conservative.
+    pub(crate) fn has_flow_event_between_at(
+        &self,
+        flow: FlowId,
+        start: TextSize,
+        end: TextSize,
+        include_start: bool,
+    ) -> bool {
+        self.unpositioned_branch_reachable
+            .get(flow.0 as usize)
+            .copied()
+            .unwrap_or(true)
+            || self.has_positioned_event_between(start, end, include_start)
+    }
+
+    fn has_positioned_event_between(
+        &self,
+        start: TextSize,
+        end: TextSize,
+        include_start: bool,
+    ) -> bool {
         has_node_between(&self.condition_nodes, start, end, include_start)
             || has_node_between(&self.closure_entries, start, end, include_start)
             || has_node_between(&self.cast_nodes, start, end, include_start)

@@ -662,6 +662,8 @@ impl<'a, 'b> BindEngine<'a, 'b> {
         let pre_while_label = self.binder.create_loop_label(while_stat.get_syntax_id());
         let after_while_label = self.binder.create_node(FlowNodeKind::LoopLabel);
         let pre_block_label = self.binder.create_branch_label();
+        // Loop-entry transfer uses the first antecedent as the pre-loop seed;
+        // register it before binding the body can append continue/back edges.
         self.binder.add_antecedent(pre_while_label, current);
         let Some(condition_expr) = while_stat.get_condition_expr() else {
             return Step::Done(current);
@@ -688,6 +690,8 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                     old_loop_label,
                     old_break_target_label,
                 });
+                // A constant-true body has no conditional guard to apply, but it
+                // still enters through the loop label to retain prior iterations.
                 match while_stat.get_block() {
                     Some(block) => Step::Task(Task::Block(block, pre_while_label)),
                     None => Step::Task(Task::Pass(pre_while_label)),
@@ -709,6 +713,8 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                     label: pre_block_label,
                     default: None,
                 });
+                // The condition sees loop-entry state; ThenFinish/ThenBlock enter
+                // the body through pre_block_label with its true-branch narrowing.
                 Step::Task(Task::Cond(
                     condition_expr,
                     pre_while_label,
@@ -722,6 +728,8 @@ impl<'a, 'b> BindEngine<'a, 'b> {
     fn evaluate_repeat_stat(&mut self, repeat_stat: LuaRepeatStat, current: FlowId) -> Step {
         let pre_repeat_label = self.binder.create_loop_label(repeat_stat.get_syntax_id());
         let post_repeat_label = self.binder.create_branch_label();
+        // Loop-entry transfer uses the first antecedent as the pre-loop seed;
+        // register it before binding the body can append continue/back edges.
         self.binder.add_antecedent(pre_repeat_label, current);
 
         let old_loop_label = self.binder.loop_label;
@@ -782,6 +790,8 @@ impl<'a, 'b> BindEngine<'a, 'b> {
     fn evaluate_for_stat(&mut self, for_stat: LuaForStat, current: FlowId) -> Step {
         let pre_for_label = self.binder.create_loop_label(for_stat.get_syntax_id());
         let post_for_label = self.binder.create_node(FlowNodeKind::LoopLabel);
+        // Loop-entry transfer uses the first antecedent as the pre-loop seed;
+        // register it before binding the body can append continue/back edges.
         self.binder.add_antecedent(pre_for_label, current);
 
         let iter_exprs = for_stat.get_iter_expr().collect::<Vec<_>>();
@@ -839,6 +849,8 @@ impl<'a, 'b> BindEngine<'a, 'b> {
             .binder
             .create_loop_label(for_range_stat.get_syntax_id());
         let post_for_range_label = self.binder.create_node(FlowNodeKind::LoopLabel);
+        // Loop-entry transfer uses the first antecedent as the pre-loop seed;
+        // register it before binding the body can append continue/back edges.
         self.binder.add_antecedent(pre_for_range_label, current);
 
         let old_loop_label = self.binder.loop_label;
