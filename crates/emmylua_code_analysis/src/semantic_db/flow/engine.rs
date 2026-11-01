@@ -679,6 +679,8 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                     old_loop_label,
                     old_break_target_label,
                 });
+                // A constant-true body has no conditional guard to apply, but it
+                // still enters through the loop label to retain prior iterations.
                 match while_stat.get_block() {
                     Some(block) => Step::Task(Task::Block(block, pre_while_label)),
                     None => Step::Task(Task::Pass(pre_while_label)),
@@ -700,6 +702,8 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                     label: pre_block_label,
                     default: None,
                 });
+                // The condition sees loop-entry state; ThenFinish/ThenBlock enter
+                // the body through pre_block_label with its true-branch narrowing.
                 Step::Task(Task::Cond(
                     condition_expr,
                     pre_while_label,
