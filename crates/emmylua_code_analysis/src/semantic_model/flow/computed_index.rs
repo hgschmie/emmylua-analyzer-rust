@@ -44,9 +44,8 @@ pub(super) fn assigned_type(
         }
         _ => inferred,
     };
-    if !base.is_nullable() {
-        return None;
-    }
+    // Dictionary read rules can add nil after raw inference returns an element
+    // type. A definite write still establishes the non-nil read in that case.
     if computed_effects::calls_conflict(
         model,
         &access,
@@ -194,6 +193,52 @@ mod tests {
             "groups[key] = { values = {} }; return groups[key].values",
         ] {
             check(body, true);
+        }
+    }
+
+    #[test]
+    fn definite_assignment_proof_survives_a_nonnullable_inference_seed() {
+        for (effect, proven) in [
+            ("", true),
+            ("inventory[key] = nil", false),
+            ("inventory = {}", false),
+            ("key = other", false),
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            let mut config = ws.get_emmyrc();
+            config.strict.array_index = false;
+            ws.update_emmyrc(config);
+            let file = ws.def(&format!(
+                r#"
+                ---@class Item
+                ---@field count integer
+                local Item = {{}}
+                ---@param key integer
+                ---@param other integer
+                local function update(key, other)
+                    ---@type Item[]
+                    local inventory = {{}}
+                    inventory[key] = inventory[key] or {{count = 0}}
+                    {effect}
+                    local observed = inventory[key]
+                end
+                "#
+            ));
+            let model = ws.analysis.semantic_model(file);
+            let read = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaIndexExpr>()
+                .filter(|index| index.get_text() == "inventory[key]")
+                .last()
+                .unwrap();
+            let seed = model.type_of_expr(read.get_syntax_id());
+            assert!(!seed.is_nullable(), "{seed:?}");
+            let proof = assigned_type(&model, &read, read.get_position());
+            assert_eq!(proof.is_some(), proven, "{effect}: {proof:?}");
+            if let Some(proof) = proof {
+                assert_eq!(ws.humanize_type(proof), "Item");
+            }
         }
     }
 
