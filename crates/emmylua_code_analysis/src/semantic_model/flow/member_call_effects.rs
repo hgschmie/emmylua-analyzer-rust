@@ -22,8 +22,8 @@ use std::{
 };
 
 use emmylua_parser::{
-    LuaAstNode, LuaCallExpr, LuaClosureExpr, LuaExpr, LuaIndexExpr, LuaSyntaxId, LuaSyntaxNode,
-    LuaVarExpr,
+    LuaAstNode, LuaCallExpr, LuaClosureExpr, LuaExpr, LuaFuncStat, LuaIndexExpr, LuaSyntaxId,
+    LuaSyntaxNode, LuaVarExpr,
 };
 use rowan::TextSize;
 
@@ -98,25 +98,28 @@ fn relevant(path: &Access, targets: &[Access]) -> bool {
 #[cfg(test)]
 thread_local! { static RECEIVER_TARGET_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
-/// A cached syntax gate keeps no-call straight-line files on their indexed path.
-/// Calls in earlier statements can invalidate a later read, so an access-local
-/// syntax gate would miss those effects even when the current statement has none.
-pub(super) fn file_has_calls(model: &SemanticModel) -> bool {
+/// Cache whether calls or member function definitions require path-aware flow.
+/// Earlier calls can invalidate a read; function statements can replace an
+/// existing member even when the file contains no calls or conditional branches.
+pub(super) fn file_requires_member_flow(model: &SemanticModel) -> bool {
     if let Some(present) = model
         .cache
         .borrow()
-        .member_file_has_calls
+        .member_file_requires_flow
         .get(&model.file_id())
     {
         return *present;
     }
-    let present = model
-        .chunk()
-        .is_some_and(|chunk| chunk.descendants::<LuaCallExpr>().next().is_some());
+    let present = model.chunk().is_some_and(|chunk| {
+        chunk.descendants::<LuaCallExpr>().next().is_some()
+            || chunk
+                .descendants::<LuaFuncStat>()
+                .any(|function| matches!(function.get_func_name(), Some(LuaVarExpr::IndexExpr(_))))
+    });
     model
         .cache
         .borrow_mut()
-        .member_file_has_calls
+        .member_file_requires_flow
         .insert(model.file_id(), present);
     present
 }

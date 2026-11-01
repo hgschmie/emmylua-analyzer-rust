@@ -227,8 +227,8 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) expr_type_at: HashMap<(FileId, LuaSyntaxId, TextSize), CacheEntry<LuaType>>,
     /// Cast-bearing flow bindings on the node and its ancestors, nearest first.
     pub(crate) expr_cast_flows: HashMap<(FileId, LuaSyntaxId), Rc<Vec<FlowId>>>,
-    /// Syntax-only call presence; straight-line member reads also need effect checks.
-    pub(crate) member_file_has_calls: HashMap<FileId, bool>,
+    /// Calls or member function definitions requiring path-aware member flow.
+    pub(crate) member_file_requires_flow: HashMap<FileId, bool>,
     /// Global-name write syntax for builtin replacement checks in this immutable snapshot.
     pub(crate) member_global_name_writes: HashMap<(FileId, SmolStr), Rc<Vec<LuaSyntaxId>>>,
     /// Syntax-only member-callee presence for this model snapshot; never call effects.

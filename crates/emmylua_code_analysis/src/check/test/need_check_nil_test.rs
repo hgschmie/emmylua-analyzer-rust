@@ -354,8 +354,7 @@ mod test {
     }
 
     #[test]
-    fn test_member_primitive_guards_preserve_invalidations() {
-        use crate::{DiagnosticCode, VirtualWorkspace};
+    fn test_member_primitive_guards_reject_unproven_or_invalidated_values() {
         for body in [
             "print(elem.handler.name)",
             "if type(other.handler) == 'table' then print(elem.handler.name) end",
@@ -429,7 +428,6 @@ mod test {
 
     #[test]
     fn unguarded_numeric_runtime_member_keeps_assignment_precision() {
-        use crate::{LuaType, VirtualWorkspace};
         use emmylua_parser::{LuaAstNode, LuaIndexExpr};
         for assignment in ["7", "7.5"] {
             let mut ws = VirtualWorkspace::new();

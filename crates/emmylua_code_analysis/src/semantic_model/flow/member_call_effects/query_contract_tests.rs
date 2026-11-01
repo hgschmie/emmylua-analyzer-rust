@@ -108,3 +108,22 @@ fn member_access_path_retains_an_uninitialized_name_root() {
         Some((decl, vec![]))
     );
 }
+
+#[test]
+fn receiver_targets_share_fixed_paths_across_distinct_guarded_members() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def("local first={};local second={};local a=first.value;local b=second.value");
+    let model = ws.analysis.semantic_model(file);
+    let chunk = model.chunk().unwrap();
+    let paths = chunk
+        .descendants::<LuaIndexExpr>()
+        .map(|index| member_access_path(&model, &LuaExpr::IndexExpr(index)).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(paths.len(), 2);
+    let first = receiver_targets(&model, &paths[0]);
+    let second = receiver_targets(&model, &paths[1]);
+    assert!(
+        Rc::ptr_eq(&first, &second),
+        "fixed guarded paths share the cached vector without cloning its contents"
+    );
+}

@@ -291,7 +291,7 @@ fn type_of_member_read(
     if let Some(tree) = model.flow_tree()
         && (tree.has_condition()
             || tree.has_complex_control()
-            || member_call_effects::file_has_calls(model))
+            || member_call_effects::file_requires_member_flow(model))
         && let Some(flow) = tree.get_flow_id_at(offset)
     {
         trace_member(
@@ -6125,6 +6125,13 @@ mod member_branch_write_tests {
                 })
             })
             .expect("the member function definition must have a flow node");
+        assert!(
+            !tree
+                .get_flow_effects(flow)
+                .iter()
+                .any(|effect| matches!(effect, FlowEffect::AssignDecl { .. })),
+            "member definition must not reassign its receiver"
+        );
         let node = tree.get_flow_node(flow).unwrap();
         assert!(matches!(node.kind, FlowNodeKind::ImplFunc(_)));
         let Some(FlowAntecedent::Single(stop)) = node.antecedent else {
@@ -6163,6 +6170,44 @@ mod member_branch_write_tests {
             Some(&other),
             flow,
             stop
+        ));
+    }
+}
+
+#[cfg(test)]
+mod straight_member_definition_tests {
+    use super::*;
+    use emmylua_parser::{LuaFuncStat, LuaIndexExpr};
+
+    #[test]
+    fn member_function_definition_without_calls_keeps_receiver_and_member_types() {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def(
+            "local elem={handler=1}; function elem.handler() end; local observed=elem.handler",
+        );
+        let model = ws.analysis.semantic_model(file);
+        let chunk = model.chunk().unwrap();
+        assert_eq!(
+            chunk.descendants::<emmylua_parser::LuaCallExpr>().count(),
+            0
+        );
+        assert!(member_call_effects::file_requires_member_flow(&model));
+        let function = chunk.descendants::<LuaFuncStat>().next().unwrap();
+        let closure = function.get_closure().unwrap();
+        let read = chunk
+            .descendants::<LuaIndexExpr>()
+            .filter(|index| index.get_text() == "elem.handler")
+            .last()
+            .unwrap();
+        let expected = model.type_of_expr(closure.get_syntax_id());
+        assert_eq!(
+            model.type_of_expr_at(read.get_syntax_id(), read.get_position()),
+            expected
+        );
+        let prefix = read.get_prefix_expr().unwrap();
+        assert!(matches!(
+            model.type_of_expr_at(prefix.get_syntax_id(), prefix.get_position()),
+            LuaType::TableConst(_)
         ));
     }
 }
