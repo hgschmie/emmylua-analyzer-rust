@@ -918,6 +918,8 @@ fn loop_structural_recurrence_does_not_claim_a_complete_shallow_union() {
 
 #[test]
 fn loop_conditional_fractional_update_widens_to_number() {
+    use emmylua_parser::{LuaAstNode, LuaNameExpr};
+
     let mut ws = crate::VirtualWorkspace::new();
     // Read at loop entry, before the conditional write from this iteration.
     let source = "local index=0; while flag do\n---@type integer\nlocal result=index\nif other then index=index+0.5 end end";
@@ -934,7 +936,29 @@ fn loop_conditional_fractional_update_widens_to_number() {
         declaration.doc_type_syntax.is_some(),
         "the result must own the integer annotation"
     );
-    assert_eq!(model.type_of_decl(&result), Some(LuaType::Integer));
+    let read_offset = source.find("result=index").unwrap() + "result=".len();
+    let read = model
+        .chunk()
+        .unwrap()
+        .descendants::<LuaNameExpr>()
+        .find(|name| u32::from(name.get_position()) as usize == read_offset)
+        .unwrap();
+    let read_type = model.type_of_expr_at(read.get_syntax_id(), read.get_position());
+    let alternatives = match read_type {
+        LuaType::Union(union) => union.into_vec(),
+        other => vec![other],
+    };
+    assert!(alternatives.contains(&LuaType::Number), "{alternatives:?}");
+    assert!(
+        alternatives
+            .iter()
+            .all(|ty| matches!(ty, LuaType::Integer | LuaType::Number)),
+        "{alternatives:?}"
+    );
+    let result_line = source[..read_offset]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count() as u32;
     let diagnostics = ws
         .analysis
         .diagnose_file(file, tokio_util::sync::CancellationToken::new())
@@ -942,7 +966,7 @@ fn loop_conditional_fractional_update_widens_to_number() {
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.range.start.line == 2
+            .any(|diagnostic| diagnostic.range.start.line == result_line
                 && diagnostic.code
                     == Some(lsp_types::NumberOrString::String(
                         crate::DiagnosticCode::AssignTypeMismatch
