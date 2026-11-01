@@ -741,3 +741,28 @@ fn normalized_nonprimitive_member_guards_keep_call_boundaries() {
         }
     }
 }
+
+#[test]
+fn visible_sibling_global_replacements_disable_primitive_guards() {
+    for (setup, nullable) in [
+        (
+            "local function replace() type=function() return 'table' end end; replace()",
+            true,
+        ),
+        (
+            "local function replace() type=function() return 'table' end end",
+            false,
+        ),
+        (
+            "local function replace() local type=function() return 'table' end end; replace()",
+            false,
+        ),
+    ] {
+        assert_member_call_boundary(
+            "type(elem.handler) == 'table'",
+            setup,
+            "local value = elem.handler.name -- observe",
+            nullable,
+        );
+    }
+}

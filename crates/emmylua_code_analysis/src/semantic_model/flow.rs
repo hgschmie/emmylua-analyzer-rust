@@ -331,6 +331,7 @@ fn invalidated_member_value_type(
             let key = member_key_from_index_expr(model, access)?;
             model.member_type(&prefix_ty, &key)
         })
+        .filter(|typ| !matches!(typ, LuaType::Unknown))
         .or_else(|| member_annotation_type(model, member))
         .unwrap_or(LuaType::Unknown)
 }

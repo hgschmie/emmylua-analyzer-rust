@@ -1,13 +1,13 @@
 //! Reaching global writes can replace names still resolved to stdlib.
 
-use super::reaching_values::reaching_values;
+use super::reaching_values::{callee_reachable_flows, reaching_values};
 use crate::semantic_db::{
     def::{DeclKind, SemanticId},
     flow::LuaClosureId,
 };
 use crate::semantic_model::SemanticModel;
-use emmylua_parser::{LuaAstNode, LuaExpr, LuaNameExpr, LuaStat, LuaVarExpr};
-use std::rc::Rc;
+use emmylua_parser::{LuaAstNode, LuaCallExpr, LuaExpr, LuaNameExpr, LuaStat, LuaVarExpr};
+use std::{collections::HashSet, rc::Rc};
 
 pub(crate) struct GlobalNameValues {
     pub(crate) may_keep_builtin: bool,
@@ -48,7 +48,12 @@ pub(crate) fn global_name_values(model: &SemanticModel, name: &LuaNameExpr) -> G
             .insert(key, syntax.clone());
         syntax
     });
+    if definitions.is_empty() {
+        return result;
+    }
     let query_closure = LuaClosureId::from_node(name.syntax());
+    let called = visible_call_closures(model, name);
+    let reachable = callee_reachable_flows(model);
     for syntax in definitions.iter() {
         let Some(statement) = syntax
             .to_node_from_root(chunk.syntax())
@@ -56,6 +61,14 @@ pub(crate) fn global_name_values(model: &SemanticModel, name: &LuaNameExpr) -> G
         else {
             continue;
         };
+        if model
+            .flow_tree()
+            .and_then(|tree| tree.get_flow_id_at(statement.get_position()))
+            .and_then(|flow| reachable.get(flow.0 as usize))
+            == Some(&false)
+        {
+            continue;
+        }
         let Some(target) = written_name(&statement, &text) else {
             continue;
         };
@@ -76,10 +89,11 @@ pub(crate) fn global_name_values(model: &SemanticModel, name: &LuaNameExpr) -> G
         } else if definition_closure
             .get_range()
             .contains_range(query_closure.get_range())
-            && statement.get_range().end() <= name.get_position()
+            || called.contains(&definition_closure)
         {
-            // An enclosing definition can be visible at invocation time, but
-            // this closure's CFG cannot prove which outer path invoked it.
+            // Invocation order, not definition position, decides captured global
+            // state. Enclosing writes and writes in visible called siblings are
+            // possible replacements; they do not prove the builtin impossible.
             result.values.extend(
                 facts
                     .decl_by_id(&id)
@@ -90,6 +104,71 @@ pub(crate) fn global_name_values(model: &SemanticModel, name: &LuaNameExpr) -> G
         }
     }
     result
+}
+
+/// Follow visible same-file name callees without invoking member/type inference.
+/// Opaque or member-installed callables retain the normal value-propagation limit.
+fn visible_call_closures(model: &SemanticModel, query: &LuaNameExpr) -> HashSet<LuaClosureId> {
+    let Some(chunk) = model.chunk() else {
+        return HashSet::new();
+    };
+    let query_closure = LuaClosureId::from_node(query.syntax());
+    let calls: Vec<_> = chunk.descendants::<LuaCallExpr>().collect();
+    let reachable = callee_reachable_flows(model);
+    let can_run = |call: &LuaCallExpr| {
+        model
+            .flow_tree()
+            .and_then(|tree| tree.get_flow_id_at(call.get_position()))
+            .and_then(|flow| reachable.get(flow.0 as usize))
+            != Some(&false)
+    };
+    let mut pending: Vec<_> = calls
+        .iter()
+        .filter(|call| {
+            let owner = LuaClosureId::from_node(call.syntax());
+            can_run(call)
+                && if owner == query_closure {
+                    call.get_range().end() <= query.get_position()
+                } else {
+                    owner.get_range().contains_range(query_closure.get_range())
+                }
+        })
+        .filter_map(LuaCallExpr::get_prefix_expr)
+        .collect();
+    let mut seen = HashSet::new();
+    let mut called = HashSet::new();
+    while let Some(expr) = pending.pop() {
+        let Some(expr) = super::guards::unparenthesized(expr) else {
+            continue;
+        };
+        if !seen.insert(expr.get_syntax_id()) {
+            continue;
+        }
+        match expr {
+            LuaExpr::ClosureExpr(closure) => {
+                let id = LuaClosureId::from_node(closure.syntax());
+                if called.insert(id) {
+                    pending.extend(
+                        calls
+                            .iter()
+                            .filter(|call| {
+                                can_run(call) && LuaClosureId::from_node(call.syntax()) == id
+                            })
+                            .filter_map(LuaCallExpr::get_prefix_expr),
+                    );
+                }
+            }
+            LuaExpr::NameExpr(ref name) => {
+                // Do not recurse through global_name_values for standard names.
+                if matches!(model.resolve_name(name.get_position()), Some(SemanticId::Decl(key)) if key.file_id == model.file_id())
+                {
+                    pending.extend(super::local_name_values(model, &expr));
+                }
+            }
+            _ => {}
+        }
+    }
+    called
 }
 
 fn written_name(statement: &LuaStat, name: &str) -> Option<LuaNameExpr> {
@@ -104,4 +183,63 @@ fn written_name(statement: &LuaStat, name: &str) -> Option<LuaNameExpr> {
         }
         _ => None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn global_builtin_writes_follow_invocation_order() {
+        for (source, replaced) in [
+            (
+                "local function query(value) return type(value) end; type=function() return 'string' end; query(nil)",
+                true,
+            ),
+            (
+                "local function replace() type=function() return 'string' end end; replace(); local result=type(nil)",
+                true,
+            ),
+            (
+                "local function replace() type=function() return 'string' end end; local alias=replace; local function wrapper() alias() end; wrapper(); local result=type(nil)",
+                true,
+            ),
+            (
+                "local function replace() if false then type=function() return 'string' end end end; replace(); local result=type(nil)",
+                false,
+            ),
+            (
+                "local function replace() type=function() return 'string' end end; local result=type(nil)",
+                false,
+            ),
+            (
+                "local result=type(nil); type=function() return 'string' end",
+                false,
+            ),
+            (
+                "local function replace() local type=function() return 'string' end end; replace(); local result=type(nil)",
+                false,
+            ),
+        ] {
+            let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+            let file = ws.def(source);
+            let model = ws.analysis.semantic_model(file);
+            let name = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaNameExpr>()
+                .find(|name| {
+                    name.get_name_text().as_deref() == Some("type")
+                        && name
+                            .syntax()
+                            .parent()
+                            .is_some_and(|p| LuaCallExpr::can_cast(p.kind().into()))
+                })
+                .unwrap();
+            assert_eq!(
+                !global_name_values(&model, &name).values.is_empty(),
+                replaced,
+                "{source}"
+            );
+        }
+    }
 }
