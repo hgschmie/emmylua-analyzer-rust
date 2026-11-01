@@ -1607,4 +1607,26 @@ local action = harmless
             call.get_range().end()
         ));
     }
+    #[test]
+    fn later_assignment_retains_the_unassigned_declaration_sentinel() {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def("local x; local y = x; x = 5");
+        let model = ws.analysis.semantic_model(file);
+        let chunk = model.chunk().unwrap();
+        let query = chunk
+            .descendants::<emmylua_parser::LuaNameExpr>()
+            .find(|name| name.get_text() == "x")
+            .unwrap();
+        let root = model.resolve_name(query.get_position()).unwrap();
+        let values = reaching_values(&model, &root, &LuaExpr::NameExpr(query));
+        assert!(matches!(values.as_slice(), [None]));
+    }
+
+    #[test]
+    fn large_hexadecimal_bounds_do_not_hide_a_possible_iteration() {
+        check(
+            "for i = 0xffdfffffffffffff, 0xffe0000000000001, 2 do action(receiver) local observed = receiver.value action = write end",
+            true,
+        );
+    }
 }
