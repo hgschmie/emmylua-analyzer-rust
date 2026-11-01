@@ -195,3 +195,72 @@ fn incomplete_callee_resolution_is_retried_after_the_query() {
         "methods.write(receiver)"
     ));
 }
+
+#[test]
+fn receiver_target_order_does_not_change_visible_effects() {
+    use crate::semantic_model::cache::CacheEntry;
+
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def("local receiver = {}; local writer = {run = function(target) target.value = nil end}; local quiet = {run = function(target) end}; local function invoke(methods, target) methods.run(target) end; invoke(writer, receiver); invoke(quiet, receiver); local observed = receiver.value");
+    let model = ws.analysis.semantic_model(file);
+    let targets = fixed_receiver_targets(&model);
+    assert!(targets.len() > 2);
+    for rotation in 0..targets.len() {
+        let mut reordered = targets.as_ref().clone();
+        reordered.rotate_left(rotation);
+        {
+            let mut cache = model.cache.borrow_mut();
+            cache
+                .member_receiver_targets
+                .insert(file, CacheEntry::Ready(Rc::new(reordered)));
+            cache.member_callees.clear();
+            cache.member_call_effects.clear();
+        }
+        assert!(conflict(
+            &model,
+            "receiver.value",
+            "invoke(writer, receiver)"
+        ));
+        assert!(!conflict(
+            &model,
+            "receiver.value",
+            "invoke(quiet, receiver)"
+        ));
+    }
+}
+
+#[test]
+fn incomplete_receiver_targets_are_retried_after_the_query() {
+    use crate::semantic_model::cache::{CacheEntry, QueryCacheScope};
+
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def("local receiver = {}; local methods = {write = function(target) target.value = nil end}; methods.write(receiver); local observed = receiver.value");
+    let model = ws.analysis.semantic_model(file);
+    {
+        let _outer = QueryCacheScope::new(&model.cache);
+        let revision = model.cache.borrow().revision();
+        model
+            .cache
+            .borrow_mut()
+            .member_receiver_targets
+            .insert(file, CacheEntry::InProgress);
+        assert!(!conflict(
+            &model,
+            "receiver.value",
+            "methods.write(receiver)"
+        ));
+        assert!(!model.cache.borrow().is_complete(revision));
+    }
+    assert!(
+        !model
+            .cache
+            .borrow()
+            .member_receiver_targets
+            .contains_key(&file)
+    );
+    assert!(conflict(
+        &model,
+        "receiver.value",
+        "methods.write(receiver)"
+    ));
+}

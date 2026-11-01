@@ -67,6 +67,8 @@ type CalleeValue = (LuaExpr, Bindings, Invocations);
 
 // File views share a cache. Calls with different argument bindings or invocation
 // histories must retain their own resolution, even at the same syntax position.
+// Targets share storage; bindings and histories are snapshots retained only for
+// this model's lifetime. Full equality avoids hash-only identity collisions.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(in crate::semantic_model) struct CalleeCacheKey {
     file: crate::FileId,
@@ -83,6 +85,8 @@ fn relevant(path: &Access, targets: &[Access]) -> bool {
 }
 
 fn receiver_targets(model: &SemanticModel, expected: &Access) -> ReceiverTargets {
+    // Consumers use membership and path-length predicates, never target priority.
+    // Keeping one file order lets different guarded members share callee results.
     let fixed = fixed_receiver_targets(model);
     if fixed.contains(expected) {
         return fixed;
@@ -99,6 +103,8 @@ fn fixed_receiver_targets(model: &SemanticModel) -> ReceiverTargets {
     {
         let cache = model.cache.borrow();
         if let Some(entry) = cache.member_receiver_targets.get(&file) {
+            // `get` marks recursive/provisional reads incomplete. The empty
+            // recursive seed cannot survive the enclosing query as a ready fact.
             return entry.get(&cache).cloned().unwrap_or_default();
         }
     }
