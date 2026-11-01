@@ -918,8 +918,70 @@ fn loop_structural_recurrence_does_not_claim_a_complete_shallow_union() {
 
 #[test]
 fn loop_conditional_fractional_update_widens_to_number() {
+    use emmylua_parser::{LuaAstNode, LuaNameExpr};
+
     let mut ws = crate::VirtualWorkspace::new();
-    assert!(ws.has_diagnostic(crate::DiagnosticCode::AssignTypeMismatch, "local index=0; while flag do if other then index=index+0.5 end end; ---@type integer\nlocal result=index"));
+    // Read at loop entry, before the conditional write from this iteration.
+    let source = "local index=0; while flag do\n---@type integer\nlocal result=index\nif other then index=index+0.5 end end";
+    ws.analysis
+        .diagnostic
+        .enable_only(crate::DiagnosticCode::AssignTypeMismatch);
+    let file = ws.def(source);
+    let model = ws.analysis.semantic_model(file);
+    let result_decl_id = model
+        .decl_by_offset((source.find("result=index").unwrap() as u32).into())
+        .unwrap();
+    let declaration = model
+        .file_facts()
+        .unwrap()
+        .decl_by_id(&result_decl_id)
+        .unwrap();
+    assert!(
+        declaration.doc_type_syntax.is_some(),
+        "the result must own the integer annotation"
+    );
+    // Locate the index expression in the annotated result assignment.
+    let read_offset = source.find("result=index").unwrap() + "result=".len();
+    let read = model
+        .chunk()
+        .unwrap()
+        .descendants::<LuaNameExpr>()
+        .find(|name| u32::from(name.get_position()) as usize == read_offset)
+        .unwrap();
+    let read_type = model.type_of_expr_at(read.get_syntax_id(), read.get_position());
+    let alternatives = match read_type {
+        LuaType::Union(union) => union.into_vec(),
+        other => vec![other],
+    };
+    assert!(alternatives.contains(&LuaType::Number), "{alternatives:?}");
+    assert!(
+        alternatives.iter().all(|ty| matches!(
+            ty,
+            LuaType::Integer | LuaType::IntegerConst(_) | LuaType::Number
+        )),
+        "{alternatives:?}"
+    );
+    // Match the diagnostic to that assignment, not the later fractional write.
+    let result_line = source[..read_offset]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count() as u32;
+    let diagnostics = ws
+        .analysis
+        .diagnose_file(file, tokio_util::sync::CancellationToken::new())
+        .unwrap();
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.range.start.line == result_line
+                && diagnostic.code
+                    == Some(lsp_types::NumberOrString::String(
+                        crate::DiagnosticCode::AssignTypeMismatch
+                            .get_name()
+                            .to_string()
+                    ))),
+        "the fractional result must be rejected: {diagnostics:?}"
+    );
 }
 
 #[test]
