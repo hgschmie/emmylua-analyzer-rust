@@ -91,6 +91,36 @@ fn decl_owner_syntax_start(model: &SemanticModel, decl: &SemanticId) -> Option<T
         .map(|syntax| syntax.get_range().start())
 }
 
+// Captured assignments require closure-entry handling even when the current
+// closure has no loop. Keep newly enabled fast reads within the declaration's
+// own closure; text order alone cannot describe an enclosing writer's effects.
+fn declaration_is_in_query_closure(
+    model: &SemanticModel,
+    decl: &SemanticId,
+    offset: TextSize,
+) -> bool {
+    let Some(chunk) = model.chunk() else {
+        return false;
+    };
+    let Some(owner) = model
+        .file_facts()
+        .and_then(|facts| facts.decl_by_id(decl))
+        .and_then(|decl| decl.owner_syntax)
+        .and_then(|syntax| syntax.to_node_from_root(chunk.syntax()))
+    else {
+        return false;
+    };
+    let Some(query) = chunk
+        .syntax()
+        .token_at_offset(offset)
+        .right_biased()
+        .and_then(|token| token.parent())
+    else {
+        return false;
+    };
+    LuaClosureId::from_node(&owner) == LuaClosureId::from_node(&query)
+}
+
 /// Flow-sensitive type of `decl` at `offset` (assignment-aware + condition narrowing; `Unknown` falls back to the declared type).
 ///
 /// When `offset` lies on the assignment flow node for `x = value`, **this assignment does not participate in the target type** —
@@ -106,13 +136,15 @@ pub fn type_of_decl_at(model: &SemanticModel, decl: &SemanticId, offset: TextSiz
     // No assignment to this decl and no narrowing/merge event after declaration:
     // the flow value is exactly the declared value. This keeps straight-line
     // initialization sections from walking O(offset) CFG nodes for every read.
-    // Complex control can bring a textually later assignment back to this read.
-    // Conservatively trace any assigned declaration in such a tree; the current
-    // assignment index does not distinguish writes inside loops or across labels.
+    // A reachable loop/label can bring a textually later assignment back to
+    // this read. Unrelated loops elsewhere in the file must not disable this
+    // fast path; use the existing per-node CFG reachability index.
     if let Some(decl_start) = decl_owner_syntax_start(model, decl)
-        && (!tree.has_complex_control() || !tree.has_decl_assignment(decl))
+        && (!tree.has_decl_assignment(decl)
+            || (!tree.is_loop_reachable(flow_id)
+                && declaration_is_in_query_closure(model, decl, offset)))
         && tree.latest_decl_assignment(decl, offset).is_none()
-        && !tree.has_flow_event_between(decl_start, offset, true)
+        && !tree.has_flow_event_between_at(flow_id, decl_start, offset, true)
     {
         #[cfg(test)]
         flow_metrics::record_fast_decl_hit();

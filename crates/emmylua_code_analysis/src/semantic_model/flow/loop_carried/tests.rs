@@ -970,3 +970,49 @@ fn loop_structural_identity_and_independent_writes_keep_known_shapes() {
         );
     }
 }
+
+#[test]
+fn unrelated_function_loop_keeps_a_straight_line_read_on_the_fast_path() {
+    use emmylua_parser::{LuaAstNode, LuaNameExpr};
+    let mut ws = crate::VirtualWorkspace::new();
+    let source = "local function unrelated() while flag do break end end;\n---@param value integer\nlocal function plain(value) local observed=value; value=1 end";
+    let file = ws.def(source);
+    let model = ws.analysis.semantic_model(file);
+    let offset = source.find("observed=value").unwrap() + "observed=".len();
+    let read = model
+        .chunk()
+        .unwrap()
+        .descendants::<LuaNameExpr>()
+        .find(|name| u32::from(name.get_position()) as usize == offset)
+        .unwrap();
+    let decl = model.resolve_name(read.get_position()).unwrap();
+    super::super::flow_metrics::reset();
+    assert_eq!(
+        super::super::type_of_decl_at(&model, &decl, read.get_position()),
+        LuaType::Integer
+    );
+    assert!(super::super::flow_metrics::fast_decl_hits() > 0);
+}
+
+#[test]
+fn captured_assigned_parameters_keep_closure_entry_flow() {
+    use emmylua_parser::{LuaAstNode, LuaNameExpr};
+    let mut ws = crate::VirtualWorkspace::new();
+    let source = "local function unrelated() while flag do break end end;\n---@param value integer\nlocal function outer(value) local function read() local observed=value end; value=1 end";
+    let file = ws.def(source);
+    let model = ws.analysis.semantic_model(file);
+    let offset = source.find("observed=value").unwrap() + "observed=".len();
+    let read = model
+        .chunk()
+        .unwrap()
+        .descendants::<LuaNameExpr>()
+        .find(|name| u32::from(name.get_position()) as usize == offset)
+        .unwrap();
+    let decl = model.resolve_name(read.get_position()).unwrap();
+    super::super::flow_metrics::reset();
+    assert_eq!(
+        super::super::type_of_decl_at(&model, &decl, read.get_position()),
+        LuaType::Integer
+    );
+    assert_eq!(super::super::flow_metrics::fast_decl_hits(), 0);
+}

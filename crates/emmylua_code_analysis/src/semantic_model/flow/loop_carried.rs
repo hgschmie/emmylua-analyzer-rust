@@ -5,6 +5,10 @@
 //! RHS inference are caught by the surrounding incompleteness-revision check.
 //! Incomplete results remain provisional only for the current query. The outer
 //! query scope discards them so a later query can retry with completed inputs.
+//!
+//! This transfer collects same-closure syntactic assignments. It does not summarize
+//! captured-local mutations performed by called nested closures; that requires
+//! interprocedural value effects beyond this loop-entry approximation.
 
 #[cfg(test)]
 mod tests;
@@ -83,7 +87,8 @@ fn compute(
         .find_map(LuaClosureExpr::cast)
         .map(|c| c.get_syntax_id());
     // Include nested loops in this closure: their writes can reach a later outer
-    // iteration. Repeated types collapse during widening; uncalled closures do not.
+    // iteration. Repeated types collapse during widening. Nested closure bodies
+    // are excluded; calling them needs a separate captured-value effect summary.
     let flow_tree = model.flow_tree()?;
     let reachable = reachability::reachable_flows(model);
     let mut assigned = Vec::new();
@@ -131,6 +136,7 @@ fn compute(
                     .or_else(|| {
                         // get(index) failed, so index >= values.len(). Only a
                         // final call or bare vararg can supply additional result slots.
+                        // For a, b, c = x, f(), c uses result slot 1 of f().
                         values
                             .last()
                             .filter(|value| expands_result_slots(value))
@@ -235,7 +241,8 @@ fn is_identity_write(model: &SemanticModel, syntax: LuaSyntaxId, decl: &Semantic
         .is_some_and(|expr| matches!(expr, LuaExpr::NameExpr(name) if model.resolve_name(name.get_position()).as_ref() == Some(decl)))
 }
 
-/// Parentheses suppress Lua's final-expression expansion.
+/// Parentheses suppress Lua's final-expression expansion. Dot and colon method
+/// calls use the same CallExpr representation as other calls.
 fn expands_result_slots(value: &LuaExpr) -> bool {
     match value {
         LuaExpr::CallExpr(_) => true,
