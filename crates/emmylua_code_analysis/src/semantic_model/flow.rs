@@ -6096,7 +6096,6 @@ fn type_is_broader(broad: &LuaType, narrow: &LuaType) -> bool {
             | (LuaType::String, LuaType::DocStringConst(_))
             | (LuaType::Integer, LuaType::IntegerConst(_))
             | (LuaType::Integer, LuaType::DocIntegerConst(_))
-            | (LuaType::Integer, LuaType::Number)
             | (LuaType::Number, LuaType::Integer)
             | (LuaType::Number, LuaType::IntegerConst(_))
             | (LuaType::Number, LuaType::DocIntegerConst(_))
@@ -6233,5 +6232,63 @@ pub(crate) mod flow_metrics {
 
     pub(crate) fn fast_member_hits() -> u64 {
         COUNTERS.with(|c| c.get().fast_member_hits)
+    }
+}
+
+#[cfg(test)]
+mod numeric_union_tests {
+    use super::*;
+    use emmylua_parser::{LuaAstNode, LuaNameExpr};
+
+    #[test]
+    fn numeric_flow_union_keeps_number_in_both_orders() {
+        for narrower in [LuaType::Integer, LuaType::IntegerConst(0)] {
+            assert_eq!(
+                merge_types(narrower.clone(), LuaType::Number),
+                LuaType::Number
+            );
+            assert_eq!(merge_types(LuaType::Number, narrower), LuaType::Number);
+        }
+        assert_eq!(
+            merge_types(LuaType::Integer, LuaType::IntegerConst(0)),
+            LuaType::Integer
+        );
+    }
+
+    #[test]
+    fn conditional_numeric_assignment_preserves_the_wider_result() {
+        for (first, second, expected) in [
+            ("integer", "number", LuaType::Number),
+            ("number", "integer", LuaType::Number),
+            ("integer", "integer", LuaType::Integer),
+        ] {
+            let source = format!(
+                r#"
+                ---@param flag boolean
+                ---@param first {first}
+                ---@param second {second}
+                local function choose(flag, first, second)
+                    local value = first
+                    if flag then value = second end
+                    local observed = value
+                end
+            "#
+            );
+            let mut ws = crate::VirtualWorkspace::new();
+            let file = ws.def(&source);
+            let model = ws.analysis.semantic_model(file);
+            let read = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaNameExpr>()
+                .filter(|name| name.get_name_text().as_deref() == Some("value"))
+                .last()
+                .unwrap();
+            assert_eq!(
+                model.type_of_expr_at(read.get_syntax_id(), read.get_position()),
+                expected,
+                "{first}, {second}"
+            );
+        }
     }
 }
