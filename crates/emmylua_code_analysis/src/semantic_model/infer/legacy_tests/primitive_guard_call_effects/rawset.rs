@@ -82,3 +82,15 @@ fn named_rawset_replacements_keep_possible_native_and_visible_custom_writes() {
         true,
     );
 }
+
+#[test]
+fn rawset_union_keys_can_target_named_fields() {
+    for (key_type, nullable) in [("string|number", true), ("number", false)] {
+        assert_member_call_boundary(
+            "type(elem.handler) == 'table'",
+            &format!("---@type {key_type}\nlocal mixed = opaque()"),
+            "rawset(elem, mixed, nil)\nlocal value = elem.handler.name -- observe",
+            nullable,
+        );
+    }
+}

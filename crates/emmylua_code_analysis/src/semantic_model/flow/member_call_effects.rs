@@ -7,6 +7,10 @@
 //! opaque. Captured member replacements without an invocation context are opaque.
 //! A reassigned name callee captured in a different closure is also
 //! opaque; the presence of any declaration assignment triggers that boundary.
+//!
+//! Syntax-only caches live for the immutable model snapshot. Type-dependent
+//! receiver targets use publish_if_complete so provisional inference is retried;
+//! invocation histories share immutable binding snapshots and retain full equality.
 
 use std::{
     borrow::Cow,
@@ -82,6 +86,8 @@ fn relevant(path: &Access, targets: &[Access]) -> bool {
 thread_local! { static RECEIVER_TARGET_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 /// A cached syntax gate keeps no-call straight-line files on their indexed path.
+/// Calls in earlier statements can invalidate a later read, so an access-local
+/// syntax gate would miss those effects even when the current statement has none.
 pub(super) fn file_has_calls(model: &SemanticModel) -> bool {
     if let Some(present) = model
         .cache

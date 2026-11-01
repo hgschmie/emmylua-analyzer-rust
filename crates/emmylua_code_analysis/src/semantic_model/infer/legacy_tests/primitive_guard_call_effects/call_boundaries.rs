@@ -722,3 +722,22 @@ fn assigned_global_type_aliases_do_not_prove_primitive_guards() {
         );
     }
 }
+
+#[test]
+fn normalized_nonprimitive_member_guards_keep_call_boundaries() {
+    for guard in [
+        "(elem.handler)",
+        "not (elem.handler == nil)",
+        "not not elem.handler",
+        "(rawget(elem, 'handler'))",
+    ] {
+        for (call, nullable) in [("harmless()", false), ("clear()", true)] {
+            assert_member_call_boundary(
+                guard,
+                "",
+                &format!("{call}\nlocal value = elem.handler.name -- observe"),
+                nullable,
+            );
+        }
+    }
+}

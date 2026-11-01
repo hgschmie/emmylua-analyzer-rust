@@ -241,7 +241,7 @@ impl FlowTree {
 
     /// Normal body completion and the entry label carrying explicit continue paths.
     /// Return [normal body exit, loop entry/backedge target] for reaching callees.
-    pub(crate) fn loop_reentries(&self, syntax: LuaSyntaxId) -> Option<&[FlowId; 2]> {
+    pub(crate) fn get_loop_reentries(&self, syntax: LuaSyntaxId) -> Option<&[FlowId; 2]> {
         self.loop_reentries.get(&syntax)
     }
 

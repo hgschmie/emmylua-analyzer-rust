@@ -1071,6 +1071,7 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                     Step::Done(return_flow_id)
                 }
             },
+            // A function statement installs a closure without evaluating its body.
             Continuation::FuncDone { func_stat, current } => match func_stat.get_func_name() {
                 Some(var) => {
                     let func_kind = FlowNodeKind::ImplFunc(func_stat.to_ptr());
@@ -1325,7 +1326,9 @@ fn loop_may_repeat(loop_stat: &LuaLoopStat) -> bool {
             let start = values.first().and_then(static_number_value);
             let stop = values.get(1).and_then(static_number_value);
             let step = values.get(2).map(static_number_value).unwrap_or(Some(1.0));
-            // Literal arithmetic uses f64, so very large counters can round.
+            // static_number_value accepts literal numbers/signs; bound arithmetic
+            // deliberately uses f64, so very large counters can round. Zero,
+            // negative zero and unresolved/nonliteral steps keep a possible repeat.
             // If adding a step makes no progress, retain the possible backedge
             // rather than declaring a potentially repeating loop single-pass:
             // start + step == start still satisfies the bound for an entered loop.
@@ -1359,4 +1362,72 @@ pub(super) fn run_bind_block(binder: &mut FlowBinder, block: LuaBlock, current: 
 /// Entry: bind an expression
 pub(super) fn run_bind_expr(binder: &mut FlowBinder, expr: LuaExpr, current: FlowId) -> FlowId {
     BindEngine::new(binder).run(Task::Expr(expr, current))
+}
+
+#[cfg(test)]
+mod loop_reentry_tests {
+    use super::*;
+    use crate::VirtualWorkspace;
+
+    #[test]
+    fn literal_loop_repetition_matrix() {
+        for (source, repeats) in [
+            ("while false do end", false),
+            ("while nil do end", false),
+            ("while true do end", true),
+            ("repeat until true", false),
+            ("repeat until 1", false),
+            ("repeat until false", true),
+            ("for i=1,1 do end", false),
+            ("for i=1,2 do end", true),
+            ("for i=2,1,-1 do end", true),
+            ("for i=1,2,0 do end", true),
+            ("for i=1,2,-0.0 do end", true),
+            ("for i=1,2,0/0 do end", true),
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            let file = ws.def(source);
+            let model = ws.analysis.semantic_model(file);
+            let loop_stat = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaLoopStat>()
+                .next()
+                .unwrap();
+            assert_eq!(loop_may_repeat(&loop_stat), repeats, "{source}");
+        }
+    }
+
+    #[test]
+    fn nested_loop_reentries_retain_distinct_captured_entries() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def("while outer do local x=1; while inner do x=2 end; x=3 end");
+        let model = ws.analysis.semantic_model(file);
+        let loops = model
+            .chunk()
+            .unwrap()
+            .descendants::<LuaLoopStat>()
+            .collect::<Vec<_>>();
+        assert_eq!(loops.len(), 2);
+        let tree = model.flow_tree().unwrap();
+        let outer = tree
+            .get_loop_reentries(loops[0].get_syntax_id())
+            .expect("outer loop reentries");
+        let inner = tree
+            .get_loop_reentries(loops[1].get_syntax_id())
+            .expect("inner loop reentries");
+        assert_ne!(
+            outer[1], inner[1],
+            "nested loops retain their own entry labels"
+        );
+        assert_ne!(
+            outer[0], inner[0],
+            "outer exit includes the write after the inner loop"
+        );
+        for reentries in [outer, inner] {
+            for flow in reentries {
+                assert!(tree.get_flow_node(*flow).is_some());
+            }
+        }
+    }
 }
