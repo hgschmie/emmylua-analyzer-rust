@@ -45,7 +45,7 @@ pub(super) fn assigned_type(
         _ => inferred,
     };
     // Later index-read policies can add nil to a non-nullable inference seed.
-    // Prove the write independently of that seed; keep it unchanged if non-nil.
+    // Still require a definite write; its proof removes only nil from the seed.
     if computed_effects::calls_conflict(
         model,
         &access,
@@ -239,11 +239,15 @@ mod tests {
             let seed = model.type_of_expr(read.get_syntax_id());
             assert!(!seed.is_nullable(), "{seed:?}");
             let proof = assigned_type(&model, &read, read.get_position());
-            assert_eq!(proof.is_some(), proven, "{effect}: {proof:?}");
+            assert_eq!(
+                proof.is_some(),
+                proven,
+                "initialization={initialization:?}, effect={effect:?}: {proof:?}"
+            );
             assert_eq!(
                 model.type_of_expr_at(read.get_syntax_id(), read.get_position()),
                 seed,
-                "ordinary non-nullable read changed after {effect}"
+                "ordinary read changed: initialization={initialization:?}, effect={effect:?}"
             );
             if let Some(proof) = proof {
                 assert_eq!(ws.humanize_type(proof), "Item");
@@ -292,13 +296,16 @@ mod tests {
                 "inventory[other] = {count = 0}",
             ] {
                 let mut ws = VirtualWorkspace::new_with_init_std_lib();
-                let mut config = serde_json::to_value(ws.get_emmyrc()).unwrap();
+                let mut config = ws.get_emmyrc();
+                config.strict.array_index = true;
+                let mut config = serde_json::to_value(config).unwrap();
                 // The isolated base has no dictionary policy/configuration field.
                 // Its serialized schema identifies whether dictionary nil checks
                 // exist; an unknown tableIndex option is otherwise ignored.
                 let dictionary_checks = config["strict"].get("tableIndex").is_some();
-                config["strict"]["arrayIndex"] = serde_json::json!(true);
-                config["strict"]["tableIndex"] = serde_json::json!(true);
+                if collection != "Item[]" {
+                    config["strict"]["tableIndex"] = serde_json::json!(true);
+                }
                 ws.update_emmyrc(serde_json::from_value(config).unwrap());
                 let source = format!(
                     r#"
