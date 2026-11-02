@@ -497,18 +497,19 @@ end
     }
 
     #[test]
-    fn recursive_call_seeds_preserve_dynamic_and_unknown_union_projections() {
-        for (returns, expected) in [
-            ("any", LuaType::Any),
+    fn recursive_call_seeds_preserve_available_projections() {
+        for (annotation, expected) in [
+            ("---@return any\n", LuaType::Any),
             (
-                "integer|unknown",
+                "---@return integer|unknown\n",
                 LuaType::Union(
                     crate::LuaUnionType::from_vec(vec![LuaType::Integer, LuaType::Unknown]).into(),
                 ),
             ),
+            ("", LuaType::Integer),
         ] {
             let mut ws = crate::VirtualWorkspace::new();
-            let file = ws.def(&format!("---@return {returns}\nlocal function create() return 1 end\nlocal item = create()\nprint(item)"));
+            let file = ws.def(&format!("{annotation}local function create() return 1 end\nlocal item = create()\nprint(item)"));
             let model = ws.analysis.semantic_model(file);
             let read = model
                 .chunk()
@@ -517,8 +518,8 @@ end
                 .find(|name| name.get_text() == "item")
                 .unwrap();
             let decl = model.resolve_name(read.get_position()).unwrap();
-            // Preserve the declared dynamic/union contract rather than treating
-            // every imprecise projection as an absent recursive seed.
+            // The shell supplies both annotated and locally inferred returns.
+            // Preserve its available projection while initialization is pending.
             assert_eq!(
                 model.analysis().decl_type_lua(file, decl.clone()),
                 Some(expected.clone())
