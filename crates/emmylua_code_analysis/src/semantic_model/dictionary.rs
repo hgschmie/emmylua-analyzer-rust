@@ -4,6 +4,8 @@ use super::{SemanticModel, type_eval};
 use crate::{LuaMemberKey, LuaType, TypeDefKind};
 use emmylua_parser::{LuaAstNode, LuaIndexExpr, LuaIndexKey};
 
+const MAX_KEY_LOOKUP_DEPTH: usize = 32;
+
 pub(crate) fn result(model: &SemanticModel, value: &LuaType, nullable: bool) -> LuaType {
     if nullable && model.strict_table_index() && !matches!(value, LuaType::Any | LuaType::Unknown) {
         LuaType::from_vec(vec![value.clone(), LuaType::Nil])
@@ -129,7 +131,7 @@ fn lookup_keys(
     owners: &mut Vec<LuaType>,
     keys: &mut Vec<LuaType>,
 ) -> Option<LuaType> {
-    if keys.len() >= 32 || keys.contains(key) {
+    if keys.len() >= MAX_KEY_LOOKUP_DEPTH || keys.contains(key) {
         return Some(LuaType::Unknown);
     }
     keys.push(key.clone());
@@ -162,16 +164,23 @@ fn lookup_keys(
     let value = if *key == LuaType::Nil {
         Some(LuaType::Nil)
     } else if let LuaType::Union(union) = key {
-        Some(combine_values(
-            union
-                .into_vec()
-                .iter()
-                .map(|key| {
-                    lookup_keys(model, owner, key, mode, owners, keys).unwrap_or(LuaType::Nil)
-                })
-                .collect(),
-            mode,
-        ))
+        // Nil and never cannot select a value slot. A write must satisfy
+        // the constraint from every non-nil key that remains.
+        let values = union
+            .into_vec()
+            .iter()
+            .filter(|key| match mode {
+                LookupMode::Write => !is_nil_only_key(model, key, 0),
+                _ => true,
+            })
+            .map(|key| lookup_keys(model, owner, key, mode, owners, keys).unwrap_or(LuaType::Nil))
+            .collect::<Vec<_>>();
+        Some(if values.is_empty() {
+            // Preserve the pure-nil-key contract, including nil assignment.
+            LuaType::Nil
+        } else {
+            combine_values(values, mode)
+        })
     } else if let Some(expanded) = expanded {
         // Keep an exact alias match as one signature check. Expanding thousands
         // of literal keys and rechecking each against that alias is quadratic.
@@ -197,8 +206,34 @@ fn lookup_keys(
     value
 }
 
+fn is_nil_only_key(model: &SemanticModel, key: &LuaType, depth: usize) -> bool {
+    // Match lookup_keys' recursion bound. An unresolved key must retain its
+    // constraint rather than being assumed to be nil.
+    if depth >= MAX_KEY_LOOKUP_DEPTH {
+        return false;
+    }
+    match key {
+        LuaType::Nil | LuaType::Never => true,
+        LuaType::Ref(id) | LuaType::Def(id) => model
+            .type_def_of(id)
+            .filter(|def| def.kind == TypeDefKind::Alias)
+            .and_then(|def| model.alias_target(&def))
+            .is_some_and(|target| is_nil_only_key(model, &target, depth + 1)),
+        LuaType::Generic(_) => {
+            let target = type_eval::expand_alias_generic(model, key);
+            target != *key && is_nil_only_key(model, &target, depth + 1)
+        }
+        LuaType::Union(union) => union
+            .into_vec()
+            .iter()
+            .all(|key| is_nil_only_key(model, key, depth + 1)),
+        LuaType::MultiLineUnion(union) => is_nil_only_key(model, &union.to_union(), depth + 1),
+        _ => false,
+    }
+}
+
 fn key_nil_status(model: &SemanticModel, key: &LuaType, seen: &mut Vec<LuaType>) -> Option<bool> {
-    if seen.len() >= 32 || seen.contains(key) {
+    if seen.len() >= MAX_KEY_LOOKUP_DEPTH || seen.contains(key) {
         return None;
     }
     seen.push(key.clone());

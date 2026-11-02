@@ -915,3 +915,90 @@ child.style.horizontal_align = 42
 "#
     ));
 }
+
+#[test]
+fn nullable_dictionary_keys_do_not_narrow_write_values_to_nil() {
+    for strict in [false, true] {
+        for dictionary in ["table<integer,string>", "{[integer]:string}"] {
+            for key in [
+                "integer?",
+                "Maybe<integer>",
+                "integer|NoKey",
+                "integer|Identity<nil>",
+                "integer|never|nil",
+            ] {
+                for (value, valid) in [("'value'", true), ("nil", true), ("3.5", false)] {
+                    let mut ws = workspace(strict);
+                    let source = format!(
+                        "---@alias Maybe<T> T|nil\n---@alias Identity<T> T\n---@alias NoKey nil\n---@alias Target {dictionary}\n---@param target Target\n---@param key {key}\nlocal function write(target,key) target[key]={value} end"
+                    );
+                    assert_eq!(
+                        ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
+                        valid,
+                        "{dictionary}, {key}, {value}, strict={strict}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn optional_write_keys_preserve_other_key_constraints() {
+    for (dictionary, key, value, valid) in [
+        (
+            "table<integer,string>",
+            "integer|string|nil",
+            "'value'",
+            false,
+        ),
+        ("table<integer,string>", "nil", "'value'", false),
+        ("table<integer,string>", "NoKey1|NoKey2", "'value'", false),
+        ("table<integer,string>", "NoKey1|NoKey2", "nil", true),
+        ("table<integer,string>", "never|nil", "'value'", false),
+        (
+            "{first:string,second:integer}",
+            "'first'|'second'|nil",
+            "'value'",
+            false,
+        ),
+        (
+            "{first:string,second:integer}",
+            "'first'|nil",
+            "'value'",
+            true,
+        ),
+        ("{first:string,second:integer}", "'first'|nil", "nil", false),
+        (
+            "{blocked:never,first:string}",
+            "'blocked'|'first'|nil",
+            "'value'",
+            false,
+        ),
+    ] {
+        let mut ws = workspace(true);
+        let source = format!(
+            "---@alias NoKey1 nil\n---@alias NoKey2 nil\n---@alias Target {dictionary}\n---@param target Target\n---@param key {key}\nlocal function write(target,key) target[key]={value} end"
+        );
+        assert_eq!(
+            ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
+            valid,
+            "{dictionary}, {key}, {value}"
+        );
+    }
+}
+
+#[test]
+fn recursive_nil_key_aliases_keep_write_constraints() {
+    for (value, valid) in [("'value'", true), ("3.5", false)] {
+        let mut ws = workspace(true);
+        let source = format!(
+            "---@alias RecursiveKey RecursiveKey|nil\n---@param target table<integer,string>\n---@param key integer|RecursiveKey\nlocal function write(target,key) target[key]={value} end"
+        );
+        assert_eq!(
+            ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
+            valid,
+            "{value}"
+        );
+    }
+}
