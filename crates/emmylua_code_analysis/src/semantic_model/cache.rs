@@ -495,4 +495,47 @@ end
             "{diagnostics:?}"
         );
     }
+
+    #[test]
+    fn recursive_call_seeds_preserve_dynamic_and_unknown_union_projections() {
+        for (returns, expected) in [
+            ("any", LuaType::Any),
+            (
+                "integer|unknown",
+                LuaType::Union(
+                    crate::LuaUnionType::from_vec(vec![LuaType::Integer, LuaType::Unknown]).into(),
+                ),
+            ),
+        ] {
+            let mut ws = crate::VirtualWorkspace::new();
+            let file = ws.def(&format!("---@return {returns}\nlocal function create() return 1 end\nlocal item = create()\nprint(item)"));
+            let model = ws.analysis.semantic_model(file);
+            let read = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaNameExpr>()
+                .find(|name| name.get_text() == "item")
+                .unwrap();
+            let decl = model.resolve_name(read.get_position()).unwrap();
+            // Preserve the declared dynamic/union contract rather than treating
+            // every imprecise projection as an absent recursive seed.
+            assert_eq!(
+                model.analysis().decl_type_lua(file, decl.clone()),
+                Some(expected.clone())
+            );
+            let key = (file, decl.clone());
+            model
+                .cache
+                .borrow_mut()
+                .decl_type
+                .insert(key.clone(), CacheEntry::InProgress);
+            let revision = model.cache.borrow().revision();
+            assert_eq!(model.type_of_decl(&decl), Some(expected));
+            assert!(!model.cache.borrow().is_complete(revision));
+            assert!(matches!(
+                model.cache.borrow().decl_type.get(&key),
+                Some(CacheEntry::InProgress)
+            ));
+        }
+    }
 }

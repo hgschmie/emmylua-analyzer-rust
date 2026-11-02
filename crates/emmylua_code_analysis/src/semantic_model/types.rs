@@ -150,7 +150,8 @@ impl<'db> SemanticModel<'db> {
         cache.decl_type.insert(key, entry);
         result
     }
-    /// Concrete call projection in this model's file; Unknown keeps the empty seed.
+    /// Available call projection in this model's file; Unknown keeps the empty seed.
+    /// Declared Any remains a valid dynamic contract.
     /// `type_of_decl` dispatches cross-file declarations before consulting its cache.
     fn call_initializer_seed(&self, decl: &SemanticId) -> Option<LuaType> {
         let facts = self.file_facts()?;
