@@ -372,12 +372,18 @@ local value = 10 - item.count
 
     #[test]
     fn other_recursive_declarations_keep_empty_seeds() {
-        for source in [
-            "local item = missing(); print(item)",
-            "---@return integer\nlocal function create() return 1 end\nlocal item = (create()); print(item)",
-            "local item = 1; print(item)",
-            "for _, item in pairs({}) do print(item) end",
-            "---@return integer\nlocal function create() return 1 end\nitem = create(); print(item)",
+        for (source, unknown_projection) in [
+            ("local item = missing(); print(item)", true),
+            (
+                "---@return integer\nlocal function create() return 1 end\nlocal item = (create()); print(item)",
+                false,
+            ),
+            ("local item = 1; print(item)", false),
+            ("for _, item in pairs({}) do print(item) end", false),
+            (
+                "---@return integer\nlocal function create() return 1 end\nitem = create(); print(item)",
+                false,
+            ),
         ] {
             let mut ws = crate::VirtualWorkspace::new();
             let file = ws.def(source);
@@ -390,7 +396,7 @@ local value = 10 - item.count
                 .last()
                 .unwrap();
             let decl = model.resolve_name(read.get_position()).unwrap();
-            if source.starts_with("local item = missing()") {
+            if unknown_projection {
                 assert!(
                     model
                         .analysis()

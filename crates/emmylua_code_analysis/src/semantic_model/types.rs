@@ -150,9 +150,12 @@ impl<'db> SemanticModel<'db> {
         cache.decl_type.insert(key, entry);
         result
     }
+    /// Concrete call projection in this model's file; Unknown keeps the empty seed.
+    /// `type_of_decl` dispatches cross-file declarations before consulting its cache.
     fn call_initializer_seed(&self, decl: &SemanticId) -> Option<LuaType> {
         let facts = self.file_facts()?;
         let info = facts.decl_by_id(decl)?;
+        // Parenthesized and other initializers retain the existing empty-seed policy.
         if !matches!(info.kind, DeclKind::Local { is_iter: false, .. })
             || info.value_expr_syntax?.get_kind() != LuaSyntaxKind::CallExpr
         {
@@ -160,6 +163,8 @@ impl<'db> SemanticModel<'db> {
         }
         // This shell projection has its own expression-cycle guard and does not
         // enter SemanticModel inference or borrow its request-local cache.
+        // Recompute while the initializer is active: storing this seed as Ready
+        // would hide a different final type. Completed declarations use the cache.
         self.analysis()
             .decl_type_lua(self.file_id(), decl.clone())
             .filter(|ty| !ty.is_unknown())
