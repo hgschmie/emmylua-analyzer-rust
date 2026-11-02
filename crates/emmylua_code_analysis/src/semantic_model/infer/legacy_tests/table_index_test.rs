@@ -789,3 +789,18 @@ fn optional_write_keys_preserve_other_key_constraints() {
         );
     }
 }
+
+#[test]
+fn recursive_nil_key_aliases_keep_write_constraints() {
+    for (value, valid) in [("'value'", true), ("3.5", false)] {
+        let mut ws = workspace(true);
+        let source = format!(
+            "---@alias RecursiveKey RecursiveKey|nil\n---@param target table<integer,string>\n---@param key integer|RecursiveKey\nlocal function write(target,key) target[key]={value} end"
+        );
+        assert_eq!(
+            ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
+            valid,
+            "{value}"
+        );
+    }
+}
