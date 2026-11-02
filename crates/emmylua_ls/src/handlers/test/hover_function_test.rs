@@ -1093,8 +1093,9 @@ mod anonymous_member_returns {
 
     fn code(definitions: &str, source: &str) -> String {
         let mut ws = ProviderVirtualWorkspace::new();
-        let source = format!("{definitions}\n{source}");
-        let (text, position) = ProviderVirtualWorkspace::handle_file_content(&source).unwrap();
+        let combined_source = format!("{definitions}\n{source}");
+        let (text, position) = ProviderVirtualWorkspace::handle_file_content(&combined_source)
+            .expect("one hover marker");
         let file = ws.def(&text);
         let result = hover(&ws.analysis, file, position).expect("member hover");
         let HoverContents::Markup(contents) = result.contents else {
@@ -1103,10 +1104,10 @@ mod anonymous_member_returns {
         contents
             .value
             .strip_prefix("```lua\n")
-            .unwrap()
+            .expect("Lua hover code fence")
             .split("\n```")
             .next()
-            .unwrap()
+            .expect("hover code block")
             .to_owned()
     }
 

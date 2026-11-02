@@ -602,6 +602,7 @@ fn member_type_at_token(model: &SemanticModel<'_>, token: &LuaSyntaxToken) -> Op
 
 /// Render function parameters/returns (`is_method=true` strips the implicit self first parameter).
 /// `show_unknown=true` is used for field/member type-surface display: still render explicitly when unbound generics become `unknown`.
+/// The return suffix includes its separator spacing or line breaks, and is empty for implicit returns.
 fn render_function_params_and_ret_mode(
     model: &SemanticModel<'_>,
     func: &LuaFunctionType,
