@@ -1192,3 +1192,92 @@ mod collection_generics {
         assert!(!text.contains("integer,"), "{text}");
     }
 }
+
+#[cfg(test)]
+mod anonymous_member_returns {
+    use crate::handlers::{hover::hover, test_lib::ProviderVirtualWorkspace};
+    use lsp_types::HoverContents;
+
+    fn code(definitions: &str, source: &str) -> String {
+        let mut ws = ProviderVirtualWorkspace::new();
+        let combined_source = format!("{definitions}\n{source}");
+        let (text, position) = ProviderVirtualWorkspace::handle_file_content(&combined_source)
+            .expect("one hover marker");
+        let file = ws.def(&text);
+        let result = hover(&ws.analysis, file, position).expect("member hover");
+        let HoverContents::Markup(contents) = result.contents else {
+            panic!("markup hover")
+        };
+        contents
+            .value
+            .strip_prefix("```lua\n")
+            .expect("Lua hover code fence")
+            .split("\n```")
+            .next()
+            .expect("hover code block")
+            .to_owned()
+    }
+
+    #[test]
+    fn anonymous_member_hover_preserves_nullable_returns() {
+        let definitions = r#"
+            ---@class Surface
+            local Surface = {}
+            ---@class Game
+            local game = {
+                ---@param index integer
+                ---@return Surface?
+                get_surface = function(index) end,
+            }
+        "#;
+        for source in [
+            "local result = game.<??>get_surface(1)",
+            "local callback = game.<??>get_surface",
+        ] {
+            let text = code(definitions, source);
+            assert!(
+                text.contains("get_surface(index: integer) -> Surface?"),
+                "{text}"
+            );
+        }
+        assert_eq!(
+            code(
+                definitions,
+                "local result = game.get_surface(1)\nlocal copy = <??>result"
+            ),
+            "local result: Surface?"
+        );
+    }
+
+    #[test]
+    fn anonymous_member_hover_preserves_multiple_returns() {
+        let definitions = r#"
+            ---@class Reader
+            local reader = {
+                ---@return string name
+                ---@return integer count
+                read = function() end,
+            }
+        "#;
+        let value = code(definitions, "local callback = reader.<??>read");
+        assert!(value.contains("-> string, integer"), "{value}");
+        let call = code(definitions, "local name, count = reader.<??>read()");
+        assert!(call.contains("-> string, integer"), "{call}");
+    }
+
+    #[test]
+    fn anonymous_member_hover_keeps_void_returns_implicit() {
+        let definitions = r#"
+            ---@class Sink
+            local sink = {
+                ---@param value string
+                ---@return nil
+                write = function(value) end,
+            }
+        "#;
+        assert_eq!(
+            code(definitions, "sink.<??>write('value')"),
+            "(field) write(value: string)"
+        );
+    }
+}
