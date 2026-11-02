@@ -433,3 +433,250 @@ impl SemanticLocalCache {
         self.revision() == revision
     }
 }
+
+#[cfg(test)]
+mod inference_seed_regression_tests {
+    use super::*;
+    use emmylua_parser::{LuaAstNode, LuaBinaryExpr, LuaNameExpr};
+
+    #[test]
+    fn arithmetic_preserves_declared_return_slots_during_initializer_reentry() {
+        for (field_type, expected) in [("integer", LuaType::Integer), ("number", LuaType::Number)] {
+            for second_slot in [false, true] {
+                for recursive_read in [false, true] {
+                    let mut ws = crate::VirtualWorkspace::new();
+                    let returns = if second_slot {
+                        "integer, Counter"
+                    } else {
+                        "Counter"
+                    };
+                    let prefix = if second_slot { "0, " } else { "" };
+                    let names = if second_slot { "ignored, item" } else { "item" };
+                    let source = format!(
+                        r#"---@class Counter
+---@field count {field_type}
+local Counter = {{}}
+---@return {returns}
+local function create() return {prefix}{{count = 1}} end
+local {names} = create()
+local value = 10 - item.count
+"#
+                    );
+                    let file = ws.def(&source);
+                    let model = ws.analysis.semantic_model(file);
+                    let chunk = model.chunk().unwrap();
+                    let read = chunk
+                        .descendants::<LuaNameExpr>()
+                        .find(|name| name.get_text() == "item")
+                        .unwrap();
+                    let decl = model.resolve_name(read.get_position()).unwrap();
+                    let expression = chunk
+                        .descendants::<LuaBinaryExpr>()
+                        .next()
+                        .unwrap()
+                        .get_syntax_id();
+                    let key = (file, decl);
+                    if recursive_read {
+                        // Hold the initializer open while a dependent arithmetic
+                        // query reads a value with an explicit return contract.
+                        model
+                            .cache
+                            .borrow_mut()
+                            .decl_type
+                            .insert(key.clone(), CacheEntry::InProgress);
+                        assert_eq!(
+                            model.type_of_expr(expression),
+                            expected,
+                            "pending {field_type}, second_slot={second_slot}"
+                        );
+                        assert!(
+                            !model
+                                .cache
+                                .borrow()
+                                .expr_type
+                                .contains_key(&(file, expression))
+                        );
+                        model.cache.borrow_mut().decl_type.remove(&key);
+                    }
+                    for _ in 0..2 {
+                        assert_eq!(
+                            model.type_of_expr(expression),
+                            expected,
+                            "completed {field_type}, second_slot={second_slot}, recursive_read={recursive_read}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn other_recursive_declarations_keep_empty_seeds() {
+        for (source, unknown_projection) in [
+            ("local item = missing(); print(item)", true),
+            (
+                "---@return integer\nlocal function create() return 1 end\nlocal item = (create()); print(item)",
+                false,
+            ),
+            ("local item = 1; print(item)", false),
+            ("for _, item in pairs({}) do print(item) end", false),
+            (
+                "---@return integer\nlocal function create() return 1 end\nitem = create(); print(item)",
+                false,
+            ),
+        ] {
+            let mut ws = crate::VirtualWorkspace::new();
+            let file = ws.def(source);
+            let model = ws.analysis.semantic_model(file);
+            let read = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaNameExpr>()
+                .filter(|name| name.get_text() == "item")
+                .last()
+                .unwrap();
+            let decl = model.resolve_name(read.get_position()).unwrap();
+            if unknown_projection {
+                assert!(
+                    model
+                        .analysis()
+                        .decl_type_lua(file, decl.clone())
+                        .unwrap()
+                        .is_unknown()
+                );
+            }
+            model
+                .cache
+                .borrow_mut()
+                .decl_type
+                .insert((file, decl.clone()), CacheEntry::InProgress);
+            let revision = model.cache.borrow().revision();
+            assert_eq!(model.type_of_decl(&decl), None, "{source}");
+            assert_eq!(model.cache.borrow().revision(), revision, "{source}");
+        }
+    }
+
+    #[test]
+    fn completed_value_replaces_provisional_arithmetic() {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def("---@return integer\nlocal function create() return 1 end\nlocal item = create()\nlocal value = 10 - item");
+        let model = ws.analysis.semantic_model(file);
+        let chunk = model.chunk().unwrap();
+        let read = chunk
+            .descendants::<LuaNameExpr>()
+            .find(|name| name.get_text() == "item")
+            .unwrap();
+        let decl = model.resolve_name(read.get_position()).unwrap();
+        let expression = chunk
+            .descendants::<LuaBinaryExpr>()
+            .next()
+            .unwrap()
+            .get_syntax_id();
+        let key = (file, decl);
+        model
+            .cache
+            .borrow_mut()
+            .decl_type
+            .insert(key.clone(), CacheEntry::InProgress);
+        assert_eq!(model.type_of_expr(expression), LuaType::Integer);
+        assert!(
+            !model
+                .cache
+                .borrow()
+                .expr_type
+                .contains_key(&(file, expression))
+        );
+        // Model completion with a broader result: the prior arithmetic must be
+        // recomputed, while subsequent complete reads remain cached.
+        model
+            .cache
+            .borrow_mut()
+            .decl_type
+            .insert(key, CacheEntry::Ready(Some(LuaType::Number)));
+        let revision = model.cache.borrow().revision();
+        for _ in 0..2 {
+            assert_eq!(model.type_of_expr(expression), LuaType::Number);
+        }
+        assert_eq!(model.cache.borrow().revision(), revision);
+    }
+
+    #[test]
+    fn captured_call_initializer_keeps_integer_arithmetic() {
+        let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(
+            r#"---@class NumericLoad
+---@field stacks integer
+local NumericLoad = {}
+---@param capacity integer
+---@return NumericLoad
+local function limit(capacity) return {stacks = 1} end
+---@return integer
+local function consume()
+    local remaining = 100
+    while remaining > 0 do
+        local item = limit(remaining)
+        remaining = remaining - item.stacks
+        print(function() return item.stacks end)
+    end
+    return remaining
+end
+"#,
+        );
+        let diagnostics = ws
+            .analysis
+            .diagnose_file(file, tokio_util::sync::CancellationToken::new())
+            .unwrap();
+        assert!(
+            !diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.code,
+                Some(lsp_types::NumberOrString::String(code))
+                    if code == "assign-type-mismatch" || code == "return-type-mismatch"
+            )),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn recursive_call_seeds_preserve_available_projections() {
+        for (annotation, expected) in [
+            ("---@return any\n", LuaType::Any),
+            (
+                "---@return integer|unknown\n",
+                LuaType::Union(
+                    crate::LuaUnionType::from_vec(vec![LuaType::Integer, LuaType::Unknown]).into(),
+                ),
+            ),
+            ("", LuaType::Integer),
+        ] {
+            let mut ws = crate::VirtualWorkspace::new();
+            let file = ws.def(&format!("{annotation}local function create() return 1 end\nlocal item = create()\nprint(item)"));
+            let model = ws.analysis.semantic_model(file);
+            let read = model
+                .chunk()
+                .unwrap()
+                .descendants::<LuaNameExpr>()
+                .find(|name| name.get_text() == "item")
+                .unwrap();
+            let decl = model.resolve_name(read.get_position()).unwrap();
+            // The shell supplies both annotated and locally inferred returns.
+            // Preserve its available projection while initialization is pending.
+            assert_eq!(
+                model.analysis().decl_type_lua(file, decl.clone()),
+                Some(expected.clone())
+            );
+            let key = (file, decl.clone());
+            model
+                .cache
+                .borrow_mut()
+                .decl_type
+                .insert(key.clone(), CacheEntry::InProgress);
+            let revision = model.cache.borrow().revision();
+            assert_eq!(model.type_of_decl(&decl), Some(expected));
+            assert!(!model.cache.borrow().is_complete(revision));
+            assert!(matches!(
+                model.cache.borrow().decl_type.get(&key),
+                Some(CacheEntry::InProgress)
+            ));
+        }
+    }
+}
