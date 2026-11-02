@@ -162,12 +162,12 @@ fn lookup_keys(
     let value = if *key == LuaType::Nil {
         Some(LuaType::Nil)
     } else if let LuaType::Union(union) = key {
-        // A nil alternative cannot select a value slot. Keep constraints from
-        // every non-nil key, including incompatible keys and required fields.
+        // Nil and never cannot select a value slot. A write must satisfy
+        // the constraint from every non-nil key that remains.
         let values = union
             .into_vec()
             .iter()
-            .filter(|key| !matches!(mode, LookupMode::Write) || !is_nil_key(model, key, 0))
+            .filter(|key| !(matches!(mode, LookupMode::Write) && is_nil_only_key(model, key, 0)))
             .map(|key| lookup_keys(model, owner, key, mode, owners, keys).unwrap_or(LuaType::Nil))
             .collect::<Vec<_>>();
         Some(if values.is_empty() {
@@ -200,26 +200,28 @@ fn lookup_keys(
     value
 }
 
-fn is_nil_key(model: &SemanticModel, key: &LuaType, depth: usize) -> bool {
+fn is_nil_only_key(model: &SemanticModel, key: &LuaType, depth: usize) -> bool {
+    // Match lookup_keys' recursion bound. An unresolved key must retain its
+    // constraint rather than being assumed to be nil.
     if depth >= 32 {
         return false;
     }
     match key {
-        LuaType::Nil => true,
+        LuaType::Nil | LuaType::Never => true,
         LuaType::Ref(id) | LuaType::Def(id) => model
             .type_def_of(id)
             .filter(|def| def.kind == TypeDefKind::Alias)
             .and_then(|def| model.alias_target(&def))
-            .is_some_and(|target| is_nil_key(model, &target, depth + 1)),
+            .is_some_and(|target| is_nil_only_key(model, &target, depth + 1)),
         LuaType::Generic(_) => {
             let target = type_eval::expand_alias_generic(model, key);
-            target != *key && is_nil_key(model, &target, depth + 1)
+            target != *key && is_nil_only_key(model, &target, depth + 1)
         }
         LuaType::Union(union) => union
             .into_vec()
             .iter()
-            .all(|key| is_nil_key(model, key, depth + 1)),
-        LuaType::MultiLineUnion(union) => is_nil_key(model, &union.to_union(), depth + 1),
+            .all(|key| is_nil_only_key(model, key, depth + 1)),
+        LuaType::MultiLineUnion(union) => is_nil_only_key(model, &union.to_union(), depth + 1),
         _ => false,
     }
 }
