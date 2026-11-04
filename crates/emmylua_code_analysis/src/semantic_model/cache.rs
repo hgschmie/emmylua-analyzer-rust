@@ -22,6 +22,12 @@ use super::member::MemberInfo;
 use super::{CallSiteAnalysis, ResolvedMember};
 use crate::IndexInfo;
 
+#[derive(Debug, Clone, Default)]
+pub(super) struct MutatorKinds {
+    pub(super) whole_table: Vec<usize>,
+    pub(super) rawset: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum BuiltinKey {
     Expression(LuaSyntaxId),
@@ -225,6 +231,8 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) expr_type_at: HashMap<(FileId, LuaSyntaxId, TextSize), CacheEntry<LuaType>>,
     /// Cast-bearing flow bindings on the node and its ancestors, nearest first.
     pub(crate) expr_cast_flows: HashMap<(FileId, LuaSyntaxId), Rc<Vec<FlowId>>>,
+    /// Builtin classification is receiver-independent; incomplete queries retry.
+    pub(super) member_mutator_kinds: HashMap<(FileId, LuaSyntaxId), CacheEntry<MutatorKinds>>,
     /// Syntax-only member-callee presence for this model snapshot; never call effects.
     pub(crate) member_call_resolution: HashMap<FileId, bool>,
     pub(crate) resolve_name: HashMap<(FileId, TextSize), Option<SemanticId>>,
@@ -273,6 +281,8 @@ impl SemanticLocalCache {
     }
 
     fn discard_provisional(&mut self) {
+        self.member_mutator_kinds
+            .retain(|_, entry| entry.is_ready());
         self.inherited_dictionaries
             .retain(|_, entry| entry.is_ready());
         self.expr_type.retain(|_, entry| entry.is_ready());

@@ -21,6 +21,7 @@ use emmylua_parser::{
 };
 use rowan::TextSize;
 
+use super::super::cache::MutatorKinds;
 use super::{SemanticModel, guards, index_access_path, path_write_affects, stable_access_path};
 use crate::semantic_db::def::SemanticId;
 use crate::semantic_db::flow::{FlowAntecedent, FlowEffect, FlowNodeKind, LuaClosureId};
@@ -1023,6 +1024,36 @@ fn whole_table_mutators(model: &SemanticModel, expr: LuaExpr) -> Vec<usize> {
     receivers
 }
 
+/// Classification depends on the expression and immutable file view, not the
+/// guarded receiver or invocation bindings. Keep receiver/key checks uncached.
+fn mutator_kinds(model: &SemanticModel, prefix: &LuaExpr) -> MutatorKinds {
+    use super::super::cache::{CacheEntry, QueryCacheScope};
+    let key = (model.file_id(), prefix.get_syntax_id());
+    {
+        let cache = model.cache.borrow();
+        if let Some(entry) = cache.member_mutator_kinds.get(&key) {
+            return entry.get(&cache).cloned().unwrap_or_default();
+        }
+    }
+    let _query = QueryCacheScope::new(&model.cache);
+    model
+        .cache
+        .borrow_mut()
+        .member_mutator_kinds
+        .insert(key, CacheEntry::InProgress);
+    let revision = model.cache.borrow().revision();
+    #[cfg(test)]
+    mutator_cache_tests::record_classification();
+    let result = MutatorKinds {
+        whole_table: whole_table_mutators(model, prefix.clone()),
+        rawset: may_call_rawset(model, prefix.clone()),
+    };
+    let mut cache = model.cache.borrow_mut();
+    let entry = CacheEntry::finish(result.clone(), cache.is_complete(revision));
+    cache.member_mutator_kinds.insert(key, entry);
+    result
+}
+
 fn mutator_conflicts(
     model: &SemanticModel,
     expected: &Access,
@@ -1032,11 +1063,15 @@ fn mutator_conflicts(
     let Some(prefix) = call.get_prefix_expr().and_then(guards::unparenthesized) else {
         return false;
     };
+    let kinds = mutator_kinds(model, &prefix);
+    if kinds.whole_table.is_empty() && !kinds.rawset {
+        return false;
+    }
     let Some(args) = call.get_args_list() else {
         return false;
     };
     let args = args.get_args().collect::<Vec<_>>();
-    for position in whole_table_mutators(model, prefix.clone()) {
+    for position in kinds.whole_table {
         if let Some(receiver) = args.get(position).or_else(|| args.first())
             && access_paths(model, receiver, bindings, std::slice::from_ref(expected))
                 .iter()
@@ -1045,7 +1080,7 @@ fn mutator_conflicts(
             return true;
         }
     }
-    if !may_call_rawset(model, prefix) {
+    if !kinds.rawset {
         return false;
     }
     let Some(receiver) = args.first() else {
@@ -1466,3 +1501,6 @@ fn dictionary_effect_unsigned_keys_do_not_wrap() {
         );
     }
 }
+
+#[cfg(test)]
+mod mutator_cache_tests;
