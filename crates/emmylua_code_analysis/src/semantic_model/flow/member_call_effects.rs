@@ -44,6 +44,8 @@ struct Caller {
     context: ContextId,
 }
 
+/// Immutable: the fingerprint hashes all contexts and incoming caller lists.
+/// Equality also checks those fields, so a fingerprint collision cannot alias graphs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InvocationSnapshot {
     fingerprint: u64,
@@ -105,6 +107,7 @@ impl InvocationGraph {
             self.callers.push(Rc::new(Vec::new()));
             id
         };
+        // Keep deterministic edge order for snapshots; duplicate checks are linear in fan-in.
         if !self.callers[id].contains(&caller) {
             Rc::make_mut(&mut self.callers[id]).push(caller);
             self.revision += 1;
@@ -114,6 +117,7 @@ impl InvocationGraph {
 
     /// Find the nearest invocation of a lexical closure on every incoming path.
     /// A path reaching the root without one retains the uninvoked-capture rules.
+    /// Both results form a conservative union, not an exact caller-to-path pairing.
     fn entries(&self, context: ContextId, closure: LuaClosureId) -> (Vec<Caller>, bool) {
         let mut pending = vec![context];
         let mut seen = HashSet::new();
@@ -127,6 +131,8 @@ impl InvocationGraph {
                 uninvoked = true;
                 continue;
             };
+            // Every context belongs to this scan's one immutable file view, and
+            // LuaClosureId itself is a TextRange. Stored syntax IDs are closures.
             if self.contexts[id].closure.get_range() == closure.get_range() {
                 callers.extend(self.callers[id].iter().copied());
             } else {
@@ -144,6 +150,7 @@ impl InvocationGraph {
 // Nested answers depend on the exact incoming graph. Share immutable snapshots
 // until an edge changes; root queries do not consult the graph. Full equality
 // keeps cached results separate even when two graphs use the same context IDs.
+// Growth invalidates snapshots; reuse primarily benefits settled graph passes.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(in crate::semantic_model) struct CalleeCacheKey {
     file: crate::FileId,
@@ -381,42 +388,50 @@ fn scan_uncached(
     };
     let mut graph = InvocationGraph::default();
     let mut last_seen_revision = 0;
-    // 0 visits the root once; k > 0 visits contexts[k - 1].
-    let mut next = 0;
+    enum Visit {
+        Root,
+        Context(usize),
+    }
+    let mut visit = Visit::Root;
     loop {
-        let (body, after, before, context, writes) = if next == 0 {
-            (node.clone(), after, before, None, false)
-        } else if let Some(entry) = graph.contexts.get(next - 1) {
-            let Some(body) = model
-                .chunk()
-                .and_then(|chunk| entry.closure.to_node_from_root(chunk.syntax()))
-                .and_then(LuaClosureExpr::cast)
-                .and_then(|closure| closure.get_block())
-            else {
-                next += 1;
-                continue;
-            };
-            (
-                body.syntax().clone(),
-                TextSize::from(0),
-                body.get_range().end(),
-                Some(next - 1),
-                true,
-            )
-        } else {
-            // New incoming edges may reveal captured replacements in an earlier
-            // context. Repeat until both contexts and caller edges settle.
-            if graph.revision == last_seen_revision {
-                break;
+        let (body, after, before, context, writes) = match visit {
+            Visit::Root => {
+                visit = Visit::Context(0);
+                (node.clone(), after, before, None, false)
             }
-            last_seen_revision = graph.revision;
-            // Root resolution is graph-independent and its edges already exist.
-            next = 1;
-            continue;
+            Visit::Context(id) => {
+                let Some(entry) = graph.contexts.get(id) else {
+                    // New edges may reveal captured replacements in earlier contexts.
+                    // The root is graph-independent; repeat only the context pass.
+                    if graph.revision == last_seen_revision {
+                        break;
+                    }
+                    last_seen_revision = graph.revision;
+                    visit = Visit::Context(0);
+                    continue;
+                };
+                visit = Visit::Context(id + 1);
+                let Some(body) = model
+                    .chunk()
+                    .and_then(|chunk| entry.closure.to_node_from_root(chunk.syntax()))
+                    .and_then(LuaClosureExpr::cast)
+                    .and_then(|closure| closure.get_block())
+                else {
+                    continue;
+                };
+                (
+                    body.syntax().clone(),
+                    TextSize::from(0),
+                    body.get_range().end(),
+                    Some(id),
+                    true,
+                )
+            }
         };
-        next += 1;
         #[cfg(test)]
         cache_tests::record_body();
+        // Own the bindings while connect() may grow the graph below. This copy
+        // and lexical-formal collection repeat on growth passes; see fan-out tests.
         let bindings = graph.bindings(context).to_vec();
         let mut pending = vec![body];
         let mut calls = Vec::new();

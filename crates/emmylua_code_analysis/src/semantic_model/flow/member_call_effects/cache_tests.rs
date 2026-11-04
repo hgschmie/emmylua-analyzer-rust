@@ -335,6 +335,7 @@ fn incomplete_effect_scan_is_retried_after_the_query() {
 
 #[test]
 fn branching_recursive_calls_share_receiver_contexts() {
+    // The abort fuse deliberately exceeds the tighter successful-visit bound.
     struct RestoreLimit;
     impl Drop for RestoreLimit {
         fn drop(&mut self) {
@@ -343,8 +344,8 @@ fn branching_recursive_calls_share_receiver_contexts() {
         }
     }
     let _limit = RestoreLimit;
-    // The old history walker exceeds256 visits. The small graph should stay
-    // below64; the larger fuse aborts regressions before they can hang the suite.
+    // The old history walker exceeds 256 visits. The small graph should stay
+    // below 64; the larger fuse aborts regressions before they can hang the suite.
     BODY_LIMIT.set(256);
     BODIES.set(0);
     let mut ws = crate::VirtualWorkspace::new();
