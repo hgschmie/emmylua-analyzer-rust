@@ -9,9 +9,8 @@
 //! opaque; the presence of any declaration assignment triggers that boundary.
 
 use std::{
-    borrow::Cow,
-    collections::{HashSet, hash_map::DefaultHasher},
-    hash::{Hash, Hasher},
+    cell::RefCell,
+    collections::{HashMap, HashSet},
     rc::Rc,
 };
 
@@ -29,53 +28,114 @@ use crate::{LuaMemberKey, LuaType};
 type Access = (SemanticId, Vec<LuaMemberKey>);
 pub(in crate::semantic_model) type ReceiverTargets = Rc<Vec<Access>>;
 type Bindings = Vec<(SemanticId, Vec<Access>)>;
-// Histories contain each (callee, callsite, caller bindings) state at most once.
-// This bounds recursion without merging replacement order or caller receivers.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Invocation {
-    closure: LuaClosureId,
-    site: LuaSyntaxId,
-    bindings: Rc<Bindings>,
-    bindings_hash: u64,
+type ContextId = Option<usize>;
+type CalleeValue = (LuaExpr, ContextId);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct InvocationContext {
+    closure: LuaSyntaxId,
+    closure_id: LuaClosureId,
+    bindings: Bindings,
 }
 
-impl Invocation {
-    fn new(closure: LuaClosureId, site: LuaSyntaxId, bindings: &Bindings) -> Self {
-        let mut state = DefaultHasher::new();
-        bindings.hash(&mut state);
-        Self {
-            closure,
-            site,
-            bindings: Rc::new(bindings.clone()),
-            bindings_hash: state.finish(),
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct Caller {
+    site: LuaSyntaxId,
+    context: ContextId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct InvocationSnapshot {
+    contexts: Vec<Rc<InvocationContext>>,
+    callers: Vec<Rc<Vec<Caller>>>,
+}
+
+/// A finite graph of receiver contexts, rather than permutations of call stacks.
+/// Incoming edges retain call positions, so reaching member assignments still
+/// respect replacement order when a lookup crosses a closure entry.
+#[derive(Default)]
+struct InvocationGraph {
+    contexts: Vec<Rc<InvocationContext>>,
+    ids: HashMap<Rc<InvocationContext>, usize>,
+    callers: Vec<Rc<Vec<Caller>>>,
+    revision: usize,
+    snapshot: RefCell<Option<Rc<InvocationSnapshot>>>,
+}
+
+impl InvocationGraph {
+    fn snapshot(&self) -> Rc<InvocationSnapshot> {
+        self.snapshot
+            .borrow_mut()
+            .get_or_insert_with(|| {
+                Rc::new(InvocationSnapshot {
+                    contexts: self.contexts.clone(),
+                    callers: self.callers.clone(),
+                })
+            })
+            .clone()
+    }
+
+    fn bindings(&self, context: ContextId) -> &[(SemanticId, Vec<Access>)] {
+        context.map_or(&[], |id| self.contexts[id].bindings.as_slice())
+    }
+
+    fn connect(&mut self, closure: &LuaClosureExpr, bindings: Bindings, caller: Caller) {
+        let context = Rc::new(InvocationContext {
+            closure: closure.get_syntax_id(),
+            closure_id: LuaClosureId::from_node(closure.syntax()),
+            bindings,
+        });
+        let id = if let Some(id) = self.ids.get(&context) {
+            *id
+        } else {
+            let id = self.contexts.len();
+            self.contexts.push(context.clone());
+            self.ids.insert(context, id);
+            self.callers.push(Rc::new(Vec::new()));
+            id
+        };
+        if !self.callers[id].contains(&caller) {
+            Rc::make_mut(&mut self.callers[id]).push(caller);
+            self.revision += 1;
+            self.snapshot.get_mut().take();
         }
     }
-}
 
-impl Hash for Invocation {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.closure.hash(state);
-        self.site.hash(state);
-        // Equality still compares complete semantic bindings on hash collisions.
-        // Sharing immutable snapshots avoids copying every ancestor's formals.
-        self.bindings_hash.hash(state);
+    /// Find the nearest invocation of a lexical closure on every incoming path.
+    /// A path reaching the root without one retains the uninvoked-capture rules.
+    fn entries(&self, context: ContextId, closure: LuaClosureId) -> (Vec<Caller>, bool) {
+        let mut pending = vec![context];
+        let mut seen = HashSet::new();
+        let mut callers = Vec::new();
+        let mut uninvoked = false;
+        while let Some(context) = pending.pop() {
+            if !seen.insert(context) {
+                continue;
+            }
+            let Some(id) = context else {
+                uninvoked = true;
+                continue;
+            };
+            if self.contexts[id].closure_id == closure {
+                callers.extend(self.callers[id].iter().copied());
+            } else {
+                pending.extend(self.callers[id].iter().map(|caller| caller.context));
+            }
+        }
+        (callers, uninvoked)
     }
 }
 
-type Invocations = Vec<Invocation>;
-type CalleeValue = (LuaExpr, Bindings, Invocations);
-
-// File views share a cache. Calls with different argument bindings or invocation
-// histories must retain their own resolution, even at the same syntax position.
-// Targets share storage; bindings and histories are snapshots retained only for
-// this model's lifetime. Full equality avoids hash-only identity collisions.
+// Nested answers depend on the exact incoming graph. Share immutable snapshots
+// until an edge changes; root queries do not consult the graph. Full equality
+// keeps cached results separate even when two graphs use the same context IDs.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(in crate::semantic_model) struct CalleeCacheKey {
     file: crate::FileId,
     call: LuaSyntaxId,
-    bindings: Bindings,
     targets: ReceiverTargets,
-    invocations: Invocations,
+    context: ContextId,
+    graph: Option<Rc<InvocationSnapshot>>,
 }
 
 fn relevant(path: &Access, targets: &[Access]) -> bool {
@@ -304,16 +364,43 @@ fn scan_uncached(
     } else {
         Rc::new(vec![expected.clone()])
     };
-    let mut bodies = vec![(
-        node.clone(),
-        after,
-        before,
-        Bindings::new(),
-        Invocations::new(),
-        false,
-    )];
-    let mut seen = HashSet::new();
-    while let Some((body, after, before, bindings, invocations, writes)) = bodies.pop() {
+    let mut graph = InvocationGraph::default();
+    let mut revision = 0;
+    let mut next = 0;
+    loop {
+        let (body, after, before, context, writes) = if next == 0 {
+            (node.clone(), after, before, None, false)
+        } else if let Some(entry) = graph.contexts.get(next - 1) {
+            let Some(body) = model
+                .chunk()
+                .and_then(|chunk| entry.closure.to_node_from_root(chunk.syntax()))
+                .and_then(LuaClosureExpr::cast)
+                .and_then(|closure| closure.get_block())
+            else {
+                next += 1;
+                continue;
+            };
+            (
+                body.syntax().clone(),
+                TextSize::from(0),
+                body.get_range().end(),
+                Some(next - 1),
+                true,
+            )
+        } else {
+            // New incoming edges may reveal captured replacements in an earlier
+            // context. Repeat until both contexts and caller edges settle.
+            if graph.revision == revision {
+                break;
+            }
+            revision = graph.revision;
+            next = 0;
+            continue;
+        };
+        next += 1;
+        #[cfg(test)]
+        cache_tests::record_body();
+        let bindings = graph.bindings(context).to_vec();
         let mut pending = vec![body];
         let mut calls = Vec::new();
         while let Some(node) = pending.pop() {
@@ -353,11 +440,24 @@ fn scan_uncached(
             pending.extend(node.children());
         }
         for call in calls {
-            for closure in local_callees(model, &call, &bindings, &targets, &invocations) {
-                let Some(body) = closure.get_block() else {
+            for closure in local_callees(model, &call, &targets, &graph, context) {
+                let Some(_) = closure.get_block() else {
                     continue;
                 };
-                let mut nested = bindings.clone();
+                // Only lexical ancestors can supply captured parameters.
+                // Caller bindings remain on their graph node for backwards
+                // lookup; unrelated formals must not distinguish this callee.
+                let visible: HashSet<_> = closure
+                    .syntax()
+                    .ancestors()
+                    .filter_map(LuaClosureExpr::cast)
+                    .flat_map(|ancestor| closure_formals(model, &ancestor))
+                    .collect();
+                let mut nested: Bindings = bindings
+                    .iter()
+                    .filter(|(id, _)| visible.contains(id))
+                    .cloned()
+                    .collect();
                 let mut args = call
                     .get_args_list()
                     .map(|args| args.get_args().collect::<Vec<_>>())
@@ -368,22 +468,7 @@ fn scan_uncached(
                 {
                     args.insert(0, receiver);
                 }
-                let mut formals = Vec::new();
-                if let Some(facts) = model.file_facts() {
-                    formals.extend(
-                        facts
-                            .decls_by_owner_syntax(closure.get_syntax_id())
-                            .filter(|decl| decl.is_implicit_self)
-                            .map(|decl| decl.id.clone()),
-                    );
-                }
-                if let Some(params) = closure.get_params_list() {
-                    formals.extend(
-                        params
-                            .get_params()
-                            .map(|param| SemanticId::decl(model.file_id(), param.get_range())),
-                    );
-                }
+                let formals = closure_formals(model, &closure);
                 for (index, id) in formals.into_iter().enumerate() {
                     let mut paths = args.get(index).map_or_else(Vec::new, |arg| {
                         access_paths(model, arg, &bindings, &targets)
@@ -400,37 +485,45 @@ fn scan_uncached(
                     SemanticId::Decl(key) => Some(key.name_range.start()),
                     _ => None,
                 });
-                let mut nested_invocations = invocations.clone();
-                let closure_id = LuaClosureId::from_node(closure.syntax());
-                if needs_members {
-                    let edge = Invocation::new(closure_id, call.get_syntax_id(), &bindings);
-                    nested_invocations.retain(|entry| *entry != edge);
-                    nested_invocations.push(edge);
-                }
-                if seen.insert((
-                    closure.get_syntax_id(),
-                    nested.clone(),
-                    nested_invocations.clone(),
-                )) {
-                    bodies.push((
-                        body.syntax().clone(),
-                        TextSize::from(0),
-                        body.get_range().end(),
-                        nested,
-                        nested_invocations,
-                        true,
-                    ));
-                }
+                graph.connect(
+                    &closure,
+                    nested,
+                    Caller {
+                        site: call.get_syntax_id(),
+                        context,
+                    },
+                );
             }
         }
     }
     false
 }
 
+/// Include implicit method receivers as well as explicit parameters.
+fn closure_formals(model: &SemanticModel, closure: &LuaClosureExpr) -> Vec<SemanticId> {
+    let mut formals = Vec::new();
+    if let Some(facts) = model.file_facts() {
+        formals.extend(
+            facts
+                .decls_by_owner_syntax(closure.get_syntax_id())
+                .filter(|decl| decl.is_implicit_self)
+                .map(|decl| decl.id.clone()),
+        );
+    }
+    if let Some(params) = closure.get_params_list() {
+        formals.extend(
+            params
+                .get_params()
+                .map(|param| SemanticId::decl(model.file_id(), param.get_range())),
+        );
+    }
+    formals
+}
+
 fn access_paths(
     model: &SemanticModel,
     expr: &LuaExpr,
-    bindings: &Bindings,
+    bindings: &[(SemanticId, Vec<Access>)],
     targets: &[Access],
 ) -> Vec<Access> {
     let mut pending = vec![(expr.clone(), Vec::new())];
@@ -485,7 +578,7 @@ fn access_paths(
 fn formal_alias_value(
     model: &SemanticModel,
     root: &SemanticId,
-    bindings: &Bindings,
+    bindings: &[(SemanticId, Vec<Access>)],
 ) -> Option<LuaExpr> {
     let facts = model.file_facts()?;
     let chunk = model.chunk()?;
@@ -657,7 +750,7 @@ fn write_conflicts(
     model: &SemanticModel,
     expected: &Access,
     var: &LuaVarExpr,
-    bindings: &Bindings,
+    bindings: &[(SemanticId, Vec<Access>)],
 ) -> bool {
     let written = match var {
         LuaVarExpr::NameExpr(name) => {
@@ -685,17 +778,17 @@ fn write_conflicts(
 fn local_callees(
     model: &SemanticModel,
     call: &LuaCallExpr,
-    bindings: &Bindings,
     targets: &ReceiverTargets,
-    invocations: &Invocations,
+    graph: &InvocationGraph,
+    context: ContextId,
 ) -> Vec<LuaClosureExpr> {
     use super::super::cache::{CacheEntry, QueryCacheScope};
     let key = CalleeCacheKey {
         file: model.file_id(),
         call: call.get_syntax_id(),
-        bindings: bindings.clone(),
         targets: targets.clone(),
-        invocations: invocations.clone(),
+        context,
+        graph: context.map(|_| graph.snapshot()),
     };
     {
         let cache = model.cache.borrow();
@@ -710,7 +803,7 @@ fn local_callees(
         .member_callees
         .insert(key.clone(), CacheEntry::InProgress);
     let revision = model.cache.borrow().revision();
-    let result = local_callees_uncached(model, call, bindings, targets, invocations);
+    let result = local_callees_uncached(model, call, targets, graph, context);
     let mut cache = model.cache.borrow_mut();
     let entry = CacheEntry::finish(result.clone(), cache.is_complete(revision));
     cache.member_callees.insert(key, entry);
@@ -720,16 +813,16 @@ fn local_callees(
 fn local_callees_uncached(
     model: &SemanticModel,
     call: &LuaCallExpr,
-    bindings: &Bindings,
     targets: &[Access],
-    invocations: &Invocations,
+    graph: &InvocationGraph,
+    context: ContextId,
 ) -> Vec<LuaClosureExpr> {
     #[cfg(test)]
     cache_tests::record_resolution();
     let Some(prefix) = call.get_prefix_expr() else {
         return Vec::new();
     };
-    let mut callees = resolve_callees(model, prefix, bindings, targets, invocations);
+    let mut callees = resolve_callees(model, prefix, targets, graph, context);
     let mut seen = HashSet::new();
     callees.retain(|callee| seen.insert(callee.get_syntax_id()));
     callees
@@ -810,14 +903,11 @@ fn may_call_rawset(model: &SemanticModel, expr: LuaExpr) -> bool {
 fn resolve_callees(
     model: &SemanticModel,
     expr: LuaExpr,
-    bindings: &Bindings,
     targets: &[Access],
-    invocations: &Invocations,
+    graph: &InvocationGraph,
+    context: ContextId,
 ) -> Vec<LuaClosureExpr> {
-    // Context identities avoid cloning/hashing every formal for each name in
-    // an alias chain. Member RHS values intern their restored caller context.
-    let mut contexts = vec![(Cow::Borrowed(bindings), Cow::Borrowed(invocations))];
-    let mut pending = vec![(expr, 0)];
+    let mut pending = vec![(expr, context)];
     let mut seen = HashSet::new();
     let mut callees = Vec::new();
     while let Some((expr, context)) = pending.pop() {
@@ -837,34 +927,14 @@ fn resolve_callees(
                 );
             }
             LuaExpr::IndexExpr(_) => {
-                let (bindings, invocations) = &contexts[context];
+                let bindings = graph.bindings(context);
                 let mut values = Vec::new();
                 for path in access_paths(model, &expr, bindings, targets) {
                     if !path.1.iter().any(LuaMemberKey::is_none) {
-                        values.extend(member_values(
-                            model,
-                            &path,
-                            &expr,
-                            bindings,
-                            targets,
-                            invocations,
-                        ));
+                        values.extend(member_values(model, &path, &expr, targets, graph, context));
                     }
                 }
-                for (value, bindings, invocations) in values {
-                    let context = contexts
-                        .iter()
-                        .position(|(existing_bindings, existing_invocations)| {
-                            existing_bindings.as_ref() == &bindings
-                                && existing_invocations.as_ref() == &invocations
-                        })
-                        .unwrap_or_else(|| {
-                            let id = contexts.len();
-                            contexts.push((Cow::Owned(bindings), Cow::Owned(invocations)));
-                            id
-                        });
-                    pending.push((value, context));
-                }
+                pending.extend(values);
             }
             _ => {}
         }
@@ -879,9 +949,9 @@ fn member_values(
     model: &SemanticModel,
     target: &Access,
     query: &LuaExpr,
-    bindings: &Bindings,
     targets: &[Access],
-    invocations: &Invocations,
+    graph: &InvocationGraph,
+    context: ContextId,
 ) -> Vec<CalleeValue> {
     let (Some(tree), Some(chunk)) = (model.flow_tree(), model.chunk()) else {
         return Vec::new();
@@ -893,18 +963,18 @@ fn member_values(
         start,
         LuaClosureId::from_node(query.syntax()),
         query.get_position(),
-        bindings.clone(),
-        invocations.clone(),
+        context,
     )];
     let mut seen = HashSet::new();
     let mut values = Vec::new();
-    while let Some((flow, closure, before, bindings, invocations)) = pending.pop() {
-        if !seen.insert((flow, closure, before, bindings.clone(), invocations.clone())) {
+    while let Some((flow, closure, before, context)) = pending.pop() {
+        if !seen.insert((flow, closure, before, context)) {
             continue;
         }
         let Some(node) = tree.get_flow_node(flow) else {
             continue;
         };
+        let bindings = graph.bindings(context);
         let syntax = node
             .kind
             .assignment_syntax()
@@ -928,11 +998,8 @@ fn member_values(
                 .as_ref()
                 .is_some_and(|syntax| LuaClosureId::from_node(syntax) != closure)
         {
-            if let Some(index) = invocations
-                .iter()
-                .rposition(|entry| entry.closure == closure)
-            {
-                let entry = &invocations[index];
+            let (callers, uninvoked) = graph.entries(context, closure);
+            for entry in callers {
                 if let Some(caller) = entry.site.to_node_from_root(chunk.syntax())
                     && let Some(caller_flow) = tree.get_flow_id_at(caller.text_range().start())
                 {
@@ -940,10 +1007,11 @@ fn member_values(
                         caller_flow,
                         LuaClosureId::from_node(&caller),
                         caller.text_range().start(),
-                        entry.bindings.as_ref().clone(),
-                        invocations[..index].to_vec(),
+                        entry.context,
                     ));
                 }
+            }
+            if !uninvoked {
                 continue;
             }
             if mutable_captured_member(model, target) {
@@ -1006,7 +1074,7 @@ fn member_values(
                     && let Some(value) = value
                         .and_then(|value| table_member_value(value, &target.1[written.1.len()..]))
                 {
-                    values.push((value, bindings.clone(), invocations.clone()));
+                    values.push((value, context));
                 }
             }
         }
@@ -1015,19 +1083,15 @@ fn member_values(
         }
         match &node.antecedent {
             Some(FlowAntecedent::Single(previous)) => {
-                pending.push((*previous, closure, before, bindings, invocations))
+                pending.push((*previous, closure, before, context))
             }
             Some(FlowAntecedent::Multiple(id)) => {
                 if let Some(previous) = tree.get_multi_antecedents(*id) {
-                    pending.extend(previous.iter().map(|flow| {
-                        (
-                            *flow,
-                            closure,
-                            before,
-                            bindings.clone(),
-                            invocations.clone(),
-                        )
-                    }));
+                    pending.extend(
+                        previous
+                            .iter()
+                            .map(|flow| (*flow, closure, before, context)),
+                    );
                 }
             }
             None => {}
@@ -1131,7 +1195,7 @@ fn mutator_conflicts(
     model: &SemanticModel,
     expected: &Access,
     call: &LuaCallExpr,
-    bindings: &Bindings,
+    bindings: &[(SemanticId, Vec<Access>)],
 ) -> bool {
     let Some(prefix) = call.get_prefix_expr().and_then(guards::unparenthesized) else {
         return false;
@@ -1336,48 +1400,6 @@ local observed = receiver.value
                 expected
             );
         }
-    }
-
-    #[test]
-    fn invocation_fingerprints_preserve_semantic_equality() {
-        let mut ws = VirtualWorkspace::new();
-        let file = ws.def("local function invoke(target) end");
-        let model = ws.analysis.semantic_model(file);
-        let closure = model
-            .chunk()
-            .unwrap()
-            .descendants::<LuaClosureExpr>()
-            .next()
-            .unwrap();
-        let id = SemanticId::decl(
-            file,
-            closure
-                .get_params_list()
-                .unwrap()
-                .get_params()
-                .next()
-                .unwrap()
-                .get_range(),
-        );
-        let paths = vec![(id.clone(), vec![(id.clone(), Vec::new())])];
-        let left = Invocation::new(
-            LuaClosureId::from_node(closure.syntax()),
-            closure.get_syntax_id(),
-            &paths,
-        );
-        let right = Invocation::new(left.closure, left.site, &paths);
-        assert!(!Rc::ptr_eq(&left.bindings, &right.bindings));
-        assert!(left == right);
-        let hash = |entry: &Invocation| {
-            let mut state = DefaultHasher::new();
-            entry.hash(&mut state);
-            state.finish()
-        };
-        assert_eq!(hash(&left), hash(&right));
-        let mut collision = Invocation::new(left.closure, left.site, &vec![(id, Vec::new())]);
-        collision.bindings_hash = left.bindings_hash;
-        assert_eq!(hash(&left), hash(&collision));
-        assert!(left != collision);
     }
 
     fn assert_known_call_conflicts(definitions: &str, call_text: &str) {

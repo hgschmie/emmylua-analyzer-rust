@@ -2,7 +2,18 @@ use super::*;
 use std::cell::Cell;
 
 thread_local! {
+    static BODIES: Cell<usize> = const { Cell::new(0) };
+    static BODY_LIMIT: Cell<usize> = const { Cell::new(usize::MAX) };
     static RESOLUTIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+pub(super) fn record_body() {
+    BODIES.set(BODIES.get() + 1);
+    assert!(
+        BODIES.get() <= BODY_LIMIT.get(),
+        "recursive effect scan exceeded {} bodies",
+        BODY_LIMIT.get()
+    );
 }
 
 pub(super) fn record_resolution() {
@@ -313,4 +324,256 @@ fn incomplete_effect_scan_is_retried_after_the_query() {
     }
     assert!(!model.cache.borrow().member_call_effects.contains_key(&key));
     assert!(conflict(&model, "receiver.value", "write(receiver)"));
+}
+
+#[test]
+fn branching_recursive_calls_share_receiver_contexts() {
+    struct RestoreLimit;
+    impl Drop for RestoreLimit {
+        fn drop(&mut self) {
+            BODY_LIMIT.set(usize::MAX);
+        }
+    }
+    let _limit = RestoreLimit;
+    BODY_LIMIT.set(256);
+    BODIES.set(0);
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def(
+        r#"
+local external = {}
+local function helper(value) external.log(value) end
+local function build(parent, def)
+    local element = parent.add(def)
+    local left, middle, right = {}, {}, {}
+    helper(left.name)
+    helper(middle.name)
+    helper(right.name)
+    build(element, left)
+    build(element, middle)
+    build(element, right)
+    element.style.width = 1
+end
+"#,
+    );
+    let model = ws.analysis.semantic_model(file);
+    assert!(!conflict(&model, "element.style", "build(element, left)"));
+    assert!(BODIES.get() > 1, "fixture must expand visible callees");
+}
+
+#[test]
+fn recursive_member_replacements_reach_later_mutators() {
+    for (member, writes) in [("value", true), ("other", false)] {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def(&format!(
+            r#"
+local receiver = {{value = 1}}
+local methods = {{run = function(target) end, next = function(target) end,
+    last = function(target) target.{member} = nil end}}
+local function recurse(target)
+    methods.run(target)
+    methods.run = methods.next
+    methods.next = methods.last
+    recurse(target)
+    recurse(target)
+end
+recurse(receiver)
+local observed = receiver.value
+"#
+        ));
+        let model = ws.analysis.semantic_model(file);
+        assert_eq!(
+            conflict(&model, "receiver.value", "recurse(receiver)"),
+            writes
+        );
+    }
+}
+
+#[test]
+fn recursive_member_calls_keep_receivers_and_callees_distinct() {
+    for (method, receiver, writes) in [
+        ("writer", "receiver", true),
+        ("writer", "other", false),
+        ("quiet", "receiver", false),
+    ] {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def(&format!(
+            r#"
+local receiver = {{value = 1}}
+local other = {{value = 1}}
+local writer = {{run = function(target) target.value = nil end}}
+local quiet = {{run = function(target) end}}
+local function recurse(methods, target)
+    if flag then
+        recurse(methods, target)
+        recurse(methods, target)
+    end
+    methods.run(target)
+end
+recurse({method}, {receiver})
+local observed = receiver.value
+"#
+        ));
+        let model = ws.analysis.semantic_model(file);
+        assert_eq!(
+            conflict(
+                &model,
+                "receiver.value",
+                &format!("recurse({method}, {receiver})")
+            ),
+            writes
+        );
+    }
+}
+
+#[test]
+fn cached_recursive_graphs_keep_distinct_callers_separate() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def(
+        r#"
+local receiver = {value = 1}
+local other = {value = 1}
+local methods = {run = function(target) target.value = nil end}
+local function recurse(target)
+    if flag then recurse(target) end
+    methods.run(target)
+end
+recurse(other)
+recurse(receiver)
+local observed = receiver.value
+"#,
+    );
+    let model = ws.analysis.semantic_model(file);
+    for _ in 0..2 {
+        assert!(!conflict(&model, "receiver.value", "recurse(other)"));
+        assert!(conflict(&model, "receiver.value", "recurse(receiver)"));
+    }
+}
+
+#[test]
+fn recursive_nested_closures_retain_captured_parameters() {
+    for (argument, writes) in [("receiver", true), ("other", false)] {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def(&format!(
+            r#"
+local receiver = {{value = 1}}
+local other = {{value = 1}}
+local function outer(target)
+    local function inner()
+        if flag then inner(); inner() end
+        target.value = nil
+    end
+    inner()
+end
+outer({argument})
+local observed = receiver.value
+"#
+        ));
+        let model = ws.analysis.semantic_model(file);
+        assert_eq!(
+            conflict(&model, "receiver.value", &format!("outer({argument})")),
+            writes
+        );
+    }
+}
+
+#[test]
+fn cached_recursive_graphs_keep_member_replacement_positions() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def(
+        r#"
+local receiver = {value = 1}
+local methods = {run = function(target) target.value = nil end}
+local function recurse(target)
+    if flag then recurse(target) end
+    methods.run(target)
+end
+recurse(receiver)
+methods.run = function(target) end
+recurse(receiver)
+local observed = receiver.value
+"#,
+    );
+    let model = ws.analysis.semantic_model(file);
+    let calls: Vec<_> = model
+        .chunk()
+        .unwrap()
+        .descendants::<LuaCallExpr>()
+        .filter(|call| call.get_text() == "recurse(receiver)")
+        .collect();
+    assert_eq!(calls.len(), 2);
+    let guarded = index(&model, "receiver.value");
+    for i in [1, 0, 1, 0] {
+        assert_eq!(
+            calls_conflict(
+                &model,
+                &guarded,
+                calls[i].syntax(),
+                calls[i].get_range().end()
+            ),
+            i == 0
+        );
+    }
+}
+
+#[test]
+fn nested_closures_retain_captured_method_receivers() {
+    for (argument, writes) in [("receiver", true), ("other", false)] {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def(&format!(
+            r#"
+local receiver = {{value = 1}}
+local other = {{value = 1}}
+local methods = {{}}
+function methods:outer()
+    local function inner()
+        if flag then inner(); inner() end
+        self.value = nil
+    end
+    inner()
+end
+methods.outer({argument})
+local observed = receiver.value
+"#
+        ));
+        let model = ws.analysis.semantic_model(file);
+        assert_eq!(
+            conflict(
+                &model,
+                "receiver.value",
+                &format!("methods.outer({argument})")
+            ),
+            writes
+        );
+    }
+}
+
+#[test]
+fn later_caller_edges_revisit_cached_member_resolution() {
+    for (member, writes) in [("value", true), ("other", false)] {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def(&format!(
+            r#"
+local receiver = {{value = 1}}
+local methods = {{run = function(target) end}}
+local function invoke(target) methods.run(target) end
+local function early(target) invoke(target) end
+local function late(target)
+    methods.run = function(value) value.{member} = nil end
+    invoke(target)
+end
+local function delayed(target) late(target) end
+local function outer(target)
+    delayed(target)
+    early(target)
+end
+outer(receiver)
+local observed = receiver.value
+"#
+        ));
+        let model = ws.analysis.semantic_model(file);
+        assert_eq!(
+            conflict(&model, "receiver.value", "outer(receiver)"),
+            writes
+        );
+    }
 }
