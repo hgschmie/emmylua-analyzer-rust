@@ -782,3 +782,30 @@ fn reaching_member_values_skip_unexecuted_nested_bodies() {
         FLOW_SYNTAX.get()
     );
 }
+
+#[test]
+fn recursive_descendant_paths_settle_at_relevant_target_depth() {
+    struct RestoreLimit;
+    impl Drop for RestoreLimit {
+        fn drop(&mut self) {
+            BODY_LIMIT.set(usize::MAX);
+            BODIES.set(0);
+        }
+    }
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def("local receiver = {}; local function descend(target) descend(target.child); descend(target.child.child); descend(target.other) end; descend(receiver); local observed = receiver.child.child.value");
+    let model = ws.analysis.semantic_model(file);
+    BODIES.set(0);
+    BODY_LIMIT.set(128);
+    let _restore = RestoreLimit;
+    assert!(!conflict(
+        &model,
+        "receiver.child.child.value",
+        "descend(receiver)"
+    ));
+    assert!(
+        (2..=32).contains(&BODIES.get()),
+        "visited {} bodies",
+        BODIES.get()
+    );
+}

@@ -63,6 +63,10 @@ impl Hash for InvocationSnapshot {
 /// A finite graph of receiver contexts, rather than permutations of call stacks.
 /// Incoming edges retain call positions, so reaching member assignments still
 /// respect replacement order when a lookup crosses a closure entry.
+// Termination: access_paths admits only prefixes (or wildcard prefixes) of the
+// finite receiver targets. Bindings contain finite lexical formals and sorted,
+// deduplicated subsets of those paths. Thus contexts and (context, callsite,
+// caller-context) edges are finite; connect() adds each edge only once.
 #[derive(Default)]
 struct InvocationGraph {
     contexts: Vec<Rc<InvocationContext>>,
@@ -381,6 +385,7 @@ fn scan_uncached(
             .insert(model.file_id(), present);
         present
     });
+    // This selects receiver targets, not whether visible callees are scanned.
     let targets = if needs_members {
         receiver_targets(model, expected)
     } else {
@@ -392,6 +397,8 @@ fn scan_uncached(
         Root,
         Context(usize),
     }
+    // Root checks only calls inside the requested range; callee visits inspect
+    // the whole body and its writes, using the caller-substituted receiver paths.
     let mut visit = Visit::Root;
     loop {
         let (body, after, before, context, writes) = match visit {
