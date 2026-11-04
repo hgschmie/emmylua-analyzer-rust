@@ -1032,22 +1032,27 @@ fn mutator_kinds(model: &SemanticModel, prefix: &LuaExpr) -> MutatorKinds {
     {
         let cache = model.cache.borrow();
         if let Some(entry) = cache.member_mutator_kinds.get(&key) {
+            // Re-entry marks this query incomplete. The temporary empty result
+            // breaks recursion; it and dependent provisional summaries are removed
+            // at the outer boundary, allowing the next independent query to retry.
             return entry.get(&cache).cloned().unwrap_or_default();
         }
     }
     let _query = QueryCacheScope::new(&model.cache);
+    let revision = model.cache.borrow().revision();
+    // Install the recursion marker before resolving aliases and builtin identity.
     model
         .cache
         .borrow_mut()
         .member_mutator_kinds
         .insert(key, CacheEntry::InProgress);
-    let revision = model.cache.borrow().revision();
     #[cfg(test)]
     mutator_cache_tests::record_classification();
     let result = MutatorKinds {
         whole_table: whole_table_mutators(model, prefix.clone()),
         rawset: may_call_rawset(model, prefix.clone()),
     };
+    // Only complete classifications survive the outer query boundary.
     let mut cache = model.cache.borrow_mut();
     let entry = CacheEntry::finish(result.clone(), cache.is_complete(revision));
     cache.member_mutator_kinds.insert(key, entry);
@@ -1063,13 +1068,13 @@ fn mutator_conflicts(
     let Some(prefix) = call.get_prefix_expr().and_then(guards::unparenthesized) else {
         return false;
     };
+    let Some(args) = call.get_args_list() else {
+        return false;
+    };
     let kinds = mutator_kinds(model, &prefix);
     if kinds.whole_table.is_empty() && !kinds.rawset {
         return false;
     }
-    let Some(args) = call.get_args_list() else {
-        return false;
-    };
     let args = args.get_args().collect::<Vec<_>>();
     for position in kinds.whole_table {
         if let Some(receiver) = args.get(position).or_else(|| args.first())

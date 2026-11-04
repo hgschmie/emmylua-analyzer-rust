@@ -89,7 +89,7 @@ fn classifications_isolate_shared_file_views_and_edits() {
 }
 
 #[test]
-fn incomplete_classification_is_retried_after_the_query() {
+fn in_progress_classification_is_retried_after_the_query() {
     use crate::semantic_model::cache::{CacheEntry, QueryCacheScope};
     let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
     let file = ws.def("rawset({}, 'value', nil)");

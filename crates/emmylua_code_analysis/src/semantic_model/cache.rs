@@ -231,7 +231,8 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) expr_type_at: HashMap<(FileId, LuaSyntaxId, TextSize), CacheEntry<LuaType>>,
     /// Cast-bearing flow bindings on the node and its ancestors, nearest first.
     pub(crate) expr_cast_flows: HashMap<(FileId, LuaSyntaxId), Rc<Vec<FlowId>>>,
-    /// Builtin classification is receiver-independent; incomplete queries retry.
+    /// Receiver-independent classification of standard table mutators and rawset.
+    /// Re-entry marks dependent queries incomplete; provisional results are discarded.
     pub(super) member_mutator_kinds: HashMap<(FileId, LuaSyntaxId), CacheEntry<MutatorKinds>>,
     /// Syntax-only member-callee presence for this model snapshot; never call effects.
     pub(crate) member_call_resolution: HashMap<FileId, bool>,
