@@ -39,6 +39,12 @@ pub(super) struct MemberCallEffectKey {
     pub(super) before: TextSize,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(super) struct MutatorKinds {
+    pub(super) whole_table: Vec<usize>,
+    pub(super) rawset: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum BuiltinKey {
     Expression(LuaSyntaxId),
@@ -342,6 +348,12 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) member_call_resolution: HashMap<FileId, bool>,
     /// Fixed targets are isolated per file when model views share this query cache.
     pub(super) member_receiver_targets: HashMap<FileId, CacheEntry<ReceiverTargets>>,
+    /// Receiver-independent classification of standard table mutators and rawset.
+    /// Re-entry marks dependent queries incomplete; provisional results are discarded.
+    pub(super) member_mutator_kinds: HashMap<(FileId, LuaSyntaxId), CacheEntry<MutatorKinds>>,
+    /// Whole-file capture state depends on the target and immutable model, not callers.
+    pub(super) mutable_captured_members:
+        HashMap<(FileId, SemanticId, Vec<LuaMemberKey>), CacheEntry<bool>>,
     pub(super) member_call_effects: HashMap<MemberCallEffectKey, CacheEntry<bool>>,
     pub(super) member_callees:
         HashMap<CalleeCacheKey, CacheEntry<Vec<emmylua_parser::LuaClosureExpr>>>,
@@ -402,6 +414,10 @@ impl SemanticLocalCache {
         self.member_receiver_targets
             .retain(|_, entry| entry.is_ready());
         self.member_callees.retain(|_, entry| entry.is_ready());
+        self.member_mutator_kinds
+            .retain(|_, entry| entry.is_ready());
+        self.mutable_captured_members
+            .retain(|_, entry| entry.is_ready());
         self.member_call_effects.retain(|_, entry| entry.is_ready());
         self.expr_type.retain(|_, entry| entry.is_ready());
         self.decl_type.retain(|_, entry| entry.is_ready());
