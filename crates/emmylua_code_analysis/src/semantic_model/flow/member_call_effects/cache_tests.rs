@@ -2,9 +2,16 @@ use super::*;
 use std::cell::Cell;
 
 thread_local! {
+    static CAPTURES: Cell<usize> = const { Cell::new(0) };
+    static FLOW_SYNTAX: Cell<usize> = const { Cell::new(0) };
+    static MIXED_ENTRIES: Cell<usize> = const { Cell::new(0) };
     static BODIES: Cell<usize> = const { Cell::new(0) };
     static BODY_LIMIT: Cell<usize> = const { Cell::new(usize::MAX) };
     static RESOLUTIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+pub(super) fn record_mixed_entry() {
+    MIXED_ENTRIES.set(MIXED_ENTRIES.get() + 1);
 }
 
 pub(super) fn record_body() {
@@ -332,9 +339,12 @@ fn branching_recursive_calls_share_receiver_contexts() {
     impl Drop for RestoreLimit {
         fn drop(&mut self) {
             BODY_LIMIT.set(usize::MAX);
+            BODIES.set(0);
         }
     }
     let _limit = RestoreLimit;
+    // The old history walker exceeds256 visits. The small graph should stay
+    // below64; the larger fuse aborts regressions before they can hang the suite.
     BODY_LIMIT.set(256);
     BODIES.set(0);
     let mut ws = crate::VirtualWorkspace::new();
@@ -357,7 +367,11 @@ end
     );
     let model = ws.analysis.semantic_model(file);
     assert!(!conflict(&model, "element.style", "build(element, left)"));
-    assert!(BODIES.get() > 1, "fixture must expand visible callees");
+    assert!(
+        (2..=64).contains(&BODIES.get()),
+        "expected shared recursive contexts, visited {} bodies",
+        BODIES.get()
+    );
 }
 
 #[test]
@@ -576,4 +590,194 @@ local observed = receiver.value
             writes
         );
     }
+}
+
+#[test]
+fn snapshot_fingerprints_preserve_structural_equality() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def("local function call(target) end; call({})");
+    let model = ws.analysis.semantic_model(file);
+    let closure = model
+        .chunk()
+        .unwrap()
+        .descendants::<LuaClosureExpr>()
+        .next()
+        .unwrap();
+    let site = call(&model, "call({})").get_syntax_id();
+    let id = SemanticId::decl(
+        file,
+        closure
+            .get_params_list()
+            .unwrap()
+            .get_params()
+            .next()
+            .unwrap()
+            .get_range(),
+    );
+    let paths = vec![(id.clone(), vec![(id.clone(), Vec::new())])];
+    let mut first = InvocationGraph::default();
+    first.connect(
+        &closure,
+        paths.clone(),
+        Caller {
+            site,
+            context: None,
+        },
+    );
+    let mut second = InvocationGraph::default();
+    second.connect(
+        &closure,
+        paths,
+        Caller {
+            site,
+            context: None,
+        },
+    );
+    assert_eq!(first.snapshot(), second.snapshot());
+    let mut other = InvocationGraph::default();
+    other.connect(
+        &closure,
+        vec![(id, Vec::new())],
+        Caller {
+            site,
+            context: None,
+        },
+    );
+    let left = first.snapshot();
+    let mut collision = (*other.snapshot()).clone();
+    collision.fingerprint = left.fingerprint;
+    let hash = |value: &InvocationSnapshot| {
+        let mut state = DefaultHasher::new();
+        value.hash(&mut state);
+        state.finish()
+    };
+    assert_eq!(hash(&left), hash(&collision));
+    assert_ne!(*left, collision);
+}
+
+#[test]
+fn mixed_invoked_and_uninvoked_paths_keep_visible_replacements() {
+    for (member, writes) in [("value", true), ("other", false)] {
+        let mut ws = crate::VirtualWorkspace::new();
+        let file = ws.def(&format!(
+            r#"
+local receiver = {{value = 1}}
+local methods = {{run = function(target) end}}
+local function outer()
+    local alias = methods.run
+    local function helper()
+        methods.run = function(target) target.{member} = nil end
+        if flag then outer() end
+        alias(receiver)
+    end
+    helper()
+    local observed = receiver.value
+end
+"#
+        ));
+        let model = ws.analysis.semantic_model(file);
+        MIXED_ENTRIES.set(0);
+        assert_eq!(conflict(&model, "receiver.value", "helper()"), writes);
+        assert!(
+            MIXED_ENTRIES.get() > 0,
+            "fixture must cover both closure-entry paths in one lookup"
+        );
+    }
+}
+
+pub(super) fn record_capture() {
+    CAPTURES.set(CAPTURES.get() + 1);
+}
+
+pub(super) fn record_flow_syntax() {
+    FLOW_SYNTAX.set(FLOW_SYNTAX.get() + 1);
+}
+
+#[test]
+fn captured_member_summary_is_reused_without_mixing_paths() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def("local methods = {}; function methods.write() end; function methods.other() end; methods.other = nil");
+    let model = ws.analysis.semantic_model(file);
+    let path = |text| index_access_path(&model, &LuaExpr::IndexExpr(index(&model, text))).unwrap();
+    let fixed = path("methods.write");
+    let mutable = path("methods.other");
+    CAPTURES.set(0);
+    for _ in 0..32 {
+        assert!(!mutable_captured_member(&model, &fixed));
+        assert!(mutable_captured_member(&model, &mutable));
+    }
+    assert_eq!(CAPTURES.get(), 2);
+}
+
+#[test]
+fn captured_member_summaries_isolate_shared_file_views_and_edits() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let fixed = "local methods = {}; function methods.write() end; local read = methods.write";
+    let mutable = "local methods = {}; function methods.write() end; methods.write = nil      ";
+    let first = ws.def_file("fixed.lua", fixed);
+    let second = ws.def_file("mutable.lua", mutable);
+    let check = |model: &SemanticModel, expected| {
+        let target =
+            index_access_path(model, &LuaExpr::IndexExpr(index(model, "methods.write"))).unwrap();
+        assert_eq!(mutable_captured_member(model, &target), expected);
+    };
+    {
+        let root = ws.analysis.semantic_model(first);
+        let other = root.model_for(second);
+        for _ in 0..2 {
+            check(&root, false);
+            check(&other, true);
+        }
+    }
+    assert_eq!(ws.def_file("fixed.lua", mutable), first);
+    check(&ws.analysis.semantic_model(first), true);
+}
+
+#[test]
+fn incomplete_capture_summary_is_conservative_and_retried() {
+    use crate::semantic_model::cache::{CacheEntry, QueryCacheScope};
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def("local methods = {}; function methods.write() end");
+    let model = ws.analysis.semantic_model(file);
+    let target =
+        index_access_path(&model, &LuaExpr::IndexExpr(index(&model, "methods.write"))).unwrap();
+    let key = (file, target.0.clone(), target.1.clone());
+    {
+        let _outer = QueryCacheScope::new(&model.cache);
+        let revision = model.cache.borrow().revision();
+        model
+            .cache
+            .borrow_mut()
+            .mutable_captured_members
+            .insert(key.clone(), CacheEntry::InProgress);
+        assert!(mutable_captured_member(&model, &target));
+        assert!(!model.cache.borrow().is_complete(revision));
+    }
+    assert!(
+        !model
+            .cache
+            .borrow()
+            .mutable_captured_members
+            .contains_key(&key)
+    );
+    assert!(!mutable_captured_member(&model, &target));
+}
+
+#[test]
+fn reaching_member_values_skip_unexecuted_nested_bodies() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let unused_calls = "unknown()\n".repeat(2048);
+    let file = ws.def(&format!("local receiver = {{}}; local methods = {{write = function(target) target.value = nil end}}; function unused() {unused_calls} end; methods.write(receiver); local observed = receiver.value"));
+    let model = ws.analysis.semantic_model(file);
+    FLOW_SYNTAX.set(0);
+    assert!(conflict(
+        &model,
+        "receiver.value",
+        "methods.write(receiver)"
+    ));
+    assert!(
+        (1..128).contains(&FLOW_SYNTAX.get()),
+        "visited {} nodes",
+        FLOW_SYNTAX.get()
+    );
 }

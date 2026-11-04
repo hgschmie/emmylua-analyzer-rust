@@ -10,7 +10,8 @@
 
 use std::{
     cell::RefCell,
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
     rc::Rc,
 };
 
@@ -34,7 +35,6 @@ type CalleeValue = (LuaExpr, ContextId);
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct InvocationContext {
     closure: LuaSyntaxId,
-    closure_id: LuaClosureId,
     bindings: Bindings,
 }
 
@@ -44,10 +44,18 @@ struct Caller {
     context: ContextId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct InvocationSnapshot {
+    fingerprint: u64,
     contexts: Vec<Rc<InvocationContext>>,
     callers: Vec<Rc<Vec<Caller>>>,
+}
+
+impl Hash for InvocationSnapshot {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Equality still checks the complete graph on fingerprint collisions.
+        self.fingerprint.hash(state);
+    }
 }
 
 /// A finite graph of receiver contexts, rather than permutations of call stacks.
@@ -67,7 +75,11 @@ impl InvocationGraph {
         self.snapshot
             .borrow_mut()
             .get_or_insert_with(|| {
+                let mut state = DefaultHasher::new();
+                self.contexts.hash(&mut state);
+                self.callers.hash(&mut state);
                 Rc::new(InvocationSnapshot {
+                    fingerprint: state.finish(),
                     contexts: self.contexts.clone(),
                     callers: self.callers.clone(),
                 })
@@ -82,7 +94,6 @@ impl InvocationGraph {
     fn connect(&mut self, closure: &LuaClosureExpr, bindings: Bindings, caller: Caller) {
         let context = Rc::new(InvocationContext {
             closure: closure.get_syntax_id(),
-            closure_id: LuaClosureId::from_node(closure.syntax()),
             bindings,
         });
         let id = if let Some(id) = self.ids.get(&context) {
@@ -116,11 +127,15 @@ impl InvocationGraph {
                 uninvoked = true;
                 continue;
             };
-            if self.contexts[id].closure_id == closure {
+            if self.contexts[id].closure.get_range() == closure.get_range() {
                 callers.extend(self.callers[id].iter().copied());
             } else {
                 pending.extend(self.callers[id].iter().map(|caller| caller.context));
             }
+        }
+        #[cfg(test)]
+        if uninvoked && !callers.is_empty() {
+            cache_tests::record_mixed_entry();
         }
         (callers, uninvoked)
     }
@@ -365,7 +380,8 @@ fn scan_uncached(
         Rc::new(vec![expected.clone()])
     };
     let mut graph = InvocationGraph::default();
-    let mut revision = 0;
+    let mut last_seen_revision = 0;
+    // 0 visits the root once; k > 0 visits contexts[k - 1].
     let mut next = 0;
     loop {
         let (body, after, before, context, writes) = if next == 0 {
@@ -390,11 +406,12 @@ fn scan_uncached(
         } else {
             // New incoming edges may reveal captured replacements in an earlier
             // context. Repeat until both contexts and caller edges settle.
-            if graph.revision == revision {
+            if graph.revision == last_seen_revision {
                 break;
             }
-            revision = graph.revision;
-            next = 0;
+            last_seen_revision = graph.revision;
+            // Root resolution is graph-independent and its edges already exist.
+            next = 1;
             continue;
         };
         next += 1;
@@ -450,6 +467,7 @@ fn scan_uncached(
                 let visible: HashSet<_> = closure
                     .syntax()
                     .ancestors()
+                    .skip(1)
                     .filter_map(LuaClosureExpr::cast)
                     .flat_map(|ancestor| closure_formals(model, &ancestor))
                     .collect();
@@ -1021,11 +1039,26 @@ fn member_values(
         let mut writes = Vec::new();
         let mut mutates = false;
         if let Some(syntax) = syntax.filter(|syntax| syntax.text_range().end() < before) {
-            mutates = syntax
-                .descendants()
-                .filter_map(LuaCallExpr::cast)
-                .filter(|call| LuaClosureId::from_node(call.syntax()) == closure)
-                .any(|call| mutator_conflicts(model, target, &call, &bindings));
+            // A nested function body cannot execute as part of this flow node.
+            // Prune it before traversal instead of visiting and rejecting each call.
+            let mut nodes = vec![syntax.clone()];
+            while let Some(node) = nodes.pop() {
+                #[cfg(test)]
+                cache_tests::record_flow_syntax();
+                if LuaClosureExpr::can_cast(node.kind().into())
+                    && !node.text_range().contains_range(closure.get_range())
+                {
+                    continue;
+                }
+                if let Some(call) = LuaCallExpr::cast(node.clone())
+                    && LuaClosureId::from_node(call.syntax()) == closure
+                    && mutator_conflicts(model, target, &call, &bindings)
+                {
+                    mutates = true;
+                    break;
+                }
+                nodes.extend(node.children());
+            }
             if let Some(assign) = LuaAssignStat::cast(syntax.clone()) {
                 let (vars, rhs) = assign.get_var_and_expr_list();
                 for (index, var) in vars.iter().enumerate() {
@@ -1103,6 +1136,31 @@ fn member_values(
 /// Without an invocation, a mutable captured member has no known runtime state.
 /// A single fixed definition is usable; replacement/ancestor writes make it opaque.
 fn mutable_captured_member(model: &SemanticModel, target: &Access) -> bool {
+    use super::super::cache::{CacheEntry, QueryCacheScope};
+    let key = (model.file_id(), target.0.clone(), target.1.clone());
+    {
+        let cache = model.cache.borrow();
+        if let Some(entry) = cache.mutable_captured_members.get(&key) {
+            return entry.get(&cache).copied().unwrap_or(true);
+        }
+    }
+    let _query = QueryCacheScope::new(&model.cache);
+    model
+        .cache
+        .borrow_mut()
+        .mutable_captured_members
+        .insert(key.clone(), CacheEntry::InProgress);
+    let revision = model.cache.borrow().revision();
+    let result = mutable_captured_member_uncached(model, target);
+    let mut cache = model.cache.borrow_mut();
+    let entry = CacheEntry::finish(result, cache.is_complete(revision));
+    cache.mutable_captured_members.insert(key, entry);
+    result
+}
+
+fn mutable_captured_member_uncached(model: &SemanticModel, target: &Access) -> bool {
+    #[cfg(test)]
+    cache_tests::record_capture();
     let Some(chunk) = model.chunk() else {
         return true;
     };

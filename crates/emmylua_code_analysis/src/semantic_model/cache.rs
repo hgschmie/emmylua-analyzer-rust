@@ -242,6 +242,9 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) member_call_resolution: HashMap<FileId, bool>,
     /// Fixed targets are isolated per file when model views share this query cache.
     pub(super) member_receiver_targets: HashMap<FileId, CacheEntry<ReceiverTargets>>,
+    /// Whole-file capture state depends on the target and immutable model, not callers.
+    pub(super) mutable_captured_members:
+        HashMap<(FileId, SemanticId, Vec<LuaMemberKey>), CacheEntry<bool>>,
     pub(super) member_call_effects: HashMap<MemberCallEffectKey, CacheEntry<bool>>,
     pub(super) member_callees:
         HashMap<CalleeCacheKey, CacheEntry<Vec<emmylua_parser::LuaClosureExpr>>>,
@@ -293,6 +296,8 @@ impl SemanticLocalCache {
         self.member_receiver_targets
             .retain(|_, entry| entry.is_ready());
         self.member_callees.retain(|_, entry| entry.is_ready());
+        self.mutable_captured_members
+            .retain(|_, entry| entry.is_ready());
         self.member_call_effects.retain(|_, entry| entry.is_ready());
         self.expr_type.retain(|_, entry| entry.is_ready());
         self.decl_type.retain(|_, entry| entry.is_ready());
