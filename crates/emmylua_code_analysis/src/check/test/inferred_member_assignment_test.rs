@@ -255,3 +255,29 @@ fn inferred_member_assignment_checks_index_contracts_on_union_prefixes() {
         }
     }
 }
+
+#[test]
+fn inferred_member_assignment_preserves_inherited_contracts() {
+    for (contract, accepted) in [("number[]", true), ("string[]", false)] {
+        let source = format!(
+            r#"
+            ---@class Parent
+            ---@field offsets {contract}
+            ---@class Entity: Parent
+            local Entity = {{}}
+            ---@param p Entity
+            ---@param replacement number[]
+            local function assign(p, replacement)
+                p.offsets = replacement
+            end
+            return assign, Entity
+        "#
+        );
+        let mut ws = VirtualWorkspace::new();
+        assert_eq!(
+            ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
+            accepted,
+            "inherited contract={contract}, expected accepted={accepted}\n{source}"
+        );
+    }
+}
