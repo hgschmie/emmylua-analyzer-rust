@@ -115,7 +115,7 @@ fn complete_provider(builder: &mut CompletionBuilder) -> Option<()> {
     if let LuaType::Ref(id) | LuaType::Def(id) = &prefix_type {
         associated.extend(type_def_member_infos_from_facts(
             &builder.semantic_model,
-            id.clone(),
+            id,
         ));
     }
     for info in associated {
@@ -315,9 +315,9 @@ fn generic_keyof_member_infos(
 /// Types without a unique attached runtime table have nothing to recover.
 fn type_def_member_infos_from_facts(
     model: &SemanticModel<'_>,
-    type_id: LuaTypeDeclId,
+    type_id: &LuaTypeDeclId,
 ) -> Vec<MemberInfo> {
-    let Some(def) = model.type_def_of(&type_id) else {
+    let Some(def) = model.type_def_of(type_id) else {
         return Vec::new();
     };
     let Some(facts) = model.file_facts_of(def.file_id) else {
@@ -864,7 +864,65 @@ mod runtime_class_completion_tests {
         );
         let model = ws.analysis.semantic_model(file);
         let members =
-            type_def_member_infos_from_facts(&model, LuaTypeDeclId::global("AmbiguousResult"));
+            type_def_member_infos_from_facts(&model, &LuaTypeDeclId::global("AmbiguousResult"));
         assert!(members.is_empty(), "{members:?}");
+    }
+    #[test]
+    fn completion_runtime_members_do_not_borrow_replacement_constructor() {
+        let mut ws = ProviderVirtualWorkspace::new();
+        let file = ws.def(
+            r#"
+            ---@class ReboundResult
+            Receiver = { own = function() end }
+            Receiver = { foreign = function() end }
+        "#,
+        );
+        let model = ws.analysis.semantic_model(file);
+        let members =
+            type_def_member_infos_from_facts(&model, &LuaTypeDeclId::global("ReboundResult"));
+        assert!(
+            members
+                .iter()
+                .any(|member| member.key.name() == Some("own"))
+        );
+        assert!(
+            !members
+                .iter()
+                .any(|member| member.key.name() == Some("foreign"))
+        );
+    }
+
+    #[test]
+    fn completion_runtime_members_document_shared_global_write_owner() {
+        let mut ws = ProviderVirtualWorkspace::new();
+        let file = ws.def(
+            r#"
+            ---@class SharedGlobalResult
+            Receiver = {}
+            function Receiver:before() end
+            Receiver = {}
+            function Receiver:after() end
+        "#,
+        );
+        let model = ws.analysis.semantic_model(file);
+        let members =
+            type_def_member_infos_from_facts(&model, &LuaTypeDeclId::global("SharedGlobalResult"));
+        // File facts give both writes the same global binding owner. Temporal
+        // separation of those writes is an existing semantic-model limitation.
+        for name in ["before", "after"] {
+            assert!(members.iter().any(|member| member.key.name() == Some(name)));
+        }
+    }
+
+    #[test]
+    fn completion_runtime_members_do_not_invent_members_for_non_table_values() {
+        for value in ["1", "function() end"] {
+            let mut ws = ProviderVirtualWorkspace::new();
+            let file = ws.def(&format!("---@class NonTableResult\nlocal value = {value}"));
+            let model = ws.analysis.semantic_model(file);
+            let members =
+                type_def_member_infos_from_facts(&model, &LuaTypeDeclId::global("NonTableResult"));
+            assert!(members.is_empty(), "{members:?}");
+        }
     }
 }
