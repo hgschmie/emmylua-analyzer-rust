@@ -1947,6 +1947,20 @@ impl PathState {
                     )
                 )
         });
+        // Repeating a removal within an uninterrupted run of removals has no
+        // effect. Keep one copy so repeated branch casts share the same memo.
+        let mut removed_types = Vec::new();
+        key.operations.retain(|operation| {
+            if let PathOp::Cast(CastOp::Remove(ty)) = operation {
+                if removed_types.contains(ty) {
+                    return false;
+                }
+                removed_types.push(ty.clone());
+            } else {
+                removed_types.clear();
+            }
+            true
+        });
         key
     }
 }
