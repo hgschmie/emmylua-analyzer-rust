@@ -312,8 +312,8 @@ fn generic_keyof_member_infos(
 }
 
 /// Recover runtime members from the table attached to this class declaration.
-/// Recovery requires one attached runtime declaration, including when a
-/// multi-name statement has only one initializer.
+/// Require exactly one attached runtime declaration.
+/// Multi-name statements are not recovered, even with a single initializer.
 fn type_def_member_infos_from_facts(
     model: &SemanticModel<'_>,
     type_id: &LuaTypeDeclId,
@@ -336,7 +336,7 @@ fn type_def_member_infos_from_facts(
     if declarations.next().is_some() {
         return Vec::new();
     }
-    let owners = runtime_member_owners(def.file_id, &def.id, decl);
+    let owners = runtime_member_owners(&def.id, decl);
     owners
         .iter()
         .flat_map(|owner| facts.members_of_owner(owner))
@@ -353,18 +353,17 @@ fn type_def_member_infos_from_facts(
 }
 
 /// Maps the class and its runtime declaration to the collector's owner identities.
-fn runtime_member_owners(file_id: FileId, type_owner: &SemanticId, decl: &Decl) -> Vec<SemanticId> {
+fn runtime_member_owners(type_owner: &SemanticId, decl: &Decl) -> Vec<SemanticId> {
     let mut owners = vec![type_owner.clone(), decl.id.clone()];
     if matches!(decl.kind, DeclKind::Global) {
-        // Global receiver writes use the runtime binding name, which may
-        // differ from the class name. Local shadowing uses Decl identities;
-        // a repeated global name is one binding; temporal writes are not separated.
+        // Global writes use the runtime binding name, which can differ from
+        // the class name. These facts combine writes across global reassignments.
         owners.push(SemanticId::name(decl.name.clone()));
     }
     if let Some(value) = decl.value_expr_syntax {
         // The facts collector keys inline fields by their table value range.
-        // Both this syntax and these member facts belong to the same revision.
-        owners.push(SemanticId::member(file_id, value.get_range()));
+        // The syntax and member facts come from the same file version.
+        owners.push(SemanticId::member(decl.file_id, value.get_range()));
     }
     owners
 }
