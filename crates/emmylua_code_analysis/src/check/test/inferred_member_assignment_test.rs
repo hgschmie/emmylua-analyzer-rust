@@ -1,7 +1,7 @@
 use crate::{DiagnosticCode, VirtualWorkspace};
 
 #[test]
-fn inferred_member_first_assignment_uses_the_declared_source_contract() {
+fn inferred_member_first_assignment_does_not_check_against_its_own_initializer() {
     for guarded in [false, true] {
         for index in ["offsets", "['offsets']"] {
             let target = if index.starts_with('[') {
@@ -146,6 +146,53 @@ fn inferred_member_assignment_preserves_union_and_index_contracts() {
             ---@param p {prefix}
             local function assign(p)
                 p.offsets = constants.offsets
+            end
+            return assign, Entity, Other
+        "#
+        );
+        let mut ws = VirtualWorkspace::new();
+        assert_eq!(
+            ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
+            accepted,
+            "prefix={prefix}, {declaration}, expected accepted={accepted}\n{source}"
+        );
+    }
+}
+
+#[test]
+fn inferred_member_assignment_preserves_partial_union_and_disjoint_index_contracts() {
+    for (prefix, declaration, accepted) in [
+        ("Entity|Other", "---@field offsets number[]", true),
+        ("Other|Entity", "---@field offsets string[]", false),
+        ("Entity|Other", "---@field offsets string[]", false),
+        (
+            "Entity",
+            "---@field [integer] number[]\n---@field [string] string[]",
+            false,
+        ),
+        (
+            "Entity",
+            "---@field [string] string[]\n---@field [integer] number[]",
+            false,
+        ),
+        (
+            "Entity",
+            "---@field [integer] string[]\n---@field [string] number[]",
+            true,
+        ),
+    ] {
+        let source = format!(
+            r#"
+            ---@class Entity
+            {declaration}
+            local Entity = {{}}
+            ---@class Other
+            ---@field name string
+            local Other = {{}}
+            ---@param p {prefix}
+            ---@param replacement number[]
+            local function assign(p, replacement)
+                p.offsets = replacement
             end
             return assign, Entity, Other
         "#
