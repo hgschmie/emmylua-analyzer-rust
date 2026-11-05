@@ -7,6 +7,7 @@ mod attribute_check_test;
 mod await_in_sync_test;
 mod boolean_compatibility_test;
 mod call_non_callable_test;
+mod caller_generic_bounds_test;
 mod cast_type_mismatch_test;
 mod check_export_test;
 mod check_return_count_test;
@@ -148,4 +149,3 @@ fn test_check_config_default_enable_rules() {
     assert!(!config.is_code_enabled(&DiagnosticCode::SyntaxError));
     assert!(config.is_code_enabled(&DiagnosticCode::UnknownDocTag));
 }
-mod caller_generic_bounds_test;

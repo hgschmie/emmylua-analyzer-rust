@@ -1015,8 +1015,9 @@ fn call_argument_type(
     } else {
         None
     };
-    // Recover a parameter's generic from its own declaration before projecting
-    // the caller's bound. A file-wide name search can select another function.
+    // Recover a parameter's generic constraint from its owning signature;
+    // non-parameter declarations pass through unchanged. A file-wide name
+    // search can select another function's generic constraint.
     let scoped_arg_ty = if let Some(decl) = &decl {
         semantic_model.attach_param_decl_constraint(decl, arg_ty.clone())
     } else {
