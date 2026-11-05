@@ -23,6 +23,7 @@ mod enum_value_mismatch_test;
 mod generic_constraint_mismatch_test;
 mod global_in_non_module_test;
 mod incomplete_signature_doc_test;
+mod inferred_member_assignment_test;
 mod inject_field_test;
 mod length_operator_test;
 mod local_const_reassign_test;
