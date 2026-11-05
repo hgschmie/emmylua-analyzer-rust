@@ -395,12 +395,15 @@ fn check_member_assign(
                     None => info.typ,
                 })
                 .or_else(|| semantic_model.member_type(&prefix_ty, &key));
+            let is_unannotated_initializer =
+                declared_ty.is_none() && member.doc_type_syntax.is_none();
+            if is_unannotated_initializer {
+                // This assignment defines the member's type. There is no separate
+                // destination contract for the remaining mismatch check.
+                return;
+            }
             if let Some(declared_ty) = declared_ty {
                 target = declared_ty;
-            } else if member.doc_type_syntax.is_none() {
-                // This assignment creates the inferred member; its initializer
-                // cannot also impose an independent destination contract.
-                return;
             }
         }
     }

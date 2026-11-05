@@ -41,11 +41,31 @@ fn inferred_member_first_assignment_uses_the_declared_source_contract() {
 
 #[test]
 fn inferred_member_assignments_preserve_independent_destination_contracts() {
-    for (declaration, setup, accepted) in [
-        ("---@field offsets number[]", "", true),
-        ("---@field offsets string[]", "", false),
-        ("", "---@type string[]\np.offsets = {}", false),
-        ("", "p.offsets = {'original'}", false),
+    for (case, declaration, setup, accepted) in [
+        (
+            "matching declared field",
+            "---@field offsets number[]",
+            "",
+            true,
+        ),
+        (
+            "incompatible declared field",
+            "---@field offsets string[]",
+            "",
+            false,
+        ),
+        (
+            "explicit assignment annotation",
+            "",
+            "---@type string[]\np.offsets = {}",
+            false,
+        ),
+        (
+            "previous inferred assignment",
+            "",
+            "p.offsets = {'original'}",
+            false,
+        ),
     ] {
         let source = format!(
             r#"
@@ -68,7 +88,37 @@ fn inferred_member_assignments_preserve_independent_destination_contracts() {
         assert_eq!(
             ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
             accepted,
-            "{source}"
+            "{case}: expected accepted={accepted}\n{source}"
         );
     }
+}
+
+#[test]
+fn inferred_member_reassignment_after_typed_use_still_checks_the_original_contract() {
+    let source = r#"
+        ---@class Entity
+        ---@field name string
+        local Entity = {}
+        ---@param p Entity
+        ---@param replacement number[]
+        local function assign(p, replacement)
+            p.offsets = {'original'}
+            ---@type string[]
+            local used = p.offsets
+            p.offsets = replacement
+            return used
+        end
+        return assign, Entity
+    "#;
+    let diagnostics = super::check_source(source);
+    let mismatches = diagnostics
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::AssignTypeMismatch)
+        .collect::<Vec<_>>();
+    assert_eq!(mismatches.len(), 1, "{diagnostics:?}");
+    let range = mismatches[0].range;
+    assert_eq!(
+        &source[usize::from(range.start())..usize::from(range.end())],
+        "replacement"
+    );
 }
