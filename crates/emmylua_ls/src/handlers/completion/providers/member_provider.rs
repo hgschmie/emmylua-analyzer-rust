@@ -308,7 +308,8 @@ fn generic_keyof_member_infos(
         .collect()
 }
 
-/// Recover runtime methods of the table attached to this class declaration.
+/// Recover runtime members from the table attached to this class declaration.
+/// Types without an attached runtime table have nothing to recover.
 fn type_def_member_infos_from_facts(
     model: &SemanticModel<'_>,
     type_id: LuaTypeDeclId,
@@ -322,14 +323,17 @@ fn type_def_member_infos_from_facts(
     let Some(owner) = def.owner_syntax else {
         return Vec::new();
     };
-    let mut owners = vec![def.id.clone()];
+    let mut owners = std::collections::HashSet::from([def.id.clone()]);
     for decl in facts.decls_by_owner_syntax(owner) {
-        owners.push(decl.id.clone());
+        owners.insert(decl.id.clone());
         if matches!(decl.kind, DeclKind::Global) {
-            owners.push(SemanticId::name(decl.name.clone()));
+            // Global receiver writes use the runtime binding name, which may
+            // differ from the class name. Only this declaration file is searched.
+            owners.insert(SemanticId::name(decl.name.clone()));
         }
         if let Some(value) = decl.value_expr_syntax {
-            owners.push(SemanticId::member(def.file_id, value.get_range()));
+            // Inline constructor fields are owned by their table value range.
+            owners.insert(SemanticId::member(def.file_id, value.get_range()));
         }
     }
     facts

@@ -2614,6 +2614,22 @@ items.<??>
                 "second",
                 "first",
             ),
+            (
+                r#"
+                ---@class LocalResult
+                local runtime = {
+                    own = function(self) return self end,
+                }
+                ---@class OtherLocalResult
+                local unrelated = {
+                    foreign = function(self) return self end,
+                }
+                function local_result() return runtime end
+                "#,
+                "local_result():<??>",
+                "own",
+                "foreign",
+            ),
         ] {
             let mut ws = ProviderVirtualWorkspace::new();
             ws.def(definition);
