@@ -1005,6 +1005,11 @@ fn call_argument_type(
     arg: &LuaExpr,
     arg_ty: &LuaType,
 ) -> LuaType {
+    if let LuaExpr::ClosureExpr(closure) = arg {
+        if let Some(func) = semantic_model.type_of_signature(closure.get_syntax_id()) {
+            return LuaType::DocFunction(Rc::new(func));
+        }
+    }
     // Recover a parameter's generic from its own declaration before projecting
     // the caller's bound. A file-wide name search can select another function.
     let scoped_arg_ty = if let LuaExpr::NameExpr(name) = arg
@@ -1016,11 +1021,6 @@ fn call_argument_type(
     };
     let constrained =
         generic_constraint_type(semantic_model, &scoped_arg_ty).unwrap_or(scoped_arg_ty);
-    if let LuaExpr::ClosureExpr(closure) = arg {
-        if let Some(func) = semantic_model.type_of_signature(closure.get_syntax_id()) {
-            return LuaType::DocFunction(Rc::new(func));
-        }
-    }
     if matches!(constrained, LuaType::Function)
         && let LuaExpr::NameExpr(name_expr) = arg
         && let Some(decl) = semantic_model.resolve_name(name_expr.get_position())
@@ -1048,7 +1048,7 @@ fn call_argument_type(
     constrained
 }
 
-/// `Ref("T")` with a signature declaring `---@generic T: Animal` -> project to the constraint Animal.
+/// Project a generic's bound, preferring its attached constraint over the legacy named-type lookup.
 fn generic_constraint_type(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> Option<LuaType> {
     if let LuaType::TplRef(tpl) = ty {
         return tpl.get_constraint().cloned();

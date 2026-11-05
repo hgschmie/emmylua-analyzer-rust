@@ -29,6 +29,8 @@ fn caller_generic_bounds_survive_undocumented_functions() {
 
 #[test]
 fn caller_generic_bounds_use_the_owning_function() {
+    // The unused earlier function is a decoy for the legacy file-wide lookup.
+    // Only caller's U may determine whether consume(value) is valid.
     for (other_bound, bound, accepted) in [("string", "number", true), ("number", "string", false)]
     {
         let source = format!(
