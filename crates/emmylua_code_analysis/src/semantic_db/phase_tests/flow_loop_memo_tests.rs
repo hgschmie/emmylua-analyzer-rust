@@ -130,6 +130,27 @@ local function probe(value, flag)
         print(value) -- read boolean
     end
 end
+
+---@param value string|number
+local function repeated_removals_with_addition(value)
+    ---@cast value -string
+    print(value) -- read number
+    ---@cast value +string
+    print(value) -- read (string|number)
+    ---@cast value -string
+    print(value) -- read number
+end
+---@param value string|false
+local function repeated_removals_with_guard(value)
+    ---@cast value -string
+    if not value then
+        print(value) -- read false
+        ---@cast value +string
+        print(value) -- read (false|string)
+        ---@cast value -string
+        print(value) -- read false
+    end
+end
 "#;
     for reverse in [false, true] {
         let mut ws = VirtualWorkspace::new_with_init_std_lib();
