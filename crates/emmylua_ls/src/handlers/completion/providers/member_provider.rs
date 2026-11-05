@@ -1,7 +1,5 @@
 //! Member completion: `.` / `:` / `[]` / string-key contexts, based on semantic `member_infos`.
 
-use std::collections::HashSet;
-
 use emmylua_code_analysis::{
     DeclKind, FileId, LuaAliasCallKind, LuaFunctionType, LuaGenericType, LuaMemberKey, LuaType,
     LuaTypeDeclId, MemberInfo, SemanticId, SemanticModel, TypeDefKind,
@@ -113,7 +111,13 @@ fn complete_provider(builder: &mut CompletionBuilder) -> Option<()> {
 
     let mut members = builder.semantic_model.member_infos(&prefix_type);
     // `---@class B : A local b = {}`: merge table-identity members with associated type definition members.
-    let associated = associated_type_member_infos(&builder.semantic_model, &prefix_expr);
+    let mut associated = associated_type_member_infos(&builder.semantic_model, &prefix_expr);
+    if let LuaType::Ref(id) | LuaType::Def(id) = &prefix_type {
+        associated.extend(type_def_member_infos_from_facts(
+            &builder.semantic_model,
+            id.clone(),
+        ));
+    }
     for info in associated {
         if !members.iter().any(|member| member.key == info.key) {
             members.push(info);
@@ -121,9 +125,6 @@ fn complete_provider(builder: &mut CompletionBuilder) -> Option<()> {
     }
     if members.is_empty() {
         members = match &prefix_type {
-            LuaType::Ref(id) | LuaType::Def(id) => {
-                type_def_member_infos_from_facts(&builder.semantic_model, id.clone())
-            }
             LuaType::Generic(generic) => {
                 let from_type = generic_keyof_member_infos(&builder.semantic_model, generic);
                 if from_type.is_empty() {
@@ -311,7 +312,7 @@ fn generic_keyof_member_infos(
 }
 
 /// Recover runtime members from the table attached to this class declaration.
-/// Types without an attached runtime table have nothing to recover.
+/// Types without a unique attached runtime table have nothing to recover.
 fn type_def_member_infos_from_facts(
     model: &SemanticModel<'_>,
     type_id: LuaTypeDeclId,
@@ -325,26 +326,32 @@ fn type_def_member_infos_from_facts(
     let Some(owner) = def.owner_syntax else {
         return Vec::new();
     };
-    let mut owners = HashSet::from([def.id.clone()]);
-    for decl in facts.decls_by_owner_syntax(owner) {
-        owners.insert(decl.id.clone());
-        if matches!(decl.kind, DeclKind::Global) {
-            // Global receiver writes use the runtime binding name, which may
-            // differ from the class name. Local shadowing uses Decl identities;
-            // a repeated global name is one binding in these same-file facts.
-            owners.insert(SemanticId::name(decl.name.clone()));
-        }
-        if let Some(value) = decl.value_expr_syntax {
-            // The facts collector keys inline fields by their table value range.
-            // Both this syntax and these member facts belong to the same revision.
-            owners.insert(SemanticId::member(def.file_id, value.get_range()));
-        }
+    let mut declarations = facts.decls_by_owner_syntax(owner);
+    let Some(decl) = declarations.next() else {
+        return Vec::new();
+    };
+    // One class owner statement can contain several parallel initializers.
+    // Without a unique runtime declaration, do not borrow a sibling's members.
+    if declarations.next().is_some() {
+        return Vec::new();
     }
-    facts
-        .members
+    let mut owners = vec![def.id.clone(), decl.id.clone()];
+    if matches!(decl.kind, DeclKind::Global) {
+        // Global receiver writes use the runtime binding name, which may
+        // differ from the class name. Local shadowing uses Decl identities;
+        // a repeated global name is one binding in these same-file facts.
+        owners.push(SemanticId::name(decl.name.clone()));
+    }
+    if let Some(value) = decl.value_expr_syntax {
+        // The facts collector keys inline fields by their table value range.
+        // Both this syntax and these member facts belong to the same revision.
+        owners.push(SemanticId::member(def.file_id, value.get_range()));
+    }
+    owners
         .iter()
+        .flat_map(|owner| facts.members_of_owner(owner))
         // Index signatures describe arbitrary keys, not named completion items.
-        .filter(|member| owners.contains(&member.owner) && member.index_key_syntax.is_none())
+        .filter(|member| member.index_key_syntax.is_none())
         .map(|member| MemberInfo {
             key: member.key.clone(),
             typ: model.type_of_member(&member.id).unwrap_or(LuaType::Unknown),
@@ -838,4 +845,26 @@ fn function_snippet(
         .collect::<Vec<_>>()
         .join(", ");
     Some(format!("{label}({params})"))
+}
+
+#[cfg(test)]
+mod runtime_class_completion_tests {
+    use super::type_def_member_infos_from_facts;
+    use crate::handlers::test_lib::ProviderVirtualWorkspace;
+    use emmylua_code_analysis::LuaTypeDeclId;
+
+    #[test]
+    fn completion_runtime_members_skip_ambiguous_owner() {
+        let mut ws = ProviderVirtualWorkspace::new();
+        let file = ws.def(
+            r#"
+            ---@class AmbiguousResult
+            local first, second = {}, { foreign = function() end }
+        "#,
+        );
+        let model = ws.analysis.semantic_model(file);
+        let members =
+            type_def_member_infos_from_facts(&model, LuaTypeDeclId::global("AmbiguousResult"));
+        assert!(members.is_empty(), "{members:?}");
+    }
 }

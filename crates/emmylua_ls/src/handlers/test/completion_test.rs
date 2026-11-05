@@ -2645,6 +2645,27 @@ items.<??>
     }
 
     #[gtest]
+    fn test_class_completion_keeps_runtime_members_beside_declared_fields() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@class FieldResult
+            ---@field x number
+            FieldReceiver = {}
+            function FieldReceiver:y() return self end
+        "#,
+        );
+        let items = get_completion_items(
+            &mut ws,
+            "FieldReceiver:y().<??>",
+            CompletionTriggerKind::TRIGGER_CHARACTER,
+        )?;
+        verify_eq!(items.iter().filter(|item| item.label == "x").count(), 1)?;
+        verify_eq!(items.iter().filter(|item| item.label == "y").count(), 1)?;
+        Ok(())
+    }
+
+    #[gtest]
     fn test_bare_class_completion_without_runtime_owner() -> Result<()> {
         let mut ws = ProviderVirtualWorkspace::new();
         ws.def("---@class DetachedResult");
