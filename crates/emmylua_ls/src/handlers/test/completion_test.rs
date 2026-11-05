@@ -2616,6 +2616,21 @@ items.<??>
                 "second",
                 "first",
             ),
+            // Separately declared local methods use the runtime declaration owner.
+            (
+                r#"
+                ---@class LocalMethodResult
+                local runtime = {}
+                function runtime:own() return self end
+                ---@class OtherLocalMethodResult
+                local unrelated = {}
+                function unrelated:foreign() return self end
+                function local_method_result() return runtime end
+                "#,
+                "local_method_result():<??>",
+                "own",
+                "foreign",
+            ),
             // Local constructor fields use value-range owners, without sibling leakage.
             (
                 r#"

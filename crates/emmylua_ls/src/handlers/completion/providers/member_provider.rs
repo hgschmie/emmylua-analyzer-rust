@@ -311,9 +311,9 @@ fn generic_keyof_member_infos(
         .collect()
 }
 
-/// Recover runtime members from the table attached to this class declaration.
-/// Require exactly one attached runtime declaration.
+/// Recover members from this class declaration's file, requiring one runtime declaration.
 /// Multi-name statements are not recovered, even with a single initializer.
+/// The caller merges these candidates by key, preserving its existing members.
 fn type_def_member_infos_from_facts(
     model: &SemanticModel<'_>,
     type_id: &LuaTypeDeclId,
@@ -357,7 +357,8 @@ fn runtime_member_owners(type_owner: &SemanticId, decl: &Decl) -> Vec<SemanticId
     let mut owners = vec![type_owner.clone(), decl.id.clone()];
     if matches!(decl.kind, DeclKind::Global) {
         // Global writes use the runtime binding name, which can differ from
-        // the class name. These facts combine writes across global reassignments.
+        // the class name. These facts combine writes across global reassignments,
+        // so methods from an earlier or later binding can still appear.
         owners.push(SemanticId::name(decl.name.clone()));
     }
     if let Some(value) = decl.value_expr_syntax {
@@ -874,7 +875,7 @@ mod runtime_class_completion_tests {
         assert!(members.is_empty(), "{members:?}");
     }
     #[test]
-    fn completion_runtime_members_do_not_borrow_replacement_constructor() {
+    fn completion_inline_fields_do_not_borrow_replacement_constructor() {
         let mut ws = ProviderVirtualWorkspace::new();
         let file = ws.def(
             r#"
