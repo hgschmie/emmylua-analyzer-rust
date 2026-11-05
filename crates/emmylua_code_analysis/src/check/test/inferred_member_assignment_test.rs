@@ -3,12 +3,7 @@ use crate::{DiagnosticCode, VirtualWorkspace};
 #[test]
 fn inferred_member_first_assignment_does_not_check_against_its_own_initializer() {
     for guarded in [false, true] {
-        for index in ["offsets", "['offsets']"] {
-            let target = if index.starts_with('[') {
-                format!("p{index}")
-            } else {
-                format!("p.{index}")
-            };
+        for target in ["p.offsets", "p['offsets']"] {
             let assignment = format!("{target} = constants.offsets");
             let body = if guarded {
                 format!("if {target} then {assignment} end")
@@ -203,5 +198,60 @@ fn inferred_member_assignment_preserves_partial_union_and_disjoint_index_contrac
             accepted,
             "prefix={prefix}, {declaration}, expected accepted={accepted}\n{source}"
         );
+    }
+}
+
+#[test]
+fn inferred_member_assignment_checks_its_own_annotation() {
+    for (contract, accepted) in [("number[]", true), ("string[]", false)] {
+        let source = format!(
+            r#"
+            ---@class Entity
+            local Entity = {{}}
+            ---@param p Entity
+            ---@param replacement number[]
+            local function assign(p, replacement)
+                ---@type {contract}
+                p.offsets = replacement
+            end
+            return assign, Entity
+        "#
+        );
+        let mut ws = VirtualWorkspace::new();
+        assert_eq!(
+            ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
+            accepted,
+            "annotation={contract}, expected accepted={accepted}\n{source}"
+        );
+    }
+}
+
+#[test]
+fn inferred_member_assignment_checks_index_contracts_on_union_prefixes() {
+    for prefix in ["Entity|Other", "Other|Entity"] {
+        for (contract, accepted) in [("number[]", true), ("string[]", false)] {
+            let source = format!(
+                r#"
+                ---@class Entity
+                ---@field [string] {contract}
+                local Entity = {{}}
+                ---@class Other
+                ---@field [string] {contract}
+                local Other = {{}}
+                ---@param p {prefix}
+                ---@param replacement number[]
+                local function assign(p, replacement)
+                    p.offsets = replacement
+                end
+                return assign, Entity, Other
+            "#
+            );
+            let mut ws = VirtualWorkspace::new();
+            assert_eq!(
+                ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
+                accepted,
+                "prefix={prefix}, contract={contract}, expected accepted={accepted}\n{source}"
+            );
+        }
     }
 }
