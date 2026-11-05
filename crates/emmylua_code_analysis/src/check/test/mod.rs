@@ -148,3 +148,4 @@ fn test_check_config_default_enable_rules() {
     assert!(!config.is_code_enabled(&DiagnosticCode::SyntaxError));
     assert!(config.is_code_enabled(&DiagnosticCode::UnknownDocTag));
 }
+mod caller_generic_bounds_test;
