@@ -1954,7 +1954,8 @@ impl PathState {
         let mut removed_types = HashSet::new();
         key.operations.retain(|operation| {
             if let PathOp::Cast(CastOp::Remove(ty)) = operation {
-                removed_types.insert(ty.clone())
+                let first_removal = removed_types.insert(ty.clone());
+                first_removal
             } else {
                 // Other casts and guards form execution-order boundaries.
                 removed_types.clear();
