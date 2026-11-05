@@ -2588,6 +2588,7 @@ items.<??>
     #[gtest]
     fn test_inferred_return_completion_keeps_runtime_class_identity() -> Result<()> {
         for (definition, call, expected, absent) in [
+            // Global runtime binding differs from its class name.
             (
                 r#"
                 ---@class NamedResult
@@ -2601,6 +2602,7 @@ items.<??>
                 "own",
                 "foreign",
             ),
+            // Completion follows the returned class, not the call receiver.
             (
                 r#"
                 ---@class FirstResult
@@ -2614,6 +2616,7 @@ items.<??>
                 "second",
                 "first",
             ),
+            // Local constructor fields use value-range owners, without sibling leakage.
             (
                 r#"
                 ---@class LocalResult
@@ -2638,6 +2641,19 @@ items.<??>
             verify_true!(items.iter().any(|item| item.label == expected))?;
             verify_true!(!items.iter().any(|item| item.label == absent))?;
         }
+        Ok(())
+    }
+
+    #[gtest]
+    fn test_bare_class_completion_without_runtime_owner() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        ws.def("---@class DetachedResult");
+        let items = get_completion_items(
+            &mut ws,
+            "---@type DetachedResult\nlocal value\nvalue.<??>",
+            CompletionTriggerKind::TRIGGER_CHARACTER,
+        )?;
+        verify_true!(items.is_empty())?;
         Ok(())
     }
 

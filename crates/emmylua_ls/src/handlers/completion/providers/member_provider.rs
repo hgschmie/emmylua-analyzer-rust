@@ -1,5 +1,7 @@
 //! Member completion: `.` / `:` / `[]` / string-key contexts, based on semantic `member_infos`.
 
+use std::collections::HashSet;
+
 use emmylua_code_analysis::{
     DeclKind, FileId, LuaAliasCallKind, LuaFunctionType, LuaGenericType, LuaMemberKey, LuaType,
     LuaTypeDeclId, MemberInfo, SemanticId, SemanticModel, TypeDefKind,
@@ -323,22 +325,25 @@ fn type_def_member_infos_from_facts(
     let Some(owner) = def.owner_syntax else {
         return Vec::new();
     };
-    let mut owners = std::collections::HashSet::from([def.id.clone()]);
+    let mut owners = HashSet::from([def.id.clone()]);
     for decl in facts.decls_by_owner_syntax(owner) {
         owners.insert(decl.id.clone());
         if matches!(decl.kind, DeclKind::Global) {
             // Global receiver writes use the runtime binding name, which may
-            // differ from the class name. Only this declaration file is searched.
+            // differ from the class name. Local shadowing uses Decl identities;
+            // a repeated global name is one binding in these same-file facts.
             owners.insert(SemanticId::name(decl.name.clone()));
         }
         if let Some(value) = decl.value_expr_syntax {
-            // Inline constructor fields are owned by their table value range.
+            // The facts collector keys inline fields by their table value range.
+            // Both this syntax and these member facts belong to the same revision.
             owners.insert(SemanticId::member(def.file_id, value.get_range()));
         }
     }
     facts
         .members
         .iter()
+        // Index signatures describe arbitrary keys, not named completion items.
         .filter(|member| owners.contains(&member.owner) && member.index_key_syntax.is_none())
         .map(|member| MemberInfo {
             key: member.key.clone(),
