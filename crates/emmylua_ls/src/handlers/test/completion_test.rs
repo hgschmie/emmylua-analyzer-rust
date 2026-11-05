@@ -2653,6 +2653,7 @@ items.<??>
             ---@field x number
             FieldReceiver = {}
             function FieldReceiver:y() return self end
+            FieldReceiver.z = true
         "#,
         );
         let items = get_completion_items(
@@ -2662,6 +2663,7 @@ items.<??>
         )?;
         verify_eq!(items.iter().filter(|item| item.label == "x").count(), 1)?;
         verify_eq!(items.iter().filter(|item| item.label == "y").count(), 1)?;
+        verify_eq!(items.iter().filter(|item| item.label == "z").count(), 1)?;
         Ok(())
     }
 

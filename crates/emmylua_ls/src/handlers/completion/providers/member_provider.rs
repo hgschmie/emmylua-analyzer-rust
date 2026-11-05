@@ -1,8 +1,8 @@
 //! Member completion: `.` / `:` / `[]` / string-key contexts, based on semantic `member_infos`.
 
 use emmylua_code_analysis::{
-    DeclKind, FileId, LuaAliasCallKind, LuaFunctionType, LuaGenericType, LuaMemberKey, LuaType,
-    LuaTypeDeclId, MemberInfo, SemanticId, SemanticModel, TypeDefKind,
+    Decl, DeclKind, FileId, LuaAliasCallKind, LuaFunctionType, LuaGenericType, LuaMemberKey,
+    LuaType, LuaTypeDeclId, MemberInfo, SemanticId, SemanticModel, TypeDefKind,
 };
 use emmylua_parser::{LuaAstNode, LuaAstToken, LuaIndexExpr, LuaStringToken};
 use lsp_types::{CompletionItem, CompletionItemKind, CompletionItemLabelDetails, InsertTextFormat};
@@ -312,7 +312,8 @@ fn generic_keyof_member_infos(
 }
 
 /// Recover runtime members from the table attached to this class declaration.
-/// Types without a unique attached runtime table have nothing to recover.
+/// Recovery requires one attached runtime declaration, including when a
+/// multi-name statement has only one initializer.
 fn type_def_member_infos_from_facts(
     model: &SemanticModel<'_>,
     type_id: &LuaTypeDeclId,
@@ -335,18 +336,7 @@ fn type_def_member_infos_from_facts(
     if declarations.next().is_some() {
         return Vec::new();
     }
-    let mut owners = vec![def.id.clone(), decl.id.clone()];
-    if matches!(decl.kind, DeclKind::Global) {
-        // Global receiver writes use the runtime binding name, which may
-        // differ from the class name. Local shadowing uses Decl identities;
-        // a repeated global name is one binding in these same-file facts.
-        owners.push(SemanticId::name(decl.name.clone()));
-    }
-    if let Some(value) = decl.value_expr_syntax {
-        // The facts collector keys inline fields by their table value range.
-        // Both this syntax and these member facts belong to the same revision.
-        owners.push(SemanticId::member(def.file_id, value.get_range()));
-    }
+    let owners = runtime_member_owners(def.file_id, &def.id, decl);
     owners
         .iter()
         .flat_map(|owner| facts.members_of_owner(owner))
@@ -360,6 +350,23 @@ fn type_def_member_infos_from_facts(
             is_method: member.is_method,
         })
         .collect()
+}
+
+/// Maps the class and its runtime declaration to the collector's owner identities.
+fn runtime_member_owners(file_id: FileId, type_owner: &SemanticId, decl: &Decl) -> Vec<SemanticId> {
+    let mut owners = vec![type_owner.clone(), decl.id.clone()];
+    if matches!(decl.kind, DeclKind::Global) {
+        // Global receiver writes use the runtime binding name, which may
+        // differ from the class name. Local shadowing uses Decl identities;
+        // a repeated global name is one binding; temporal writes are not separated.
+        owners.push(SemanticId::name(decl.name.clone()));
+    }
+    if let Some(value) = decl.value_expr_syntax {
+        // The facts collector keys inline fields by their table value range.
+        // Both this syntax and these member facts belong to the same revision.
+        owners.push(SemanticId::member(file_id, value.get_range()));
+    }
+    owners
 }
 
 /// When `---@class Test1` follows `local Test = {}` (the class name differs from the runtime
