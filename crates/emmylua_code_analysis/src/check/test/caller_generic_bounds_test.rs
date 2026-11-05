@@ -2,6 +2,7 @@ use crate::{DiagnosticCode, VirtualWorkspace};
 
 #[test]
 fn caller_generic_bounds_survive_undocumented_functions() {
+    // The legacy lookup returns early on a signature without documentation.
     let mut ws = VirtualWorkspace::new();
     assert!(ws.has_no_diagnostic(
         DiagnosticCode::ParamTypeMismatch,

@@ -1010,20 +1010,22 @@ fn call_argument_type(
             return LuaType::DocFunction(Rc::new(func));
         }
     }
+    let decl = if let LuaExpr::NameExpr(name) = arg {
+        semantic_model.resolve_name(name.get_position())
+    } else {
+        None
+    };
     // Recover a parameter's generic from its own declaration before projecting
     // the caller's bound. A file-wide name search can select another function.
-    let scoped_arg_ty = if let LuaExpr::NameExpr(name) = arg
-        && let Some(decl) = semantic_model.resolve_name(name.get_position())
-    {
-        semantic_model.attach_param_decl_constraint(&decl, arg_ty.clone())
+    let scoped_arg_ty = if let Some(decl) = &decl {
+        semantic_model.attach_param_decl_constraint(decl, arg_ty.clone())
     } else {
         arg_ty.clone()
     };
     let constrained =
         generic_constraint_type(semantic_model, &scoped_arg_ty).unwrap_or(scoped_arg_ty);
     if matches!(constrained, LuaType::Function)
-        && let LuaExpr::NameExpr(name_expr) = arg
-        && let Some(decl) = semantic_model.resolve_name(name_expr.get_position())
+        && let Some(decl) = decl
     {
         if let Some(func) = semantic_model.type_of_decl_signature(&decl) {
             return LuaType::DocFunction(Rc::new(func));
@@ -1048,7 +1050,7 @@ fn call_argument_type(
     constrained
 }
 
-/// Project a generic's bound, preferring its attached constraint over the legacy named-type lookup.
+/// Read a template's own bound, or use the legacy lookup for a bare named type.
 fn generic_constraint_type(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> Option<LuaType> {
     if let LuaType::TplRef(tpl) = ty {
         return tpl.get_constraint().cloned();
