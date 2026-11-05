@@ -1103,6 +1103,30 @@ mod collection_generics {
     }
 
     #[test]
+    fn collection_call_hover_uses_only_reaching_overloads() {
+        for (setup, expected_return) in [
+            ("accept = replacement", "boolean"),
+            ("---@cast accept -fun(value: string): string", "number"),
+        ] {
+            let text = hover_text(&format!(
+                r#"
+                ---@param value number
+                ---@return number
+                ---@overload fun(value: string): string
+                local function accept(value) return value end
+                ---@param value number
+                ---@return boolean
+                local function replacement(value) return true end
+                {setup}
+                local result = <??>accept(1)
+            "#
+            ));
+            let primary = text.split("```").nth(1).unwrap();
+            assert!(primary.contains(&format!("-> {expected_return}")), "{text}");
+        }
+    }
+
+    #[test]
     fn collection_call_hover_specializes_iterators() {
         for (iterator, collection, expected_key) in [
             ("pairs", "Foo[]", "integer"),

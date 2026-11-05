@@ -78,11 +78,25 @@ pub(crate) fn infer_call_signature(
 ) -> Option<(crate::LuaFunctionType, unify::TplBindings)> {
     let tree = model.syntax_tree()?;
     let call = LuaCallExpr::cast(call_syntax.to_node_from_root(&tree.get_red_root())?)?;
-    let emmylua_parser::LuaExpr::NameExpr(callee) = call.get_prefix_expr()? else {
+    let callee = call.get_prefix_expr()?;
+    let emmylua_parser::LuaExpr::NameExpr(name) = &callee else {
         return None;
     };
-    let owner = model.resolve_name(callee.get_position())?;
-    let candidates = vm::InferVm::new(model, &[]).callable_candidates_for_owner(&owner)?;
+    let mut candidates = model.callable_candidates_for_expr(&callee);
+    // Preserve explicit-overload precedence among the signatures still reaching
+    // this call. The shared expression query excludes replaced/removed signatures.
+    if let Some(owner) = model.resolve_name(name.get_position())
+        && let SemanticId::Decl(key) = &owner
+        && let Some(facts) = model.file_facts_of(key.file_id)
+        && let Some(decl) = facts.decl_by_id(&owner)
+        && let Some(signature) = decl
+            .value_expr_syntax
+            .and_then(|syntax| facts.signature_by_closure(syntax))
+        && let Some(projection) =
+            vm::InferVm::new(model, &[]).signature_projection(key.file_id, signature)
+    {
+        candidates.sort_by_key(|candidate| !projection.overloads.contains(candidate));
+    }
     let analysis = model.call_site_analysis(&call);
     let expressions = call.get_args_list()?.get_args().collect::<Vec<_>>();
     let args = analysis
