@@ -1127,6 +1127,21 @@ mod collection_generics {
     }
 
     #[test]
+    fn collection_call_hover_keeps_parameter_callable_without_initializer() {
+        let text = hover_text(
+            r#"
+            ---@param callback fun(values: number[]): boolean
+            local function invoke(callback)
+                local result = <??>callback({1, 2})
+            end
+        "#,
+        );
+        let primary = text.split("```").nth(1).unwrap();
+        assert!(primary.contains("number[]"), "{text}");
+        assert!(primary.contains("-> boolean"), "{text}");
+    }
+
+    #[test]
     fn collection_call_hover_specializes_iterators() {
         for (iterator, collection, expected_key) in [
             ("pairs", "Foo[]", "integer"),

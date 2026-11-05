@@ -85,17 +85,12 @@ pub(crate) fn infer_call_signature(
     let mut candidates = model.callable_candidates_for_expr(&callee);
     // Preserve explicit-overload precedence among the signatures still reaching
     // this call. The shared expression query excludes replaced/removed signatures.
-    if let Some(owner) = model.resolve_name(name.get_position())
-        && let SemanticId::Decl(key) = &owner
-        && let Some(facts) = model.file_facts_of(key.file_id)
-        && let Some(decl) = facts.decl_by_id(&owner)
-        && let Some(signature) = decl
-            .value_expr_syntax
-            .and_then(|syntax| facts.signature_by_closure(syntax))
-        && let Some(projection) =
-            vm::InferVm::new(model, &[]).signature_projection(key.file_id, signature)
-    {
-        candidates.sort_by_key(|candidate| !projection.overloads.contains(candidate));
+    if let Some(overloads) = declared_call_overloads(model, name) {
+        // False sorts first; keep the query order within both groups.
+        candidates.sort_by_cached_key(|candidate| {
+            let is_explicit_overload = overloads.contains(candidate);
+            !is_explicit_overload
+        });
     }
     let analysis = model.call_site_analysis(&call);
     let expressions = call.get_args_list()?.get_args().collect::<Vec<_>>();
@@ -111,6 +106,23 @@ pub(crate) fn infer_call_signature(
         .collect::<Vec<_>>();
     let receiver = analysis.colon_call.then_some(&analysis.receiver_ty);
     overload::select_callable(model, &candidates, &args, analysis.colon_call, receiver)
+}
+
+/// Find declared overloads for ordering only; missing declaration metadata keeps
+/// the shared expression query's candidate order unchanged.
+fn declared_call_overloads(
+    model: &SemanticModel,
+    name: &emmylua_parser::LuaNameExpr,
+) -> Option<Vec<crate::LuaFunctionType>> {
+    let owner = model.resolve_name(name.get_position())?;
+    let SemanticId::Decl(key) = &owner else {
+        return None;
+    };
+    let facts = model.file_facts_of(key.file_id)?;
+    let decl = facts.decl_by_id(&owner)?;
+    let signature = facts.signature_by_closure(decl.value_expr_syntax?)?;
+    let projection = vm::InferVm::new(model, &[]).signature_projection(key.file_id, signature)?;
+    Some(projection.overloads)
 }
 
 /// Call type plus generic bindings (`T -> actual argument type`; consumed by the
