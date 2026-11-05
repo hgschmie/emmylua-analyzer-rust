@@ -2586,6 +2586,46 @@ items.<??>
     }
 
     #[gtest]
+    fn test_inferred_return_completion_keeps_runtime_class_identity() -> Result<()> {
+        for (definition, call, expected, absent) in [
+            (
+                r#"
+                ---@class NamedResult
+                GlobalReceiver = {}
+                function GlobalReceiver:own() return self end
+                ---@class OtherResult
+                OtherReceiver = {}
+                function OtherReceiver:foreign() return self end
+                "#,
+                "GlobalReceiver:own():<??>",
+                "own",
+                "foreign",
+            ),
+            (
+                r#"
+                ---@class FirstResult
+                FirstReceiver = {}
+                ---@class SecondResult
+                SecondReceiver = {}
+                function SecondReceiver:second() return self end
+                function FirstReceiver:first() return SecondReceiver end
+                "#,
+                "FirstReceiver:first():<??>",
+                "second",
+                "first",
+            ),
+        ] {
+            let mut ws = ProviderVirtualWorkspace::new();
+            ws.def(definition);
+            let items =
+                get_completion_items(&mut ws, call, CompletionTriggerKind::TRIGGER_CHARACTER)?;
+            verify_true!(items.iter().any(|item| item.label == expected))?;
+            verify_true!(!items.iter().any(|item| item.label == absent))?;
+        }
+        Ok(())
+    }
+
+    #[gtest]
     fn test_colon_member_completion_before_scope_boundaries() -> Result<()> {
         let cases = [
             (
