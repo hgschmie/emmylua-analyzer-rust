@@ -82,10 +82,13 @@ pub(crate) fn infer_call_signature(
     let emmylua_parser::LuaExpr::NameExpr(name) = &callee else {
         return None;
     };
+    let owner = model.resolve_name(name.get_position())?;
     let mut candidates = model.callable_candidates_for_expr(&callee);
     // Preserve explicit-overload precedence among the signatures still reaching
     // this call. The shared expression query excludes replaced/removed signatures.
-    if let Some(overloads) = declared_call_overloads(model, name) {
+    if candidates.len() > 1
+        && let Some(overloads) = declared_call_overloads(model, &owner)
+    {
         // False sorts first; keep the query order within both groups.
         candidates.sort_by_cached_key(|candidate| {
             let is_explicit_overload = overloads.contains(candidate);
@@ -112,14 +115,13 @@ pub(crate) fn infer_call_signature(
 /// the shared expression query's candidate order unchanged.
 fn declared_call_overloads(
     model: &SemanticModel,
-    name: &emmylua_parser::LuaNameExpr,
+    owner: &SemanticId,
 ) -> Option<Vec<crate::LuaFunctionType>> {
-    let owner = model.resolve_name(name.get_position())?;
-    let SemanticId::Decl(key) = &owner else {
+    let SemanticId::Decl(key) = owner else {
         return None;
     };
     let facts = model.file_facts_of(key.file_id)?;
-    let decl = facts.decl_by_id(&owner)?;
+    let decl = facts.decl_by_id(owner)?;
     let signature = facts.signature_by_closure(decl.value_expr_syntax?)?;
     let projection = vm::InferVm::new(model, &[]).signature_projection(key.file_id, signature)?;
     Some(projection.overloads)
