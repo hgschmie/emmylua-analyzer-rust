@@ -394,12 +394,23 @@ fn check_member_assign(
                     Some(id) => semantic_model.member_assignment_type(&id, info.typ),
                     None => info.typ,
                 })
-                .or_else(|| semantic_model.member_type(&prefix_ty, &key));
-            let is_unannotated_initializer =
-                declared_ty.is_none() && member.doc_type_syntax.is_none();
-            if is_unannotated_initializer {
-                // This assignment defines the member's type. There is no separate
-                // destination contract for the remaining mismatch check.
+                .or_else(|| semantic_model.member_type(&prefix_ty, &key))
+                .or_else(|| {
+                    let key_ty = key.to_index_type()?;
+                    let info = semantic_model
+                        .applicable_index_infos(&prefix_ty, &key_ty)
+                        .ok()?
+                        .into_iter()
+                        .next()?;
+                    Some(match info.id {
+                        Some(id) => semantic_model.member_assignment_type(&id, info.value_type),
+                        None => info.value_type,
+                    })
+                });
+            let no_member_contract = declared_ty.is_none() && member.doc_type_syntax.is_none();
+            if no_member_contract {
+                // Without a declared or previously inferred member type, there
+                // is nothing independent to compare this assignment with.
                 return;
             }
             if let Some(declared_ty) = declared_ty {
