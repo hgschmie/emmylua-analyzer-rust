@@ -397,6 +397,10 @@ fn check_member_assign(
                 .or_else(|| semantic_model.member_type(&prefix_ty, &key));
             if let Some(declared_ty) = declared_ty {
                 target = declared_ty;
+            } else if member.doc_type_syntax.is_none() {
+                // This assignment creates the inferred member; its initializer
+                // cannot also impose an independent destination contract.
+                return;
             }
         }
     }
