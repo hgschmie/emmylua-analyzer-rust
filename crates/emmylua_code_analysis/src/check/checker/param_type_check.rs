@@ -1516,16 +1516,28 @@ fn call_argument_type(
     arg: &LuaExpr,
     arg_ty: &LuaType,
 ) -> LuaType {
-    let constrained =
-        generic_constraint_type(semantic_model, arg_ty).unwrap_or_else(|| arg_ty.clone());
     if let LuaExpr::ClosureExpr(closure) = arg {
         if let Some(func) = semantic_model.type_of_signature(closure.get_syntax_id()) {
             return LuaType::DocFunction(Rc::new(func));
         }
     }
+    let decl = if let LuaExpr::NameExpr(name) = arg {
+        semantic_model.resolve_name(name.get_position())
+    } else {
+        None
+    };
+    // Recover a parameter's generic constraint from its owning signature;
+    // non-parameter declarations pass through unchanged. A file-wide name
+    // search can select another function's generic constraint.
+    let scoped_arg_ty = if let Some(decl) = &decl {
+        semantic_model.attach_param_decl_constraint(decl, arg_ty.clone())
+    } else {
+        arg_ty.clone()
+    };
+    let constrained =
+        generic_constraint_type(semantic_model, &scoped_arg_ty).unwrap_or(scoped_arg_ty);
     if matches!(constrained, LuaType::Function)
-        && let LuaExpr::NameExpr(name_expr) = arg
-        && let Some(decl) = semantic_model.resolve_name(name_expr.get_position())
+        && let Some(decl) = decl
     {
         if let Some(func) = semantic_model.type_of_decl_signature(&decl) {
             return LuaType::DocFunction(Rc::new(func));
@@ -1550,8 +1562,11 @@ fn call_argument_type(
     constrained
 }
 
-/// `Ref("T")` with a signature declaring `---@generic T: Animal` -> project to the constraint Animal.
+/// Read a template's own bound, or use the legacy lookup for a bare named type.
 fn generic_constraint_type(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> Option<LuaType> {
+    if let LuaType::TplRef(tpl) = ty {
+        return tpl.get_constraint().cloned();
+    }
     let (LuaType::Ref(id) | LuaType::Def(id)) = ty else {
         return None;
     };

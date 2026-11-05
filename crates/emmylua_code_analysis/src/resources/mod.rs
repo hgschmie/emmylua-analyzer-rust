@@ -26,13 +26,14 @@ pub fn load_resource_std(
         } else {
             PathBuf::from(&create_resources_dir)
         };
-        // i18n resources exist; switch to the std dir for the current locale.
         let result = load_resource_from_file_system(&resource_path);
         if let Some(mut files) = result {
+            // i18n resources exist; switch to the std dir for the current locale.
+            let std_dir = get_std_dir(&resource_path);
             if !is_jit {
                 remove_jit_resource(&mut files);
             }
-            return (get_std_dir(&resource_path), files);
+            return (std_dir, files);
         }
     }
     // No resource dir specified; use the default dir, which has no i18n.
@@ -83,25 +84,13 @@ fn remove_jit_resource(files: &mut Vec<LuaFileInfo>) {
 
 /// Extract bundled resources when their content changes, including within one release.
 /// Returns whether extraction was needed. The selected directory owns its marker.
-pub fn prepare_resources_dir(resources_dir: &Path) -> Option<bool> {
+fn prepare_resources_dir(resources_dir: &Path) -> Option<bool> {
     if check_need_dump_to_file_system(resources_dir) {
         log::info!("Creating resources dir: {:?}", resources_dir);
         // Incomplete extraction must not leave a marker that appears current.
         let version_path = resources_dir.join("version");
         if version_path.exists() {
             std::fs::remove_file(&version_path).ok()?;
-        }
-        // Extraction can replace bundled translations. Invalidate their markers too.
-        if resources_dir.exists() {
-            for entry in std::fs::read_dir(resources_dir).ok()? {
-                let entry = entry.ok()?;
-                if entry.file_name().to_string_lossy().starts_with("std-") {
-                    let marker = entry.path().join(".version");
-                    if marker.exists() {
-                        std::fs::remove_file(marker).ok()?;
-                    }
-                }
-            }
         }
         let files = load_resource_from_include_dir();
         for file in &files {
@@ -142,7 +131,7 @@ pub fn prepare_resources_dir(resources_dir: &Path) -> Option<bool> {
 
 fn load_resource_from_file_system(resources_dir: &Path) -> Option<Vec<LuaFileInfo>> {
     prepare_resources_dir(resources_dir)?;
-    let std_dir = get_std_dir(&resources_dir);
+    let std_dir = get_std_dir(resources_dir);
     let match_pattern = vec!["**/*.lua".to_string()];
     let files = match load_workspace_files(&std_dir, &match_pattern, &Vec::new(), &Vec::new(), None)
     {
@@ -156,8 +145,8 @@ fn load_resource_from_file_system(resources_dir: &Path) -> Option<Vec<LuaFileInf
     Some(files)
 }
 
-/// Content identity shared with the language server's translated-resource cache.
-pub fn resource_cache_key() -> &'static str {
+/// Content identity for all bundled declarations, including translated files.
+fn resource_cache_key() -> &'static str {
     static KEY: OnceLock<String> = OnceLock::new();
     KEY.get_or_init(|| resource_fingerprint(load_resource_from_include_dir()))
 }

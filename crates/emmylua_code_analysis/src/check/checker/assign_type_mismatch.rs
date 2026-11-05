@@ -423,18 +423,19 @@ fn resolved_member_write_target(
             };
             let prefix_ty = semantic_model
                 .type_of_decl_assign_target_at(&SemanticId::Decl(owner.clone()), target_offset);
-            let key = member.key.clone();
-            let infos = semantic_model.member_infos_with_key(&prefix_ty, &key);
-            let declared_ty = infos
-                .into_iter()
-                .find(|info| info.id.as_ref() != Some(member_id))
-                .map(|info| match info.id {
-                    Some(id) => semantic_model.member_assignment_type(&id, info.typ),
-                    None => info.typ,
-                })
-                .or_else(|| semantic_model.member_type(&prefix_ty, &key));
-            if let Some(declared_ty) = declared_ty {
-                target = declared_ty;
+            let expected_member_ty = resolve_member_assignment_contract(
+                semantic_model,
+                &prefix_ty,
+                &member.key,
+                member_id,
+            );
+            if expected_member_ty.is_none() && member.doc_type_syntax.is_none() {
+                // A declared field, previous assignment, index signature or
+                // explicit annotation must provide an independent contract.
+                return None;
+            }
+            if let Some(expected_member_ty) = expected_member_ty {
+                target = expected_member_ty;
             }
         }
     }
@@ -444,6 +445,41 @@ fn resolved_member_write_target(
         return None;
     }
     complete_member_write_target(target)
+}
+
+/// Resolve a destination contract without using the current assignment's initializer.
+fn resolve_member_assignment_contract(
+    semantic_model: &SemanticModel<'_>,
+    prefix_ty: &LuaType,
+    key: &LuaMemberKey,
+    current_member: &SemanticId,
+) -> Option<LuaType> {
+    if let Some(info) = semantic_model
+        .member_infos_with_key(prefix_ty, key)
+        .into_iter()
+        .find(|info| info.id.as_ref() != Some(current_member))
+    {
+        return Some(match info.id {
+            Some(id) => semantic_model.member_assignment_type(&id, info.typ),
+            None => info.typ,
+        });
+    }
+    if let Some(ty) = semantic_model.member_type(prefix_ty, key) {
+        return Some(ty);
+    }
+    let key_ty = key.to_index_type()?;
+    // Errors mean unresolved or exhausted inference, not an incompatible value.
+    // As in table-field checking, only a completed query supplies a contract.
+    let infos = semantic_model
+        .applicable_index_infos(prefix_ty, &key_ty)
+        .ok()?;
+    // Match table-field checking's first-applicable signature precedence. The
+    // query has already excluded signatures that do not accept this key.
+    let info = infos.into_iter().next()?;
+    Some(match info.id {
+        Some(id) => semantic_model.member_assignment_type(&id, info.value_type),
+        None => info.value_type,
+    })
 }
 
 fn complete_member_write_target(target: LuaType) -> Option<LuaType> {
