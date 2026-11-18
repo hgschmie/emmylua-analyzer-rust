@@ -37,7 +37,10 @@ mod test {
             ---@class DictionaryWriter
             local Writer = {}
             Writer.count = 1
-            function Writer:clear() self.count = 0 end
+            function Writer:clear()
+                self.count = 0
+                self.last_key = nil
+            end
             ---@version 5.1
             function Writer:legacy() end
             "#
