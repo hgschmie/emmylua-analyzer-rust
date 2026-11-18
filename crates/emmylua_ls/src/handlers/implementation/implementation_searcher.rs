@@ -62,18 +62,22 @@ fn search_member_implementations(
             let Some(members) = model.members() else {
                 return;
             };
-            let mut discovered = discovered.lock().expect("implementation locations lock");
+            let mut file_locations = Vec::new();
             for m in members.iter() {
                 if m.key == target.key
                     && implementation_owner_ids(model, &m.owner)
                         .iter()
                         .any(|owner| owners.contains(owner))
                     && let Some(key_range) = m.id.member_key_range()
-                    && !discovered.contains(&(file_id, key_range))
+                    && !file_locations.contains(&(file_id, key_range))
                 {
-                    discovered.push((file_id, key_range));
+                    file_locations.push((file_id, key_range));
                 }
             }
+            discovered
+                .lock()
+                .expect("implementation locations lock")
+                .extend(file_locations);
         });
         let mut discovered = discovered
             .into_inner()

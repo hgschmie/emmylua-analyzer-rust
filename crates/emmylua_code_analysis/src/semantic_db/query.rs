@@ -408,9 +408,8 @@ pub(crate) fn resolve_member_id(
     let original_receiver = member_use.receiver.as_ref()?;
     // Only a direct self access needs its enclosing method and shadowing declarations.
     let lexical_use = member_use.root_syntax.and_then(|root| {
-        let text = db.get_file_text(facts.file_id)?;
         if !original_receiver.keys.is_empty()
-            || text.get(std::ops::Range::<usize>::from(root.get_range()))? != "self"
+            || facts.name_use_at_offset(root.get_range().start())?.name != "self"
         {
             return None;
         }
@@ -420,7 +419,7 @@ pub(crate) fn resolve_member_id(
         Some(MemberUse {
             receiver: Some(AccessPath {
                 root: owner.clone(),
-                keys: original_receiver.keys.clone(),
+                keys: Default::default(),
             }),
             owner: Some(owner),
             ..member_use.clone()
