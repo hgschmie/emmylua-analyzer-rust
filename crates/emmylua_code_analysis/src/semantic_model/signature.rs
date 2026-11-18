@@ -1167,6 +1167,7 @@ impl<'db> SemanticModel<'db> {
         let owner = self.type_of_expr_at(prefix.get_syntax_id(), index.get_position());
         let value = self.contextual_table_value(&owner, &key)?;
         let cache = self.cache.borrow();
+        // A provisional key type cannot establish a callback contract.
         (!cache.evaluation_exhausted && cache.is_complete(revision)).then_some(value)
     }
 
@@ -1191,14 +1192,10 @@ impl<'db> SemanticModel<'db> {
         self.contextual_table_value_by_key_type(owner, &key.to_index_type()?)
     }
 
-    fn contextual_table_value_by_key_type(
-        &self,
-        owner: &LuaType,
-        key: &LuaType,
-    ) -> Option<LuaType> {
+    fn contextual_key_domain(&self, key: &LuaType) -> Option<LuaType> {
         // A nullable computed key still identifies the value contract on the
         // non-nil path. Key validity is checked separately from callback context.
-        let key = match self.contextual_alias_target(key) {
+        Some(match self.contextual_alias_target(key) {
             // Unknown compatibility cannot establish an index value contract.
             LuaType::Unknown | LuaType::Nil => return None,
             LuaType::Union(union) => {
@@ -1216,10 +1213,13 @@ impl<'db> SemanticModel<'db> {
                 LuaType::from_vec(alternatives)
             }
             key => key,
-        };
+        })
+    }
+
+    fn contextual_non_nil_owner(&self, owner: &LuaType) -> Option<LuaType> {
         // The constructor supplies the non-nil value of an optional owner.
         // Multiple non-nil owner alternatives remain ambiguous here.
-        let owner = match self.contextual_alias_target(owner) {
+        Some(match self.contextual_alias_target(owner) {
             LuaType::Union(union) => {
                 let mut alternatives = union.iter().filter(|ty| !ty.is_nil());
                 let owner = alternatives.next()?.clone();
@@ -1229,7 +1229,16 @@ impl<'db> SemanticModel<'db> {
                 owner
             }
             owner => owner,
-        };
+        })
+    }
+
+    fn contextual_table_value_by_key_type(
+        &self,
+        owner: &LuaType,
+        key: &LuaType,
+    ) -> Option<LuaType> {
+        let key = self.contextual_key_domain(key)?;
+        let owner = self.contextual_non_nil_owner(owner)?;
         let params = match &owner {
             LuaType::Array(array) => {
                 // Match the shared array index signature's integer domain.
