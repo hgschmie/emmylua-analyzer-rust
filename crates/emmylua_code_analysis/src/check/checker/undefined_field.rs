@@ -435,23 +435,6 @@ fn is_string_key(ty: &LuaType) -> bool {
     }
 }
 
-fn numeric_key(ty: &LuaType) -> bool {
-    match ty {
-        LuaType::Number
-        | LuaType::Integer
-        | LuaType::IntegerConst(_)
-        | LuaType::FloatConst(_)
-        | LuaType::DocIntegerConst(_) => true,
-        LuaType::Union(union) => union.into_vec().iter().any(numeric_key),
-        LuaType::MultiLineUnion(union) => match union.to_union() {
-            LuaType::Union(union) => union.into_vec().iter().any(numeric_key),
-            _ => false,
-        },
-        LuaType::Ref(_) | LuaType::Def(_) => false,
-        _ => false,
-    }
-}
-
 /// Numeric key after alias expansion (`IntegerPartIndex = 1|2`, `NewKey: integer`).
 fn numeric_key_expanded(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> bool {
     numeric_key_expanded_inner(semantic_model, ty, &mut Vec::new())
@@ -462,8 +445,23 @@ fn numeric_key_expanded_inner(
     ty: &LuaType,
     visited: &mut Vec<LuaTypeDeclId>,
 ) -> bool {
-    if numeric_key(ty) {
-        return true;
+    match ty {
+        LuaType::Number
+        | LuaType::Integer
+        | LuaType::IntegerConst(_)
+        | LuaType::FloatConst(_)
+        | LuaType::DocIntegerConst(_) => return true,
+        LuaType::Union(union) => {
+            return union
+                .iter()
+                .any(|part| numeric_key_expanded_inner(semantic_model, part, visited));
+        }
+        LuaType::MultiLineUnion(union) => {
+            return union
+                .iter()
+                .any(|part| numeric_key_expanded_inner(semantic_model, part, visited));
+        }
+        _ => {}
     }
     let Some(def) = named_type_def(semantic_model, ty) else {
         return false;
@@ -510,6 +508,12 @@ fn key_matches(semantic_model: &SemanticModel<'_>, key: &LuaType, table_key: &Lu
             .any(|k| key_matches(semantic_model, key, k)),
         LuaType::Ref(_) | LuaType::Def(_) => {
             // Alias / class inheritance: recursive target or parent chain is handled by type_check.
+            if matches!(
+                expand_alias_type(semantic_model, table_key),
+                Some(LuaType::Number | LuaType::Integer)
+            ) {
+                return numeric_key_expanded(semantic_model, key);
+            }
             is_compatible(semantic_model, key, table_key)
         }
         _ => true,

@@ -1382,3 +1382,25 @@ fn enum_runtime_cross_file_dynamic_and_conditional_keys() {
         eq(false)
     );
 }
+
+#[test]
+fn numeric_dictionary_keys_resolve_aliases_in_unions() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for domain in ["integer", "EntityId"] {
+        for (key, valid) in [
+            ("EntityId?", true),
+            ("Label|EntityId", true),
+            ("Label?", false),
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            let source = format!(
+                "---@alias EntityId integer\n---@alias Label string\n---@param map table<{domain},string>\n---@param key {key}\nlocal function read(map, key) return map[key] end"
+            );
+            assert_eq!(
+                ws.has_no_diagnostic(DiagnosticCode::UndefinedField, &source),
+                valid,
+                "{domain}: {key}"
+            );
+        }
+    }
+}
