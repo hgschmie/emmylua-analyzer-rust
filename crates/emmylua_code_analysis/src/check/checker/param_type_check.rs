@@ -8,7 +8,8 @@ use crate::semantic_model::type_check::{TypeCheckContext, integer_index_applies}
 use std::rc::Rc;
 
 use emmylua_parser::{
-    LuaAst, LuaAstNode, LuaCallExpr, LuaExpr, LuaIndexExpr, LuaSyntaxId, LuaTokenKind,
+    LuaAst, LuaAstNode, LuaCallExpr, LuaExpr, LuaIndexExpr, LuaIndexKey, LuaLiteralToken,
+    LuaSyntaxId, LuaTokenKind,
 };
 
 use crate::semantic_model::infer::callable::CallableCandidateSet;
@@ -20,8 +21,8 @@ use crate::semantic_model::table_constructor::table_expr;
 use crate::semantic_model::type_check::{check_type_at, is_compatible};
 use crate::semantic_model::{SemanticModel, type_eval};
 use crate::{
-    DiagnosticCode, LuaFunctionType, LuaTupleStatus, LuaTupleType, LuaType, LuaTypeNode,
-    TypeDefKind, VariadicType,
+    DiagnosticCode, LuaFunctionType, LuaMemberKey, LuaTupleStatus, LuaTupleType, LuaType,
+    LuaTypeNode, TypeDefKind, VariadicType,
 };
 
 use super::param_count::first_param_is_self;
@@ -128,9 +129,7 @@ pub(crate) fn callable_candidates_uncached(
         let static_key = index_expr.get_index_key().is_some_and(|key| {
             matches!(
                 key,
-                emmylua_parser::LuaIndexKey::Name(_)
-                    | emmylua_parser::LuaIndexKey::String(_)
-                    | emmylua_parser::LuaIndexKey::Integer(_)
+                LuaIndexKey::Name(_) | LuaIndexKey::String(_) | LuaIndexKey::Integer(_)
             )
         });
         if static_key {
@@ -268,11 +267,14 @@ fn check_call(
         quick_candidate_score(func, &analysis.arg_types, colon_call, &receiver_ty)
     });
 
-    let mut best: Option<Vec<Mismatch>> = None;
-    for candidate in ordered {
+    let preferred = preferred_table_overload(semantic_model, &ordered, &args, colon_call);
+    let remaining = (0..ordered.len()).filter(|&index| Some(index) != preferred);
+    let mut best = None;
+    let mut best_score = (usize::MAX, usize::MAX);
+    for index in preferred.into_iter().chain(remaining) {
         let mismatches = check_candidate(
             semantic_model,
-            candidate,
+            ordered[index],
             &args,
             colon_call,
             &receiver_ty,
@@ -282,10 +284,10 @@ fn check_call(
         if mismatches.is_empty() {
             return;
         }
-        if best
-            .as_ref()
-            .is_none_or(|current| mismatch_count(&mismatches) < mismatch_count(current))
-        {
+        // Keep the original order as the tie-breaker for failing overloads.
+        let score = (mismatch_count(&mismatches), index);
+        if score < best_score {
+            best_score = score;
             best = Some(mismatches);
         }
     }
@@ -298,6 +300,67 @@ fn check_call(
         let literal_names = doc_overload_literal_names(semantic_model, &callee);
         report_mismatches(context, mismatches, &literal_names);
     }
+}
+
+/// Try the overload whose declared string field matches the constructor first.
+/// An untagged parameter can also accept a tag missing from the specialized overloads.
+fn preferred_table_overload(
+    model: &SemanticModel,
+    candidates: &[&LuaFunctionType],
+    args: &[LuaExpr],
+    colon_call: bool,
+) -> Option<usize> {
+    if candidates.len() < 2 {
+        return None;
+    }
+    let (arg_index, table) = args
+        .iter()
+        .enumerate()
+        .find_map(|(i, arg)| table_expr(arg).map(|table| (i, table)))?;
+    // Limit the hint to one named literal. A hint changes only the order of evaluation.
+    let (key, value) = table
+        .get_fields_with_keys()
+        .into_iter()
+        .find_map(|(field, key)| {
+            let LuaIndexKey::Name(name) = key else {
+                return None;
+            };
+            let LuaExpr::LiteralExpr(literal) = field.get_value_expr()? else {
+                return None;
+            };
+            let LuaLiteralToken::String(value) = literal.get_literal()? else {
+                return None;
+            };
+            Some((
+                LuaMemberKey::Name(name.get_name_text().into()),
+                value.get_value(),
+            ))
+        })?;
+    let mut fallback = None;
+    for (index, candidate) in candidates.iter().enumerate() {
+        let explicit_self = first_param_is_self(candidate);
+        let param_index = if colon_call && (explicit_self || !candidate.is_colon_define()) {
+            Some(arg_index + 1)
+        } else if !colon_call && !explicit_self && candidate.is_colon_define() {
+            arg_index.checked_sub(1)
+        } else {
+            Some(arg_index)
+        };
+        let member = param_index
+            .and_then(|i| candidate.get_params().get(i))
+            .and_then(|(_, ty)| model.member_type(ty.as_ref()?, &key));
+        match member {
+            Some(LuaType::StringConst(expected) | LuaType::DocStringConst(expected)) => {
+                if expected.as_str() == value {
+                    return Some(index);
+                }
+            }
+            _ => {
+                fallback.get_or_insert(index);
+            }
+        }
+    }
+    fallback
 }
 
 /// Check fields against a signature that accepts this argument count when possible.
