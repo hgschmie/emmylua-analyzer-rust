@@ -2025,3 +2025,13 @@ fn contextual_callback_local_values_do_not_borrow_trailing_contracts() {
         }
     }
 }
+
+#[test]
+fn contextual_callback_uses_a_callable_class_contract() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def("---@class Handler\n---@overload fun(value: string)\n---@class Options\n---@field handler Handler");
+    let file = ws.def(
+        "---@type Options\nlocal options = {handler = function(value) local observed = value end}",
+    );
+    assert_eq!(local_type(&ws, file, "observed"), LuaType::String);
+}

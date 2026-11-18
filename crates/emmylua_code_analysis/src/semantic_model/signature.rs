@@ -1189,9 +1189,8 @@ impl<'db> SemanticModel<'db> {
         };
         types
             .iter()
-            .filter_map(|ty| match self.contextual_alias_target(ty) {
-                LuaType::DocFunction(fun) => Some(fun.as_ref().clone()),
-                _ => None,
+            .flat_map(|ty| {
+                infer::vm::expand_callable_types_in_model(self, &self.contextual_alias_target(ty))
             })
             .collect()
     }
