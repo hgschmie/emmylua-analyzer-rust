@@ -28,6 +28,8 @@ pub(crate) struct ConstructorValue<'a> {
 
 impl TableConstructor {
     pub(crate) fn new(model: &SemanticModel, table: &LuaTableExpr) -> Self {
+        // Only the syntactic final field expands. A trailing unfinished entry
+        // still makes an earlier call supply exactly one result.
         let last_field = table.get_fields().last();
         let fields: Vec<_> = table
             .get_fields_with_keys()
@@ -110,20 +112,23 @@ impl TableConstructor {
             // earlier integer keys only for slots supplied by every alternative.
             if let LuaType::IntegerConst(start) = key {
                 let value = field.value.as_ref().map_err(Clone::clone)?;
-                for offset in 0..minimum_result_count(value) {
+                for offset in 0..minimum_expanded_slots(value) {
                     seen.insert(LuaType::IntegerConst(start + offset as i64));
                 }
             }
-            let entries = field.entries()?;
-            Ok(entries)
+            field.entries()
         })
     }
 }
 
-fn minimum_result_count(ty: &LuaType) -> usize {
+fn minimum_expanded_slots(ty: &LuaType) -> usize {
     match ty {
         LuaType::Variadic(pack) => pack.get_min_len().unwrap_or(0),
-        LuaType::Union(branches) => branches.iter().map(minimum_result_count).min().unwrap_or(0),
+        LuaType::Union(branches) => branches
+            .iter()
+            .map(minimum_expanded_slots)
+            .min()
+            .unwrap_or(0),
         _ => 1,
     }
 }

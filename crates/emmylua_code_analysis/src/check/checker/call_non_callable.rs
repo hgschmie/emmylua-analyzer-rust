@@ -38,23 +38,29 @@ fn check_call(
         return;
     };
     let callee_ty = match &prefix_expr {
-        emmylua_parser::LuaExpr::NameExpr(name_expr) => semantic_model
-            .resolve_name(name_expr.get_position())
-            .map(|decl| {
-                // M0 compatibility: calls in local initializer expressions are checked against the declared target type (preserving legacy
-                // `integer|fun()` still reporting union after assignment); calls in ordinary statements use flow
-                // reads, allowing `i = function() end` followed by `i()`.
-                if call_expr
-                    .syntax()
-                    .ancestors()
-                    .any(|node| LuaLocalStat::cast(node).is_some())
-                {
-                    semantic_model.type_of_decl_assign_target_at(&decl, name_expr.get_position())
-                } else {
-                    semantic_model.type_of_decl_at(&decl, name_expr.get_position())
-                }
-            })
-            .unwrap_or_else(|| semantic_model.type_of_expr(prefix_expr.get_syntax_id())),
+        emmylua_parser::LuaExpr::NameExpr(name_expr) => {
+            crate::semantic_model::flow::inline_asserted_type(semantic_model, &prefix_expr)
+                .unwrap_or_else(|| {
+                    semantic_model
+                        .resolve_name(name_expr.get_position())
+                        .map(|decl| {
+                            // M0 compatibility: calls in local initializer expressions are checked against the declared target type (preserving legacy
+                            // `integer|fun()` still reporting union after assignment); calls in ordinary statements use flow
+                            // reads, allowing `i = function() end` followed by `i()`.
+                            if call_expr
+                                .syntax()
+                                .ancestors()
+                                .any(|node| LuaLocalStat::cast(node).is_some())
+                            {
+                                semantic_model
+                                    .type_of_decl_assign_target_at(&decl, name_expr.get_position())
+                            } else {
+                                semantic_model.type_of_decl_at(&decl, name_expr.get_position())
+                            }
+                        })
+                        .unwrap_or_else(|| semantic_model.type_of_expr(prefix_expr.get_syntax_id()))
+                })
+        }
         _ => semantic_model.type_of_expr(prefix_expr.get_syntax_id()),
     };
     if is_callable(semantic_model, &callee_ty) {

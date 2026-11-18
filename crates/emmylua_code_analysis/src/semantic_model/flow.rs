@@ -1710,9 +1710,11 @@ fn asserted_type_for_target(
 }
 
 /// An inline assertion can explicitly resolve to unknown.
-pub(super) fn inline_asserted_type(model: &SemanticModel, expr: &LuaExpr) -> Option<LuaType> {
+pub(crate) fn inline_asserted_type(model: &SemanticModel, expr: &LuaExpr) -> Option<LuaType> {
     let tree = model.flow_tree().filter(|tree| tree.has_tag_cast())?;
     let flows = expr_cast_flows(model, expr.syntax(), &tree);
+    // Forward evaluation overwrites the type at each matching assertion.
+    // Search backward to return that same final assertion.
     flows.iter().rev().find_map(|id| {
         tree.get_flow_effects(*id)
             .iter()

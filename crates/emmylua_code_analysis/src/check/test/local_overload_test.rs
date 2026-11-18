@@ -262,3 +262,11 @@ fn an_explicit_unknown_callee_does_not_restore_its_overloads() {
         "{diagnostics:?}"
     );
 }
+
+#[test]
+fn an_explicit_string_callee_reports_its_type() {
+    let source = format!("{DECLARATION}\naccept --[[@as string]] (false)");
+    let diagnostics = check_source(&source);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(diagnostics[0].code, DiagnosticCode::CallNonCallable);
+}
