@@ -267,3 +267,12 @@ fn bare_table_generic_repair_preserves_union_object_arguments() {
         Some(LuaType::Integer)
     );
 }
+
+#[test]
+fn open_member_or_preserves_nullable_fallbacks() {
+    for fallback in ["nil", "other"] {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def(&format!("---@param t table\n---@param other string?\nfunction f(t, other)\nlocal result = t.field or {fallback}\nreturn result end"));
+        assert!(result_type(&ws, file).is_nullable(), "{fallback}");
+    }
+}

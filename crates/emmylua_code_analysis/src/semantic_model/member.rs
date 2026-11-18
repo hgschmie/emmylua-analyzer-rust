@@ -21,8 +21,17 @@ use super::table_constructor::expanded_results;
 /// chains from making `member_info` / `resolve_member` slow-path expansion unbounded.
 const MAX_MEMBER_INHERITANCE_DEPTH: usize = 100;
 
-/// Whether arbitrary member reads have no declared key/value contract.
+/// Whether any union alternative permits arbitrary keys without a declared value type.
 pub(crate) fn has_unrestricted_members(model: &SemanticModel, ty: &LuaType) -> bool {
+    match ty {
+        LuaType::Any | LuaType::Table => return true,
+        LuaType::Union(_)
+        | LuaType::MultiLineUnion(_)
+        | LuaType::Ref(_)
+        | LuaType::Def(_)
+        | LuaType::Generic(_) => {}
+        _ => return false,
+    }
     let mut pending = vec![ty.clone()];
     let mut seen = HashSet::new();
     while let Some(current) = pending.pop() {
