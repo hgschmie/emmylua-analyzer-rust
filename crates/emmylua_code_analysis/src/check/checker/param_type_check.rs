@@ -9,7 +9,8 @@ use crate::semantic_model::type_check::{TypeCheckContext, integer_index_applies}
 use std::rc::Rc;
 
 use emmylua_parser::{
-    LuaAst, LuaAstNode, LuaCallExpr, LuaExpr, LuaIndexExpr, LuaSyntaxId, LuaTokenKind,
+    LuaAst, LuaAstNode, LuaCallExpr, LuaExpr, LuaIndexExpr, LuaIndexKey, LuaLiteralToken,
+    LuaSyntaxId, LuaTokenKind,
 };
 
 use crate::semantic_model::infer::callable::CallableCandidateSet;
@@ -21,8 +22,8 @@ use crate::semantic_model::table_constructor::table_expr;
 use crate::semantic_model::type_check::{check_type_at, is_compatible};
 use crate::semantic_model::{SemanticModel, type_eval};
 use crate::{
-    DiagnosticCode, LuaFunctionType, LuaTupleStatus, LuaTupleType, LuaType, LuaTypeNode,
-    TypeDefKind, VariadicType,
+    DiagnosticCode, LuaFunctionType, LuaMemberKey, LuaTupleStatus, LuaTupleType, LuaType,
+    LuaTypeNode, TypeDefKind, VariadicType,
 };
 
 use super::param_count::first_param_is_self;
@@ -133,9 +134,7 @@ pub(crate) fn callable_candidates_uncached(
         let static_key = index_expr.get_index_key().is_some_and(|key| {
             matches!(
                 key,
-                emmylua_parser::LuaIndexKey::Name(_)
-                    | emmylua_parser::LuaIndexKey::String(_)
-                    | emmylua_parser::LuaIndexKey::Integer(_)
+                LuaIndexKey::Name(_) | LuaIndexKey::String(_) | LuaIndexKey::Integer(_)
             )
         });
         if static_key {
@@ -273,11 +272,14 @@ fn check_call(
         quick_candidate_score(func, &analysis.arg_types, colon_call, &receiver_ty)
     });
 
-    let mut best: Option<Vec<Mismatch>> = None;
-    for candidate in ordered {
+    let preferred = preferred_table_overload(semantic_model, &ordered, &args, colon_call);
+    let remaining = (0..ordered.len()).filter(|&index| Some(index) != preferred);
+    let mut best = None;
+    let mut best_score = (usize::MAX, usize::MAX);
+    for index in preferred.into_iter().chain(remaining) {
         let mismatches = check_candidate(
             semantic_model,
-            candidate,
+            ordered[index],
             &args,
             colon_call,
             &receiver_ty,
@@ -287,10 +289,10 @@ fn check_call(
         if mismatches.is_empty() {
             return;
         }
-        if best
-            .as_ref()
-            .is_none_or(|current| mismatch_count(&mismatches) < mismatch_count(current))
-        {
+        // Keep the original order as the tie-breaker for failing overloads.
+        let score = (mismatch_count(&mismatches), index);
+        if score < best_score {
+            best_score = score;
             best = Some(mismatches);
         }
     }
@@ -303,6 +305,77 @@ fn check_call(
         let literal_names = doc_overload_literal_names(semantic_model, &callee);
         report_mismatches(context, mismatches, &literal_names);
     }
+}
+
+/// Prefer an exact string tag or the only overload without a conflicting tag.
+fn preferred_table_overload(
+    model: &SemanticModel,
+    candidates: &[&LuaFunctionType],
+    args: &[LuaExpr],
+    colon_call: bool,
+) -> Option<usize> {
+    if candidates.len() < 2 {
+        return None;
+    }
+    let (arg_index, table) = args
+        .iter()
+        .enumerate()
+        .find_map(|(i, arg)| table_expr(arg).map(|table| (i, table)))?;
+    // Inspect one named field with a string literal value in the first table argument.
+    let (key, value) = table
+        .get_fields_with_keys()
+        .into_iter()
+        .find_map(|(field, key)| {
+            let LuaExpr::LiteralExpr(literal) = field.get_value_expr()? else {
+                return None;
+            };
+            let LuaLiteralToken::String(value) = literal.get_literal()? else {
+                return None;
+            };
+            let key = match key {
+                LuaIndexKey::Name(name) => name.get_name_text().into(),
+                LuaIndexKey::String(string) => string.get_value().into(),
+                _ => return None,
+            };
+            Some((LuaMemberKey::Name(key), value.get_value()))
+        })?;
+    let mut unclassified = None;
+    let mut unclassified_count = 0;
+    for (index, candidate) in candidates.iter().enumerate() {
+        let member = parameter_for_argument(candidate, arg_index, colon_call)
+            .and_then(|param| model.member_type(param, &key));
+        match member {
+            Some(LuaType::DocStringConst(expected) | LuaType::StringConst(expected)) => {
+                if expected.as_str() == value {
+                    return Some(index);
+                }
+            }
+            _ => {
+                unclassified = Some(index);
+                unclassified_count += 1;
+            }
+        }
+    }
+    // If every other overload declares a conflicting tag, try the remaining one first.
+    if unclassified_count == 1 {
+        unclassified
+    } else {
+        None
+    }
+}
+
+fn parameter_for_argument(
+    candidate: &LuaFunctionType,
+    arg: usize,
+    colon_call: bool,
+) -> Option<&LuaType> {
+    let implicit_self = candidate.is_colon_define() && !first_param_is_self(candidate);
+    let index = match (colon_call, implicit_self) {
+        (true, false) => arg + 1, // The receiver fills the first declared parameter.
+        (false, true) => arg.checked_sub(1)?, // The first actual argument supplies the receiver.
+        _ => arg,                 // Caller and signature agree on the receiver.
+    };
+    candidate.get_params().get(index)?.1.as_ref()
 }
 
 /// Check fields against a signature that accepts this argument count when possible.
@@ -1159,4 +1232,48 @@ fn mismatch_message(
         reason = ""
     )
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::VirtualWorkspace;
+
+    fn preferred_index(source: &str) -> Option<usize> {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def(source);
+        let call = ws.get_node::<LuaCallExpr>(file);
+        let model = ws.analysis.semantic_model(file);
+        let analysis = model.call_site_analysis(&call);
+        let args: Vec<_> = call.get_args_list().unwrap().get_args().collect();
+        let candidates: Vec<_> = analysis.candidates.iter().collect();
+        assert!(candidates.len() >= 2, "{source}");
+        preferred_table_overload(&model, &candidates, &args, false)
+    }
+
+    #[test]
+    fn matching_tag_moves_a_later_overload_to_the_front() {
+        assert_eq!(
+            preferred_index(
+                r#"
+            ---@param opts {kind: "first"}
+            ---@overload fun(opts: {kind: "second"})
+            local function add(opts) return opts end
+            add({["kind"] = "second"})
+        "#
+            ),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn general_overload_is_preferred_only_when_all_others_have_conflicting_tags() {
+        let declarations = r#"---@param opts {kind: "first"}
+---@overload fun(opts: {kind: string})"#;
+        let call = r#"local function add(opts) return opts end
+            add({kind="other"})"#;
+        assert_eq!(preferred_index(&format!("{declarations}\n{call}")), Some(1));
+        let ambiguous = format!("{declarations}\n---@overload fun(opts:table)\n{call}");
+        assert_eq!(preferred_index(&ambiguous), None);
+    }
 }
