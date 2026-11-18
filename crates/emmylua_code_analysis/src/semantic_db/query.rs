@@ -405,14 +405,12 @@ pub(crate) fn resolve_member_id(
     facts: &FileFacts,
     member_use: &MemberUse,
 ) -> Option<SemanticId> {
-    let receiver = member_use.receiver.as_ref()?;
+    let original_receiver = member_use.receiver.as_ref()?;
     // Only a direct self access needs its enclosing method and shadowing declarations.
     let lexical_use = member_use.root_syntax.and_then(|root| {
         let text = db.get_file_text(facts.file_id)?;
-        if !receiver.keys.is_empty()
-            || text
-                .get(usize::from(root.get_range().start())..usize::from(root.get_range().end()))?
-                != "self"
+        if !original_receiver.keys.is_empty()
+            || text.get(std::ops::Range::<usize>::from(root.get_range()))? != "self"
         {
             return None;
         }
@@ -422,7 +420,7 @@ pub(crate) fn resolve_member_id(
         Some(MemberUse {
             receiver: Some(AccessPath {
                 root: owner.clone(),
-                ..receiver.clone()
+                keys: original_receiver.keys.clone(),
             }),
             owner: Some(owner),
             ..member_use.clone()
