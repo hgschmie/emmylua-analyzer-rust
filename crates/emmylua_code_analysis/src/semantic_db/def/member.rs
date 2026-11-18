@@ -25,9 +25,8 @@ pub struct MemberRef {
     pub name: SmolStr,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MemberAccess {
-    #[default]
     ReadWrite,
     Read,
     Write,

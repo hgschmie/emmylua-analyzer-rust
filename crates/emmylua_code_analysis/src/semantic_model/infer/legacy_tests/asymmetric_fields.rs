@@ -665,6 +665,36 @@ end
 }
 
 #[test]
+fn asymmetric_fields_aliased_nullable_discriminants() {
+    for getter in ["MaybeNumber", "Optional<number>"] {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(&format!(
+            r#"
+---@alias AbsentValue nil
+---@alias MaybeNumber number?
+---@alias Optional<T> T|nil
+---@class Absent
+---@field (read) value AbsentValue
+---@field (write) value string
+---@class Maybe
+---@field (read) value {getter}
+---@field (write) value string
+---@param a Absent|Maybe
+local function check(a)
+    if a.value == nil then
+        matches_nil = a
+    else
+        has_number = a
+    end
+end
+"#
+        ));
+        assert_eq!(ws.expr_ty("matches_nil"), ws.ty("Absent|Maybe"), "{getter}");
+        assert_eq!(ws.expr_ty("has_number"), ws.ty("Maybe"), "{getter}");
+    }
+}
+
+#[test]
 fn asymmetric_fields_review_ordinary_nullable_discriminant_keeps_receiver() {
     let mut ws = VirtualWorkspace::new();
     ws.def(

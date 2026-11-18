@@ -5633,6 +5633,11 @@ fn filter_type_by_member_discriminant(
         let can_match_branch = model
             .member_type(&component, key)
             .map(|member_ty| {
+                let Some(member_ty) = super::type_eval::expand_alias_branches(model, &member_ty)
+                else {
+                    // An incomplete alias expansion cannot rule out either branch.
+                    return true;
+                };
                 if keep_matching {
                     return types_may_overlap(member_ty, literal.clone());
                 }
@@ -6317,28 +6322,20 @@ fn directional_read_at(
     let mut pending = vec![(start, PathState::default(), HashSet::new())];
     let mut results = Vec::new();
     let mut budget = DIRECTIONAL_READ_FLOW_BUDGET;
-    while let Some((mut current, mut path, mut seen)) = pending.pop() {
+    'paths: while let Some((mut current, mut path, mut seen)) = pending.pop() {
         loop {
-            if budget == 0 {
-                // Preserve completed results and modifiers already seen on every
-                // unfinished path; default only the unseen prefix to the getter.
-                results.push(finalize(model, read.typ.clone(), &path));
-                results.extend(
-                    pending
-                        .into_iter()
-                        .map(|(_, path, _)| finalize(model, read.typ.clone(), &path)),
-                );
-                return Some(merge_directional_read_paths(results));
-            }
-            if !seen.insert(current) {
-                results.push(finalize(model, read.typ.clone(), &path));
+            if budget == 0 || !seen.insert(current) {
                 break;
             }
             budget -= 1;
-            let node = tree.get_flow_node(current)?;
+            let Some(node) = tree.get_flow_node(current) else {
+                break;
+            };
             match &node.kind {
                 FlowNodeKind::Assignment(ptr) => {
-                    let assignment = ptr.to_node(&root)?;
+                    let Some(assignment) = ptr.to_node(&root) else {
+                        break;
+                    };
                     if assignment.get_range().end() <= offset
                         && (assignment.get_var_and_expr_list().0.iter().any(|var| {
                             let emmylua_parser::LuaVarExpr::IndexExpr(target) = var else {
@@ -6357,13 +6354,14 @@ fn directional_read_at(
                             None,
                         ) != MemberWrite::Unrelated)
                     {
-                        results.push(finalize(model, read.typ.clone(), &path));
                         break;
                     }
                 }
                 FlowNodeKind::TrueCondition(cond) | FlowNodeKind::FalseCondition(cond) => {
                     // Match receiver paths, including stable aliases, before narrowing.
-                    let expr = cond.to_node(&root)?;
+                    let Some(expr) = cond.to_node(&root) else {
+                        break;
+                    };
                     let relevant = std::iter::once(expr.syntax().clone())
                         .chain(expr.syntax().descendants())
                         .filter_map(LuaIndexExpr::cast)
@@ -6390,17 +6388,23 @@ fn directional_read_at(
             match &node.antecedent {
                 Some(FlowAntecedent::Single(next)) => current = *next,
                 Some(FlowAntecedent::Multiple(id)) => {
-                    for next in tree.get_multi_antecedents(*id)? {
+                    let Some(predecessors) = tree.get_multi_antecedents(*id) else {
+                        break;
+                    };
+                    if predecessors.is_empty() {
+                        break;
+                    }
+                    for next in predecessors {
                         pending.push((*next, path.clone_path(), seen.clone()));
                     }
-                    break;
+                    continue 'paths;
                 }
-                None => {
-                    results.push(finalize(model, read.typ.clone(), &path));
-                    break;
-                }
+                None => break,
             }
         }
+        // Every path either schedules predecessors or contributes its getter with
+        // the modifiers already seen, even for incomplete flow or exhausted budget.
+        results.push(finalize(model, read.typ.clone(), &path));
     }
     Some(merge_directional_read_paths(results))
 }

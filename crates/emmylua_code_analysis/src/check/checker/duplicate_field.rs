@@ -92,15 +92,8 @@ impl Checker for DuplicateFieldChecker {
                         && dupes
                             .iter()
                             .all(|member| member.access != MemberAccess::ReadWrite)
-                        && [MemberAccess::Read, MemberAccess::Write]
-                            .into_iter()
-                            .all(|access| {
-                                let mut direction =
-                                    dupes.iter().filter(|member| member.access == access);
-                                direction.clone().count() <= 1
-                                    || direction
-                                        .all(|member| is_function_like(semantic_model, member))
-                            })
+                        && valid_overloads_for_access(semantic_model, &dupes, MemberAccess::Read)
+                        && valid_overloads_for_access(semantic_model, &dupes, MemberAccess::Write)
                     {
                         continue;
                     }
@@ -234,6 +227,26 @@ fn required_module_file(
         _ => return None,
     };
     semantic_model.module_file_of(&module_name)
+}
+
+/// A single declaration may have any type. Repeated declarations must all be callable.
+fn valid_overloads_for_access(
+    model: &SemanticModel<'_>,
+    members: &[&Member],
+    access: MemberAccess,
+) -> bool {
+    let mut matching = members
+        .iter()
+        .copied()
+        .filter(|member| member.access == access)
+        .peekable();
+    let Some(first) = matching.next() else {
+        return true;
+    };
+    if matching.peek().is_none() {
+        return true;
+    }
+    is_function_like(model, first) && matching.all(|member| is_function_like(model, member))
 }
 
 /// Whether a member resolves to a function or has a closure value.

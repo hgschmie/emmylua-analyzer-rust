@@ -25,7 +25,7 @@ pub(super) fn hover(
         })?;
     let (read, write) = pair;
     let mut value = format!(
-        "```lua\nRead: {}\nWrite: {}\n```",
+        "```\nRead: {}\nWrite: {}\n```",
         humanize(model, &read.typ),
         humanize(model, &write.typ)
     );
