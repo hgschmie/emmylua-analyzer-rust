@@ -32,7 +32,8 @@ mod inline_assertion_arguments {
         accept(({} --[[@as Message]]))
         accept(({}) --[[@as Message]])
         "#;
-        assert!(diagnostics(source).is_empty(), "{:#?}", diagnostics(source));
+        let result = diagnostics(source);
+        assert!(result.is_empty(), "{result:#?}");
     }
 
     #[test]
@@ -193,12 +194,15 @@ mod inline_assertion_arguments {
                 "---@class Message\n---@field text string\n---@param first Message\n---@param second Message\nlocal function accept(first, second) end\naccept({{}} --[[@as Message]], {value})"
             );
             let result = diagnostics(&source);
+            let start = source.rfind(value).unwrap();
             assert!(!result.is_empty(), "{value}");
             assert!(
-                result
-                    .iter()
-                    .all(|d| d.code != DiagnosticCode::MissingFields),
-                "asserted first argument was rechecked: {result:#?}"
+                result.iter().all(|diagnostic| {
+                    diagnostic.code != DiagnosticCode::MissingFields
+                        && usize::from(diagnostic.range.start()) >= start
+                        && usize::from(diagnostic.range.end()) <= start + value.len()
+                }),
+                "{value}: {result:#?}"
             );
         }
     }

@@ -4,6 +4,7 @@
 //! otherwise report type and field errors from the candidate with the fewest mismatches. Colon calls:
 //! strip one slot for the self parameter; plain functions treat the receiver as the first argument.
 
+use crate::semantic_model::flow::{ExprCastMode, type_of_expr_with_cast};
 use crate::semantic_model::type_check::{TypeCheckContext, integer_index_applies};
 use std::rc::Rc;
 
@@ -599,17 +600,14 @@ fn cached_arg_type(
     let Some(arg) = args.get(index) else {
         return LuaType::Unknown;
     };
-    let asserted_type = |syntax| {
-        crate::semantic_model::flow::type_of_expr_with_cast(
-            semantic_model,
-            syntax,
-            crate::semantic_model::flow::ExprCastMode::AsOnly,
-        )
-    };
+    let asserted_type =
+        |syntax: LuaSyntaxId| type_of_expr_with_cast(semantic_model, syntax, ExprCastMode::AsOnly);
     let ty = arg_types
         .and_then(|types| types.get(index))
         .cloned()
         .unwrap_or_else(|| asserted_type(arg.get_syntax_id()));
+    // A parenthesized literal can keep its table type in the call cache while
+    // the inline assertion belongs to the inner constructor.
     if matches!(ty, LuaType::TableConst(_))
         && matches!(arg, LuaExpr::ParenExpr(_))
         && let Some(table) = table_expr(arg)
