@@ -45,12 +45,14 @@ fn search_member_implementations(
     };
     let member_model = SemanticModel::new(db, key.file_id);
     let mut ranges = member_reference_ranges(db, member, true);
-    // Include other definitions only when both the key and receiver identity match.
-    if let Some(target) = member_model.file_facts()?.member_by_id(member) {
+    // Include definitions on the same receiver or its declared class.
+    if let Some(facts) = member_model.file_facts()
+        && let Some(target) = facts.member_by_id(member)
+    {
         // Initializer fields also have a synthetic table owner; retain the
         // declaration owner of that same source field and its annotated type.
-        let owners: Vec<_> = member_model
-            .members()?
+        let owners: Vec<_> = facts
+            .members
             .iter()
             .filter(|candidate| candidate.id == *member)
             .flat_map(|candidate| implementation_owner_ids(&member_model, &candidate.owner))
@@ -60,18 +62,22 @@ fn search_member_implementations(
             let Some(members) = model.members() else {
                 return;
             };
-            let mut discovered = discovered.lock().expect("implementation locations lock");
+            let mut file_locations = Vec::new();
             for m in members.iter() {
                 if m.key == target.key
                     && implementation_owner_ids(model, &m.owner)
                         .iter()
                         .any(|owner| owners.contains(owner))
                     && let Some(key_range) = m.id.member_key_range()
-                    && !discovered.contains(&(file_id, key_range))
+                    && !file_locations.contains(&(file_id, key_range))
                 {
-                    discovered.push((file_id, key_range));
+                    file_locations.push((file_id, key_range));
                 }
             }
+            discovered
+                .lock()
+                .expect("implementation locations lock")
+                .extend(file_locations);
         });
         let mut discovered = discovered
             .into_inner()

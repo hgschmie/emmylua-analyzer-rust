@@ -35,21 +35,18 @@ fn check_condition(
     semantic_model: &SemanticModel<'_>,
     condition: &emmylua_parser::LuaExpr,
 ) {
-    let inferred_type = semantic_model.type_of_expr(condition.get_syntax_id());
-    let Some(inferred_type) =
-        crate::semantic_model::type_eval::expand_alias_branches(semantic_model, &inferred_type)
-    else {
-        return;
-    };
-    // Refine existing constant-condition candidates. Inferred collection reads
-    // remain indeterminate: a runtime member can describe a later assignment,
-    // so querying its flow here must not introduce a new constant diagnostic.
-    if matches!(inferred_type, crate::LuaType::Any | crate::LuaType::Unknown)
-        || (!inferred_type.is_always_truthy() && !inferred_type.is_always_falsy())
-    {
-        return;
+    if !is_documented_field(semantic_model, condition) {
+        let inferred = semantic_model.type_of_expr(condition.get_syntax_id());
+        let Some(inferred) =
+            crate::semantic_model::type_eval::expand_alias_branches(semantic_model, &inferred)
+        else {
+            return;
+        };
+        if !inferred.is_always_truthy() && !inferred.is_always_falsy() {
+            return;
+        }
     }
-    // Use the read at the condition, including optional field contracts and prior guards.
+    // A dictionary's value type can be truthy even when the requested entry is absent.
     let expr_type =
         semantic_model.type_of_expr_at(condition.get_syntax_id(), condition.get_position());
     let Some(expr_type) =
@@ -70,4 +67,28 @@ fn check_condition(
             t!("Impossible `if` statement: this condition is always falsy"),
         );
     }
+}
+
+fn is_documented_field(model: &SemanticModel, expr: &emmylua_parser::LuaExpr) -> bool {
+    let emmylua_parser::LuaExpr::IndexExpr(index) = expr else {
+        return false;
+    };
+    let Some(id) = model
+        .resolve_member(index)
+        .and_then(|resolved| resolved.member_id)
+    else {
+        return false;
+    };
+    let crate::SemanticId::Member(key) = &id else {
+        return false;
+    };
+    model
+        .file_facts_of(key.file_id)
+        .and_then(|facts| facts.member_by_id(&id))
+        .is_some_and(|member| {
+            matches!(
+                member.source,
+                crate::semantic_db::def::MemberSource::DocField
+            )
+        })
 }

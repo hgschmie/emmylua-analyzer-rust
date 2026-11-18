@@ -3,6 +3,27 @@ mod test {
     use crate::{DiagnosticCode, VirtualWorkspace};
 
     #[test]
+    fn named_dictionary_entries_may_be_absent_in_a_condition() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let mut config = ws.get_emmyrc();
+        config.strict.table_index = true;
+        ws.update_emmyrc(config);
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+            ---@class Entity
+            local Entity = {}
+            ---@alias EntityMap table<string, Entity>
+            ---@param entries EntityMap
+            ---@param key string
+            local function visit(entries, key)
+                if entries[key] then return entries[key] end
+            end
+        "#
+        ));
+    }
+
+    #[test]
     fn test_mutable_capture_unrelated_closures_preserve_diagnostics() {
         for (code, source) in [
             (

@@ -43,7 +43,7 @@ fn composed_overload_keeps_invalid_dictionary_values() {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.code == DiagnosticCode::AssignTypeMismatch)
+            .any(|d| d.code == DiagnosticCode::ParamTypeMismatch)
     );
 }
 
@@ -138,19 +138,15 @@ fn composed_overload_dictionary_aliases_keep_complete_call_matching() {
 }
 
 #[test]
-fn composed_overload_bad_alias_keeps_both_diagnostic_contracts() {
+fn composed_overload_reports_bad_alias_at_call() {
     let source = "---@alias StringIntegers table<string, integer>\n---@param values table<integer, string>\n---@param mode string\n---@overload fun(values: StringIntegers, mode: integer)\nlocal function accept(values, mode) return values, mode end\naccept({count = 'bad'}, 1)";
     let diagnostics = check_source(source);
     assert_eq!(
         diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
-        vec![
-            DiagnosticCode::ParamTypeMismatch,
-            DiagnosticCode::AssignTypeMismatch
-        ],
+        vec![DiagnosticCode::ParamTypeMismatch],
         "{diagnostics:?}"
     );
     assert_eq!(&source[diagnostics[0].range], "{count = 'bad'}");
-    assert_eq!(&source[diagnostics[1].range], "'bad'");
 }
 
 #[test]

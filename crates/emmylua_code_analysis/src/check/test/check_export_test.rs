@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use lsp_types::Uri;
 
-use crate::{DiagnosticCode, VirtualWorkspace};
-use crate::{Emmyrc, SemanticDatabase, SemanticModel};
+use crate::DiagnosticCode;
+use crate::{Emmyrc, LuaType, SemanticDatabase, SemanticModel, VirtualWorkspace};
 
 use super::{Diagnostic, check_source, count_by_code};
 use crate::check::{CheckConfig, check_file};
@@ -26,6 +26,53 @@ fn check_export(def_source: &str, use_source: &str) -> Vec<Diagnostic> {
     let model = SemanticModel::new(&db, use_file);
     let config = Arc::new(CheckConfig::new(&emmyrc));
     check_file(&model, config)
+}
+
+// 导出类表时应包含声明字段, 同时继续拒绝不存在的字段.
+#[test]
+fn test_export_declared_class_fields() {
+    let source = r#"
+        ---@class Shared
+        ---@field value integer
+        local M = {}
+        return M
+        "#;
+    let mut ws = VirtualWorkspace::new();
+    ws.def_file("mod.lua", source);
+    assert_eq!(ws.expr_ty("require('mod').value"), LuaType::Integer);
+    let diagnostics = check_export(
+        source,
+        r#"
+        local shared = require 'mod'
+        shared.value = 1
+        return shared.value, shared.missing
+        "#,
+    );
+    assert_eq!(
+        count_by_code(&diagnostics, DiagnosticCode::UndefinedField),
+        1,
+        "{diagnostics:#?}"
+    );
+    assert_eq!(
+        count_by_code(&diagnostics, DiagnosticCode::InjectField),
+        0,
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn imported_missing_fields_report_once_per_key() {
+    for read in ["m.absent", "m['absent']"] {
+        let diagnostics = check_export(
+            "---@class Exported\nlocal M = {}\nreturn M",
+            &format!("local m = require 'mod'\nreturn {read}"),
+        );
+        assert_eq!(
+            count_by_code(&diagnostics, DiagnosticCode::UndefinedField),
+            1,
+            "{read}: {diagnostics:#?}"
+        );
+    }
 }
 
 /// `return { a = 1 }`: imported tables may only read/write fields on the export surface.
@@ -121,7 +168,7 @@ fn test_local_table_not_limited() {
 }
 
 #[test]
-fn test_export_declared_class_fields() {
+fn imported_class_exports_validate_missing_fields() {
     let mut ws = VirtualWorkspace::new();
     ws.def_file(
         "framework.lua",
@@ -234,4 +281,42 @@ fn test_export_annotation_preserves_runtime_surface() {
         DiagnosticCode::UndefinedField,
         r#"local value = require("loose").existing"#,
     ));
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::UndefinedField,
+        r#"return require("loose").dynamic"#
+    ));
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::InjectField,
+        r#"require("loose").newField = true"#
+    ));
+}
+
+#[test]
+fn open_annotations_allow_new_export_fields() {
+    for annotation in ["table", "unknown", "table<string, integer>"] {
+        let module = format!("---@type {annotation}\nlocal M = {{}}\nreturn M");
+        let result = check_export(&module, "local m = require 'mod'\nm.newField = 1");
+        assert_eq!(
+            count_by_code(&result, DiagnosticCode::InjectField),
+            0,
+            "{annotation}: {result:?}"
+        );
+    }
+}
+
+#[test]
+fn factory_exports_use_the_declared_class() {
+    let module = "---@class Exported\n---@field name string\nlocal Foo = {}\n---@return Exported\nlocal function make() return Foo end\nreturn make()";
+    let result = check_export(module, "local m = require 'mod'\nreturn m.name, m.absent");
+    assert_eq!(
+        count_by_code(&result, DiagnosticCode::UndefinedField),
+        1,
+        "{result:?}"
+    );
+    let written = check_export(module, "local m = require 'mod'\nm.extra = 1");
+    assert_eq!(
+        count_by_code(&written, DiagnosticCode::InjectField),
+        1,
+        "{written:?}"
+    );
 }

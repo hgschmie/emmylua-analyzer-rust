@@ -277,10 +277,10 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                 Step::Done(current)
             }
             LuaExpr::LiteralExpr(_) => Step::Done(current),
-            LuaExpr::ParenExpr(paren_expr) => match paren_expr.get_expr() {
-                Some(inner) => Step::Task(Task::Expr(inner, current)),
-                None => Step::Done(current),
-            },
+            LuaExpr::ParenExpr(paren_expr) => {
+                // Visit the enclosed expression and its trailing assertion in source order.
+                self.spawn_children(LuaAst::LuaParenExpr(paren_expr), current)
+            }
             LuaExpr::ClosureExpr(closure_expr) => {
                 let entry = self.binder.create_node(FlowNodeKind::ClosureEntry(
                     LuaClosureId::from_closure(closure_expr.clone()),
@@ -672,15 +672,15 @@ impl<'a, 'b> BindEngine<'a, 'b> {
     }
 
     fn evaluate_while_stat(&mut self, while_stat: LuaWhileStat, current: FlowId) -> Step {
+        let Some(condition_expr) = while_stat.get_condition_expr() else {
+            return Step::Done(current);
+        };
         let pre_while_label = self.binder.create_loop_label(while_stat.get_syntax_id());
-        let after_while_label = self.binder.create_node(FlowNodeKind::LoopLabel);
+        let after_while_label = self.binder.create_branch_label();
         let pre_block_label = self.binder.create_branch_label();
         // Loop-entry transfer uses the first antecedent as the pre-loop seed;
         // register it before binding the body can append continue/back edges.
         self.binder.add_antecedent(pre_while_label, current);
-        let Some(condition_expr) = while_stat.get_condition_expr() else {
-            return Step::Done(current);
-        };
 
         let old_loop_label = self.binder.loop_label;
         let old_break_target_label = self.binder.break_target_label;
@@ -821,7 +821,7 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                 static_number_value(stop_expr),
                 static_number_value(step_expr),
             ) {
-                (Some(start), Some(stop), Some(step)) => {
+                (Some(start), Some(stop), Some(step)) if step != 0.0 => {
                     Some((step > 0.0 && start <= stop) || (step < 0.0 && start >= stop))
                 }
                 _ => None,

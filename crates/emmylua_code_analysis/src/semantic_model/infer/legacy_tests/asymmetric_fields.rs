@@ -5,12 +5,14 @@ use crate::{DiagnosticCode, LuaType, VirtualWorkspace};
 fn integrated_callback_assignment_keeps_same_file_directional_contract() {
     use emmylua_parser::{LuaAstNode, LuaIndexExpr};
     let source = r#"
+---@param value any
+local function initial(value) end
 ---@class Holder
 ---@field (read) callback fun(value: boolean)
 ---@field (write) callback fun(value: string)
 ---@field (write) callback fun(value: number)
 ---@type Holder
-holder = {}
+holder = { callback = initial }
 holder.callback = function(value)
     callback_value = value
 end
@@ -259,6 +261,39 @@ fn asymmetric_fields_reindex_and_incomplete_directions() {
 }
 
 #[test]
+fn asymmetric_fields_unresolved_setter_does_not_use_getter() {
+    use crate::semantic_model::cache::CacheEntry;
+    use emmylua_parser::{LuaAstNode, LuaExpr, LuaIndexExpr};
+
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("---@class Box\n---@field (read) value boolean\n---@field (write) value string\n---@param box Box\nlocal function set(box) box.value = 'ok' end");
+    let model = ws.analysis.semantic_model(file);
+    let index = model
+        .chunk()
+        .unwrap()
+        .descendants::<LuaIndexExpr>()
+        .next()
+        .unwrap();
+    let writer = model
+        .file_facts()
+        .unwrap()
+        .members
+        .iter()
+        .find(|field| field.access == crate::MemberAccess::Write)
+        .unwrap();
+    // A recursive query can read the getter while the setter is still being inferred.
+    model
+        .cache
+        .borrow_mut()
+        .member_type
+        .insert((file, writer.id.clone()), CacheEntry::InProgress);
+    assert_eq!(
+        model.assignment_target_type(&LuaExpr::IndexExpr(index)),
+        LuaType::Unknown
+    );
+}
+
+#[test]
 fn asymmetric_fields_contextual_table_assignment() {
     let mut ws = VirtualWorkspace::new();
     ws.def(
@@ -313,6 +348,17 @@ keyed = {}
             &format!("---@class Bad\n{fields}")
         ));
     }
+}
+
+#[test]
+fn asymmetric_fields_calls_use_getter_signature() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def(
+        "---@class Callbacks\n---@field (read) callback fun(n: number): boolean\n---@field (write) callback fun(n: string)\n---@type Callbacks\nholder = {}",
+    );
+    assert!(ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, "holder.callback(1)"));
+    assert!(!ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, "holder.callback('test')"));
+    assert_eq!(ws.expr_ty("holder.callback(1)"), LuaType::Boolean);
 }
 
 #[test]
@@ -472,13 +518,25 @@ fn asymmetric_fields_review_repeated_callback_writer_generics() {
         ---@field (write) callback fun(value: table)
         ---@type Holder<number>
         holder = {}
+        ---@class OrdinaryHolder<T>
+        ---@field callback fun(value: boolean)
+        ---@type OrdinaryHolder<number>
+        ordinary_holder = {}
         holder.callback = function(value)
             callback_value = value
         end
     "#,
     );
     assert_eq!(ws.expr_ty("callback_value"), LuaType::Number);
-    assert_eq!(ws.expr_ty("holder.callback"), ws.ty("fun(value: boolean)"));
+    let actual = ws.expr_ty("holder.callback");
+    assert_eq!(actual, ws.expr_ty("ordinary_holder.callback"));
+    let LuaType::DocFunction(getter) = actual else {
+        panic!("expected a callable getter");
+    };
+    assert_eq!(
+        getter.get_params(),
+        &[("value".into(), Some(LuaType::Boolean))]
+    );
 }
 
 #[test]
@@ -491,8 +549,11 @@ fn asymmetric_fields_review_member_collection_preserves_real_overloads() {
         let file = ws.def_file("pair.lua", &format!("---@class Pair\n{fields}"));
         let model = ws.analysis.semantic_model(file);
         let ty = LuaType::Ref(crate::LuaTypeDeclId::global("Pair"));
-        let infos =
-            model.member_infos_with_key_all(&ty, &crate::LuaMemberKey::Name("value".into()));
+        let infos = model.member_infos_with_key_mode(
+            &ty,
+            &crate::LuaMemberKey::Name("value".into()),
+            crate::MemberCollectMode::Effective,
+        );
         assert_eq!(infos.len(), 1, "{fields}: {infos:?}");
         assert_eq!(infos[0].typ, LuaType::Number);
     }
@@ -503,8 +564,11 @@ fn asymmetric_fields_review_member_collection_preserves_real_overloads() {
         ));
         let model = ws.analysis.semantic_model(file);
         let ty = LuaType::Ref(crate::LuaTypeDeclId::global("Overloads"));
-        let infos =
-            model.member_infos_with_key_all(&ty, &crate::LuaMemberKey::Name("callback".into()));
+        let infos = model.member_infos_with_key_mode(
+            &ty,
+            &crate::LuaMemberKey::Name("callback".into()),
+            crate::MemberCollectMode::Effective,
+        );
         assert_eq!(infos.len(), 2, "{flag}: {infos:?}");
         assert_ne!(infos[0].id, infos[1].id);
     }
@@ -681,6 +745,36 @@ end
     assert_eq!(ws.expr_ty("matches_nil"), ws.ty("Absent|Maybe"));
     assert_eq!(ws.expr_ty("may_have_number"), ws.ty("Maybe"));
     assert_eq!(ws.expr_ty("number_value"), LuaType::Number);
+}
+
+#[test]
+fn asymmetric_fields_aliased_nullable_discriminants() {
+    for getter in ["MaybeNumber", "Optional<number>"] {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(&format!(
+            r#"
+---@alias AbsentValue nil
+---@alias MaybeNumber number?
+---@alias Optional<T> T|nil
+---@class Absent
+---@field (read) value AbsentValue
+---@field (write) value string
+---@class Maybe
+---@field (read) value {getter}
+---@field (write) value string
+---@param a Absent|Maybe
+local function check(a)
+    if a.value == nil then
+        matches_nil = a
+    else
+        has_number = a
+    end
+end
+"#
+        ));
+        assert_eq!(ws.expr_ty("matches_nil"), ws.ty("Absent|Maybe"), "{getter}");
+        assert_eq!(ws.expr_ty("has_number"), ws.ty("Maybe"), "{getter}");
+    }
 }
 
 #[test]

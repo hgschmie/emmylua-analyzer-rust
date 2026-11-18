@@ -402,10 +402,6 @@ fn signature(
 }
 
 impl SemanticModel<'_> {
-    pub(crate) fn dictionary_field_type(&self, owner: &LuaType, key: &LuaType) -> Option<LuaType> {
-        lookup(self, owner, key, false)
-    }
-
     pub fn dictionary_index_type(&self, index: &LuaIndexExpr, nullable: bool) -> Option<LuaType> {
         let mode = if nullable {
             LookupMode::Read

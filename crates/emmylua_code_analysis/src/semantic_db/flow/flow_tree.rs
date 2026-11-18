@@ -51,11 +51,12 @@ pub struct FlowTree {
     has_complex_control: bool,
     /// Per node: whether a loop / label / break / continue node can reach it by
     /// following antecedent edges (computed by forward propagation from those
-    /// nodes). Unmarked nodes can memoize trace states even when another function
-    /// in the same file has loops.
+    /// nodes).
     loop_reachable: Vec<bool>,
-    /// Per node: a real cycle is reachable by following its antecedents.
-    cycle_reachable: Vec<bool>,
+    /// Per node: whether it lies on a cycle of the flow graph (a backward `goto`).
+    /// A backward walk from any other node never returns to a node it came from,
+    /// so unmarked nodes can memoize trace states even inside or after a loop.
+    in_cycle: Vec<bool>,
 }
 
 impl FlowTree {
@@ -88,19 +89,23 @@ impl FlowTree {
                     | FlowNodeKind::Continue
             )
         });
-        let loop_reachable = if has_complex_control {
-            Self::compute_reachable(&flow_nodes, &multiple_antecedents, |node| {
-                matches!(
-                    node.kind,
-                    FlowNodeKind::LoopLabel
-                        | FlowNodeKind::NamedLabel(_)
-                        | FlowNodeKind::ForIStat(_)
-                        | FlowNodeKind::Break
-                        | FlowNodeKind::Continue
-                )
-            })
+        let (loop_reachable, in_cycle) = if has_complex_control {
+            let successors = Self::successors(&flow_nodes, &multiple_antecedents);
+            (
+                Self::compute_reachable(&flow_nodes, &successors, |node| {
+                    matches!(
+                        node.kind,
+                        FlowNodeKind::LoopLabel
+                            | FlowNodeKind::NamedLabel(_)
+                            | FlowNodeKind::ForIStat(_)
+                            | FlowNodeKind::Break
+                            | FlowNodeKind::Continue
+                    )
+                }),
+                Self::compute_in_cycle(&successors),
+            )
         } else {
-            vec![false; flow_nodes.len()]
+            (vec![false; flow_nodes.len()], vec![false; flow_nodes.len()])
         };
         for node in &flow_nodes {
             let flow_id = node.id;
@@ -173,18 +178,20 @@ impl FlowTree {
         for (range, flow_id) in &binding_ranges {
             binding_starts.entry(range.start()).or_insert(*flow_id);
         }
-        let cycle_reachable = cycle_reachable_nodes(&flow_nodes, &multiple_antecedents);
         let unpositioned_branch_reachable = if unpositioned_branch {
-            Self::compute_reachable(&flow_nodes, &multiple_antecedents, |node| {
-                matches!(node.antecedent, Some(FlowAntecedent::Multiple(_)))
-                    && flow_node_position(&node.kind).is_none()
-            })
+            Self::compute_reachable(
+                &flow_nodes,
+                &Self::successors(&flow_nodes, &multiple_antecedents),
+                |node| {
+                    matches!(node.antecedent, Some(FlowAntecedent::Multiple(_)))
+                        && flow_node_position(&node.kind).is_none()
+                },
+            )
         } else {
             vec![false; flow_nodes.len()]
         };
 
         Self {
-            cycle_reachable,
             decl_bind_expr_ref,
             decl_multi_return_ref,
             flow_nodes,
@@ -207,20 +214,14 @@ impl FlowTree {
             unpositioned_branch_reachable,
             has_complex_control,
             loop_reachable,
+            in_cycle,
         }
     }
 
-    /// Propagate selected entry nodes along successor edges, visiting each once.
-    fn compute_reachable(
-        flow_nodes: &[FlowNode],
-        multiple_antecedents: &[Vec<FlowId>],
-        is_entry: impl Fn(&FlowNode) -> bool,
-    ) -> Vec<bool> {
-        let mut reachable = vec![false; flow_nodes.len()];
+    /// Successor edges of every node, the reverse of its antecedent edges.
+    fn successors(flow_nodes: &[FlowNode], multiple_antecedents: &[Vec<FlowId>]) -> Vec<Vec<u32>> {
         let mut successors: Vec<Vec<u32>> = vec![Vec::new(); flow_nodes.len()];
-        let mut queue = VecDeque::new();
         for node in flow_nodes {
-            let id = node.id.0;
             let antecedents: &[FlowId] = match &node.antecedent {
                 Some(FlowAntecedent::Single(prev)) => std::slice::from_ref(prev),
                 Some(FlowAntecedent::Multiple(multi_id)) => multiple_antecedents
@@ -236,9 +237,25 @@ impl FlowTree {
                     prev.0
                 );
                 if let Some(list) = successors.get_mut(prev.0 as usize) {
-                    list.push(id);
+                    list.push(node.id.0);
                 }
             }
+        }
+        successors
+    }
+
+    /// Marks every node that a loop / label / break / continue node can reach by
+    /// following antecedent edges. Computed by propagating forward from those nodes
+    /// along successor edges, so each node is visited once.
+    fn compute_reachable(
+        flow_nodes: &[FlowNode],
+        successors: &[Vec<u32>],
+        is_entry: impl Fn(&FlowNode) -> bool,
+    ) -> Vec<bool> {
+        let mut reachable = vec![false; flow_nodes.len()];
+        let mut queue = VecDeque::new();
+        for node in flow_nodes {
+            let id = node.id.0;
             if is_entry(node)
                 && let Some(slot) = reachable.get_mut(id as usize)
                 && !*slot
@@ -261,6 +278,64 @@ impl FlowTree {
             }
         }
         reachable
+    }
+
+    /// Marks the nodes of every strongly connected component that contains a cycle.
+    /// Iterative Tarjan, so long flow chains do not grow the native stack.
+    fn compute_in_cycle(successors: &[Vec<u32>]) -> Vec<bool> {
+        const UNVISITED: usize = usize::MAX;
+        let len = successors.len();
+        let mut index = vec![UNVISITED; len];
+        let mut low_link = vec![0; len];
+        let mut on_stack = vec![false; len];
+        let mut in_cycle = vec![false; len];
+        let mut component = Vec::new();
+        let mut next_index = 0;
+        for root in 0..len {
+            if index[root] != UNVISITED {
+                continue;
+            }
+            index[root] = next_index;
+            low_link[root] = next_index;
+            next_index += 1;
+            component.push(root);
+            on_stack[root] = true;
+            // (node, position of the next successor edge to follow)
+            let mut dfs = vec![(root, 0)];
+            while let Some((node, edge)) = dfs.last_mut() {
+                let node = *node;
+                if let Some(&next) = successors[node].get(*edge) {
+                    *edge += 1;
+                    let next = next as usize;
+                    if index[next] == UNVISITED {
+                        index[next] = next_index;
+                        low_link[next] = next_index;
+                        next_index += 1;
+                        component.push(next);
+                        on_stack[next] = true;
+                        dfs.push((next, 0));
+                    } else if on_stack[next] {
+                        low_link[node] = low_link[node].min(index[next]);
+                    }
+                    continue;
+                }
+                dfs.pop();
+                if let Some(&(parent, _)) = dfs.last() {
+                    low_link[parent] = low_link[parent].min(low_link[node]);
+                }
+                if low_link[node] == index[node]
+                    && let Some(start) = component.iter().rposition(|&member| member == node)
+                {
+                    let cyclic =
+                        component.len() - start > 1 || successors[node].contains(&(node as u32));
+                    for member in component.drain(start..) {
+                        on_stack[member] = false;
+                        in_cycle[member] = cyclic;
+                    }
+                }
+            }
+        }
+        in_cycle
     }
 
     /// Returns [body completion, loop entry]; the entry carries explicit continue paths.
@@ -491,15 +566,7 @@ impl FlowTree {
         self.member_assignments.contains_key(member)
     }
 
-    /// Whether this node can reach a real back edge through its antecedents.
-    pub fn is_cycle_reachable(&self, flow_id: FlowId) -> bool {
-        self.cycle_reachable
-            .get(flow_id.0 as usize)
-            .copied()
-            .unwrap_or(true)
-    }
-
-    /// Whether syntactic loop/label control disables position-based shortcuts.
+    /// Whether loops / labels / break / continue may create non-monotonic flow edges.
     pub fn has_complex_control(&self) -> bool {
         self.has_complex_control
     }
@@ -509,6 +576,15 @@ impl FlowTree {
     pub fn is_loop_reachable(&self, flow_id: FlowId) -> bool {
         // An unknown node stays on the conservative, uncached path.
         self.loop_reachable
+            .get(flow_id.0 as usize)
+            .copied()
+            .unwrap_or(true)
+    }
+
+    /// Whether `flow_id` lies on a cycle of the flow graph.
+    pub fn is_in_cycle(&self, flow_id: FlowId) -> bool {
+        // An unknown node stays on the conservative, uncached path.
+        self.in_cycle
             .get(flow_id.0 as usize)
             .copied()
             .unwrap_or(true)
@@ -785,40 +861,6 @@ impl FlowTree {
     }
 }
 
-/// Iterative topological elimination keeps cycle detection linear and stack-safe.
-/// Loop summaries can be DAGs; goto/continue back edges must keep uncached tracing.
-fn cycle_reachable_nodes(nodes: &[FlowNode], multiple: &[Vec<FlowId>]) -> Vec<bool> {
-    let mut remaining = vec![0usize; nodes.len()];
-    let mut successors = vec![Vec::new(); nodes.len()];
-    for node in nodes {
-        let predecessors: &[FlowId] = match &node.antecedent {
-            None => &[],
-            Some(FlowAntecedent::Single(id)) => std::slice::from_ref(id),
-            Some(FlowAntecedent::Multiple(id)) => &multiple[*id as usize],
-        };
-        remaining[node.id.0 as usize] = predecessors.len();
-        for previous in predecessors {
-            successors[previous.0 as usize].push(node.id.0 as usize);
-        }
-    }
-    let mut ready: Vec<_> = remaining
-        .iter()
-        .enumerate()
-        .filter_map(|(index, count)| (*count == 0).then_some(index))
-        .collect();
-    while let Some(index) = ready.pop() {
-        for &next in &successors[index] {
-            remaining[next] -= 1;
-            if remaining[next] == 0 {
-                ready.push(next);
-            }
-        }
-    }
-    // Only cycles and their forward descendants survive elimination. A cycle
-    // in another function must not disable caching of an acyclic loop summary.
-    remaining.into_iter().map(|count| count != 0).collect()
-}
-
 /// Best-effort AST position for a flow node kind; `None` for label/terminal nodes.
 fn flow_node_position(kind: &FlowNodeKind) -> Option<TextSize> {
     match kind {
@@ -906,59 +948,19 @@ mod cycle_tests {
             },
         ];
         let multiple = vec![vec![FlowId(1), FlowId(2)]];
-        assert_eq!(cycle_reachable_nodes(&nodes, &multiple), vec![false; 4]);
+        assert_eq!(
+            FlowTree::compute_in_cycle(&FlowTree::successors(&nodes, &multiple)),
+            vec![false; 4]
+        );
         nodes[1].antecedent = Some(FlowAntecedent::Single(FlowId(3)));
         assert_eq!(
-            cycle_reachable_nodes(&nodes, &multiple),
+            FlowTree::compute_in_cycle(&FlowTree::successors(&nodes, &multiple)),
             vec![false, true, false, true]
         );
         nodes[1].antecedent = Some(FlowAntecedent::Single(FlowId(1)));
         assert_eq!(
-            cycle_reachable_nodes(&nodes, &multiple),
-            vec![false, true, false, true]
+            FlowTree::compute_in_cycle(&FlowTree::successors(&nodes, &multiple)),
+            vec![false, true, false, false]
         );
-    }
-}
-
-#[cfg(test)]
-mod member_cache_cycle_tests {
-    use super::*;
-
-    // Preserve the original global-cycle fixture against the shared per-node classifier.
-    fn contains_cycle(nodes: &[FlowNode], multiple: &[Vec<FlowId>]) -> bool {
-        cycle_reachable_nodes(nodes, multiple)
-            .into_iter()
-            .any(|reachable| reachable)
-    }
-    #[test]
-    fn distinguishes_shared_predecessors_from_back_edges() {
-        let mut nodes = vec![
-            FlowNode {
-                id: FlowId(0),
-                kind: FlowNodeKind::Start,
-                antecedent: None,
-            },
-            FlowNode {
-                id: FlowId(1),
-                kind: FlowNodeKind::LoopLabel,
-                antecedent: Some(FlowAntecedent::Single(FlowId(0))),
-            },
-            FlowNode {
-                id: FlowId(2),
-                kind: FlowNodeKind::BranchLabel,
-                antecedent: Some(FlowAntecedent::Single(FlowId(0))),
-            },
-            FlowNode {
-                id: FlowId(3),
-                kind: FlowNodeKind::BranchLabel,
-                antecedent: Some(FlowAntecedent::Multiple(0)),
-            },
-        ];
-        let multiple = vec![vec![FlowId(1), FlowId(2)]];
-        assert!(!contains_cycle(&nodes, &multiple));
-        nodes[1].antecedent = Some(FlowAntecedent::Single(FlowId(3)));
-        assert!(contains_cycle(&nodes, &multiple));
-        nodes[1].antecedent = Some(FlowAntecedent::Single(FlowId(1)));
-        assert!(contains_cycle(&nodes, &multiple));
     }
 }

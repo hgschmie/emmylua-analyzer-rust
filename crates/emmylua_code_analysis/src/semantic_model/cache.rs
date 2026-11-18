@@ -49,6 +49,29 @@ pub(super) struct MutatorKinds {
 pub(crate) enum BuiltinKey {
     Expression(LuaSyntaxId),
     Flow(SemanticId, FlowId),
+    /// All writes, seeded by the point value or the declaration initializer.
+    Declaration(SemanticId, Option<FlowId>),
+    /// Standard global value before any workspace writes.
+    InitialGlobal(SmolStr),
+}
+
+impl super::SemanticModel<'_> {
+    /// An unfinished semantic dependency cannot prove either outcome.
+    pub(crate) fn require_complete<T>(
+        &self,
+        query: impl FnOnce() -> T,
+    ) -> Result<T, super::type_check::TypeCheckFailReason> {
+        let revision = self.cache.borrow().revision();
+        let result = query();
+        let cache = self.cache.borrow();
+        if cache.evaluation_exhausted {
+            Err(super::type_check::TypeCheckFailReason::TooComplex)
+        } else if cache.is_complete(revision) {
+            Ok(result)
+        } else {
+            Err(super::type_check::TypeCheckFailReason::Unresolved)
+        }
+    }
 }
 
 /// Keep provisional memo entries while dependent queries still need them.
@@ -147,75 +170,6 @@ impl Drop for QueryCacheScope<'_> {
     }
 }
 
-/// Remove an unfinished constructor entry even when its callback unwinds.
-pub(super) struct ConstructorQueryGuard<'a> {
-    cache: &'a super::LazyCache,
-    key: (FileId, LuaSyntaxId, LuaType),
-}
-
-impl<'a> ConstructorQueryGuard<'a> {
-    pub(super) fn new(cache: &'a super::LazyCache, key: (FileId, LuaSyntaxId, LuaType)) -> Self {
-        cache
-            .borrow_mut()
-            .constructor_diagnostics
-            .insert(key.clone(), CacheEntry::InProgress);
-        Self { cache, key }
-    }
-}
-
-impl Drop for ConstructorQueryGuard<'_> {
-    fn drop(&mut self) {
-        let mut cache = self.cache.borrow_mut();
-        if matches!(
-            cache.constructor_diagnostics.get(&self.key),
-            Some(CacheEntry::InProgress)
-        ) {
-            cache.constructor_diagnostics.remove(&self.key);
-            cache.mark_incomplete();
-        }
-    }
-}
-
-/// An active constructor query may be suspended while a child query completes.
-/// Drop the active-key guard before the outer query scope, including during unwind.
-pub(crate) struct ConstructorQuery<'a> {
-    active: ConstructorQueryGuard<'a>,
-    _scope: QueryCacheScope<'a>,
-    revision: u64,
-}
-
-impl<'a> ConstructorQuery<'a> {
-    pub(super) fn new(cache: &'a super::LazyCache, key: (FileId, LuaSyntaxId, LuaType)) -> Self {
-        let scope = QueryCacheScope::new(cache);
-        let revision = cache.borrow().revision();
-        Self {
-            active: ConstructorQueryGuard::new(cache, key),
-            _scope: scope,
-            revision,
-        }
-    }
-
-    pub(crate) fn finish(
-        self,
-        result: Option<Vec<crate::check::checker::ConstructorDiagnostic>>,
-    ) -> Option<Vec<crate::check::checker::ConstructorDiagnostic>> {
-        let mut cache = self.active.cache.borrow_mut();
-        let Some(result) = result else {
-            cache.mark_incomplete();
-            cache.constructor_diagnostics.remove(&self.active.key);
-            return None;
-        };
-        if cache.is_complete(self.revision) {
-            cache
-                .constructor_diagnostics
-                .insert(self.active.key.clone(), CacheEntry::Ready(result.clone()));
-        } else {
-            cache.constructor_diagnostics.remove(&self.active.key);
-        }
-        Some(result)
-    }
-}
-
 #[derive(Debug, Clone)]
 pub(crate) enum CacheEntry<T> {
     InProgress,
@@ -281,12 +235,15 @@ pub(crate) struct OriginalSignatures {
     pub(super) signatures: Rc<Vec<LuaFunctionType>>,
 }
 
-/// The three declaration queries supported by the shared flow walk.
+/// Declaration queries supported by the shared flow walk.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum DeclTracePurpose {
     ReadValue,
-    /// Use the declaration type and casts, without assignments or branch guards.
-    AssignTarget,
+    /// Use this contract with guards and casts, without assignment types.
+    /// The seed is part of the key because globals can combine several declarations.
+    ReadContract(LuaType),
+    /// Use the supplied contract (or declaration type) and casts, without assignments or guards.
+    AssignTarget(Option<LuaType>),
     OriginalSignatures(OriginalSignatures),
 }
 
@@ -309,6 +266,7 @@ pub(crate) enum TraceSubject {
     Member {
         member: SemanticId,
         access: Option<LuaSyntaxId>,
+        ignore_guards: bool,
     },
 }
 
@@ -328,20 +286,8 @@ pub(crate) struct TypeDefCache {
     pub(crate) base_types: Option<Vec<LuaType>>,
 }
 
-/// Syntax-only cast positions and asserted expressions in one file view.
-#[derive(Default)]
-pub(crate) struct LocalCallableCasts {
-    pub(crate) first_cast: HashMap<SemanticId, TextSize>,
-    pub(crate) asserted_exprs: HashSet<LuaSyntaxId>,
-}
-
 #[derive(Default)]
 pub(crate) struct SemanticLocalCache {
-    /// Unfiltered constructor failures shared by all diagnostic passes in this model.
-    pub(crate) constructor_diagnostics: HashMap<
-        (FileId, LuaSyntaxId, LuaType),
-        CacheEntry<Vec<crate::check::checker::ConstructorDiagnostic>>,
-    >,
     /// Changes whenever a query reads an unfinished dependency. Most queries
     /// use this to decide whether a result can be cached. Type comparisons
     /// track completeness in their result, including discarded alternatives.
@@ -404,9 +350,6 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) return_cast:
         HashMap<(FileId, LuaSyntaxId), Option<(LuaExpr, LuaType, Option<LuaType>, bool)>>,
     pub(crate) callable_candidates: HashMap<(FileId, LuaSyntaxId), Vec<LuaFunctionType>>,
-    pub(crate) local_callable_casts: HashMap<FileId, Rc<LocalCallableCasts>>,
-    #[cfg(test)]
-    pub(crate) local_callable_cast_scans: usize,
     pub(crate) call_site: HashMap<(FileId, LuaSyntaxId), CallSiteAnalysis>,
     pub(crate) call_site_signatures:
         HashMap<(FileId, LuaSyntaxId), Vec<(LuaFunctionType, TplBindings)>>,

@@ -79,7 +79,13 @@ fn constructor_context_infos(
     let named_infos = || {
         member_key
             .as_ref()
-            .map(|key| model.member_infos_with_key_all(owner, key))
+            .map(|key| {
+                model.member_infos_with_key_mode(
+                    owner,
+                    key,
+                    emmylua_code_analysis::MemberCollectMode::AllDefinitions,
+                )
+            })
             .unwrap_or_default()
     };
     let expanded = model.expand_alias_for_hover(owner);
@@ -170,7 +176,7 @@ pub(crate) fn table_context_type_for_expr(
                 return Some(model.require_module_type(module_path));
             }
             if let Some(syntax) = member.doc_type_syntax {
-                return Some(model.doc_type_lua_rich_in(model.file_id(), syntax));
+                return Some(model.doc_type_lua(syntax));
             }
         }
         if let Some(parent) = field.get_parent::<LuaTableExpr>()

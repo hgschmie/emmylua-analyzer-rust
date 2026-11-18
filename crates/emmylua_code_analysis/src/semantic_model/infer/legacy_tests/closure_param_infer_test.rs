@@ -494,6 +494,27 @@ mod test {
     }
 
     #[test]
+    fn test_local_doc_type_closure_param() {
+        for annotation in ["Adder", "fun(x: number, y: string)"] {
+            let mut ws = VirtualWorkspace::new();
+            ws.def(&format!(
+                r#"
+                ---@alias Adder fun(x: number, y: string)
+
+                ---@type {annotation}
+                local add = function(x, y)
+                    ParamX = x
+                    ParamY = y
+                end
+                "#
+            ));
+
+            assert_eq!(ws.expr_ty("ParamX"), ws.ty("number"), "{annotation}");
+            assert_eq!(ws.expr_ty("ParamY"), ws.ty("string"), "{annotation}");
+        }
+    }
+
+    #[test]
     fn annotated_global_table_keeps_overloaded_callback_types() {
         let mut ws = VirtualWorkspace::new();
         ws.def_file(

@@ -6,6 +6,7 @@ use emmylua_code_analysis::{
 };
 use emmylua_parser::{LuaAstNode, LuaAstToken, LuaIndexExpr, LuaStringToken};
 use lsp_types::{CompletionItem, CompletionItemKind, CompletionItemLabelDetails, InsertTextFormat};
+use std::rc::Rc;
 
 use crate::handlers::hover::render::humanize;
 
@@ -14,7 +15,7 @@ use crate::handlers::completion::{
     completion_data::{CompletionData, CompletionDataType},
 };
 
-use super::{CompletionProvider, ProviderDecision};
+use super::{CompletionProvider, ProviderDecision, function_provider::resolve_function_type};
 
 pub struct MemberProvider;
 
@@ -128,6 +129,9 @@ fn complete_provider(builder: &mut CompletionBuilder) -> Option<()> {
     }
     if members.is_empty() {
         members = match &prefix_type {
+            LuaType::Ref(id) | LuaType::Def(id) => {
+                class_table_member_infos(&builder.semantic_model, id)
+            }
             LuaType::Generic(generic) => {
                 let from_type = generic_keyof_member_infos(&builder.semantic_model, generic);
                 if from_type.is_empty() {
@@ -164,7 +168,8 @@ fn complete_provider(builder: &mut CompletionBuilder) -> Option<()> {
 
     if completion_status == CompletionTriggerStatus::Colon {
         for member in members {
-            if member.typ.is_function() {
+            let non_nil_typ = remove_nil_from_callable_type(builder, &member.typ);
+            if non_nil_typ.as_ref().unwrap_or(&member.typ).is_function() {
                 // A filtered candidate must not stop enumeration.
                 let _ = add_member_completion(builder, &member, completion_status);
             }
@@ -403,8 +408,6 @@ fn associated_type_member_infos(
     else {
         return Vec::new();
     };
-    let mut out = Vec::new();
-    let mut seen_keys = Vec::new();
     let mut owners = vec![def.id.clone(), decl.clone()];
     owners.dedup();
     let mut super_stack = model.base_type_defs(&def.type_decl_id());
@@ -418,6 +421,39 @@ fn associated_type_member_infos(
         super_stack.extend(model.base_type_defs(&parent.type_decl_id()));
     }
     owners.dedup();
+    member_infos_of_owners(model, owners)
+}
+
+/// Members of the table a class annotates (`---@class iolib` above `io = {}`): they belong to
+/// that table rather than to the class, so `member_infos` of the class type does not list them.
+fn class_table_member_infos(model: &SemanticModel<'_>, type_id: &LuaTypeDeclId) -> Vec<MemberInfo> {
+    let Some(def) = model.type_def_of(type_id) else {
+        return Vec::new();
+    };
+    let Some(owner_syntax) = def.owner_syntax else {
+        return Vec::new();
+    };
+    let Some(facts) = model.file_facts_of(def.file_id) else {
+        return Vec::new();
+    };
+    let mut owners = Vec::new();
+    for decl in facts
+        .decls
+        .iter()
+        .filter(|decl| decl.owner_syntax == Some(owner_syntax))
+    {
+        owners.push(decl.id.clone());
+        // Runtime members of a global table are keyed by its name.
+        if decl.kind == DeclKind::Global {
+            owners.push(SemanticId::name(decl.name.clone()));
+        }
+    }
+    member_infos_of_owners(model, owners)
+}
+
+fn member_infos_of_owners(model: &SemanticModel<'_>, owners: Vec<SemanticId>) -> Vec<MemberInfo> {
+    let mut out = Vec::new();
+    let mut seen_keys = Vec::new();
     for owner in owners {
         for member_ref in model.members_of_owner(&owner).iter() {
             let Some(member_facts) = model.file_facts_of(member_ref.file_id) else {
@@ -513,6 +549,30 @@ fn index_alias_name(builder: &CompletionBuilder, member_file: Option<FileId>) ->
     Some(inner[..end].to_string())
 }
 
+fn remove_nil_from_callable_type(builder: &CompletionBuilder, typ: &LuaType) -> Option<LuaType> {
+    let LuaType::Union(union) = typ else {
+        return None;
+    };
+    let components = union.into_vec();
+    if !components.iter().any(|component| component.is_nil()) {
+        return None;
+    }
+    let mut callables = Vec::new();
+    for component in components.iter().filter(|component| !component.is_nil()) {
+        if component.is_function() {
+            callables.push(component.clone());
+            continue;
+        }
+        let mut visited = Vec::new();
+        let fun = resolve_function_type(builder, component, &mut visited)?;
+        callables.push(LuaType::DocFunction(Rc::new(fun)));
+    }
+    if callables.is_empty() {
+        return None;
+    }
+    Some(LuaType::from_vec(callables))
+}
+
 /// Adds completion items for one eligible member.
 /// `None` means this candidate was filtered out, not a provider-level failure.
 fn add_member_completion(
@@ -559,7 +619,9 @@ fn add_member_completion(
         return None;
     }
 
-    let typ = &info.typ;
+    let raw_typ = &info.typ;
+    let non_nil_typ = remove_nil_from_callable_type(builder, raw_typ);
+    let typ = non_nil_typ.as_ref().unwrap_or(raw_typ);
     let skip_self = info.is_method
         || matches!(typ, LuaType::DocFunction(func) if func.is_colon_define())
         || matches!(typ, LuaType::DocFunction(func)

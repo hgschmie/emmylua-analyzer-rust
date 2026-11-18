@@ -24,8 +24,6 @@ pub(crate) mod overload;
 pub(crate) mod unify;
 pub(crate) mod vm;
 
-pub use vm::infer_doc_func;
-
 use std::rc::Rc;
 
 use emmylua_parser::{LuaAstNode, LuaCallExpr, LuaSyntaxId};
@@ -72,8 +70,7 @@ pub(crate) fn closure_return_lua(model: &SemanticModel, closure_syntax: LuaSynta
     vm.closure_return_type_with_env(closure_syntax)
 }
 
-/// Select the same callable candidates as expression inference, retaining
-/// their generic bindings for call-site presentation.
+/// Select a direct-name call signature and retain its bindings for call-site presentation.
 pub(crate) fn infer_call_signature(
     model: &SemanticModel,
     call_syntax: LuaSyntaxId,
@@ -86,6 +83,12 @@ pub(crate) fn infer_call_signature(
     };
     let owner = model.resolve_name(name.get_position())?;
     let mut candidates = model.callable_candidates_for_expr(&callee);
+    if candidates
+        .iter()
+        .all(|candidate| candidate.get_generic_params().is_empty())
+    {
+        return None;
+    }
     // Preserve explicit-overload precedence among the signatures still reaching
     // this call. The shared expression query excludes replaced/removed signatures.
     if candidates.len() > 1
@@ -109,8 +112,7 @@ pub(crate) fn infer_call_signature(
                 .then(|| expr.get_syntax_id()),
         })
         .collect::<Vec<_>>();
-    let receiver = analysis.colon_call.then_some(&analysis.receiver_ty);
-    overload::select_callable(model, &candidates, &args, analysis.colon_call, receiver)
+    overload::select_callable(model, &candidates, &args, false, None)
 }
 
 /// Find declared overloads for ordering only; missing declaration metadata keeps

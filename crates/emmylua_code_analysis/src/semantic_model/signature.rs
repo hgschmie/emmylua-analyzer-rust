@@ -1,6 +1,6 @@
 use crate::semantic_model::type_check::TypeCheckFailReason;
-use crate::{IndexInfo, MemberList, OperatorDef};
-use emmylua_parser::LuaIndexKey;
+use crate::{IndexInfo, OperatorDef};
+use emmylua_parser::{LuaIndexKey, LuaTableExpr};
 
 use super::prelude::*;
 
@@ -62,33 +62,6 @@ fn widen_inferred_return(ty: LuaType) -> LuaType {
 }
 
 impl<'db> SemanticModel<'db> {
-    /// Members whose owner is a `SemanticId` (cross-file).
-    pub fn members_of_owner(&self, owner: &SemanticId) -> MemberList {
-        if let Some(cached) = self.cache.borrow().members_of_owner.get(owner) {
-            return cached.clone();
-        }
-        let result = self.analysis().members_of_owner(owner.clone());
-        self.cache
-            .borrow_mut()
-            .members_of_owner
-            .insert(owner.clone(), result.clone());
-        result
-    }
-    /// Members of an owner with a specific name.
-    pub fn members_of_owner_named(&self, owner: &SemanticId, name: &str) -> MemberList {
-        let key = (owner.clone(), SmolStr::new(name));
-        if let Some(cached) = self.cache.borrow().members_of_owner_named.get(&key) {
-            return cached.clone();
-        }
-        let result = self
-            .analysis()
-            .members_of_owner_named(owner.clone(), SmolStr::new(name));
-        self.cache
-            .borrow_mut()
-            .members_of_owner_named
-            .insert(key, result.clone());
-        result
-    }
     /// Constructor attributes for a type definition (`---@[constructor("init")]` from the `meta("Class")` factory).
     pub fn constructor_attribute_of_type(
         &self,
@@ -116,7 +89,7 @@ impl<'db> SemanticModel<'db> {
                 .as_ref()
             && docs.returns.len() == 1
         {
-            let rich = self.doc_type_lua_rich(docs.returns[0]);
+            let rich = self.project_doc_type(self.file_id(), docs.returns[0], &[]);
             if !matches!(rich, LuaType::Unknown) {
                 ty = rich;
             }
@@ -192,9 +165,6 @@ impl<'db> SemanticModel<'db> {
     }
     // -- Type / member association --
 
-    pub fn member_keys_of_owner(&self, owner: &SemanticId) -> Vec<SmolStr> {
-        self.analysis().member_keys_of_owner(owner.clone())
-    }
     pub fn resolve_owner(&self, owner: &SemanticId) -> Option<SemanticId> {
         self.analysis().resolve_owner(owner.clone())
     }
@@ -413,7 +383,7 @@ impl<'db> SemanticModel<'db> {
         if let Some(docs) = signature.docs.as_ref()
             && docs.returns.len() == 1
         {
-            let rich = self.doc_type_lua_rich_in(file_id, docs.returns[0]);
+            let rich = self.project_doc_type(file_id, docs.returns[0], &[]);
             if !matches!(rich, LuaType::Unknown)
                 && rich.any_type(|ty| matches!(ty, LuaType::Conditional(_)))
             {
@@ -425,7 +395,7 @@ impl<'db> SemanticModel<'db> {
             && let Some(docs) = signature.docs.as_ref()
             && docs.returns.len() == 1
         {
-            let rich = self.doc_type_lua_rich_in(file_id, docs.returns[0]);
+            let rich = self.project_doc_type(file_id, docs.returns[0], &[]);
             if !matches!(rich, LuaType::Unknown) {
                 ret = rich;
             }
@@ -446,7 +416,7 @@ impl<'db> SemanticModel<'db> {
             .map(|syntax| {
                 (
                     String::new(),
-                    Some(self.doc_type_lua_rich_in(file_id, *syntax)),
+                    Some(self.project_doc_type(file_id, *syntax, &[])),
                 )
             })
             .collect::<Vec<_>>();
@@ -458,7 +428,7 @@ impl<'db> SemanticModel<'db> {
             false,
             is_variadic,
             params,
-            self.doc_type_lua_rich_in(file_id, op.returns),
+            self.project_doc_type(file_id, op.returns, &[]),
             None,
         )
     }
@@ -571,7 +541,7 @@ impl<'db> SemanticModel<'db> {
                     .iter()
                     .find(|(param_name, _)| param_name == name)
             {
-                let rich = self.doc_type_lua_rich(*syntax);
+                let rich = self.project_doc_type(self.file_id(), *syntax, &[]);
                 if !matches!(rich, LuaType::Unknown) {
                     ty = rich;
                 }
@@ -589,8 +559,8 @@ impl<'db> SemanticModel<'db> {
             ty = type_eval::expand_alias_generic(self, &ty);
             // Do not evaluate conditional types here: before function generics are substituted, `T extends ...` would incorrectly take the false branch.
             // Call sites/diagnostics should call `eval_conditionals` after bindings are substituted.
-            if nullable_params.iter().any(|n| n == name) && !ty.is_nullable() {
-                ty = LuaType::Union(Rc::new(LuaUnionType::from_vec(vec![ty, LuaType::Nil])));
+            if nullable_params.iter().any(|n| n == name) {
+                ty = LuaType::make_nullable(ty);
             }
             params.push((name.to_string(), Some(ty)));
         }
@@ -603,7 +573,7 @@ impl<'db> SemanticModel<'db> {
                 docs.overloads
                     .iter()
                     .filter_map(|syntax| {
-                        match self.doc_type_lua_rich_in(self.view.file_id(), *syntax) {
+                        match self.project_doc_type(self.view.file_id(), *syntax, &[]) {
                             LuaType::DocFunction(fun) => Some(fun.as_ref().clone()),
                             _ => None,
                         }
@@ -795,7 +765,12 @@ impl<'db> SemanticModel<'db> {
         };
         let mut ty = self.type_of_decl(&self.resolve_name(root.get_position())?)?;
         for key in keys.into_iter().rev() {
-            let infos = member::member_infos_with_key_all(self, &ty, &LuaMemberKey::Name(key));
+            let infos = member::member_infos_with_key_mode(
+                self,
+                &ty,
+                &LuaMemberKey::Name(key),
+                member::MemberCollectMode::Effective,
+            );
             ty = LuaType::from_vec(infos.into_iter().map(|info| info.typ).collect());
             if ty.is_unknown() {
                 return None;
@@ -832,11 +807,12 @@ impl<'db> SemanticModel<'db> {
         closure_syntax: LuaSyntaxId,
         param_index: usize,
     ) -> Option<LuaType> {
+        let signature = self.file_facts()?.signature_by_closure(closure_syntax)?;
         let expected_signatures = self.expected_member_signatures_for_closure(closure_syntax)?;
         // Project explicit docs in their function's generic scope before using
         // an available callback contract, including when the doc says unknown.
+        // Use the same first signature annotation as signature type projection.
         if !expected_signatures.is_empty()
-            && let Some(signature) = self.file_facts()?.signature_by_closure(closure_syntax)
             && let Some(name) = signature.param_names.get(param_index)
             && let Some(docs) = signature.docs.as_ref()
             && let Some((_, syntax)) = docs
@@ -845,8 +821,10 @@ impl<'db> SemanticModel<'db> {
                 .find(|(param_name, _)| param_name == name)
         {
             let generics = self.contextual_signature_generics(self.file_id(), signature);
-            let ty =
-                infer::vm::bind_signature_generics(&self.doc_type_lua_rich(*syntax), &generics);
+            let ty = infer::vm::bind_signature_generics(
+                &self.project_doc_type(self.file_id(), *syntax, &[]),
+                &generics,
+            );
             return Some(if docs.nullable_params.contains(name) {
                 LuaType::from_vec(vec![ty, LuaType::Nil])
             } else {
@@ -857,9 +835,9 @@ impl<'db> SemanticModel<'db> {
         // a contract, field-level annotations follow table_field_signature_override.
         // Table-field docs are not necessarily attached to the closure's
         // signature. Their explicit @param still takes precedence over context.
-        if let Some(signature) = self.file_facts()?.signature_by_closure(closure_syntax)
-            && let Some(name) = signature.param_names.get(param_index)
-            && let Some(docs) = self.contextual_field_docs(self.file_id(), closure_syntax)
+        let field_docs = self.contextual_field_docs(self.file_id(), closure_syntax);
+        if let Some(name) = signature.param_names.get(param_index)
+            && let Some(docs) = &field_docs
             && let Some((_, syntax, nullable)) = docs
                 .params
                 .iter()
@@ -867,27 +845,22 @@ impl<'db> SemanticModel<'db> {
                 .find(|(param_name, _, _)| param_name == name)
         {
             let generics = self.contextual_signature_generics(self.file_id(), signature);
-            let ty =
-                infer::vm::bind_signature_generics(&self.doc_type_lua_rich(*syntax), &generics);
+            let ty = infer::vm::bind_signature_generics(
+                &self.project_doc_type(self.file_id(), *syntax, &[]),
+                &generics,
+            );
             return Some(if *nullable {
                 LuaType::from_vec(vec![ty, LuaType::Nil])
             } else {
                 ty
             });
         }
-        if expected_signatures.is_empty()
-            && self
-                .contextual_field_docs(self.file_id(), closure_syntax)
-                .is_some_and(|docs| docs.typ.is_some())
-        {
+        if expected_signatures.is_empty() && field_docs.is_some_and(|docs| docs.typ.is_some()) {
             // Preserve the unconstrained formal of an explicitly non-callable
             // field, without borrowing parameters from its enclosing owner.
             return Some(LuaType::Any);
         }
-        let is_method = self
-            .file_facts()
-            .and_then(|facts| facts.signature_by_closure(closure_syntax))
-            .is_some_and(|sig| sig.is_method);
+        let is_method = signature.is_method;
         let mut types = Vec::new();
         for expected_fun in expected_signatures {
             let has_self_in_expected = expected_fun
@@ -904,10 +877,20 @@ impl<'db> SemanticModel<'db> {
             if let Some(ty) = expected_fun
                 .get_params()
                 .get(expected_index)
-                .and_then(|(_, ty)| ty.clone())
-                && !types.contains(&ty)
+                .and_then(|(_, ty)| ty.as_ref())
             {
-                types.push(ty);
+                let ty = match ty {
+                    LuaType::Generic(_)
+                    | LuaType::Call(_)
+                    | LuaType::Conditional(_)
+                    | LuaType::Mapped(_) => {
+                        type_eval::expand_alias_head(self, ty).unwrap_or_else(|| ty.clone())
+                    }
+                    _ => ty.clone(),
+                };
+                if !types.contains(&ty) {
+                    types.push(ty);
+                }
             }
         }
         if types.is_empty() {
@@ -944,7 +927,7 @@ impl<'db> SemanticModel<'db> {
         if let Some(decl) = contextual_initializer_decl(facts, value_syntax)
             && let Some(doc_syntax) = decl.doc_type_syntax
         {
-            let ty = self.doc_type_lua_rich_in(member_file, doc_syntax);
+            let ty = self.project_doc_type(member_file, doc_syntax, &[]);
             let signatures = self.contextual_callback_signatures(&ty);
             if !signatures.is_empty() {
                 return Some(signatures);
@@ -956,7 +939,7 @@ impl<'db> SemanticModel<'db> {
             .find(|member| member.value_syntax == Some(value_syntax))?;
         // 0. Inline `---@type` on a table field (`{ ---@type test A = function(a, b) ... }`) directly gives the function type.
         if let Some(doc_syntax) = member.doc_type_syntax {
-            let doc_ty = self.doc_type_lua_rich_in(member_file, doc_syntax);
+            let doc_ty = self.project_doc_type(member_file, doc_syntax, &[]);
             let docs_out = self.contextual_callback_signatures(&doc_ty);
             // Facts may carry an enclosing field's annotation. Only the closure's
             // own field type excludes outer context when it is non-callable.
@@ -975,7 +958,8 @@ impl<'db> SemanticModel<'db> {
         {
             let mut out = Vec::new();
             for syntax in &docs.overloads {
-                if let LuaType::DocFunction(fun) = self.doc_type_lua_rich_in(member_file, *syntax) {
+                if let LuaType::DocFunction(fun) = self.project_doc_type(member_file, *syntax, &[])
+                {
                     out.push(fun.as_ref().clone());
                 }
             }
@@ -1063,7 +1047,12 @@ impl<'db> SemanticModel<'db> {
         let infos = if let Some((_, writes)) = self.directional_member_views(&owner_ty, &key) {
             writes
         } else {
-            member::member_infos_with_key_all(self, &owner_ty, &key)
+            member::member_infos_with_key_mode(
+                self,
+                &owner_ty,
+                &key,
+                member::MemberCollectMode::Effective,
+            )
         };
         let mut out = Vec::new();
         for info in &infos {
@@ -1100,7 +1089,7 @@ impl<'db> SemanticModel<'db> {
             .member_by_value_syntax(value.get_syntax_id())
             .and_then(|member| member.doc_type_syntax)
         {
-            return Some(self.doc_type_lua_rich_in(self.view.file_id(), doc));
+            return Some(self.project_doc_type(self.file_id(), doc, &[]));
         }
         if let Some(assign) = value.get_parent::<LuaAssignStat>() {
             let (targets, values) = assign.get_var_and_expr_list();
@@ -1202,6 +1191,7 @@ impl<'db> SemanticModel<'db> {
         let owner = self.type_of_expr_at(prefix.get_syntax_id(), index.get_position());
         let value = self.contextual_table_value(&owner, &key)?;
         let cache = self.cache.borrow();
+        // A provisional key type cannot establish a callback contract.
         (!cache.evaluation_exhausted && cache.is_complete(revision)).then_some(value)
     }
 
@@ -1212,31 +1202,24 @@ impl<'db> SemanticModel<'db> {
 
     fn contextual_callback_signatures(&self, ty: &LuaType) -> Vec<LuaFunctionType> {
         let ty = self.contextual_alias_target(ty);
-        let types = match ty {
-            LuaType::Union(union) => union.into_vec(),
-            ty => vec![ty],
-        };
-        types
-            .iter()
-            .filter_map(|ty| match self.contextual_alias_target(ty) {
-                LuaType::DocFunction(fun) => Some(fun.as_ref().clone()),
-                _ => None,
-            })
-            .collect()
+        // Alias expansion already visited the outer union and each branch.
+        match ty {
+            LuaType::Union(union) => union
+                .iter()
+                .flat_map(|branch| infer::vm::expand_callable_types_in_model(self, branch))
+                .collect(),
+            ty => infer::vm::expand_callable_types_in_model(self, &ty),
+        }
     }
 
     fn contextual_table_value(&self, owner: &LuaType, key: &LuaMemberKey) -> Option<LuaType> {
         self.contextual_table_value_by_key_type(owner, &key.to_index_type()?)
     }
 
-    fn contextual_table_value_by_key_type(
-        &self,
-        owner: &LuaType,
-        key: &LuaType,
-    ) -> Option<LuaType> {
+    fn contextual_key_domain(&self, key: &LuaType) -> Option<LuaType> {
         // A nullable computed key still identifies the value contract on the
         // non-nil path. Key validity is checked separately from callback context.
-        let key = match self.contextual_alias_target(key) {
+        Some(match self.contextual_alias_target(key) {
             // Unknown compatibility cannot establish an index value contract.
             LuaType::Unknown | LuaType::Nil => return None,
             LuaType::Union(union) => {
@@ -1254,10 +1237,13 @@ impl<'db> SemanticModel<'db> {
                 LuaType::from_vec(alternatives)
             }
             key => key,
-        };
+        })
+    }
+
+    fn contextual_non_nil_owner(&self, owner: &LuaType) -> Option<LuaType> {
         // The constructor supplies the non-nil value of an optional owner.
         // Multiple non-nil owner alternatives remain ambiguous here.
-        let owner = match self.contextual_alias_target(owner) {
+        Some(match self.contextual_alias_target(owner) {
             LuaType::Union(union) => {
                 let mut alternatives = union.iter().filter(|ty| !ty.is_nil());
                 let owner = alternatives.next()?.clone();
@@ -1267,7 +1253,16 @@ impl<'db> SemanticModel<'db> {
                 owner
             }
             owner => owner,
-        };
+        })
+    }
+
+    fn contextual_table_value_by_key_type(
+        &self,
+        owner: &LuaType,
+        key: &LuaType,
+    ) -> Option<LuaType> {
+        let key = self.contextual_key_domain(key)?;
+        let owner = self.contextual_non_nil_owner(owner)?;
         let params = match &owner {
             LuaType::Array(array) => {
                 // Match the shared array index signature's integer domain.
@@ -1316,7 +1311,7 @@ impl<'db> SemanticModel<'db> {
         let mut has_param = false;
         for (name, syntax, nullable) in docs.params {
             let mut ty = infer::vm::bind_signature_generics(
-                &self.doc_type_lua_rich_in(file_id, syntax),
+                &self.project_doc_type(file_id, syntax, &[]),
                 &generics,
             );
             if nullable {
@@ -1331,7 +1326,7 @@ impl<'db> SemanticModel<'db> {
         let mut returns = Vec::new();
         for syntax in docs.returns.into_iter().flatten() {
             let ty = infer::vm::bind_signature_generics(
-                &self.doc_type_lua_rich_in(file_id, syntax),
+                &self.project_doc_type(file_id, syntax, &[]),
                 &generics,
             );
             if !matches!(ty, LuaType::Unknown) {
@@ -1384,7 +1379,7 @@ impl<'db> SemanticModel<'db> {
                         docs.param_types
                             .iter()
                             .find(|(param_name, _)| param_name == name)
-                            .map(|(_, syntax)| self.doc_type_lua_rich_in(file_id, *syntax))
+                            .map(|(_, syntax)| self.project_doc_type(file_id, *syntax, &[]))
                     })
                 })
                 .unwrap_or(LuaType::Any);
@@ -1392,8 +1387,8 @@ impl<'db> SemanticModel<'db> {
             ty = infer::vm::bind_signature_generics(&ty, &generic_params);
             ty = type_eval::expand_alias_generic(self, &ty);
             // See `type_of_signature`: do not evaluate conditional types before function generics are substituted.
-            if nullable_params.iter().any(|n| n == name) && !ty.is_nullable() {
-                ty = LuaType::Union(Rc::new(LuaUnionType::from_vec(vec![ty, LuaType::Nil])));
+            if nullable_params.iter().any(|n| n == name) {
+                ty = LuaType::make_nullable(ty);
             }
             params.push((name.to_string(), Some(ty)));
         }

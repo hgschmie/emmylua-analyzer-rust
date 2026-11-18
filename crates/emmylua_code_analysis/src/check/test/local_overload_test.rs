@@ -9,7 +9,7 @@ local function accept(value) return value end
 "#;
 
 #[test]
-fn local_overload_review_incomplete_dictionary_field_keeps_earlier_value() {
+fn local_overload_incomplete_dictionary_field_keeps_earlier_value() {
     let source = "---@param values table<string, integer>\nlocal function accept(values) return values end\naccept({count = 'bad', count = })";
     let diagnostics = check_source(source);
     assert!(
@@ -153,6 +153,14 @@ fn local_overload_dictionary_checks_keep_nil_overwrites_and_return_slots() {
             .all(|d| d.code != DiagnosticCode::ParamTypeMismatch),
         "{diagnostics:?}"
     );
+    let nil_tail = overwritten_tail
+        .replace("---@return integer, integer", "---@return integer, nil")
+        .replace("return 1, 2", "return 1, nil");
+    assert!(
+        check_source(&nil_tail)
+            .iter()
+            .all(|d| d.code != DiagnosticCode::ParamTypeMismatch)
+    );
 }
 
 #[test]
@@ -244,19 +252,21 @@ fn local_overload_forwarded_dictionary_calls_require_a_complete_signature() {
 }
 
 #[test]
-fn local_overload_dictionary_assertions_remain_authoritative() {
-    let declaration = "---@param values table<string, integer>\nlocal function accept(values) return values end\n";
-    for argument in [
-        "{count = 'bad'} --[[@as table<string, integer>]]",
-        "({count = 'bad'} --[[@as table<string, integer>]])",
-        "(({count = 'bad'}) --[[@as table<string, integer>]])",
-    ] {
-        let diagnostics = check_source(&format!("{declaration}accept({argument})"));
-        assert!(
-            diagnostics
-                .iter()
-                .all(|d| d.code != DiagnosticCode::ParamTypeMismatch),
-            "{argument}: {diagnostics:?}"
-        );
-    }
+fn an_explicit_unknown_callee_does_not_restore_its_overloads() {
+    let source = format!("{DECLARATION}\naccept --[[@as unknown]] (false)");
+    let diagnostics = check_source(&source);
+    assert!(
+        diagnostics
+            .iter()
+            .all(|d| d.code != DiagnosticCode::ParamTypeMismatch),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn an_explicit_string_callee_reports_its_type() {
+    let source = format!("{DECLARATION}\naccept --[[@as string]] (false)");
+    let diagnostics = check_source(&source);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(diagnostics[0].code, DiagnosticCode::CallNonCallable);
 }

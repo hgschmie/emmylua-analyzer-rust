@@ -109,8 +109,22 @@ impl SemanticModel<'_> {
         }
         let writes = writers
             .into_iter()
-            .map(|writer| member::member_info_for_declaration(self, prefix, key, &writer.id))
-            .collect::<Option<Vec<_>>>()?;
+            .map(|writer| {
+                member::member_info_for_declaration(self, prefix, key, &writer.id).unwrap_or_else(
+                    || {
+                        // The setter exists even when its type is still being inferred.
+                        // Preserve its identity so assignment cannot fall back to the getter.
+                        MemberInfo {
+                            key: writer.key.clone(),
+                            typ: LuaType::Unknown,
+                            id: Some(writer.id.clone()),
+                            file_id: Some(id.file_id),
+                            is_method: writer.is_method,
+                        }
+                    },
+                )
+            })
+            .collect();
         Some((writes, true))
     }
 

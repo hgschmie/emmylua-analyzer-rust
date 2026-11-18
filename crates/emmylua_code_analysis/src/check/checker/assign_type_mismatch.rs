@@ -1,30 +1,31 @@
 use std::rc::Rc;
 
-use std::collections::{HashMap, HashSet};
-
 use emmylua_parser::{
     LuaAssignStat, LuaAst, LuaAstNode, LuaCallExpr, LuaClosureExpr, LuaExpr, LuaIndexExpr,
-    LuaIndexKey, LuaLiteralToken, LuaLocalStat, LuaTableExpr, LuaVarExpr, NumberResult,
+    LuaLiteralToken, LuaLocalStat, LuaSyntaxId, LuaTableExpr, LuaVarExpr,
 };
 
 use crate::DiagnosticCode;
+use crate::LuaMemberKey;
+use crate::semantic_db::def::MemberSource;
 use crate::semantic_model::SemanticModel;
-use crate::semantic_model::type_check::{TypeCheckFailReason, check_type_detail, is_compatible};
-use crate::{Decl, LuaMemberKey, LuaType, LuaTypeNode, SemanticId, TypeDef, TypeDefKind};
+use crate::semantic_model::member::class_fields;
+use crate::semantic_model::table_constructor::table_expr;
+use crate::semantic_model::type_check::{TypeCheckFailReason, check_type_at, is_compatible};
+use crate::{LuaObjectType, LuaType, LuaTypeNode, SemanticId, TypeDefKind};
 
-use super::constructor::{Task, UnionMode, evaluate};
-use super::{CheckContext, Checker, check_field::static_member_key};
+use super::check_field::table_literal_mismatches;
+use super::{CheckContext, Checker};
 use crate::semantic_model::render::humanize_type;
 
 pub struct AssignTypeMismatchChecker;
 
-pub(super) struct TypeMismatch {
-    pub(super) range: rowan::TextRange,
-    pub(super) message: String,
-}
-
 impl Checker for AssignTypeMismatchChecker {
-    const CODES: &[DiagnosticCode] = &[DiagnosticCode::AssignTypeMismatch];
+    const CODES: &[DiagnosticCode] = &[
+        DiagnosticCode::AssignTypeMismatch,
+        DiagnosticCode::MissingFields,
+        DiagnosticCode::InjectField,
+    ];
 
     fn check(context: &mut CheckContext<'_>, semantic_model: &SemanticModel<'_>) {
         let Some(tree) = semantic_model.syntax_tree() else {
@@ -209,20 +210,64 @@ fn check_local(
         }
         if decl.doc_type_syntax.is_none() {
             // `---@class B` directly attached to `local b = a`: use the type definition as the declaration contract.
-            if let Some(target) = class_contract_for_decl(semantic_model, &decl) {
-                // `local B = setmetatable({}, A)` is the standard class-inheritance idiom: B's runtime
-                // table uses A as its metatable, so an RHS type of A is expected and must not be treated as a base-class assignment mismatch.
-                if let LuaExpr::CallExpr(call) = expr
-                    && is_setmetatable_call(call)
-                {
-                    continue;
-                }
-                check_value_against(context, semantic_model, &target, &expr);
+            if let Some(target) = class_contract_for_owner(semantic_model, stat.get_syntax_id()) {
+                check_class_initializer(context, semantic_model, &target, expr);
             }
             continue;
         }
         check_against(context, semantic_model, &decl_id, &expr);
     }
+}
+
+fn check_class_initializer(
+    context: &mut CheckContext<'_>,
+    semantic_model: &SemanticModel<'_>,
+    target: &LuaType,
+    value_expr: &LuaExpr,
+) {
+    let mut expr = value_expr.clone();
+    while let LuaExpr::ParenExpr(paren) = &expr {
+        let Some(inner) = paren.get_expr() else {
+            return;
+        };
+        expr = inner;
+    }
+    // A class table may inherit its members through a metatable.
+    if let LuaExpr::CallExpr(call) = &expr
+        && is_setmetatable_call(call)
+    {
+        return;
+    }
+    let value_ty = assignment_value_type(semantic_model, &expr)
+        .get_result_slot_type(0)
+        .unwrap_or(LuaType::Nil);
+    let is_constructor = match &value_ty {
+        LuaType::TableConst(_) => true,
+        LuaType::Union(union) => union.iter().all(|ty| matches!(ty, LuaType::TableConst(_))),
+        _ => false,
+    };
+    if !is_constructor {
+        check_value_against(context, semantic_model, target, &expr);
+        return;
+    }
+    // A class definition may fill its top-level fields later. Check supplied
+    // values through the same contract regardless of where the table was created.
+    let class = class_fields(semantic_model, target);
+    let fields = class
+        .get_fields()
+        .iter()
+        .map(|(key, ty)| {
+            (
+                key.clone(),
+                LuaType::from_vec(vec![ty.clone(), LuaType::Nil]),
+            )
+        })
+        .collect();
+    let initializer = LuaType::Object(Rc::new(LuaObjectType::new_with_fields(
+        fields,
+        class.get_index_access().to_vec(),
+    )));
+    check_value_against(context, semantic_model, &initializer, &expr);
 }
 
 fn is_setmetatable_call(call: &LuaCallExpr) -> bool {
@@ -255,6 +300,16 @@ fn check_assign(
                     }
                     continue;
                 };
+                if let Some(decl) = semantic_model
+                    .file_facts()
+                    .and_then(|facts| facts.decl_by_id(&decl_id))
+                    && decl.doc_type_syntax.is_none()
+                    && let Some(target) =
+                        class_contract_for_owner(semantic_model, stat.get_syntax_id())
+                {
+                    check_class_initializer(context, semantic_model, &target, expr);
+                    continue;
+                }
                 check_assign_against(
                     context,
                     semantic_model,
@@ -274,9 +329,59 @@ fn check_assign(
                     }
                     continue;
                 }
-                if let Some(target) = member_write_target(semantic_model, index_expr, expr) {
-                    check_value_against(context, semantic_model, &target, expr);
+                // A nested assignment can resolve to the root's index signature.
+                // Prefer the declared field of the immediate receiver.
+                if let Some(prefix @ LuaExpr::IndexExpr(_)) = index_expr.get_prefix_expr()
+                    && let Some(key) = index_expr.get_index_key().and_then(|key| {
+                        crate::semantic_model::table_constructor::static_member_key(
+                            semantic_model,
+                            &key,
+                        )
+                    })
+                    && let Some(info) = semantic_model.member_info(
+                        &semantic_model
+                            .type_of_expr_at(prefix.get_syntax_id(), prefix.get_position()),
+                        &key,
+                    )
+                    && let Some(id) = info.id
+                {
+                    let target = semantic_model.member_contract_type(Some(&id), info.typ);
+                    if !target.is_nil()
+                        && !semantic_model.type_of_expr(expr.get_syntax_id()).is_nil()
+                    {
+                        check_value_against(context, semantic_model, &target, &expr);
+                    }
+                    continue;
                 }
+                let Some(resolved) = semantic_model.resolve_member(index_expr) else {
+                    check_self_member_assign(context, semantic_model, index_expr, &expr);
+                    continue;
+                };
+                let Some(member_id) = resolved.member_id else {
+                    check_self_member_assign(context, semantic_model, index_expr, &expr);
+                    continue;
+                };
+                let owner_is_self = semantic_model
+                    .file_facts()
+                    .and_then(|facts| facts.member_by_id(&member_id))
+                    .is_some_and(|member| {
+                        matches!(
+                            member.owner,
+                            SemanticId::Name(ref name)
+                                if name.as_str() == "self"
+                        )
+                    });
+                if owner_is_self {
+                    check_self_member_assign(context, semantic_model, index_expr, &expr);
+                    continue;
+                }
+                check_member_assign(
+                    context,
+                    semantic_model,
+                    &member_id,
+                    index_expr.get_range().start(),
+                    &expr,
+                );
             }
         }
     }
@@ -307,64 +412,13 @@ fn check_assign_against(
     check_value_against(context, semantic_model, &target, value_expr);
 }
 
-/// Resolve the same write contract for structural and value checks of a member assignment.
-/// Prefer the declared member over the member synthesized from this RHS, retaining
-/// the existing self fallback and nil/incomplete-template exclusions.
-pub(super) fn member_write_target(
-    semantic_model: &SemanticModel<'_>,
-    index_expr: &LuaIndexExpr,
-    value_expr: &LuaExpr,
-) -> Option<LuaType> {
-    // Nested accesses must use their immediate receiver's field contract. The
-    // synthesized assignment owner can be the root declaration instead.
-    if let Some(prefix @ LuaExpr::IndexExpr(_)) = index_expr.get_prefix_expr()
-        && let Some(key) = index_expr
-            .get_index_key()
-            .and_then(|key| static_member_key(semantic_model, &key))
-    {
-        let prefix_type =
-            semantic_model.type_of_expr_at(prefix.get_syntax_id(), prefix.get_position());
-        if let Some(info) = semantic_model.member_info(&prefix_type, &key)
-            && let Some(id) = info.id
-        {
-            let value_type = semantic_model.type_of_expr(value_expr.get_syntax_id());
-            if value_type.is_nil() || info.typ.is_nil() {
-                return None;
-            }
-            return complete_member_write_target(
-                semantic_model.member_assignment_type(&id, info.typ),
-            );
-        }
-    }
-    let Some(member_id) = semantic_model
-        .resolve_member(index_expr)
-        .and_then(|resolved| resolved.member_id)
-    else {
-        return self_member_write_target(semantic_model, index_expr, value_expr);
-    };
-    let owner_is_self = semantic_model
-        .file_facts()
-        .and_then(|facts| facts.member_by_id(&member_id))
-        .is_some_and(
-            |member| matches!(member.owner, SemanticId::Name(ref name) if name.as_str() == "self"),
-        );
-    if owner_is_self {
-        return self_member_write_target(semantic_model, index_expr, value_expr);
-    }
-    resolved_member_write_target(
-        semantic_model,
-        &member_id,
-        index_expr.get_range().start(),
-        value_expr,
-    )
-}
-
 /// `function mt:init() self.x = value`: self member falls back to the same-named member on the method owner.
-fn self_member_write_target(
+fn check_self_member_assign(
+    context: &mut CheckContext<'_>,
     semantic_model: &SemanticModel<'_>,
     index_expr: &LuaIndexExpr,
     value_expr: &LuaExpr,
-) -> Option<LuaType> {
+) -> Option<()> {
     let prefix = index_expr.get_prefix_expr()?;
     let LuaExpr::NameExpr(name_expr) = &prefix else {
         return None;
@@ -372,46 +426,44 @@ fn self_member_write_target(
     if name_expr.get_text() != "self" {
         return None;
     }
-    let key = index_expr
-        .get_index_key()
-        .map(|key| key.get_path_part())
-        .unwrap_or_default();
     let closure = index_expr.ancestors::<LuaClosureExpr>().next()?;
     let facts = semantic_model.file_facts()?;
-    let methods: Vec<_> = facts
-        .members
-        .iter()
-        .filter(|member| member.value_syntax == Some(closure.get_syntax_id()))
-        .collect();
-    let method = methods.into_iter().find(|member| member.is_method)?;
+    let usage = facts.member_use(index_expr.get_syntax_id())?;
+    let receiver = usage.receiver.as_ref()?;
+    let method = facts
+        .member_by_value_syntax(closure.get_syntax_id())
+        .filter(|member| member.is_method)?;
     let owner_ty = semantic_model
         .type_of_decl(&method.owner)
         .unwrap_or(LuaType::Unknown);
     // The owner's VM type may be Unknown: directly take the declaration type of the same-named runtime member on the owner.
     let target = facts
-        .members
-        .iter()
-        .find(|member| {
-            member.owner == method.owner
-                && member.key.name() == Some(key.as_str())
-                && member.value_syntax != Some(value_expr.get_syntax_id())
+        .members_of_receiver_key(receiver, &usage.key)
+        .chain(facts.members_of_owner(&method.owner).filter(|member| {
+            usage.has_direct_owner()
+                && member.key == usage.key
+                && !matches!(member.source, MemberSource::Runtime { .. })
+        }))
+        .find(|member| member.value_syntax != Some(value_expr.get_syntax_id()))
+        .map(|member| {
+            semantic_model
+                .type_of_member_assign_target_at(&member.id, index_expr.get_range().start())
         })
-        .map(|member| semantic_model.type_of_member_at(&member.id, index_expr.get_range().start()))
-        .or_else(|| {
-            semantic_model.member_type(&owner_ty, &LuaMemberKey::Name(key.clone().into()))
-        })?;
-    Some(target)
+        .or_else(|| semantic_model.member_type(&owner_ty, &usage.key))?;
+    check_value_against(context, semantic_model, &target, value_expr);
+    Some(())
 }
 
-fn resolved_member_write_target(
+fn check_member_assign(
+    context: &mut CheckContext<'_>,
     semantic_model: &SemanticModel<'_>,
     member_id: &SemanticId,
     target_offset: rowan::TextSize,
     value_expr: &LuaExpr,
-) -> Option<LuaType> {
-    let mut target = semantic_model.member_assignment_type(
-        member_id,
-        semantic_model.type_of_member_at(member_id, target_offset),
+) {
+    let mut target = semantic_model.member_contract_type(
+        Some(member_id),
+        semantic_model.type_of_member_assign_target_at(member_id, target_offset),
     );
     // `t.x = value`: resolve_member first returns the synthesized member for this assignment; prefer the same-named member on the prefix's declared type.
     if let Some(facts) = semantic_model.file_facts()
@@ -419,7 +471,7 @@ fn resolved_member_write_target(
     {
         if member.value_syntax == Some(value_expr.get_syntax_id()) {
             let SemanticId::Decl(owner) = &member.owner else {
-                return complete_member_write_target(target);
+                return check_value_against_target(context, semantic_model, &target, value_expr);
             };
             let prefix_ty = semantic_model
                 .type_of_decl_assign_target_at(&SemanticId::Decl(owner.clone()), target_offset);
@@ -432,7 +484,7 @@ fn resolved_member_write_target(
             if expected_member_ty.is_none() && member.doc_type_syntax.is_none() {
                 // A declared field, previous assignment, index signature or
                 // explicit annotation must provide an independent contract.
-                return None;
+                return;
             }
             if let Some(expected_member_ty) = expected_member_ty {
                 target = expected_member_ty;
@@ -442,9 +494,9 @@ fn resolved_member_write_target(
     let value_ty =
         semantic_model.type_of_expr_at(value_expr.get_syntax_id(), value_expr.get_range().start());
     if matches!(value_ty, LuaType::Nil) || matches!(target, LuaType::Nil) {
-        return None;
+        return;
     }
-    complete_member_write_target(target)
+    check_value_against_target(context, semantic_model, &target, value_expr);
 }
 
 /// Resolve a destination contract without using the current assignment's initializer.
@@ -460,7 +512,7 @@ fn resolve_member_assignment_contract(
         .find(|info| info.id.as_ref() != Some(current_member))
     {
         return Some(match info.id {
-            Some(id) => semantic_model.member_assignment_type(&id, info.typ),
+            Some(id) => semantic_model.member_contract_type(Some(&id), info.typ),
             None => info.typ,
         });
     }
@@ -477,110 +529,38 @@ fn resolve_member_assignment_contract(
     // query has already excluded signatures that do not accept this key.
     let info = infos.into_iter().next()?;
     Some(match info.id {
-        Some(id) => semantic_model.member_assignment_type(&id, info.value_type),
+        Some(id) => semantic_model.member_contract_type(Some(&id), info.value_type),
         None => info.value_type,
     })
 }
 
-fn complete_member_write_target(target: LuaType) -> Option<LuaType> {
-    if target.contains_tpl_node() {
-        // Skip when class-level generic projection is incomplete, avoiding false positives for conditional generics like `MockResult<MockReturnType<T>>`.
-        return None;
-    }
-    Some(target)
-}
-
-fn is_structured_table_target(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> bool {
-    let mut pending = vec![ty.clone()];
-    let mut seen = Vec::new();
-    while let Some(target) = pending.pop() {
-        if seen.contains(&target) {
-            continue;
-        }
-        seen.push(target.clone());
-        match &target {
-            LuaType::Array(_) | LuaType::Object(_) | LuaType::TableGeneric(_) => return true,
-            LuaType::Union(union) => pending.extend(union.into_vec().into_iter().rev()),
-            LuaType::Generic(generic) => {
-                if matches!(generic.get_base_type_id().get_name(), "array" | "table") {
-                    return true;
-                }
-                pending.push(LuaType::Ref(generic.get_base_type_id()));
-            }
-            LuaType::Ref(_) | LuaType::Def(_) => {
-                if let Some(def) = named_def(semantic_model, &target) {
-                    match def.kind {
-                        TypeDefKind::Class => return true,
-                        TypeDefKind::Alias => {
-                            if let Some(expanded) =
-                                super::check_field::expand_alias_type(semantic_model, &target)
-                            {
-                                pending.push(expanded);
-                            }
-                        }
-                        TypeDefKind::Enum => {}
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    false
-}
-
-pub(super) fn check_value_against(
+fn check_value_against_target(
     context: &mut CheckContext<'_>,
     semantic_model: &SemanticModel<'_>,
     target: &LuaType,
     value_expr: &LuaExpr,
 ) {
-    if let Some(diagnostics) = evaluate(
-        semantic_model,
-        Task::Value(target.clone(), value_expr.clone()),
-    ) {
-        for diagnostic in diagnostics {
-            context.add_diagnostic(diagnostic.code, diagnostic.range, diagnostic.message);
-        }
+    if target.contains_tpl_node() {
+        // Skip when class-level generic projection is incomplete, avoiding false positives for conditional generics like `MockResult<MockReturnType<T>>`.
+        return;
     }
+    check_value_against(context, semantic_model, target, value_expr);
 }
 
-pub(super) fn value_tasks(
-    tasks: &mut Vec<Task<'_>>,
+fn check_value_against(
+    context: &mut CheckContext<'_>,
     semantic_model: &SemanticModel<'_>,
     target: &LuaType,
     value_expr: &LuaExpr,
 ) {
-    if let LuaExpr::TableExpr(table) = value_expr {
-        // Plain table target without a declared type: keep old behavior — don't check each field or report a type mismatch (same table identity).
-        if matches!(target, LuaType::Table | LuaType::TableConst(_)) {
-            return;
-        }
-        let expanded = super::check_field::expand_alias_type(semantic_model, target);
-        let target = expanded.as_ref().unwrap_or(target);
-        if matches!(target, LuaType::Union(_)) || is_structured_table_target(semantic_model, target)
-        {
-            tasks.push(Task::TableValues(target.clone(), table.clone()));
-        } else {
-            let value_ty = semantic_model
-                .type_of_expr_at(value_expr.get_syntax_id(), value_expr.get_range().start());
-            if matches!(value_ty, LuaType::Unknown | LuaType::Any | LuaType::Never) {
-                return;
-            }
-            // Compatibility resolves tuple aliases and unions. Keep the intersection guard:
-            // the general check currently accepts a table matching only one component.
-            if !matches!(target, LuaType::Intersection(_))
-                && is_compatible(semantic_model, &value_ty, target)
-            {
-                return;
-            }
-            tasks.push(Task::mismatch(type_mismatch(
-                semantic_model,
-                value_expr.get_range(),
-                target,
-                &value_ty,
-            )));
-        }
-        return;
+    let field_errors = table_expr(value_expr).map_or_else(Vec::new, |table| {
+        table_literal_mismatches(semantic_model, target, &table)
+    });
+    let has_field_error = field_errors
+        .iter()
+        .any(|error| context.is_diagnostic_enabled(error.code, error.range));
+    for error in field_errors {
+        context.add_diagnostic(error.code, error.range, error.message);
     }
     let value_ty = assignment_value_type(semantic_model, value_expr);
     // A generic's constraint is a wider type, not a replacement for its identity.
@@ -590,17 +570,25 @@ pub(super) fn value_tasks(
         return;
     }
     let value_ty = resolve_unbound_generic(semantic_model, value_ty);
+    let compatible = if matches!(value_ty, LuaType::TableConst(_)) {
+        check_type_at(
+            semantic_model,
+            &value_ty,
+            target,
+            value_expr.get_range(),
+            false,
+        )
+        .is_ok()
+    } else {
+        is_compatible(semantic_model, &value_ty, target)
+    };
     if matches!(value_ty, LuaType::Unknown | LuaType::Any | LuaType::Never)
-        || is_compatible(semantic_model, &value_ty, target)
+        || compatible
+        || has_field_error
     {
         return;
     }
-    tasks.push(Task::mismatch(type_mismatch(
-        semantic_model,
-        value_expr.get_range(),
-        target,
-        &value_ty,
-    )));
+    add_mismatch(context, value_expr.get_range(), target, &value_ty);
 }
 
 /// Assignment RHS type: when VM yields `Function`, if the RHS is a named function, resolve its cross-file signature structure.
@@ -665,7 +653,8 @@ fn resolve_unbound_generic(semantic_model: &SemanticModel<'_>, ty: LuaType) -> L
             .find(|param| param.name.as_str() == name)
             && let Some(constraint) = param.constraint
         {
-            let constraint_ty = semantic_model.doc_type_lua_rich(constraint);
+            let constraint_ty =
+                semantic_model.project_doc_type(semantic_model.file_id(), constraint, &[]);
             if !matches!(constraint_ty, LuaType::Unknown) {
                 return constraint_ty;
             }
@@ -674,289 +663,17 @@ fn resolve_unbound_generic(semantic_model: &SemanticModel<'_>, ty: LuaType) -> L
     ty
 }
 
-/// Let argument checking collect field errors after it substitutes call generics.
-pub(super) fn table_field_mismatches(
+/// Statement attached to a `---@class B` comment -> class reference type.
+fn class_contract_for_owner(
     semantic_model: &SemanticModel<'_>,
-    target: &LuaType,
-    table: &LuaTableExpr,
-) -> Vec<TypeMismatch> {
-    if !is_structured_table_target(semantic_model, target) {
-        return Vec::new();
-    }
-    evaluate(
-        semantic_model,
-        Task::TableValues(target.clone(), table.clone()),
-    )
-    .unwrap_or_default()
-    .into_iter()
-    .map(|diagnostic| TypeMismatch {
-        range: diagnostic.range,
-        message: diagnostic.message,
-    })
-    .collect()
-}
-
-pub(super) fn table_value_tasks(
-    tasks: &mut Vec<Task<'_>>,
-    semantic_model: &SemanticModel<'_>,
-    target: &LuaType,
-    table: &LuaTableExpr,
-) {
-    if let LuaType::Union(union) = target {
-        tasks.push(Task::Union(
-            Rc::clone(union),
-            table.clone(),
-            UnionMode::Values,
-        ));
-        return;
-    }
-    if matches!(target, LuaType::TableGeneric(_))
-        || matches!(target, LuaType::Generic(generic)
-            if generic.get_base_type_id() == crate::LuaTypeDeclId::global("table")
-                && semantic_model.type_def_of(generic.get_base_type_id_ref())
-                    .is_none_or(|def| semantic_model.is_std_file(def.file_id)))
-    {
-        for (field, key) in table.get_fields_with_keys() {
-            let Some(value) = field.get_value_expr() else {
-                continue;
-            };
-            let key = index_key_type(semantic_model, &key);
-            if let Some(expected) = semantic_model.dictionary_field_type(target, &key) {
-                tasks.push(Task::EntryValue(expected, value));
-            }
-        }
-        return;
-    }
-    // Array target: check every table-literal element against the element type.
-    if let LuaType::Array(array) = target {
-        let expected = array.get_base();
-        for (field, _) in table.get_fields_with_keys() {
-            let Some(value_expr) = field.get_value_expr() else {
-                continue;
-            };
-            tasks.push(Task::EntryValue(expected.clone(), value_expr));
-        }
-        return;
-    }
-    // Projection form where the `array<T>` alias / `T[]` is not expanded into `Array`.
-    if let LuaType::Generic(generic) = target
-        && generic.get_base_type_id().get_name() == "array"
-        && let Some(expected) = generic.get_params().first()
-    {
-        for (field, _) in table.get_fields_with_keys() {
-            let Some(value_expr) = field.get_value_expr() else {
-                continue;
-            };
-            tasks.push(Task::EntryValue(expected.clone(), value_expr));
-        }
-        return;
-    }
-    // Object target: static fields first, then `{[string]: string}` index signatures.
-    if let LuaType::Object(object) = target {
-        for (field, key) in table.get_fields_with_keys() {
-            let Some(value_expr) = field.get_value_expr() else {
-                continue;
-            };
-            let member_key = static_member_key(semantic_model, &key);
-            if let Some(expected) = member_key
-                .as_ref()
-                .and_then(|key| object.get_fields().get(key))
-            {
-                tasks.push(Task::EntryValue(expected.clone(), value_expr));
-                continue;
-            }
-            let key_ty = index_key_type(semantic_model, &key);
-            if let Ok(infos) = semantic_model.applicable_index_infos(target, &key_ty)
-                && let Some(info) = infos.first()
-            {
-                tasks.push(Task::EntryValue(info.value_type.clone(), value_expr));
-            }
-        }
-        return;
-    }
-
-    // Alias target: expand it, then check as object/array/class.
-    if let LuaType::Ref(_) | LuaType::Def(_) = target
-        && let Some(def) = named_def(semantic_model, target)
-        && def.kind == TypeDefKind::Alias
-        && let Some(alias_target) = super::check_field::expand_alias_type(semantic_model, target)
-        && is_structured_table_target(semantic_model, &alias_target)
-    {
-        tasks.push(Task::TableValues(alias_target, table.clone()));
-        return;
-    }
-
-    if named_def(semantic_model, target).is_none() {
-        return;
-    }
-    let mut members = HashMap::new();
-    let mut required_members: Vec<(String, LuaType)> = Vec::new();
-    for info in semantic_model.member_infos(target) {
-        let declaration = info.id.as_ref().and_then(|id| {
-            semantic_model
-                .file_facts_of(info.file_id?)
-                .and_then(|facts| facts.member_by_id(id))
-        });
-        if declaration.is_some_and(|member| !matches!(member.owner, SemanticId::TypeDef(_))) {
-            continue;
-        }
-        let required = declaration.is_some_and(|member| !member.is_nullable);
-        if required {
-            required_members.push((info.key.to_path(), info.typ.clone()));
-        }
-        members.insert(info.key, info.typ);
-    }
-    let fields: Vec<_> = table
-        .get_fields_with_keys()
-        .into_iter()
-        .map(|(field, key)| {
-            let member_key = match &key {
-                LuaIndexKey::Expr(_) => None,
-                _ => static_member_key(semantic_model, &key),
-            };
-            (field, key, member_key)
-        })
-        .collect();
-    for (field, key, member_key) in &fields {
-        if let Some(expected) = member_key.as_ref().and_then(|key| members.get(key)) {
-            let Some(value_expr) = field.get_value_expr() else {
-                continue;
-            };
-            tasks.push(Task::EntryValue(expected.clone(), value_expr));
-            continue;
-        }
-        // Static member not found -> check against index signatures (`@field [integer] string`).
-        let Ok(infos) =
-            semantic_model.applicable_index_infos(target, &index_key_type(semantic_model, key))
-        else {
-            continue;
-        };
-        let Some(info) = infos.first() else {
-            continue;
-        };
-        let expected = &info.value_type;
-        let Some(value_expr) = field.get_value_expr() else {
-            continue;
-        };
-        tasks.push(Task::EntryValue(expected.clone(), value_expr));
-    }
-    // Array-shaped table literal + integer index signature: required static members from class inheritance must still appear
-    // (an Opts with `@field [integer] string` still requires the parent's `@field foo boolean`).
-    if fields
-        .iter()
-        .any(|(_, key, _)| matches!(key, LuaIndexKey::Integer(_) | LuaIndexKey::Idx(_)))
-    {
-        let field_names: HashSet<String> = fields
-            .iter()
-            .map(|(_, key, member_key)| {
-                member_key
-                    .as_ref()
-                    .map(|key| key.to_path())
-                    .unwrap_or_else(|| key.get_path_part())
-            })
-            .collect();
-        for (name, required_ty) in &required_members {
-            if !field_names.contains(name.as_str()) {
-                if let Some((first_field, _, _)) = fields.first()
-                    && let Some(value_expr) = first_field.get_value_expr()
-                {
-                    let value_ty = semantic_model.type_of_expr_at(
-                        value_expr.get_syntax_id(),
-                        value_expr.get_range().start(),
-                    );
-                    tasks.push(Task::mismatch(type_mismatch(
-                        semantic_model,
-                        value_expr.get_range(),
-                        required_ty,
-                        &value_ty,
-                    )));
-                }
-                break;
-            }
-        }
-    }
-}
-
-pub(super) fn entry_value_tasks(
-    tasks: &mut Vec<Task<'_>>,
-    semantic_model: &SemanticModel<'_>,
-    value_expr: &LuaExpr,
-    expected: &LuaType,
-) {
-    if matches!(value_expr, LuaExpr::TableExpr(_)) {
-        tasks.push(Task::Value(expected.clone(), value_expr.clone()));
-        return;
-    }
-    let value_ty =
-        semantic_model.type_of_expr_at(value_expr.get_syntax_id(), value_expr.get_range().start());
-    // Nil omits an entry from a table constructor.
-    let expected_or_absent = LuaType::from_vec(vec![expected.clone(), LuaType::Nil]);
-    if matches!(value_ty, LuaType::Unknown | LuaType::Any | LuaType::Never)
-        || is_compatible(semantic_model, &value_ty, &expected_or_absent)
-    {
-        return;
-    }
-    tasks.push(Task::mismatch(type_mismatch(
-        semantic_model,
-        value_expr.get_range(),
-        expected,
-        &value_ty,
-    )));
-}
-
-pub(super) fn unresolved_constructor_mismatch(
-    semantic_model: &SemanticModel<'_>,
-    target: &LuaType,
-    table: &LuaTableExpr,
-) -> TypeMismatch {
-    let value_type = semantic_model.type_of_expr(table.get_syntax_id());
-    type_mismatch(semantic_model, table.get_range(), target, &value_type)
-}
-
-pub(super) fn index_key_type(semantic_model: &SemanticModel<'_>, key: &LuaIndexKey) -> LuaType {
-    if let Some(key) = static_member_key(semantic_model, key).and_then(|key| key.to_index_type()) {
-        return key;
-    }
-    match key {
-        LuaIndexKey::Name(_) | LuaIndexKey::String(_) => LuaType::String,
-        LuaIndexKey::Integer(token) => match token.get_number_value() {
-            NumberResult::Float(value) => LuaType::FloatConst(value),
-            NumberResult::Int(value) => LuaType::IntegerConst(value),
-            NumberResult::Uint(value) => LuaType::FloatConst(value as f64),
-            NumberResult::Number => LuaType::Number,
-        },
-        LuaIndexKey::Idx(value) => LuaType::IntegerConst(*value as i64),
-        LuaIndexKey::Expr(expr) => semantic_model.type_of_expr(expr.get_syntax_id()),
-    }
-}
-
-/// Local declaration attached to a `---@class B` comment -> class reference type.
-fn class_contract_for_decl(semantic_model: &SemanticModel<'_>, decl: &Decl) -> Option<LuaType> {
-    let def = facts_type_def_for_decl(semantic_model, decl)?;
-    if def.kind == TypeDefKind::Enum {
+    owner: LuaSyntaxId,
+) -> Option<LuaType> {
+    let facts = semantic_model.file_facts()?;
+    let def = facts.type_def_by_owner_syntax(owner)?;
+    if def.kind != TypeDefKind::Class {
         return None;
     }
-    Some(semantic_model.type_def_ref(&def))
-}
-
-fn facts_type_def_for_decl(semantic_model: &SemanticModel<'_>, decl: &Decl) -> Option<TypeDef> {
-    let facts = semantic_model.file_facts()?;
-    facts
-        .type_defs
-        .iter()
-        .find(|def| def.owner_syntax.is_some() && def.owner_syntax == decl.owner_syntax)
-        .cloned()
-}
-
-fn named_def(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> Option<TypeDef> {
-    let id = match ty {
-        LuaType::Ref(id) | LuaType::Def(id) => id,
-        LuaType::Generic(generic) => {
-            return named_def(semantic_model, &LuaType::Ref(generic.get_base_type_id()));
-        }
-        _ => return None,
-    };
-    semantic_model.type_def_of(id)
+    Some(semantic_model.type_def_ref(def))
 }
 
 /// The `---@type C` comment immediately before an assignment statement -> target type (`_ = c` scenario).
@@ -989,89 +706,33 @@ fn preceding_doc_type_target(
 
 fn add_mismatch(
     context: &mut CheckContext<'_>,
-    range: rowan::TextRange,
+    mut range: rowan::TextRange,
     target: &LuaType,
     value_ty: &LuaType,
 ) {
-    let mismatch = type_mismatch(context.semantic_model, range, target, value_ty);
-    context.add_diagnostic(
-        DiagnosticCode::AssignTypeMismatch,
-        mismatch.range,
-        mismatch.message,
-    );
-}
-
-fn type_mismatch(
-    semantic_model: &SemanticModel<'_>,
-    range: rowan::TextRange,
-    target: &LuaType,
-    value_ty: &LuaType,
-) -> TypeMismatch {
-    let reason = match check_type_detail(semantic_model, value_ty, target) {
-        Err(TypeCheckFailReason::TypeNotMatchWithReason(reason)) => Some(reason),
-        _ => None,
+    let failure = check_type_at(context.semantic_model, value_ty, target, range, true).err();
+    let (target, value_ty) = if let Some(TypeCheckFailReason::TypeNotMatchAtField(field)) = &failure
+        && field.location.file_id == context.semantic_model.file_id()
+        && range.contains_range(field.location.value)
+    {
+        range = field.location.value;
+        (&field.target, &field.source)
+    } else {
+        (target, value_ty)
     };
+    let reason = failure.as_ref().and_then(TypeCheckFailReason::reason);
     let message = match reason {
         Some(reason) => t!(
             "expected `%{target}` but found `%{value}`.\n  %{reason}",
-            target = humanize_type(semantic_model, target),
-            value = humanize_type(semantic_model, value_ty),
+            target = humanize_type(context.semantic_model, target),
+            value = humanize_type(context.semantic_model, value_ty),
             reason = reason
         ),
         None => t!(
             "expected `%{target}` but found `%{value}`",
-            target = humanize_type(semantic_model, target),
-            value = humanize_type(semantic_model, value_ty)
+            target = humanize_type(context.semantic_model, target),
+            value = humanize_type(context.semantic_model, value_ty)
         ),
     };
-    TypeMismatch {
-        range,
-        message: message.into_owned(),
-    }
-}
-
-#[cfg(test)]
-mod structured_target_classification {
-    use super::*;
-    use crate::{LuaUnionMembers, LuaUnionType, VirtualWorkspace};
-
-    #[test]
-    fn finite_union_graphs_keep_their_structured_leaf() {
-        let mut ws = VirtualWorkspace::new();
-        let object = ws.ty("{value:number}");
-        let file = ws.def("local value = {}\nreturn value");
-        let model = ws.analysis.semantic_model(file);
-        for depth in [99, 100, 200] {
-            for (leaf, expected) in [(object.clone(), true), (LuaType::String, false)] {
-                let mut target = leaf;
-                for _ in 0..depth {
-                    target =
-                        LuaType::Union(Rc::new(LuaUnionType::Multi(LuaUnionMembers::new(vec![
-                            target,
-                        ]))));
-                }
-                assert_eq!(
-                    is_structured_table_target(&model, &target),
-                    expected,
-                    "depth={depth}, structured={expected}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn alias_cycles_do_not_hide_a_structured_sibling() {
-        let mut ws = VirtualWorkspace::new();
-        ws.def("---@alias Cycle Cycle\n---@alias Left Right|{value:number}\n---@alias Right Left");
-        let cycle = ws.ty("Cycle");
-        let left = ws.ty("Left");
-        let right = ws.ty("Right");
-        let array = ws.ty("number[]");
-        let file = ws.def("local value = {}\nreturn value");
-        let model = ws.analysis.semantic_model(file);
-        assert!(!is_structured_table_target(&model, &cycle));
-        for target in [left, right, array] {
-            assert!(is_structured_table_target(&model, &target));
-        }
-    }
+    context.add_diagnostic(DiagnosticCode::AssignTypeMismatch, range, message);
 }

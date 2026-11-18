@@ -37,26 +37,7 @@ fn check_call(
     let Some(prefix_expr) = call_expr.get_prefix_expr() else {
         return;
     };
-    let callee_ty = match &prefix_expr {
-        emmylua_parser::LuaExpr::NameExpr(name_expr) => semantic_model
-            .resolve_name(name_expr.get_position())
-            .map(|decl| {
-                // M0 compatibility: calls in local initializer expressions are checked against the declared target type (preserving legacy
-                // `integer|fun()` still reporting union after assignment); calls in ordinary statements use flow
-                // reads, allowing `i = function() end` followed by `i()`.
-                if call_expr
-                    .syntax()
-                    .ancestors()
-                    .any(|node| LuaLocalStat::cast(node).is_some())
-                {
-                    semantic_model.type_of_decl_assign_target_at(&decl, name_expr.get_position())
-                } else {
-                    semantic_model.type_of_decl_at(&decl, name_expr.get_position())
-                }
-            })
-            .unwrap_or_else(|| semantic_model.type_of_expr(prefix_expr.get_syntax_id())),
-        _ => semantic_model.type_of_expr(prefix_expr.get_syntax_id()),
-    };
+    let callee_ty = callee_type(semantic_model, call_expr, &prefix_expr);
     if is_callable(semantic_model, &callee_ty) {
         return;
     }
@@ -68,6 +49,34 @@ fn check_call(
             name = humanize_type(semantic_model, &callee_ty)
         ),
     );
+}
+
+fn callee_type(
+    model: &SemanticModel,
+    call: &LuaCallExpr,
+    callee: &emmylua_parser::LuaExpr,
+) -> LuaType {
+    let emmylua_parser::LuaExpr::NameExpr(name) = callee else {
+        return model.type_of_expr(callee.get_syntax_id());
+    };
+    if let Some(asserted) = crate::semantic_model::flow::inline_asserted_type(model, callee) {
+        return asserted;
+    }
+    let position = name.get_position();
+    let Some(decl) = model.resolve_name(position) else {
+        return model.type_of_expr(callee.get_syntax_id());
+    };
+    // Initializers use the declared target contract. An ordinary call observes
+    // the current value, including a function assigned since the declaration.
+    if call
+        .syntax()
+        .ancestors()
+        .any(|node| LuaLocalStat::cast(node).is_some())
+    {
+        model.type_of_decl_assign_target_at(&decl, position)
+    } else {
+        model.type_of_decl_at(&decl, position)
+    }
 }
 
 fn is_callable(model: &SemanticModel, ty: &LuaType) -> bool {

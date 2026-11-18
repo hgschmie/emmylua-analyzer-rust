@@ -6,6 +6,14 @@ mod test {
     use crate::{LuaType, LuaUnionType, VirtualWorkspace};
 
     #[test]
+    fn pairs_preserves_a_named_dictionary_key() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def("---@class Foo\n---@field id integer\n---@type table<string, Foo>\nlocal items = {}\nfor key, value in pairs(items) do result_key = key; result_value = value end");
+        assert_eq!(ws.expr_ty("result_key"), LuaType::String);
+        assert_eq!(ws.expr_ty("result_value"), ws.ty("Foo"));
+    }
+
+    #[test]
     fn test_ipairs_array_and_integer_dictionary_slots() {
         for container in ["Foo[]", "table<integer, Foo>"] {
             let mut ws = VirtualWorkspace::new_with_init_std_lib();

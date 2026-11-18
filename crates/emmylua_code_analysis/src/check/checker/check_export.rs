@@ -10,7 +10,7 @@ use crate::DiagnosticCode;
 use crate::semantic_db::def::{ModuleExport, SemanticId};
 use crate::semantic_db::facts::FileFacts;
 use crate::semantic_model::SemanticModel;
-use crate::{FileId, InFiled, LuaMemberKey, LuaType};
+use crate::{FileId, InFiled, LuaMemberKey, LuaType, MemberInfo};
 
 use super::{CheckContext, Checker};
 use crate::semantic_model::render::humanize_type;
@@ -25,6 +25,13 @@ impl Checker for CheckExportChecker {
             return;
         };
         let root = tree.get_red_root();
+        // CheckContext holds diagnostics for this file. UndefinedFieldChecker runs first and reports the index key range for a missing member.
+        let reported_fields: HashSet<_> = context
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == DiagnosticCode::UndefinedField)
+            .map(|diagnostic| diagnostic.range)
+            .collect();
         let mut checked_index_exprs = HashSet::new();
         for node in root.descendants().filter_map(LuaAst::cast) {
             match node {
@@ -43,7 +50,12 @@ impl Checker for CheckExportChecker {
                     }
                 }
                 LuaAst::LuaIndexExpr(index_expr) => {
-                    if checked_index_exprs.contains(&index_expr.get_syntax_id()) {
+                    if checked_index_exprs.contains(&index_expr.get_syntax_id())
+                        || index_expr
+                            .get_index_key()
+                            .and_then(|key| key.get_range())
+                            .is_some_and(|range| reported_fields.contains(&range))
+                    {
                         continue;
                     }
                     check_index_expr(
@@ -73,11 +85,37 @@ fn check_index_expr(
     let Some(module_file) = import_module_file(semantic_model, &prefix) else {
         return;
     };
-    let Some(module_facts) = semantic_model.file_facts_of(module_file) else {
+    let module_model = semantic_model.model_for(module_file);
+    let Some(module_facts) = module_model.file_facts() else {
         return;
     };
-    let Some(export_ty) = export_table_type(module_file, module_facts) else {
+    if let ModuleExport::Decl { decl, .. } = &module_facts.module_export
+        && let Some(annotation) = module_facts
+            .decl_by_id(decl)
+            .and_then(|decl| decl.doc_type_syntax)
+        && matches!(
+            module_model.doc_type_lua(annotation),
+            LuaType::Unknown | LuaType::Any | LuaType::Table | LuaType::TableGeneric(_)
+        )
+    {
         return;
+    }
+    let declared_ty = match &module_facts.module_export {
+        ModuleExport::Decl { decl, .. } => module_model.type_of_decl(decl),
+        ModuleExport::Expr { value_syntax } => Some(module_model.type_of_expr(*value_syntax)),
+        ModuleExport::Global { .. } | ModuleExport::None => None,
+    };
+    // A typed class can publish fields from both its declaration and its initializer.
+    // Open annotations and index signatures are checked through their declared types.
+    let export_ty = match declared_ty.as_ref() {
+        Some(ty @ LuaType::TableConst(_)) => ty.clone(),
+        Some(ty) if is_export_class(&module_model, ty) => {
+            let Some(runtime) = export_table_type(module_file, module_facts) else {
+                return;
+            };
+            runtime
+        }
+        _ => return,
     };
     let Some(index_key) = index_expr.get_index_key() else {
         return;
@@ -85,18 +123,12 @@ fn check_index_expr(
     let Some(key) = lua_member_key(semantic_model, &index_key) else {
         return;
     };
-    let declared_ty = match &module_facts.module_export {
-        ModuleExport::Decl { decl, .. } => semantic_model.type_of_decl(decl),
-        _ => None,
-    };
     // If the export surface contains the member → valid.
     //
     // Canonical module owners also aggregate mutations contributed by other
     // files (P5 require aliases). Those are visible to semantic resolution but
     // are *not* part of the original export surface: a consumer doing
     // `local a = require("mod"); a.newField = 1` is still an injection.
-    // Declared class fields (including inherited fields in another file) are
-    // part of the contract, even when absent from the initial table literal.
     let is_surface_member = semantic_model
         .member_infos_with_key(&export_ty, &key)
         .into_iter()
@@ -106,18 +138,7 @@ fn check_index_expr(
                 .into_iter()
                 .flat_map(|ty| semantic_model.member_infos_with_key(ty, &key)),
         )
-        .any(|info| {
-            info.file_id.is_none_or(|file_id| file_id == module_file)
-                || info
-                    .file_id
-                    .zip(info.id.as_ref())
-                    .is_some_and(|(file_id, id)| {
-                        semantic_model
-                            .file_facts_of(file_id)
-                            .and_then(|facts| facts.member_by_id(id))
-                            .is_some_and(|member| matches!(member.owner, SemanticId::TypeDef(_)))
-                    })
-        });
+        .any(|info| is_exported_member(semantic_model, module_file, &info));
     // A function-valued __index supplies readable members without declaring
     // fields on the exported table. It does not authorize injecting new fields.
     let is_index_read = code == DiagnosticCode::UndefinedField
@@ -152,6 +173,35 @@ fn check_index_expr(
         }
         _ => {}
     }
+}
+
+fn is_export_class(model: &SemanticModel, ty: &LuaType) -> bool {
+    let id = match ty {
+        LuaType::Ref(id) | LuaType::Def(id) => id.clone(),
+        LuaType::Generic(generic) => generic.get_base_type_id(),
+        _ => return false,
+    };
+    model
+        .type_def_of(&id)
+        .is_some_and(|def| def.kind == crate::TypeDefKind::Class && !model.is_std_file(def.file_id))
+}
+
+/// Accept the module's own members and declared class fields from other files.
+fn is_exported_member(model: &SemanticModel, module_file: FileId, info: &MemberInfo) -> bool {
+    // Structural members have no declaring file and belong to the queried type.
+    let Some(file) = info.file_id else {
+        return true;
+    };
+    if file == module_file {
+        return true;
+    }
+    let Some(id) = &info.id else {
+        return false;
+    };
+    model
+        .file_facts_of(file)
+        .and_then(|facts| facts.member_by_id(id))
+        .is_some_and(|member| matches!(member.owner, SemanticId::TypeDef(_)))
 }
 
 /// Runtime surface of a table constructor exported directly or through a local declaration.

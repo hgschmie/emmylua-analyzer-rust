@@ -704,6 +704,10 @@ fn loop_carried_types_exclude_statically_unreachable_writes() {
     use emmylua_parser::{LuaAstNode, LuaNameExpr};
     for tail in [
         "break; value = 'text'",
+        "value = 'text'; break",
+        "value = 'text'; return",
+        "if other then value = 'text'; break end",
+        "while other do value = 'text'; break end; break",
         "return; value = 'text'",
         "if false then value = 'text' end",
         "if not true then value = 'text' end",
@@ -1080,4 +1084,12 @@ fn captured_assigned_parameters_keep_closure_entry_flow() {
         );
         assert_eq!(super::super::flow_metrics::fast_decl_hits(), 0);
     }
+}
+
+#[test]
+fn identity_write_preserves_narrowed_loop_entry() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let source = "---@param value integer|string\n---@param flag boolean\nlocal function f(value, flag)\nif type(value) == 'number' then\nwhile flag do observed = value; value = value end\nend end";
+    ws.def(source);
+    assert_eq!(ws.expr_ty("observed"), LuaType::Integer);
 }

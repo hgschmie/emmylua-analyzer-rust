@@ -226,7 +226,7 @@ fn p11_sequential_loop_summaries_do_not_expand_exponentially() {
             let tree = model.flow_tree().unwrap();
             let flow = tree.get_flow_id_at(name.get_position()).unwrap();
             assert!(tree.is_loop_reachable(flow));
-            assert!(!tree.is_cycle_reachable(flow));
+            assert!(!tree.is_in_cycle(flow));
             flow_metrics::reset();
             let ty = model.type_of_expr_at(name.get_syntax_id(), name.get_position());
             assert!(!ty.is_unknown() && !ty.is_never());

@@ -13,7 +13,6 @@ pub mod check_field;
 pub mod check_return_count;
 pub mod circle_doc_class;
 pub mod code_style;
-mod constructor;
 pub mod deprecated;
 pub mod discard_returns;
 pub mod duplicate_field;
@@ -44,7 +43,7 @@ pub mod unnecessary_if;
 pub mod unresolved_require;
 pub mod unused;
 
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use lsp_types::{DiagnosticSeverity, DiagnosticTag};
 use rowan::TextRange;
@@ -66,24 +65,11 @@ pub struct Diagnostic {
     pub data: Option<serde_json::Value>,
 }
 
-/// Unconfigured failure data shared between constructor checker passes.
-/// These producers use no code-action data; consumers apply severity and tags
-/// through their active context after selecting one complete alternative.
-#[derive(Debug, Clone)]
-pub(crate) struct ConstructorDiagnostic {
-    pub range: TextRange,
+/// A validation error before diagnostic settings are applied.
+pub(super) struct Mismatch {
     pub code: DiagnosticCode,
+    pub range: TextRange,
     pub message: String,
-}
-
-impl From<Diagnostic> for ConstructorDiagnostic {
-    fn from(diagnostic: Diagnostic) -> Self {
-        Self {
-            range: diagnostic.range,
-            code: diagnostic.code,
-            message: diagnostic.message,
-        }
-    }
 }
 
 /// Checker trait (mirrors `diagnostic::checker::Checker`).
@@ -116,8 +102,6 @@ pub struct CheckContext<'a> {
     pub semantic_model: &'a SemanticModel<'a>,
     pub(crate) config: Arc<CheckConfig>,
     diagnostics: Vec<Diagnostic>,
-    filter_diagnostics: bool,
-    constructor_selections: param_type_check::ConstructorSelections,
 }
 
 impl<'a> CheckContext<'a> {
@@ -126,21 +110,6 @@ impl<'a> CheckContext<'a> {
             semantic_model,
             config,
             diagnostics: Vec::new(),
-            filter_diagnostics: true,
-            constructor_selections: Default::default(),
-        }
-    }
-
-    /// Collect structural failures independently of user-facing diagnostic filters.
-    pub(super) fn unfiltered(semantic_model: &'a SemanticModel<'a>) -> Self {
-        static CONFIG: LazyLock<Arc<CheckConfig>> =
-            LazyLock::new(|| Arc::new(CheckConfig::default()));
-        Self {
-            semantic_model,
-            config: CONFIG.clone(),
-            diagnostics: Vec::new(),
-            filter_diagnostics: false,
-            constructor_selections: Default::default(),
         }
     }
 
@@ -166,10 +135,9 @@ impl<'a> CheckContext<'a> {
         message: String,
         data: Option<serde_json::Value>,
     ) {
-        if self.filter_diagnostics
-            && (!self.is_diagnostic_enabled(code, range)
-                || (code == DiagnosticCode::UnusedSelf
-                    && !self.is_diagnostic_enabled(DiagnosticCode::Unused, range)))
+        if !self.is_diagnostic_enabled(code, range)
+            || (code == DiagnosticCode::UnusedSelf
+                && !self.is_diagnostic_enabled(DiagnosticCode::Unused, range))
         {
             return;
         }
@@ -185,8 +153,7 @@ impl<'a> CheckContext<'a> {
         });
     }
 
-    /// Applies configuration and annotation filters to one diagnostic code.
-    fn is_diagnostic_enabled(&self, code: DiagnosticCode, range: TextRange) -> bool {
+    pub(super) fn is_diagnostic_enabled(&self, code: DiagnosticCode, range: TextRange) -> bool {
         if let Some(facts) = self.semantic_model.file_facts() {
             let force_enable = facts.file_diagnostic_enabled.contains(&code);
             if !force_enable {

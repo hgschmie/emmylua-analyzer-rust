@@ -87,75 +87,12 @@ fn compute(
     {
         return None;
     }
-    let closure = node
-        .ancestors()
-        .find_map(LuaClosureExpr::cast)
-        .map(|c| c.get_syntax_id());
-    // Include nested loops in this closure: their writes can reach a later outer
-    // iteration. Repeated types collapse during widening. Nested closure bodies
-    // are excluded; calling them needs a separate captured-value effect summary.
-    let flow_tree = model.flow_tree()?;
-    let reachable = reachability::reachable_flows(model);
-    let mut assigned = Vec::new();
-    // The first query scans this loop body; completed transfers are cached per
-    // declaration/loop, and reachability is shared across declarations in the file.
-    for statement in node.descendants().filter_map(LuaStat::cast) {
-        if statement
-            .ancestors::<LuaClosureExpr>()
-            .next()
-            .map(|c| c.get_syntax_id())
-            != closure
-        {
-            continue;
-        }
-        if flow_tree
-            .get_flow_id_at(statement.get_position())
-            .and_then(|flow| reachable.get(flow.0 as usize))
-            == Some(&false)
-        {
-            continue;
-        }
-        // Numeric loops with a statically empty range retain a possible body in
-        // the CFG. Its writes cannot contribute to this outer loop transfer.
-        if numeric_loops::is_in_unentered_body(model, &statement) {
-            continue;
-        }
-        let assignment = match statement {
-            LuaStat::AssignStat(assignment) => assignment,
-            LuaStat::FuncStat(function) => {
-                // A function statement installs its closure in the named target;
-                // its body is not executed. Qualified members do not rebind a local.
-                if let Some(LuaVarExpr::NameExpr(name)) = function.get_func_name()
-                    && model.resolve_name(name.get_position()).as_ref() == Some(decl)
-                    && let Some(body) = function.get_closure()
-                {
-                    assigned.push(Some((body.get_syntax_id(), 0)));
-                }
-                continue;
-            }
-            _ => continue,
-        };
-        let (vars, values) = assignment.get_var_and_expr_list();
-        for (index, var) in vars.iter().enumerate() {
-            if let LuaVarExpr::NameExpr(name) = var
-                && model.resolve_name(name.get_position()).as_ref() == Some(decl)
-            {
-                let value = values
-                    .get(index)
-                    .map(|value| (value.get_syntax_id(), 0))
-                    .or_else(|| {
-                        // get(index) failed, so index >= values.len(). Only a
-                        // final call or bare vararg can supply additional result slots.
-                        // For a, b, c = x, f(), c uses result slot 1 of f().
-                        values
-                            .last()
-                            .filter(|value| expands_result_slots(value))
-                            .map(|value| (value.get_syntax_id(), index + 1 - values.len()))
-                    });
-                assigned.push(value);
-            }
-        }
-    }
+    let mut assigned = loop_assignments(model, decl, &node)?;
+    assigned.retain(|rhs| {
+        !rhs.is_some_and(|(syntax, slot)| {
+            slot == 0 && super::is_decl_self_assignment(model, decl, syntax)
+        })
+    });
     if assigned.is_empty() {
         return None;
     }
@@ -227,6 +164,126 @@ fn compute(
         types.push(widen_const_type(typ));
     }
     Some(LuaType::from_vec(types))
+}
+
+fn loop_assignments(
+    model: &SemanticModel,
+    decl: &SemanticId,
+    node: &emmylua_parser::LuaSyntaxNode,
+) -> Option<Vec<Option<(LuaSyntaxId, usize)>>> {
+    let closure = node
+        .ancestors()
+        .find_map(LuaClosureExpr::cast)
+        .map(|c| c.get_syntax_id());
+    // Include nested loops in this closure: their writes can reach a later outer
+    // iteration. Repeated types collapse during widening. Nested closure bodies
+    // are excluded; calling them needs a separate captured-value effect summary.
+    let flow_tree = model.flow_tree()?;
+    let reachable = reachability::reachable_flows(model);
+    let mut assigned = Vec::new();
+    // The first query scans this loop body; completed transfers are cached per
+    // declaration/loop, and reachability is shared across declarations in the file.
+    for statement in node.descendants().filter_map(LuaStat::cast) {
+        if statement
+            .ancestors::<LuaClosureExpr>()
+            .next()
+            .map(|c| c.get_syntax_id())
+            != closure
+        {
+            continue;
+        }
+        if flow_tree
+            .get_flow_id_at(statement.get_position())
+            .and_then(|flow| reachable.get(flow.0 as usize))
+            == Some(&false)
+        {
+            continue;
+        }
+        // Numeric loops with a statically empty range retain a possible body in
+        // the CFG. Its writes cannot contribute to this outer loop transfer.
+        if numeric_loops::is_in_unentered_body(model, &statement) {
+            continue;
+        }
+        if definitely_exits_after(&statement, node) {
+            continue;
+        }
+        let assignment = match statement {
+            LuaStat::AssignStat(assignment) => assignment,
+            LuaStat::FuncStat(function) => {
+                // A function statement installs its closure in the named target;
+                // its body is not executed. Qualified members do not rebind a local.
+                if let Some(LuaVarExpr::NameExpr(name)) = function.get_func_name()
+                    && model.resolve_name(name.get_position()).as_ref() == Some(decl)
+                    && let Some(body) = function.get_closure()
+                {
+                    assigned.push(Some((body.get_syntax_id(), 0)));
+                }
+                continue;
+            }
+            _ => continue,
+        };
+        let (vars, values) = assignment.get_var_and_expr_list();
+        for (index, var) in vars.iter().enumerate() {
+            if let LuaVarExpr::NameExpr(name) = var
+                && model.resolve_name(name.get_position()).as_ref() == Some(decl)
+            {
+                let value = values
+                    .get(index)
+                    .map(|value| (value.get_syntax_id(), 0))
+                    .or_else(|| {
+                        // get(index) failed, so index >= values.len(). Only a
+                        // final call or bare vararg can supply additional result slots.
+                        // For a, b, c = x, f(), c uses result slot 1 of f().
+                        values
+                            .last()
+                            .filter(|value| expands_result_slots(value))
+                            .map(|value| (value.get_syntax_id(), index + 1 - values.len()))
+                    });
+                assigned.push(value);
+            }
+        }
+    }
+    Some(assigned)
+}
+
+/// An unconditional exit following a write prevents it from reaching the next
+/// iteration. A break from a nested loop can still reach this outer loop.
+fn definitely_exits_after(statement: &LuaStat, target: &emmylua_parser::LuaSyntaxNode) -> bool {
+    let enclosing = |node: &emmylua_parser::LuaSyntaxNode| {
+        node.ancestors()
+            .take_while(|node| node != target)
+            .filter_map(LuaStat::cast)
+    };
+    let mut ancestors = enclosing(statement.syntax());
+    while let Some(current) = ancestors.next() {
+        let next = current
+            .syntax()
+            .siblings(rowan::Direction::Next)
+            .skip(1)
+            .filter_map(LuaStat::cast)
+            .find(|stat| !matches!(stat, LuaStat::EmptyStat(_)));
+        match next {
+            None => continue,
+            Some(LuaStat::ReturnStat(_)) => return true,
+            Some(LuaStat::BreakStat(_)) => {
+                let nested = ancestors.find(|stat| {
+                    matches!(
+                        stat,
+                        LuaStat::WhileStat(_)
+                            | LuaStat::RepeatStat(_)
+                            | LuaStat::ForStat(_)
+                            | LuaStat::ForRangeStat(_)
+                    )
+                });
+                let Some(nested) = nested else {
+                    return true;
+                };
+                ancestors = enclosing(nested.syntax());
+            }
+            Some(_) => return false,
+        }
+    }
+    false
 }
 
 fn has_structural_shape(typ: &LuaType) -> bool {

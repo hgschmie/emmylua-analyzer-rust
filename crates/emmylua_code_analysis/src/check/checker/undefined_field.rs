@@ -8,7 +8,8 @@
 //! - Class runtime value bound to a table literal: check against the class member surface.
 
 use emmylua_parser::{
-    LuaAstNode, LuaDocType, LuaExpr, LuaIndexExpr, LuaIndexKey, LuaSyntaxKind, LuaTokenKind,
+    LuaAssignStat, LuaAstNode, LuaDocType, LuaExpr, LuaIndexExpr, LuaIndexKey, LuaSyntaxKind,
+    LuaTokenKind,
 };
 use rowan::TextRange;
 
@@ -46,6 +47,28 @@ fn check_index(
     let Some(resolved) = semantic_model.resolve_member(index_expr) else {
         return;
     };
+    // The member exists, but only in declarations hidden by `---@version`.
+    // Report it instead of silently accepting an API that is absent from this runtime.
+    if semantic_model.is_version_hidden_member_access(index_expr) {
+        // A definition may introduce a member for another runtime version.
+        // Other writes still need the ordinary member and index-key checks below.
+        if is_definition_index_expr(index_expr) {
+            return;
+        }
+        if let Some(index_key) = index_expr.get_index_key() {
+            context.add_diagnostic(
+                DiagnosticCode::UndefinedField,
+                index_key
+                    .get_range()
+                    .unwrap_or_else(|| index_expr.get_range()),
+                t!(
+                    "Undefined field: `%{name}`",
+                    name = index_key.get_path_part()
+                ),
+            );
+        }
+        return;
+    }
     if resolved.member_id.as_ref().is_some_and(|id| {
         // Index navigation can select the signature without proving its domain
         // accepts this key. Only an explicit field bypasses key validation.
@@ -98,6 +121,28 @@ fn check_index(
             name = index_key.get_path_part()
         ),
     );
+}
+
+/// Whether the index expression is a declaration/assignment target rather than a read.
+fn is_definition_index_expr(index_expr: &LuaIndexExpr) -> bool {
+    let mut current = index_expr.syntax().clone();
+    while let Some(parent) = current.parent() {
+        if LuaIndexExpr::cast(parent.clone()).is_some() {
+            current = parent;
+            continue;
+        }
+        if parent.kind() == LuaSyntaxKind::FuncStat.into() {
+            return true;
+        }
+        if let Some(assign) = LuaAssignStat::cast(parent) {
+            let (vars, _) = assign.get_var_and_expr_list();
+            return vars
+                .iter()
+                .any(|var| var.syntax().text_range() == current.text_range());
+        }
+        break;
+    }
+    false
 }
 
 fn is_invalid_prefix_type(ty: &LuaType) -> bool {
@@ -182,7 +227,7 @@ fn is_valid_member(
             let Some((decl, def)) = table_binding(semantic_model, table.file_id, table.value)
             else {
                 // Unbound table: a local export table is still checked against the export surface (old check_export semantics).
-                return !is_export_surface_missing(semantic_model, table, index_expr, index_key);
+                return !is_export_surface_missing(semantic_model, table, index_key);
             };
             // Members of std built-in tables (table/string/...) are not checked for undefined fields.
             if matches!(
@@ -315,10 +360,7 @@ fn valid_named_member(
         return true;
     }
     // `[]` inside a conditional expression is allowed broadly (old check_field semantics).
-    if in_conditional_statement(index_expr) && has_bracket(index_expr) {
-        return true;
-    }
-    false
+    in_conditional_statement(index_expr) && has_bracket(index_expr)
 }
 
 fn enum_table_access(
@@ -503,6 +545,9 @@ fn key_matches(semantic_model: &SemanticModel<'_>, key: &LuaType, table_key: &Lu
     if table_key.is_unknown() || table_key.is_any() {
         return true;
     }
+    if let Some(expanded) = expand_alias_type(semantic_model, key) {
+        return key_matches(semantic_model, &expanded, table_key);
+    }
     match table_key {
         LuaType::String | LuaType::StringConst(_) | LuaType::DocStringConst(_) => {
             string_key_expanded(semantic_model, key)
@@ -655,7 +700,6 @@ fn is_enum_like_key_inner(
 fn is_export_surface_missing(
     semantic_model: &SemanticModel<'_>,
     table: &InFiled<TextRange>,
-    index_expr: &LuaIndexExpr,
     index_key: &LuaIndexKey,
 ) -> bool {
     let Some(facts) = semantic_model.file_facts_of(table.file_id) else {
@@ -679,7 +723,7 @@ fn is_export_surface_missing(
         return semantic_model.member_info(&export_ty, &key).is_none();
     }
     // Dynamic keys are not checked against the export surface.
-    !in_conditional_statement(index_expr) && false
+    false
 }
 
 fn static_member_key(

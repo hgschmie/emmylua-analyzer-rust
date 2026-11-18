@@ -86,7 +86,7 @@ fn bare_table_fix_preserves_known_record_and_array_types() {
 
 #[test]
 fn bare_table_alias_members_are_any() {
-    for expression in ["value.missing", "value[key]"] {
+    for expression in ["value.known", "value.missing", "value[key]"] {
         let mut ws = VirtualWorkspace::new();
         let file = ws.def(&format!(
             r#"
@@ -175,7 +175,7 @@ fn bare_table_union_and_long_alias_reads_remain_open() {
         for n in 1..48 {
             definitions.push_str(&format!("---@alias Chain{n} Chain{}\n", n - 1));
         }
-        for expression in ["value.missing", "value[key]"] {
+        for expression in ["value.known", "value.missing", "value[key]"] {
             let mut ws = VirtualWorkspace::new();
             ws.def(&definitions);
             let file = ws.def(&format!("---@param value {annotation}\n---@param key string\nfunction read(value,key) local result={expression} return result end"));
@@ -189,9 +189,9 @@ fn bare_table_union_and_long_alias_reads_remain_open() {
 }
 
 #[test]
-fn bare_table_generic_repair_keeps_nested_arguments_and_intersections() {
+fn bare_table_generic_repair_keeps_nested_arguments() {
     let mut ws = VirtualWorkspace::new();
-    ws.def("---@class Wrapper<A,B>\n---@field first A\n---@field second B\n---@class Owner<T>\n---@field value Wrapper<{foo:T},T>\n---@field nested Wrapper<Wrapper<{foo:T},T>,T>\n---@class Record\n---@field known string");
+    ws.def("---@class Wrapper<A,B>\n---@field first A\n---@field second B\n---@class Owner<T>\n---@field value Wrapper<{foo:T},T>\n---@field nested Wrapper<Wrapper<{foo:T},T>,T>");
     for (annotation, expression, expected) in [
         ("Owner<integer>", "value.value.first.foo", LuaType::Integer),
         ("Owner<integer>", "value.value.second", LuaType::Integer),
@@ -266,4 +266,36 @@ fn bare_table_generic_repair_preserves_union_object_arguments() {
         model.member_type(&value, &crate::LuaMemberKey::from("second")),
         Some(LuaType::Integer)
     );
+}
+
+#[test]
+fn open_member_or_preserves_nullable_fallbacks() {
+    for fallback in ["nil", "other"] {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def(&format!("---@param t table\n---@param other string?\nfunction f(t, other)\nlocal result = t.field or {fallback}\nreturn result end"));
+        assert!(result_type(&ws, file).is_nullable(), "{fallback}");
+    }
+}
+
+#[test]
+fn structured_members_remain_available_for_navigation_on_open_unions() {
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("---@class Record\n---@field name string");
+    let ty = ws.ty("table|Record");
+    let model = ws.analysis.semantic_model(file);
+    let fields = model.member_infos_with_key(&ty, &crate::LuaMemberKey::from("name"));
+    assert!(fields.iter().any(|field| field.typ == LuaType::String));
+    assert!(
+        model
+            .member_infos_with_key(&ty, &crate::LuaMemberKey::from("other"))
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_definitely_truthy_record_skips_its_nullable_fallback() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def("---@class Record\n---@field name string");
+    let file = ws.def("---@param value Record\n---@param fallback string?\nfunction f(value, fallback) local result = value or fallback return result end");
+    assert_eq!(result_type(&ws, file), ws.ty("Record"));
 }
