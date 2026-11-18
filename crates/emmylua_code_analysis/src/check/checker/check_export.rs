@@ -119,17 +119,13 @@ fn check_index_expr(
     // `local a = require("mod"); a.newField = 1` is still an injection.
     // Declared class fields (including inherited fields in another file) are
     // part of the contract, even when absent from the initial table literal.
-    let is_surface_member = semantic_model
-        .member_infos_with_key(&export_ty, &key)
-        .into_iter()
-        .chain(
-            declared_ty
-                .as_ref()
-                .into_iter()
-                .flat_map(|ty| semantic_model.member_infos_with_key(ty, &key)),
-        )
-        .any(|info| is_exported_member(semantic_model, module_file, &info));
-    if is_surface_member {
+    let contains_key = |ty| {
+        semantic_model
+            .member_infos_with_key(ty, &key)
+            .iter()
+            .any(|info| is_exported_member(semantic_model, module_file, info))
+    };
+    if contains_key(&export_ty) || declared_ty.as_ref().is_some_and(contains_key) {
         return;
     }
     let field_name = index_key.get_path_part();
@@ -161,6 +157,7 @@ fn check_index_expr(
 
 /// Accept the module's own members and declared class fields from other files.
 fn is_exported_member(model: &SemanticModel, module_file: FileId, info: &MemberInfo) -> bool {
+    // Structural members have no declaring file and belong to the queried type.
     let Some(file) = info.file_id else {
         return true;
     };
