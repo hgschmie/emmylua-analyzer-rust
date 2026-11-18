@@ -4555,12 +4555,10 @@ fn logical_left_nullable_extra(model: &SemanticModel, syntax: LuaSyntaxId) -> Op
         .and_then(|resolved| resolved.member_id)
         .or_else(|| {
             let prefix = index_expr.get_prefix_expr()?;
+            // Only infer the strictly smaller receiver, and use its read contract.
             let prefix_type = model.type_of_expr_at(prefix.get_syntax_id(), prefix.get_position());
             let key = index_key_to_member_key(&index_expr.get_index_key()?)?;
-            model
-                .member_infos_with_key(&prefix_type, &key)
-                .into_iter()
-                .find_map(|info| info.id)
+            crate::semantic_model::member::member_info(model, &prefix_type, &key)?.id
         })?;
     let member_file = match &member_id {
         SemanticId::Member(key) => key.file_id,

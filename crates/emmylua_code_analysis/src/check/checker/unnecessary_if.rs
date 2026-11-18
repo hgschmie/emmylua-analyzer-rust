@@ -35,24 +35,7 @@ fn check_condition(
     semantic_model: &SemanticModel<'_>,
     condition: &emmylua_parser::LuaExpr,
 ) {
-    let is_declared_field = if let emmylua_parser::LuaExpr::IndexExpr(index) = condition
-        && let Some(ref id @ crate::SemanticId::Member(ref key)) = semantic_model
-            .resolve_member(index)
-            .and_then(|resolved| resolved.member_id)
-    {
-        semantic_model
-            .file_facts_of(key.file_id)
-            .and_then(|facts| facts.member_by_id(&id))
-            .is_some_and(|member| {
-                matches!(
-                    member.source,
-                    crate::semantic_db::def::MemberSource::DocField
-                )
-            })
-    } else {
-        false
-    };
-    let expr_type = if is_declared_field {
+    let expr_type = if is_documented_field(semantic_model, condition) {
         semantic_model.type_of_expr_at(condition.get_syntax_id(), condition.get_position())
     } else {
         semantic_model.type_of_expr(condition.get_syntax_id())
@@ -75,4 +58,28 @@ fn check_condition(
             t!("Impossible `if` statement: this condition is always falsy"),
         );
     }
+}
+
+fn is_documented_field(model: &SemanticModel, expr: &emmylua_parser::LuaExpr) -> bool {
+    let emmylua_parser::LuaExpr::IndexExpr(index) = expr else {
+        return false;
+    };
+    let Some(id) = model
+        .resolve_member(index)
+        .and_then(|resolved| resolved.member_id)
+    else {
+        return false;
+    };
+    let crate::SemanticId::Member(key) = &id else {
+        return false;
+    };
+    model
+        .file_facts_of(key.file_id)
+        .and_then(|facts| facts.member_by_id(&id))
+        .is_some_and(|member| {
+            matches!(
+                member.source,
+                crate::semantic_db::def::MemberSource::DocField
+            )
+        })
 }
