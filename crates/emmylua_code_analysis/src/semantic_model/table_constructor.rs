@@ -99,23 +99,22 @@ impl TableConstructor {
     {
         let mut seen = HashSet::new();
         self.fields.iter().rev().map(move |field| {
-            let mut entries = field.entries()?;
-            entries.retain(|(key, _)| !seen.contains(key));
-            // Keep all alternatives in this field; mask earlier writes only for
-            // result slots that every return alternative actually supplies.
             let key = field.key.as_ref().map_err(Clone::clone)?;
-            if is_literal_key(key) {
-                if field.expands
-                    && let LuaType::IntegerConst(start) = key
-                {
-                    let value = field.value.as_ref().map_err(Clone::clone)?;
-                    for offset in 0..minimum_result_count(value) {
-                        seen.insert(LuaType::IntegerConst(start + offset as i64));
-                    }
-                } else {
-                    seen.insert(key.clone());
+            if !field.expands {
+                if is_literal_key(key) && !seen.insert(key.clone()) {
+                    return Ok(Vec::new());
+                }
+                return field.entries();
+            }
+            // Only the final field can expand, so it is visited first. Mask
+            // earlier integer keys only for slots supplied by every alternative.
+            if let LuaType::IntegerConst(start) = key {
+                let value = field.value.as_ref().map_err(Clone::clone)?;
+                for offset in 0..minimum_result_count(value) {
+                    seen.insert(LuaType::IntegerConst(start + offset as i64));
                 }
             }
+            let entries = field.entries()?;
             Ok(entries)
         })
     }
