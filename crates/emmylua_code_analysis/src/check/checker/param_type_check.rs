@@ -317,7 +317,7 @@ fn preferred_table_overload(
         .iter()
         .enumerate()
         .find_map(|(i, arg)| table_expr(arg).map(|table| (i, table)))?;
-    // Limit the hint to one named literal. A hint changes only the order of evaluation.
+    // Use the first named string literal in the first table argument to bound lookup cost.
     let (key, value) = table
         .get_fields_with_keys()
         .into_iter()
@@ -352,15 +352,11 @@ fn parameter_for_argument(
     arg: usize,
     colon_call: bool,
 ) -> Option<&LuaType> {
-    let explicit_self = first_param_is_self(candidate);
-    let index = if colon_call && (explicit_self || !candidate.is_colon_define()) {
-        // The receiver occupies the first declared parameter.
-        arg + 1
-    } else if !colon_call && !explicit_self && candidate.is_colon_define() {
-        // A dot call to a method passes the receiver as its first argument.
-        arg.checked_sub(1)?
-    } else {
-        arg
+    let implicit_self = candidate.is_colon_define() && !first_param_is_self(candidate);
+    let index = match (colon_call, implicit_self) {
+        (true, false) => arg + 1, // The receiver fills the first declared parameter.
+        (false, true) => arg.checked_sub(1)?, // The first actual argument supplies the receiver.
+        _ => arg,                 // Caller and signature agree on the receiver.
     };
     candidate.get_params().get(index)?.1.as_ref()
 }
