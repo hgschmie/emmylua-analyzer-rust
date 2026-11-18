@@ -44,16 +44,17 @@ fn check_index(
     semantic_model: &SemanticModel<'_>,
     index_expr: &LuaIndexExpr,
 ) {
-    // `function C.hidden()` / `C.hidden = value`: the member definition target is not an access.
-    if is_definition_index_expr(index_expr) {
-        return;
-    }
     let Some(resolved) = semantic_model.resolve_member(index_expr) else {
         return;
     };
     // The member exists, but only in declarations hidden by `---@version`.
     // Report it instead of silently accepting an API that is absent from this runtime.
     if semantic_model.is_version_hidden_member_access(index_expr) {
+        // A definition may introduce a member for another runtime version.
+        // Other writes still need the ordinary member and index-key checks below.
+        if is_definition_index_expr(index_expr) {
+            return;
+        }
         if let Some(index_key) = index_expr.get_index_key() {
             context.add_diagnostic(
                 DiagnosticCode::UndefinedField,
