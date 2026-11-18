@@ -4022,8 +4022,8 @@ pub(crate) fn unify_call_bindings(
                     }
                 } else if pv.iter().any(LuaType::contains_tpl_node) {
                     // A broad table alternative must not hide bindings available
-                    // from a typed collection alternative. Failed alternatives must
-                    // not leak partial bindings into the next attempt.
+                    // from a typed collection alternative. Prefer the match that binds
+                    // the most parameters, keeping union order for equally informative matches.
                     let mut best: Option<unify::TplBindings> = None;
                     for param in &pv {
                         if matches!(param, Table) && !model.type_check_subtype(arg, param) {

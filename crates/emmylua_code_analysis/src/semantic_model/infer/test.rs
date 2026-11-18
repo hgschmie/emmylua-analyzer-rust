@@ -1943,13 +1943,33 @@ fn test_collection_union_binding_rollback_and_typed_match() {
     ));
     assert!(invalid_bindings.is_empty());
 
-    // A failed structural alternative may bind T before rejecting another slot.
     let tuple = |items| {
         LuaType::Tuple(Rc::new(crate::LuaTupleType::new(
             items,
             crate::LuaTupleStatus::InferResolve,
         )))
     };
+    // Both alternatives match. Only the second determines both return parameters.
+    let other = LuaType::TplRef(Rc::new(GenericTpl::new(
+        GenericTplId::Type(1),
+        "U".into(),
+        None,
+        None,
+        false,
+        None,
+    )));
+    let union = LuaType::from_vec(vec![
+        tuple(vec![generic.clone(), LuaType::Integer]),
+        tuple(vec![generic.clone(), other]),
+    ]);
+    let actual = tuple(vec![LuaType::String, LuaType::Integer]);
+    let mut both = TplBindings::new();
+    assert!(super::vm::unify_call_bindings(
+        &model, &union, &actual, &mut both
+    ));
+    assert_eq!(both.get(&GenericTplId::Type(1)), Some(&LuaType::Integer));
+
+    // A failed structural alternative may bind T before rejecting another slot.
     let first = tuple(vec![generic.clone(), LuaType::String]);
     let second = tuple(vec![LuaType::String, generic]);
     let union = LuaType::from_vec(vec![first, second]);
