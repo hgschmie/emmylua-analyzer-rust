@@ -445,7 +445,7 @@ fn numeric_key_expanded_inner(
     ty: &LuaType,
     visited: &mut Vec<LuaTypeDeclId>,
 ) -> bool {
-    match ty {
+    let id = match ty {
         LuaType::Number
         | LuaType::Integer
         | LuaType::IntegerConst(_)
@@ -461,15 +461,13 @@ fn numeric_key_expanded_inner(
                 .iter()
                 .any(|part| numeric_key_expanded_inner(semantic_model, part, visited));
         }
-        _ => {}
-    }
-    let Some(def) = named_type_def(semantic_model, ty) else {
-        return false;
-    };
-    let id = match ty {
         LuaType::Ref(id) | LuaType::Def(id) => id,
         _ => return false,
     };
+    let Some(def) = semantic_model.type_def_of(id) else {
+        return false;
+    };
+    // This is a reachability check. Each named definition has the same exits on every path.
     if visited.contains(id) {
         return false;
     }
@@ -507,13 +505,13 @@ fn key_matches(semantic_model: &SemanticModel<'_>, key: &LuaType, table_key: &Lu
             .iter()
             .any(|k| key_matches(semantic_model, key, k)),
         LuaType::Ref(_) | LuaType::Def(_) => {
-            // Alias / class inheritance: recursive target or parent chain is handled by type_check.
-            if matches!(
-                expand_alias_type(semantic_model, table_key),
-                Some(LuaType::Number | LuaType::Integer)
-            ) {
-                return numeric_key_expanded(semantic_model, key);
+            // An alias of a primitive key domain follows the same rule as that primitive.
+            if let Some(domain @ (LuaType::Number | LuaType::Integer | LuaType::String)) =
+                expand_alias_type(semantic_model, table_key)
+            {
+                return key_matches(semantic_model, key, &domain);
             }
+            // Keep type compatibility for literal aliases and named classes.
             is_compatible(semantic_model, key, table_key)
         }
         _ => true,
