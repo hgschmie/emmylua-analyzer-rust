@@ -154,6 +154,8 @@ pub(super) fn table_literal_mismatches(
                 start,
                 best,
             } => {
+                // Every sibling starts at the same offset. Discard its temporary
+                // errors on success, or keep the shortest complete failure.
                 let branch = errors.split_off(start);
                 if branch.is_empty() {
                     continue;
@@ -220,7 +222,7 @@ fn check_table_head(
             let mut alternatives =
                 constructor_alternatives(semantic_model, union, table).into_iter();
             if let Some(first) = alternatives.next() {
-                if alternatives.len() > 0 {
+                if !alternatives.as_slice().is_empty() {
                     pending.push(TableCheck::NextAlternative {
                         table: table.clone(),
                         remaining: alternatives,
@@ -321,7 +323,8 @@ fn constructor_alternatives(
     });
     if let Some(only) = viable.next()
         && viable.next().is_none()
-        && !target_def(model, only).is_some_and(|def| def.kind == TypeDefKind::Alias)
+        && (matches!(only, LuaType::Object(_))
+            || target_def(model, only).is_some_and(|def| def.kind == TypeDefKind::Class))
     {
         return vec![only.clone()];
     }
