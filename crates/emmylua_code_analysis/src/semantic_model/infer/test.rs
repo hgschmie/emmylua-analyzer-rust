@@ -1918,6 +1918,23 @@ fn test_collection_union_binding_rollback_and_typed_match() {
         false,
         None,
     )));
+    // A matching scalar alternative leaves T available for a later argument.
+    let scalar = LuaType::from_vec(vec![LuaType::String, generic.clone()]);
+    let mut shared = TplBindings::new();
+    assert!(super::vm::unify_call_bindings(
+        &model,
+        &scalar,
+        &LuaType::String,
+        &mut shared
+    ));
+    assert!(shared.is_empty());
+    assert!(super::vm::unify_call_bindings(
+        &model,
+        &generic,
+        &LuaType::Integer,
+        &mut shared
+    ));
+    assert_eq!(shared.get(&GenericTplId::Type(0)), Some(&LuaType::Integer));
     let array = LuaType::Array(Rc::new(crate::LuaArrayType::from_base_type(
         generic.clone(),
     )));

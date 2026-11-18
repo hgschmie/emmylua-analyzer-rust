@@ -81,6 +81,12 @@ pub(crate) fn infer_call_signature(
     };
     let owner = model.resolve_name(name.get_position())?;
     let mut candidates = model.callable_candidates_for_expr(&callee);
+    if candidates
+        .iter()
+        .all(|candidate| candidate.get_generic_params().is_empty())
+    {
+        return None;
+    }
     // Preserve explicit-overload precedence among the signatures still reaching
     // this call. The shared expression query excludes replaced/removed signatures.
     if candidates.len() > 1

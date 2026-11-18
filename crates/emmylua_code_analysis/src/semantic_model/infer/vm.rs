@@ -4020,7 +4020,14 @@ pub(crate) fn unify_call_bindings(
                     } else {
                         true
                     }
-                } else if pv.iter().any(LuaType::contains_tpl_node) {
+                } else if pv.iter().any(LuaType::contains_tpl_node)
+                    && pv.iter().any(|ty| {
+                        matches!(
+                            ty,
+                            Table | Array(_) | Tuple(_) | TableGeneric(_) | Object(_)
+                        )
+                    })
+                {
                     // A broad table alternative must not hide bindings available
                     // from a typed collection alternative. Prefer the match that binds
                     // the most parameters, keeping union order for equally informative matches.
