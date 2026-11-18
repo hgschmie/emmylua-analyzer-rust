@@ -42,6 +42,62 @@ fn asymmetric_fields_hover_and_navigation() {
 }
 
 #[gtest]
+fn asymmetric_fields_property_references_and_rename() {
+    let mut ws = ProviderVirtualWorkspace::new();
+    let source = "---@class Property\n---@field (read) value number\n---@field (write) value string\n---@param property Property\nlocal function check(property)\nlocal x = property.value\nproperty.value = 'coal'\nend";
+    let file = ws.def_file("paired.lua", &source);
+    let ranges = source
+        .lines()
+        .enumerate()
+        .filter_map(|(line, text)| {
+            let start = text.find("value")? as u32;
+            Some(lsp_types::Range::new(
+                Position::new(line as u32, start),
+                Position::new(line as u32, start + 5),
+            ))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(ranges.len(), 4);
+    for range in &ranges {
+        let cursor = Position::new(range.start.line, range.start.character + 2);
+        let refs = crate::handlers::references::references(&ws.analysis, file, cursor, true)
+            .expect("references");
+        let mut hits: Vec<_> = refs.iter().map(|location| location.range).collect();
+        hits.sort_by_key(|r| r.start);
+        assert!(
+            hits.starts_with(&ranges[..2]),
+            "both accessor declarations from {cursor:?}: {hits:?}"
+        );
+        let uses = crate::handlers::references::references(&ws.analysis, file, cursor, false)
+            .expect("uses");
+        assert!(
+            uses.iter()
+                .all(|location| !ranges[..2].contains(&location.range))
+        );
+        if range == &ranges[3] {
+            assert!(
+                ranges[2..].iter().all(|runtime| hits.contains(runtime)),
+                "indexed runtime uses: {hits:?}"
+            );
+        }
+        let changes = crate::handlers::rename::rename(&ws.analysis, file, cursor, "fuel".into())
+            .expect("rename")
+            .changes
+            .expect("edits");
+        let mut edits: Vec<_> = changes
+            .values()
+            .flatten()
+            .map(|edit| {
+                assert_eq!(edit.new_text, "fuel");
+                edit.range
+            })
+            .collect();
+        edits.sort_by_key(|r| r.start);
+        assert_eq!(edits, ranges, "rename from {cursor:?}");
+    }
+}
+
+#[gtest]
 fn asymmetric_fields_completion() -> Result<()> {
     let mut ws = ProviderVirtualWorkspace::new();
     ws.def_file("defs.lua", DEFS);

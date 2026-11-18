@@ -93,11 +93,11 @@ impl SemanticModel<'_> {
             }
             return Some((writes, directional));
         }
-        let Some(SemanticId::Member(id)) = read.id.as_ref() else {
+        let Some(member_id @ SemanticId::Member(id)) = read.id.as_ref() else {
             return Some((vec![read.clone()], false));
         };
         let facts = self.file_facts_of(id.file_id)?;
-        let field = facts.member_by_id(read.id.as_ref()?)?;
+        let field = facts.member_by_id(member_id)?;
         if field.access == MemberAccess::ReadWrite {
             return Some((vec![read.clone()], false));
         }
@@ -124,6 +124,11 @@ impl SemanticModel<'_> {
             },
             _ => return None,
         };
+        // Most keys have no directional declaration anywhere in the project.
+        // Skip receiver inference and projection for them on ordinary reads and writes.
+        if !self.db().has_directional_key(&key) {
+            return None;
+        }
         let prefix = self.type_of_expr(index.get_prefix_expr()?.get_syntax_id());
         self.directional_member(&prefix, &key)
     }

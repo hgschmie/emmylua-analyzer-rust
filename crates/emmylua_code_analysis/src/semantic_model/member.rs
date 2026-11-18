@@ -79,9 +79,11 @@ pub(super) fn member_infos_all(model: &SemanticModel, prefix_type: &LuaType) -> 
         None,
         &mut visited,
         &mut out,
-        None,
-        MemberCollectMode::Effective,
-        None,
+        MemberCollection {
+            filter: None,
+            mode: MemberCollectMode::Effective,
+            raw_member: None,
+        },
     );
     out
 }
@@ -162,9 +164,11 @@ fn find_type_def_member(
             None,
             visited,
             &mut infos,
-            Some(key),
-            MemberCollectMode::Effective,
-            None,
+            MemberCollection {
+                filter: Some(key),
+                mode: MemberCollectMode::Effective,
+                raw_member: None,
+            },
         );
         if let Some(info) = infos.into_iter().next() {
             visited.pop();
@@ -440,9 +444,11 @@ pub fn member_infos_with_key_mode(
         None,
         &mut visited,
         &mut out,
-        Some(key),
-        mode,
-        None,
+        MemberCollection {
+            filter: Some(key),
+            mode,
+            raw_member: None,
+        },
     );
     out
 }
@@ -463,9 +469,11 @@ pub(super) fn member_info_for_declaration(
         None,
         &mut Vec::new(),
         &mut out,
-        Some(key),
-        MemberCollectMode::AllDefinitions,
-        Some(declaration),
+        MemberCollection {
+            filter: Some(key),
+            mode: MemberCollectMode::AllDefinitions,
+            raw_member: Some(declaration),
+        },
     );
     out.into_iter()
         .find(|info| info.id.as_ref() == Some(declaration))
@@ -628,6 +636,13 @@ pub enum MemberCollectMode {
     AllDefinitions,
 }
 
+#[derive(Clone, Copy)]
+struct MemberCollection<'a> {
+    filter: Option<&'a LuaMemberKey>,
+    mode: MemberCollectMode,
+    raw_member: Option<&'a SemanticId>,
+}
+
 fn collect_members(
     model: &SemanticModel,
     prefix_type: &LuaType,
@@ -635,10 +650,13 @@ fn collect_members(
     name_bindings: Option<&HashMap<String, LuaType>>,
     visited: &mut Vec<SemanticId>,
     out: &mut Vec<MemberInfo>,
-    filter: Option<&LuaMemberKey>,
-    mode: MemberCollectMode,
-    raw_member: Option<&SemanticId>,
+    options: MemberCollection<'_>,
 ) {
+    let MemberCollection {
+        filter,
+        mode,
+        raw_member,
+    } = options;
     match prefix_type {
         // Named type: @field + inheritance + runtime value members.
         LuaType::Ref(decl_id) | LuaType::Def(decl_id) => {
@@ -653,9 +671,7 @@ fn collect_members(
                             name_bindings,
                             visited,
                             out,
-                            filter,
-                            mode,
-                            raw_member,
+                            options,
                         );
                     });
                     return;
@@ -698,9 +714,7 @@ fn collect_members(
                             name_bindings,
                             visited,
                             out,
-                            filter,
-                            mode,
-                            raw_member,
+                            options,
                         );
                         return;
                     }
@@ -712,9 +726,7 @@ fn collect_members(
                     name_bindings,
                     visited,
                     out,
-                    filter,
-                    mode,
-                    raw_member,
+                    options,
                 );
             }
         }
@@ -724,9 +736,7 @@ fn collect_members(
                 && def.kind == TypeDefKind::Alias
             {
                 with_expanded_alias(model, prefix_type, |expanded| {
-                    collect_members(
-                        model, expanded, None, None, visited, out, filter, mode, raw_member,
-                    );
+                    collect_members(model, expanded, None, None, visited, out, options);
                 });
                 return;
             }
@@ -758,9 +768,7 @@ fn collect_members(
                 Some(&generic_name_bindings),
                 visited,
                 out,
-                filter,
-                mode,
-                raw_member,
+                options,
             );
         }
         // Anonymous table literal: field members of the synthesized owner (file, range).
@@ -852,9 +860,7 @@ fn collect_members(
                     name_bindings,
                     visited,
                     out,
-                    filter,
-                    mode,
-                    raw_member,
+                    options,
                 );
             }
         }
@@ -870,9 +876,7 @@ fn collect_members(
                     name_bindings,
                     &mut component_visited,
                     &mut component_members,
-                    filter,
-                    mode,
-                    raw_member,
+                    options,
                 );
                 for info in component_members {
                     if mode == MemberCollectMode::AllDefinitions {
@@ -978,10 +982,13 @@ fn collect_type_def_members(
     name_bindings: Option<&HashMap<String, LuaType>>,
     visited: &mut Vec<SemanticId>,
     out: &mut Vec<MemberInfo>,
-    filter: Option<&LuaMemberKey>,
-    mode: MemberCollectMode,
-    raw_member: Option<&SemanticId>,
+    options: MemberCollection<'_>,
 ) {
+    let MemberCollection {
+        filter,
+        mode,
+        raw_member,
+    } = options;
     if visited.contains(&def.id) || visited.len() >= MAX_MEMBER_INHERITANCE_DEPTH {
         return;
     }
@@ -1002,17 +1009,7 @@ fn collect_type_def_members(
     // 2. Parent types
     for super_type in inherited_base_types(model, def, bindings, name_bindings) {
         let mut layer = Vec::new();
-        collect_members(
-            model,
-            &super_type,
-            None,
-            None,
-            visited,
-            &mut layer,
-            filter,
-            mode,
-            raw_member,
-        );
+        collect_members(model, &super_type, None, None, visited, &mut layer, options);
         push_member_layer(out, &mut shadowed, layer, mode);
     }
 
@@ -1235,6 +1232,8 @@ pub(super) fn projected_member_type(
     }
     // Nullable fields merge nil; function fields stay pure-function shaped to avoid parameter/self inference
     // being disturbed by a `fun | nil` union (flow queries still add nil through flow_member_value_type).
+    // Directional contracts are projected independently: the getter and setter must
+    // each carry their own explicit optionality, including for reference and callable types.
     // Generic aliases stay lazy and can resolve to primitives, so they retain nil.
     if member.is_nullable
         && !typ.is_nullable()

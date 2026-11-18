@@ -6302,7 +6302,27 @@ fn merge_directional_read_paths(mut results: Vec<LuaType>) -> LuaType {
     LuaType::from_vec(results)
 }
 
-/// Bound the total backward traversal across all paths of one directional read.
+/// Direct setters can resolve to a different declaration than the getter.
+/// Compare the receiver and key for a direct property write.
+fn assigns_directional_property(
+    model: &SemanticModel,
+    assignment: &LuaAssignStat,
+    owner: &SemanticId,
+    key: &LuaMemberKey,
+) -> bool {
+    assignment.get_var_and_expr_list().0.iter().any(|var| {
+        let emmylua_parser::LuaVarExpr::IndexExpr(target) = var else {
+            return false;
+        };
+        member_key_from_index_expr(model, target).as_ref() == Some(key)
+            && model
+                .resolve_member(target)
+                .is_some_and(|resolved| &resolved.owner == owner)
+    })
+}
+
+/// Cap the total CFG nodes per read so branch-heavy code cannot multiply the work
+/// across paths. Once exhausted, unfinished paths still contribute their narrowed getter.
 const DIRECTIONAL_READ_FLOW_BUDGET: usize = 512;
 
 /// Directional assignments invalidate earlier guards but never substitute the
@@ -6336,25 +6356,14 @@ fn directional_read_at(
                     let Some(assignment) = ptr.to_node(&root) else {
                         break;
                     };
-                    if assignment.get_range().end() <= offset
-                        && (assignment.get_var_and_expr_list().0.iter().any(|var| {
-                            let emmylua_parser::LuaVarExpr::IndexExpr(target) = var else {
-                                return false;
-                            };
-                            member_key_from_index_expr(model, target).as_ref() == Some(&read.key)
-                                && model
-                                    .resolve_member(target)
-                                    .is_some_and(|resolved| resolved.owner == owner)
-                        }) || member_write_match(
-                            model,
-                            tree,
-                            current,
-                            member,
-                            Some(index),
-                            None,
-                        ) != MemberWrite::Unrelated)
-                    {
-                        break;
+                    if assignment.get_range().end() <= offset {
+                        // A setter, an alias write or replacement of a receiver invalidates the guard.
+                        if assigns_directional_property(model, &assignment, &owner, &read.key)
+                            || member_write_match(model, tree, current, member, Some(index), None)
+                                != MemberWrite::Unrelated
+                        {
+                            break;
+                        }
                     }
                 }
                 FlowNodeKind::TrueCondition(cond) | FlowNodeKind::FalseCondition(cond) => {

@@ -222,6 +222,22 @@ fn asymmetric_fields_reindex_and_incomplete_directions() {
 }
 
 #[test]
+fn asymmetric_fields_directional_keys_follow_file_updates() {
+    let mut ws = VirtualWorkspace::new();
+    let key = crate::LuaMemberKey::Name("value".into());
+    let declarations =
+        |class: &str, flag: &str| format!("---@class {class}\n---@field {flag} value number");
+    ws.def_file("a.lua", &declarations("A", "(read)"));
+    ws.def_file("b.lua", &declarations("B", "(write)"));
+    ws.def_file("a.lua", &declarations("A", ""));
+    assert!(ws.analysis.db.has_directional_key(&key));
+    ws.def_file("b.lua", &declarations("B", ""));
+    assert!(!ws.analysis.db.has_directional_key(&key));
+    ws.def_file("a.lua", &declarations("A", "(write)"));
+    assert!(ws.analysis.db.has_directional_key(&key));
+}
+
+#[test]
 fn asymmetric_fields_contextual_table_assignment() {
     let mut ws = VirtualWorkspace::new();
     ws.def(
@@ -276,6 +292,17 @@ keyed = {}
             &format!("---@class Bad\n{fields}")
         ));
     }
+}
+
+#[test]
+fn asymmetric_fields_calls_use_getter_signature() {
+    let mut ws = VirtualWorkspace::new();
+    ws.def(
+        "---@class Callbacks\n---@field (read) callback fun(n: number): boolean\n---@field (write) callback fun(n: string)\n---@type Callbacks\nholder = {}",
+    );
+    assert!(ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, "holder.callback(1)"));
+    assert!(!ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, "holder.callback('test')"));
+    assert_eq!(ws.expr_ty("holder.callback(1)"), LuaType::Boolean);
 }
 
 #[test]

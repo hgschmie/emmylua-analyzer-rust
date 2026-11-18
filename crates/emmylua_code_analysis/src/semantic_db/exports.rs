@@ -147,6 +147,7 @@ pub struct MemberExport {
     pub value_syntax: Option<LuaSyntaxId>,
     /// Method definition (`:`).
     pub is_method: bool,
+    pub access: crate::MemberAccess,
     /// Access visibility (`@private` / `@protected` / ...).
     pub visibility: VisibilityKind,
     pub deprecated: bool,
@@ -173,6 +174,7 @@ impl MemberExport {
             && self.index_key_syntax == other.index_key_syntax
             && self.index_key_text == other.index_key_text
             && self.member == other.member
+            && self.access == other.access
             && self.is_method == other.is_method
             && self.visibility == other.visibility
             && self.deprecated == other.deprecated
@@ -259,6 +261,7 @@ pub(super) fn build_file_exports(
             member: member.id.clone(),
             value_syntax: member.value_syntax,
             is_method: member.is_method,
+            access: member.access,
             visibility: member.visibility,
             deprecated: member.deprecated,
             order: order as u32,
