@@ -602,6 +602,8 @@ fn cached_arg_type(
     };
     let asserted_type =
         |syntax: LuaSyntaxId| type_of_expr_with_cast(semantic_model, syntax, ExprCastMode::AsOnly);
+    // Protected calls can supply arguments without a cached type. Apply the explicit @as
+    // assertion at the argument itself before comparing it to the parameter.
     let ty = arg_types
         .and_then(|types| types.get(index))
         .cloned()
@@ -613,7 +615,7 @@ fn cached_arg_type(
 }
 
 /// A cached literal can carry its assertion on any enclosed expression.
-/// Walk from the outside in so the nearest enclosing assertion wins.
+/// Walk from the outside in so the outermost assertion wins.
 fn parenthesized_table_assertion(
     arg: &LuaExpr,
     asserted_type: impl Fn(LuaSyntaxId) -> LuaType,
@@ -621,6 +623,7 @@ fn parenthesized_table_assertion(
     let LuaExpr::ParenExpr(paren) = arg else {
         return None;
     };
+    // A name can also resolve to TableConst. Only inspect literal syntax here.
     table_expr(arg)?;
     let mut inner = paren.get_expr()?;
     loop {

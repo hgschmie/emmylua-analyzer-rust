@@ -264,7 +264,7 @@ impl<'a, 'b> BindEngine<'a, 'b> {
             }
             LuaExpr::LiteralExpr(_) => Step::Done(current),
             LuaExpr::ParenExpr(paren_expr) => {
-                // A trailing assertion inside parentheses is a sibling of the enclosed expression.
+                // Visit the enclosed expression and its trailing assertion in source order.
                 self.spawn_children(LuaAst::LuaParenExpr(paren_expr), current)
             }
             LuaExpr::ClosureExpr(closure_expr) => {
