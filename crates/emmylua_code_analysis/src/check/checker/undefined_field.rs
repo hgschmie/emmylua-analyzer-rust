@@ -467,7 +467,8 @@ fn numeric_key_expanded_inner(
     let Some(def) = semantic_model.type_def_of(id) else {
         return false;
     };
-    // This is a reachability check. Each named definition has the same exits on every path.
+    // A union only needs one numeric member. Visiting each definition once across
+    // all branches finds that member and stops cycles.
     if visited.contains(id) {
         return false;
     }
@@ -511,7 +512,7 @@ fn key_matches(semantic_model: &SemanticModel<'_>, key: &LuaType, table_key: &Lu
             {
                 return key_matches(semantic_model, key, &domain);
             }
-            // Keep type compatibility for literal aliases and named classes.
+            // Literal domains must still match their value, and classes use their declared compatibility.
             is_compatible(semantic_model, key, table_key)
         }
         _ => true,

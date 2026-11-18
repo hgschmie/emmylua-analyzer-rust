@@ -1386,7 +1386,7 @@ fn enum_runtime_cross_file_dynamic_and_conditional_keys() {
 #[test]
 fn numeric_dictionary_keys_resolve_aliases_in_unions() {
     use crate::{DiagnosticCode, VirtualWorkspace};
-    for domain in ["integer", "EntityId"] {
+    for domain in ["integer", "number", "EntityId"] {
         for (key, valid) in [
             ("EntityId?", true),
             ("Label|EntityId", true),
@@ -1414,6 +1414,9 @@ fn primitive_key_aliases_preserve_the_declared_domain() {
     for (domain, key, valid) in [
         ("string", "string?", true),
         ("string", "integer", false),
+        ("number", "number?", true),
+        ("\n---| number", "number", true),
+        ("\n---| number", "string", false),
         ("1", "1", true),
         ("1", "2", false),
     ] {
