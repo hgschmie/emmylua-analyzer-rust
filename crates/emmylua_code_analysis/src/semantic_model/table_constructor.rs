@@ -121,6 +121,7 @@ impl TableConstructor {
     }
 }
 
+/// Count only slots supplied by every possible return pack.
 fn minimum_expanded_slots(ty: &LuaType) -> usize {
     match ty {
         LuaType::Variadic(pack) => pack.get_min_len().unwrap_or(0),

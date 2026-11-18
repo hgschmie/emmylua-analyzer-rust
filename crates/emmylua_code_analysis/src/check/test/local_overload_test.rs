@@ -9,7 +9,7 @@ local function accept(value) return value end
 "#;
 
 #[test]
-fn local_overload_review_incomplete_dictionary_field_keeps_earlier_value() {
+fn local_overload_incomplete_dictionary_field_keeps_earlier_value() {
     let source = "---@param values table<string, integer>\nlocal function accept(values) return values end\naccept({count = 'bad', count = })";
     let diagnostics = check_source(source);
     assert!(
