@@ -215,6 +215,7 @@ return items
         for call in [
             r#"add({kind="one", first=1})"#,
             r#"add({kind="two", second="ok"})"#,
+            r#"add({["kind"]="two", second="ok"})"#,
         ] {
             assert!(check_source(&format!("{api}\n{call}")).is_empty(), "{call}");
         }
@@ -232,14 +233,13 @@ return items
         let diagnostics = check_source(
             r#"
             ---@class Widget
-            ---@field add fun(self: Widget, opts: {kind: string, text: string})
-            ---@type Widget
-            local widget
+            local Widget = {}
             ---@param opts {kind: "button", enabled: boolean}
-            ---@overload fun(opts: {kind: string, text: string})
-            local function add(opts) return opts end
-            add({kind="label", text="hello"})
+            ---@overload fun(self: Widget, opts: {kind: string, text: string})
+            function Widget:add(opts) return self, opts end
+            local widget = Widget
             widget:add({kind="label", text="hello"})
+            widget.add(widget, {kind="button", enabled=true})
         "#,
         );
         assert!(diagnostics.is_empty(), "{diagnostics:?}");

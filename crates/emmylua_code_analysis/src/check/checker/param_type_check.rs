@@ -303,7 +303,7 @@ fn check_call(
 }
 
 /// Try the overload whose declared string field matches the constructor first.
-/// An untagged parameter can also accept a tag missing from the specialized overloads.
+/// Without a matching literal, the existing overload order applies.
 fn preferred_table_overload(
     model: &SemanticModel,
     candidates: &[&LuaFunctionType],
@@ -322,45 +322,47 @@ fn preferred_table_overload(
         .get_fields_with_keys()
         .into_iter()
         .find_map(|(field, key)| {
-            let LuaIndexKey::Name(name) = key else {
-                return None;
-            };
             let LuaExpr::LiteralExpr(literal) = field.get_value_expr()? else {
                 return None;
             };
             let LuaLiteralToken::String(value) = literal.get_literal()? else {
                 return None;
             };
-            Some((
-                LuaMemberKey::Name(name.get_name_text().into()),
-                value.get_value(),
-            ))
+            let key = match key {
+                LuaIndexKey::Name(name) => name.get_name_text().into(),
+                LuaIndexKey::String(string) => string.get_value().into(),
+                _ => return None,
+            };
+            Some((LuaMemberKey::Name(key), value.get_value()))
         })?;
-    let mut fallback = None;
-    for (index, candidate) in candidates.iter().enumerate() {
-        let explicit_self = first_param_is_self(candidate);
-        let param_index = if colon_call && (explicit_self || !candidate.is_colon_define()) {
-            Some(arg_index + 1)
-        } else if !colon_call && !explicit_self && candidate.is_colon_define() {
-            arg_index.checked_sub(1)
-        } else {
-            Some(arg_index)
+    candidates.iter().position(|candidate| {
+        let Some(param) = parameter_for_argument(candidate, arg_index, colon_call) else {
+            return false;
         };
-        let member = param_index
-            .and_then(|i| candidate.get_params().get(i))
-            .and_then(|(_, ty)| model.member_type(ty.as_ref()?, &key));
-        match member {
-            Some(LuaType::StringConst(expected) | LuaType::DocStringConst(expected)) => {
-                if expected.as_str() == value {
-                    return Some(index);
-                }
-            }
-            _ => {
-                fallback.get_or_insert(index);
-            }
-        }
-    }
-    fallback
+        matches!(
+            model.member_type(param, &key),
+            Some(LuaType::DocStringConst(expected) | LuaType::StringConst(expected))
+                if expected.as_str() == value
+        )
+    })
+}
+
+fn parameter_for_argument(
+    candidate: &LuaFunctionType,
+    arg: usize,
+    colon_call: bool,
+) -> Option<&LuaType> {
+    let explicit_self = first_param_is_self(candidate);
+    let index = if colon_call && (explicit_self || !candidate.is_colon_define()) {
+        // The receiver occupies the first declared parameter.
+        arg + 1
+    } else if !colon_call && !explicit_self && candidate.is_colon_define() {
+        // A dot call to a method passes the receiver as its first argument.
+        arg.checked_sub(1)?
+    } else {
+        arg
+    };
+    candidate.get_params().get(index)?.1.as_ref()
 }
 
 /// Check fields against a signature that accepts this argument count when possible.
