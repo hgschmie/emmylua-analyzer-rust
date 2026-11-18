@@ -276,3 +276,18 @@ fn open_member_or_preserves_nullable_fallbacks() {
         assert!(result_type(&ws, file).is_nullable(), "{fallback}");
     }
 }
+
+#[test]
+fn structured_members_remain_available_for_navigation_on_open_unions() {
+    let mut ws = VirtualWorkspace::new();
+    let file = ws.def("---@class Record\n---@field name string");
+    let ty = ws.ty("table|Record");
+    let model = ws.analysis.semantic_model(file);
+    let fields = model.member_infos_with_key(&ty, &crate::LuaMemberKey::from("name"));
+    assert!(fields.iter().any(|field| field.typ == LuaType::String));
+    assert!(
+        model
+            .member_infos_with_key(&ty, &crate::LuaMemberKey::from("other"))
+            .is_empty()
+    );
+}

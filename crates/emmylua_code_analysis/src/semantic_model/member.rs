@@ -5,9 +5,7 @@ use hashbrown::{HashMap, HashSet};
 
 use crate::semantic_db::def::{DeclKind, MemberRef, SemanticId, TypeDef, TypeDefKind};
 use crate::semantic_model::infer::unify::{self, TplBindings};
-use crate::semantic_model::type_eval::{
-    expand_alias_head, substitute_named_refs, with_expanded_alias,
-};
+use crate::semantic_model::type_eval::{substitute_named_refs, with_expanded_alias};
 use crate::{FileId, GenericTplId, InFiled, LuaMemberKey, LuaObjectType, LuaType};
 use crate::{Member, semantic_db::facts::FileFacts};
 use smol_str::SmolStr;
@@ -32,29 +30,18 @@ pub(crate) fn has_unrestricted_members(model: &SemanticModel, ty: &LuaType) -> b
         | LuaType::Generic(_) => {}
         _ => return false,
     }
-    let mut pending = vec![ty.clone()];
-    let mut seen = HashSet::new();
-    while let Some(current) = pending.pop() {
-        if !seen.insert(current.clone()) {
-            continue;
-        }
-        match &current {
-            LuaType::Table | LuaType::Any => return true,
-            LuaType::Union(union) => pending.extend(union.iter().cloned()),
-            LuaType::MultiLineUnion(union) => pending.push(union.to_union()),
-            LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_) => {
-                if let Some(expanded) = expand_alias_head(model, &current)
-                    && expanded != current
-                {
-                    pending.push(expanded);
-                }
-            }
-            // An intersection may impose a structured contract even when one
-            // component is table. Do not erase the other component's fields.
-            _ => {}
-        }
+    // Use the shared alias budget; growing generic aliases may never repeat an identical type.
+    let Some(expanded) = crate::semantic_model::type_eval::expand_alias_branches(model, ty) else {
+        return false;
+    };
+    match expanded {
+        LuaType::Table | LuaType::Any => true,
+        LuaType::Union(union) => union
+            .iter()
+            .any(|ty| matches!(ty, LuaType::Table | LuaType::Any)),
+        // An intersection can impose required fields on an otherwise open table.
+        _ => false,
     }
-    false
 }
 
 /// Member information (an entry from a prefix-type query).
@@ -488,6 +475,8 @@ pub fn member_type(
     prefix_type: &LuaType,
     key: &LuaMemberKey,
 ) -> Option<LuaType> {
+    // Member lookup is also used by keyof and indexed types to find declared fields.
+    // The expression VM separately supplies the runtime value of an unrestricted read.
     member_info(model, prefix_type, key).map(|info| info.typ)
 }
 
