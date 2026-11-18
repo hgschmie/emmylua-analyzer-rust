@@ -2073,6 +2073,35 @@ impl PathState {
     }
 }
 
+#[cfg(test)]
+#[test]
+fn normalized_trace_keys_preserve_final_types() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def("return true");
+    let model = ws.analysis.semantic_model(file);
+    let ops = vec![
+        PathOp::Guard(Narrowing::NotNil),
+        PathOp::Guard(Narrowing::NotNil),
+        PathOp::Cast(CastOp::Remove(LuaType::Integer)),
+        PathOp::Cast(CastOp::Remove(LuaType::String)),
+        PathOp::Cast(CastOp::Remove(LuaType::Integer)),
+        PathOp::Cast(CastOp::Add(LuaType::Integer)),
+        PathOp::Cast(CastOp::Remove(LuaType::Integer)),
+        PathOp::Guard(Narrowing::Replace(LuaType::String)),
+        PathOp::Cast(CastOp::Add(LuaType::Boolean)),
+    ];
+    for end in 1..=ops.len() {
+        let path = PathState {
+            operations: ops[..end].to_vec(),
+            ..Default::default()
+        };
+        assert_eq!(
+            finalize(&model, LuaType::Nil, &path),
+            finalize(&model, LuaType::Nil, &path.cache_key())
+        );
+    }
+}
+
 /// Checks from an antecedent toward the declaration whether a narrowing node already exists.
 /// Used for `self` return_cast: only allow it if the receiver was first narrowed by another condition/`@cast`.
 /// Uses an explicit work stack; Multiple requires all branches to satisfy the condition.

@@ -84,6 +84,7 @@ fn loop_exit_preserves_possible_boolean_assignments() {
     for body in [
         "for _, value in pairs(values) do if value then found = true end end",
         "for i = 1, limit do found = true end",
+        "for i = 1, 3, 0 do found = true end",
         "while flag do found = true; break end",
         "for _, value in pairs(values) do found = true; break end",
         "for _, value in pairs(values) do for _, other in pairs(values) do found = true end end",

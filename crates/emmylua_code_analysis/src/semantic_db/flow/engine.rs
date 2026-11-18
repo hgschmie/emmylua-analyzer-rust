@@ -792,7 +792,7 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                 static_number_value(stop_expr),
                 static_number_value(step_expr),
             ) {
-                (Some(start), Some(stop), Some(step)) => {
+                (Some(start), Some(stop), Some(step)) if step != 0.0 => {
                     Some((step > 0.0 && start <= stop) || (step < 0.0 && start >= stop))
                 }
                 _ => None,
