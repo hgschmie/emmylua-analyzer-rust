@@ -250,3 +250,15 @@ fn local_overload_forwarded_dictionary_calls_require_a_complete_signature() {
         assert!(usize::from(diagnostics[0].range.start()) >= declaration.len());
     }
 }
+
+#[test]
+fn an_explicit_unknown_callee_does_not_restore_its_overloads() {
+    let source = format!("{DECLARATION}\naccept --[[@as unknown]] (false)");
+    let diagnostics = check_source(&source);
+    assert!(
+        diagnostics
+            .iter()
+            .all(|d| d.code != DiagnosticCode::ParamTypeMismatch),
+        "{diagnostics:?}"
+    );
+}

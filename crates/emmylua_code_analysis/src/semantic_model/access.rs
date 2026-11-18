@@ -870,16 +870,10 @@ impl<'db> SemanticModel<'db> {
     /// so all rendering paths share one candidate list.
     pub fn callable_candidates_for_expr(&self, callee: &LuaExpr) -> Vec<LuaFunctionType> {
         // A callee assertion replaces the declared overload set at exactly this read.
-        if matches!(callee, LuaExpr::NameExpr(_)) {
-            let asserted = flow::apply_expr_casts(
-                self,
-                callee.get_syntax_id(),
-                LuaType::Unknown,
-                flow::ExprCastMode::AsOnly,
-            );
-            if !matches!(asserted, LuaType::Unknown) {
-                return infer::vm::expand_callable_types_in_model(self, &asserted);
-            }
+        if matches!(callee, LuaExpr::NameExpr(_))
+            && let Some(asserted) = flow::inline_asserted_type(self, callee)
+        {
+            return infer::vm::expand_callable_types_in_model(self, &asserted);
         }
         if let Some(globals) = self.callable_candidates_for_name_expr(callee) {
             return globals;
