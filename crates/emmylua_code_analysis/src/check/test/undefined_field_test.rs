@@ -13,6 +13,7 @@ mod test {
             local function update(map, invalid, valid)
                 map[invalid] = 1
                 map[valid] = 2
+                map.new_key = 3
             end
         "#;
         let diagnostics = crate::check::test::check_source(source);

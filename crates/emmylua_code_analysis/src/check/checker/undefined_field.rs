@@ -50,7 +50,8 @@ fn check_index(
     // The member exists, but only in declarations hidden by `---@version`.
     // Report it instead of silently accepting an API that is absent from this runtime.
     if semantic_model.is_version_hidden_member_access(index_expr) {
-        // A definition can introduce a member for another runtime version.
+        // A definition may introduce a member for another runtime version.
+        // Other writes still need the ordinary member and index-key checks below.
         if is_definition_index_expr(index_expr) {
             return;
         }
