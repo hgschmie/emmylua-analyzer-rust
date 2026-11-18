@@ -31,6 +31,7 @@ mod inline_assertion_arguments {
         accept({unexpected = true} --[[@as Message]])
         accept(({} --[[@as Message]]))
         accept(({}) --[[@as Message]])
+        accept((({} --[[@as integer]]) --[[@as Message]]))
         "#;
         let result = diagnostics(source);
         assert!(result.is_empty(), "{result:#?}");

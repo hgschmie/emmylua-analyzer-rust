@@ -608,11 +608,18 @@ fn cached_arg_type(
         .unwrap_or_else(|| asserted_type(arg.get_syntax_id()));
     // A parenthesized literal can keep its table type in the call cache while
     // the inline assertion belongs to the inner constructor.
-    if matches!(ty, LuaType::TableConst(_))
-        && matches!(arg, LuaExpr::ParenExpr(_))
-        && let Some(table) = table_expr(arg)
-    {
-        return asserted_type(table.get_syntax_id());
+    if matches!(ty, LuaType::TableConst(_)) && table_expr(arg).is_some() {
+        let mut inner = arg.clone();
+        while let LuaExpr::ParenExpr(paren) = inner {
+            let Some(expr) = paren.get_expr() else {
+                break;
+            };
+            let asserted = asserted_type(expr.get_syntax_id());
+            if !matches!(asserted, LuaType::TableConst(_)) {
+                return asserted;
+            }
+            inner = expr;
+        }
     }
     ty
 }
