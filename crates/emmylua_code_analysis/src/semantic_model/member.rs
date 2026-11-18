@@ -23,6 +23,13 @@ const MAX_MEMBER_INHERITANCE_DEPTH: usize = 100;
 pub(crate) fn has_unrestricted_members(model: &SemanticModel, ty: &LuaType) -> bool {
     match ty {
         LuaType::Any | LuaType::Table => return true,
+        LuaType::Ref(id) | LuaType::Def(id)
+            if !model
+                .type_def_of(id)
+                .is_some_and(|def| def.kind == TypeDefKind::Alias) =>
+        {
+            return false;
+        }
         LuaType::Union(_)
         | LuaType::MultiLineUnion(_)
         | LuaType::Ref(_)
@@ -1140,7 +1147,9 @@ fn has_shell_table_argument(typ: &LuaType) -> bool {
     }
 }
 
-/// Restore only erased table arguments, retaining the existing generic shape.
+/// Restore erased table arguments from a second projection of the same annotation.
+/// The shell owns branch membership. Keep unmatched branches, including a bare
+/// table, when the richer projection cannot identify a corresponding shape.
 fn repair_shell_table_arguments(shell: &LuaType, rich: &LuaType) -> LuaType {
     match (shell, rich) {
         (LuaType::Table, _) => rich.clone(),
