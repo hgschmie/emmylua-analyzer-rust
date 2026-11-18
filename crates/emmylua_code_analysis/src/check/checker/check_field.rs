@@ -131,6 +131,8 @@ fn is_mapped_alias(semantic_model: &SemanticModel<'_>, def: &TypeDef) -> bool {
     matches!(LuaDocType::cast(node), Some(LuaDocType::Mapped(_)))
 }
 
+/// Collect structural errors. Assignment and argument checkers report value
+/// mismatches, including constructors with no viable record alternative.
 pub(super) fn table_literal_mismatches(
     semantic_model: &SemanticModel<'_>,
     target: &LuaType,
@@ -222,6 +224,8 @@ fn check_table_head(
             let mut alternatives =
                 constructor_alternatives(semantic_model, union, table).into_iter();
             if let Some(first) = alternatives.next() {
+                // Schedule the continuation first so the branch and its descendants
+                // finish before comparing their errors against the previous best.
                 if !alternatives.as_slice().is_empty() {
                     pending.push(TableCheck::NextAlternative {
                         table: table.clone(),
@@ -365,9 +369,8 @@ fn constructor_alternatives(
 
     // A value mismatch inside an otherwise matching record belongs to the
     // assignment or argument checker. Prefer that record to unrelated missing fields.
-    ranked
-        .unwrap_or_else(|| closest_record_shapes(model, union, table))
-        .1
+    let (_, shapes) = ranked.unwrap_or_else(|| closest_record_shapes(model, union, table));
+    shapes
 }
 
 fn closest_record_shapes(
