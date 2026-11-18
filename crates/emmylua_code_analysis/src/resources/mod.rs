@@ -8,6 +8,7 @@ use include_dir::{Dir, DirEntry, include_dir};
 use crate::{LuaFileInfo, get_locale_code, load_workspace_files};
 
 static RESOURCE_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/resources");
+const DEFAULT_STD_DIR: &str = "std";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn load_resource_std(
@@ -33,12 +34,12 @@ pub fn load_resource_std(
     }
     // No resource dir specified; use the default dir, which has no i18n.
     let resoucres_dir = get_best_resources_dir();
-    let std_dir = resoucres_dir.join("std");
+    let std_dir = resoucres_dir.join(DEFAULT_STD_DIR);
     let files = load_resource_from_include_dir();
     let mut files = files
         .into_iter()
         .filter_map(|file| {
-            if file.path.ends_with(".lua") {
+            if Path::new(&file.path).starts_with(DEFAULT_STD_DIR) && file.path.ends_with(".lua") {
                 let path = resoucres_dir
                     .join(&file.path)
                     .to_str()
@@ -182,5 +183,33 @@ fn get_std_dir(resources_dir: &Path) -> PathBuf {
             return locale_dir;
         }
     }
-    resources_dir.join("std")
+    resources_dir.join(DEFAULT_STD_DIR)
+}
+
+#[cfg(test)]
+mod embedded_tests {
+    use super::*;
+
+    #[test]
+    fn embedded_lua_files_belong_to_the_registered_standard_library() {
+        for jit in [false, true] {
+            let (root, files) = load_resource_std(None, jit);
+            assert!(
+                files
+                    .iter()
+                    .any(|file| Path::new(&file.path) == root.join("global.lua"))
+            );
+            assert!(
+                files
+                    .iter()
+                    .all(|file| Path::new(&file.path).starts_with(&root))
+            );
+            assert_eq!(
+                files
+                    .iter()
+                    .any(|file| Path::new(&file.path) == root.join("jit.lua")),
+                jit
+            );
+        }
+    }
 }
