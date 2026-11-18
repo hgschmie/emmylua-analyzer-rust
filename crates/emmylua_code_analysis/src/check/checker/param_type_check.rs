@@ -302,8 +302,7 @@ fn check_call(
     }
 }
 
-/// Try the overload whose declared string field matches the constructor first.
-/// Without a matching literal, the existing overload order applies.
+/// Prefer an exact string tag or the only overload without a conflicting tag.
 fn preferred_table_overload(
     model: &SemanticModel,
     candidates: &[&LuaFunctionType],
@@ -317,7 +316,7 @@ fn preferred_table_overload(
         .iter()
         .enumerate()
         .find_map(|(i, arg)| table_expr(arg).map(|table| (i, table)))?;
-    // Use the first named string literal in the first table argument to bound lookup cost.
+    // Inspect one named field with a string literal value in the first table argument.
     let (key, value) = table
         .get_fields_with_keys()
         .into_iter()
@@ -335,16 +334,29 @@ fn preferred_table_overload(
             };
             Some((LuaMemberKey::Name(key), value.get_value()))
         })?;
-    candidates.iter().position(|candidate| {
-        let Some(param) = parameter_for_argument(candidate, arg_index, colon_call) else {
-            return false;
-        };
-        matches!(
-            model.member_type(param, &key),
-            Some(LuaType::DocStringConst(expected) | LuaType::StringConst(expected))
-                if expected.as_str() == value
-        )
-    })
+    let mut unclassified = None;
+    let mut unclassified_count = 0;
+    for (index, candidate) in candidates.iter().enumerate() {
+        let member = parameter_for_argument(candidate, arg_index, colon_call)
+            .and_then(|param| model.member_type(param, &key));
+        match member {
+            Some(LuaType::DocStringConst(expected) | LuaType::StringConst(expected)) => {
+                if expected.as_str() == value {
+                    return Some(index);
+                }
+            }
+            _ => {
+                unclassified = Some(index);
+                unclassified_count += 1;
+            }
+        }
+    }
+    // If every other overload declares a conflicting tag, try the remaining one first.
+    if unclassified_count == 1 {
+        unclassified
+    } else {
+        None
+    }
 }
 
 fn parameter_for_argument(
@@ -1193,27 +1205,41 @@ mod tests {
     use super::*;
     use crate::VirtualWorkspace;
 
-    #[test]
-    fn matching_tag_moves_a_later_overload_to_the_front() {
+    fn preferred_index(source: &str) -> Option<usize> {
         let mut ws = VirtualWorkspace::new();
-        let file = ws.def(
-            r#"
-            ---@param opts {kind: "first"}
-            ---@overload fun(opts: {kind: "second"})
-            local function add(opts) return opts end
-            add({["kind"] = "second"})
-        "#,
-        );
+        let file = ws.def(source);
         let call = ws.get_node::<LuaCallExpr>(file);
         let model = ws.analysis.semantic_model(file);
         let analysis = model.call_site_analysis(&call);
         let args: Vec<_> = call.get_args_list().unwrap().get_args().collect();
         let candidates: Vec<_> = analysis.candidates.iter().collect();
+        assert!(candidates.len() >= 2, "{source}");
+        preferred_table_overload(&model, &candidates, &args, false)
+    }
 
-        assert_eq!(candidates.len(), 2);
+    #[test]
+    fn matching_tag_moves_a_later_overload_to_the_front() {
         assert_eq!(
-            preferred_table_overload(&model, &candidates, &args, false),
+            preferred_index(
+                r#"
+            ---@param opts {kind: "first"}
+            ---@overload fun(opts: {kind: "second"})
+            local function add(opts) return opts end
+            add({["kind"] = "second"})
+        "#
+            ),
             Some(1)
         );
+    }
+
+    #[test]
+    fn general_overload_is_preferred_only_when_all_others_have_conflicting_tags() {
+        let declarations = r#"---@param opts {kind: "first"}
+---@overload fun(opts: {kind: string})"#;
+        let call = r#"local function add(opts) return opts end
+            add({kind="other"})"#;
+        assert_eq!(preferred_index(&format!("{declarations}\n{call}")), Some(1));
+        let ambiguous = format!("{declarations}\n---@overload fun(opts:table)\n{call}");
+        assert_eq!(preferred_index(&ambiguous), None);
     }
 }
