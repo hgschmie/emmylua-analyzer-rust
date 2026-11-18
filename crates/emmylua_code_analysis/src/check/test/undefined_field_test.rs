@@ -28,6 +28,22 @@ mod test {
     }
 
     #[test]
+    fn class_field_and_method_definitions_are_valid_writes() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            r#"
+            ---@class DictionaryWriter
+            local Writer = {}
+            Writer.count = 1
+            function Writer:clear() self.count = 0 end
+            ---@version 5.1
+            function Writer:legacy() end
+            "#
+        ));
+    }
+
+    #[test]
     fn test_1() {
         let mut ws = VirtualWorkspace::new();
         assert!(ws.has_no_diagnostic(
