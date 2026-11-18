@@ -313,4 +313,10 @@ fn factory_exports_use_the_declared_class() {
         1,
         "{result:?}"
     );
+    let written = check_export(module, "local m = require 'mod'\nm.extra = 1");
+    assert_eq!(
+        count_by_code(&written, DiagnosticCode::InjectField),
+        1,
+        "{written:?}"
+    );
 }
