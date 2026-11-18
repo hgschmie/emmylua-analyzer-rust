@@ -87,7 +87,12 @@ fn compute(
     {
         return None;
     }
-    let assigned = loop_assignments(model, decl, &node)?;
+    let mut assigned = loop_assignments(model, decl, &node)?;
+    assigned.retain(|rhs| {
+        !rhs.is_some_and(|(syntax, slot)| {
+            slot == 0 && super::is_decl_self_assignment(model, decl, syntax)
+        })
+    });
     if assigned.is_empty() {
         return None;
     }
@@ -199,6 +204,9 @@ fn loop_assignments(
         if numeric_loops::is_in_unentered_body(model, &statement) {
             continue;
         }
+        if definitely_exits_after(&statement, node) {
+            continue;
+        }
         let assignment = match statement {
             LuaStat::AssignStat(assignment) => assignment,
             LuaStat::FuncStat(function) => {
@@ -236,6 +244,46 @@ fn loop_assignments(
         }
     }
     Some(assigned)
+}
+
+/// An unconditional exit following a write prevents it from reaching the next
+/// iteration. A break from a nested loop can still reach this outer loop.
+fn definitely_exits_after(statement: &LuaStat, target: &emmylua_parser::LuaSyntaxNode) -> bool {
+    let enclosing = |node: &emmylua_parser::LuaSyntaxNode| {
+        node.ancestors()
+            .take_while(|node| node != target)
+            .filter_map(LuaStat::cast)
+    };
+    let mut ancestors = enclosing(statement.syntax());
+    while let Some(current) = ancestors.next() {
+        let next = current
+            .syntax()
+            .siblings(rowan::Direction::Next)
+            .skip(1)
+            .filter_map(LuaStat::cast)
+            .find(|stat| !matches!(stat, LuaStat::EmptyStat(_)));
+        match next {
+            None => continue,
+            Some(LuaStat::ReturnStat(_)) => return true,
+            Some(LuaStat::BreakStat(_)) => {
+                let nested = ancestors.find(|stat| {
+                    matches!(
+                        stat,
+                        LuaStat::WhileStat(_)
+                            | LuaStat::RepeatStat(_)
+                            | LuaStat::ForStat(_)
+                            | LuaStat::ForRangeStat(_)
+                    )
+                });
+                let Some(nested) = nested else {
+                    return true;
+                };
+                ancestors = enclosing(nested.syntax());
+            }
+            Some(_) => return false,
+        }
+    }
+    false
 }
 
 fn has_structural_shape(typ: &LuaType) -> bool {
