@@ -86,7 +86,7 @@ fn bare_table_fix_preserves_known_record_and_array_types() {
 
 #[test]
 fn bare_table_alias_members_are_any() {
-    for expression in ["value.missing", "value[key]"] {
+    for expression in ["value.known", "value.missing", "value[key]"] {
         let mut ws = VirtualWorkspace::new();
         let file = ws.def(&format!(
             r#"
@@ -175,7 +175,7 @@ fn bare_table_union_and_long_alias_reads_remain_open() {
         for n in 1..48 {
             definitions.push_str(&format!("---@alias Chain{n} Chain{}\n", n - 1));
         }
-        for expression in ["value.missing", "value[key]"] {
+        for expression in ["value.known", "value.missing", "value[key]"] {
             let mut ws = VirtualWorkspace::new();
             ws.def(&definitions);
             let file = ws.def(&format!("---@param value {annotation}\n---@param key string\nfunction read(value,key) local result={expression} return result end"));

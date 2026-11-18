@@ -1141,7 +1141,7 @@ fn has_shell_table_argument(typ: &LuaType) -> bool {
     match typ {
         LuaType::Table => true,
         LuaType::Generic(generic) => generic.get_params().iter().any(has_shell_table_argument),
-        LuaType::Union(union) => union.into_vec().iter().any(has_shell_table_argument),
+        LuaType::Union(union) => union.iter().any(has_shell_table_argument),
         LuaType::MultiLineUnion(union) => has_shell_table_argument(&union.to_union()),
         _ => false,
     }

@@ -800,6 +800,24 @@ pub(crate) fn type_of_expr_at_node(
                         .find_map(|info| info.id)
                 })
             {
+                // Navigation can resolve a declared field on one branch of an
+                // open alias. At runtime the other branch can supply any value.
+                if let Some(prefix) = index_expr.get_prefix_expr() {
+                    let owner = model.type_of_expr_at(prefix.get_syntax_id(), offset);
+                    if matches!(
+                        owner,
+                        LuaType::Ref(_)
+                            | LuaType::Def(_)
+                            | LuaType::Generic(_)
+                            | LuaType::Union(_)
+                            | LuaType::MultiLineUnion(_)
+                    ) && has_unrestricted_members(model, &owner)
+                    {
+                        let ty = guarded_index_type(model, index_expr, offset, &LuaType::Any)
+                            .unwrap_or(LuaType::Any);
+                        return apply_casts(ty);
+                    }
+                }
                 let mut member_ty = if let Some(flow_tree) = model.flow_tree()
                     && (flow_tree.has_condition() || flow_tree.has_complex_control())
                     && let Some(flow_id) = flow_tree.get_flow_id_at(offset)
