@@ -281,4 +281,23 @@ fn test_export_annotation_preserves_runtime_surface() {
         DiagnosticCode::UndefinedField,
         r#"local value = require("loose").existing"#,
     ));
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::UndefinedField,
+        r#"return require("loose").dynamic"#
+    ));
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::InjectField,
+        r#"require("loose").newField = true"#
+    ));
+}
+
+#[test]
+fn factory_exports_use_the_declared_class() {
+    let module = "---@class Exported\n---@field name string\nlocal Foo = {}\n---@return Exported\nlocal function make() return Foo end\nreturn make()";
+    let result = check_export(module, "local m = require 'mod'\nreturn m.name, m.absent");
+    assert_eq!(
+        count_by_code(&result, DiagnosticCode::UndefinedField),
+        1,
+        "{result:?}"
+    );
 }

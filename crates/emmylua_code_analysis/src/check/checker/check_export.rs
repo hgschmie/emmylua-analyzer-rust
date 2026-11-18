@@ -25,7 +25,7 @@ impl Checker for CheckExportChecker {
             return;
         };
         let root = tree.get_red_root();
-        // UndefinedFieldChecker runs first and reports the index key range for a missing member.
+        // CheckContext holds diagnostics for this file. UndefinedFieldChecker runs first and reports the index key range for a missing member.
         let reported_fields: HashSet<_> = context
             .diagnostics
             .iter()
@@ -89,14 +89,19 @@ fn check_index_expr(
     let Some(module_facts) = module_model.file_facts() else {
         return;
     };
-    let export_ty = match &module_facts.module_export {
+    let declared_ty = match &module_facts.module_export {
         ModuleExport::Decl { decl, .. } => module_model.type_of_decl(decl),
         ModuleExport::Expr { value_syntax } => Some(module_model.type_of_expr(*value_syntax)),
         ModuleExport::Global { .. } | ModuleExport::None => None,
     };
     // An annotation can hide the literal type while the constructor still defines export fields.
-    let Some(export_ty) = export_ty
+    if matches!(declared_ty, Some(LuaType::Any)) {
+        return;
+    }
+    let Some(export_ty) = declared_ty
+        .as_ref()
         .filter(|ty| matches!(ty, LuaType::TableConst(_)))
+        .cloned()
         .or_else(|| export_table_type(module_file, module_facts))
     else {
         return;
@@ -107,10 +112,6 @@ fn check_index_expr(
     let Some(key) = lua_member_key(semantic_model, &index_key) else {
         return;
     };
-    let declared_ty = match &module_facts.module_export {
-        ModuleExport::Decl { decl, .. } => semantic_model.type_of_decl(decl),
-        _ => None,
-    };
     // If the export surface contains the member → valid.
     //
     // Canonical module owners also aggregate mutations contributed by other
@@ -119,7 +120,7 @@ fn check_index_expr(
     // `local a = require("mod"); a.newField = 1` is still an injection.
     // Declared class fields (including inherited fields in another file) are
     // part of the contract, even when absent from the initial table literal.
-    let contains_key = |ty| {
+    let contains_key = |ty: &LuaType| {
         semantic_model
             .member_infos_with_key(ty, &key)
             .iter()
