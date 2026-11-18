@@ -60,6 +60,21 @@ fn test_export_declared_class_fields() {
     );
 }
 
+#[test]
+fn imported_missing_fields_report_once_per_key() {
+    for read in ["m.absent", "m['absent']"] {
+        let diagnostics = check_export(
+            "---@class Exported\nlocal M = {}\nreturn M",
+            &format!("local m = require 'mod'\nreturn {read}"),
+        );
+        assert_eq!(
+            count_by_code(&diagnostics, DiagnosticCode::UndefinedField),
+            1,
+            "{read}: {diagnostics:#?}"
+        );
+    }
+}
+
 /// `return { a = 1 }`: imported tables may only read/write fields on the export surface.
 #[test]
 fn test_export_table_literal() {

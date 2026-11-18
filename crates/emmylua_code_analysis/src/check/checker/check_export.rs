@@ -10,7 +10,7 @@ use crate::DiagnosticCode;
 use crate::semantic_db::def::{ModuleExport, SemanticId};
 use crate::semantic_db::facts::FileFacts;
 use crate::semantic_model::SemanticModel;
-use crate::{FileId, InFiled, LuaMemberKey, LuaType};
+use crate::{FileId, InFiled, LuaMemberKey, LuaType, MemberInfo};
 
 use super::{CheckContext, Checker};
 use crate::semantic_model::render::humanize_type;
@@ -25,7 +25,7 @@ impl Checker for CheckExportChecker {
             return;
         };
         let root = tree.get_red_root();
-        // Ordinary member checking can already diagnose the same imported read.
+        // UndefinedFieldChecker runs first and reports the index key range for a missing member.
         let reported_fields: HashSet<_> = context
             .diagnostics
             .iter()
@@ -94,6 +94,7 @@ fn check_index_expr(
         ModuleExport::Expr { value_syntax } => Some(module_model.type_of_expr(*value_syntax)),
         ModuleExport::Global { .. } | ModuleExport::None => None,
     };
+    // An annotation can hide the literal type while the constructor still defines export fields.
     let Some(export_ty) = export_ty
         .filter(|ty| matches!(ty, LuaType::TableConst(_)))
         .or_else(|| export_table_type(module_file, module_facts))
@@ -127,18 +128,7 @@ fn check_index_expr(
                 .into_iter()
                 .flat_map(|ty| semantic_model.member_infos_with_key(ty, &key)),
         )
-        .any(|info| {
-            info.file_id.is_none_or(|file_id| file_id == module_file)
-                || info
-                    .file_id
-                    .zip(info.id.as_ref())
-                    .is_some_and(|(file_id, id)| {
-                        semantic_model
-                            .file_facts_of(file_id)
-                            .and_then(|facts| facts.member_by_id(id))
-                            .is_some_and(|member| matches!(member.owner, SemanticId::TypeDef(_)))
-                    })
-        });
+        .any(|info| is_exported_member(semantic_model, module_file, &info));
     if is_surface_member {
         return;
     }
@@ -167,6 +157,23 @@ fn check_index_expr(
         }
         _ => {}
     }
+}
+
+/// Accept the module's own members and declared class fields from other files.
+fn is_exported_member(model: &SemanticModel, module_file: FileId, info: &MemberInfo) -> bool {
+    let Some(file) = info.file_id else {
+        return true;
+    };
+    if file == module_file {
+        return true;
+    }
+    let Some(id) = &info.id else {
+        return false;
+    };
+    model
+        .file_facts_of(file)
+        .and_then(|facts| facts.member_by_id(id))
+        .is_some_and(|member| matches!(member.owner, SemanticId::TypeDef(_)))
 }
 
 /// Runtime surface of a table constructor exported directly or through a local declaration.
