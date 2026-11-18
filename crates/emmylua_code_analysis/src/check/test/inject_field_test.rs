@@ -2724,6 +2724,20 @@ mod union_constructor_alternatives {
     }
 
     #[test]
+    fn optional_array_checks_required_fields_at_the_leaf() {
+        let source = "---@alias Node {value:number,children:Node[]?}\n---@param root Node|string\nlocal function accept(root) return root end\naccept({value=1,children={{}}})";
+        let diagnostics = isolated_checks(source.to_owned());
+        let leaf = source.find("{}").unwrap();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::MissingFields
+                    && usize::from(d.range.start()) == leaf),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
     fn deeply_nested_missing_fields_use_the_leaf_range() {
         let mut value = "{}".to_owned();
         for _ in 0..512 {

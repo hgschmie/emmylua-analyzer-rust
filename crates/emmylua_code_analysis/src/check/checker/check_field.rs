@@ -323,7 +323,7 @@ fn constructor_alternatives(
     });
     if let Some(only) = viable.next()
         && viable.next().is_none()
-        && (matches!(only, LuaType::Object(_))
+        && (matches!(only, LuaType::Object(_) | LuaType::Array(_))
             || target_def(model, only).is_some_and(|def| def.kind == TypeDefKind::Class))
     {
         return vec![only.clone()];
