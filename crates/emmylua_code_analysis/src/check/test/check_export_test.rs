@@ -292,6 +292,19 @@ fn test_export_annotation_preserves_runtime_surface() {
 }
 
 #[test]
+fn open_annotations_allow_new_export_fields() {
+    for annotation in ["table", "unknown", "table<string, integer>"] {
+        let module = format!("---@type {annotation}\nlocal M = {{}}\nreturn M");
+        let result = check_export(&module, "local m = require 'mod'\nm.newField = 1");
+        assert_eq!(
+            count_by_code(&result, DiagnosticCode::InjectField),
+            0,
+            "{annotation}: {result:?}"
+        );
+    }
+}
+
+#[test]
 fn factory_exports_use_the_declared_class() {
     let module = "---@class Exported\n---@field name string\nlocal Foo = {}\n---@return Exported\nlocal function make() return Foo end\nreturn make()";
     let result = check_export(module, "local m = require 'mod'\nreturn m.name, m.absent");

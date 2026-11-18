@@ -89,22 +89,33 @@ fn check_index_expr(
     let Some(module_facts) = module_model.file_facts() else {
         return;
     };
+    if let ModuleExport::Decl { decl, .. } = &module_facts.module_export
+        && let Some(annotation) = module_facts
+            .decl_by_id(decl)
+            .and_then(|decl| decl.doc_type_syntax)
+        && matches!(
+            module_model.doc_type_lua(annotation),
+            LuaType::Unknown | LuaType::Any | LuaType::Table | LuaType::TableGeneric(_)
+        )
+    {
+        return;
+    }
     let declared_ty = match &module_facts.module_export {
         ModuleExport::Decl { decl, .. } => module_model.type_of_decl(decl),
         ModuleExport::Expr { value_syntax } => Some(module_model.type_of_expr(*value_syntax)),
         ModuleExport::Global { .. } | ModuleExport::None => None,
     };
-    // An annotation can hide the literal type while the constructor still defines export fields.
-    if matches!(declared_ty, Some(LuaType::Any)) {
-        return;
-    }
-    let Some(export_ty) = declared_ty
-        .as_ref()
-        .filter(|ty| matches!(ty, LuaType::TableConst(_)))
-        .cloned()
-        .or_else(|| export_table_type(module_file, module_facts))
-    else {
-        return;
+    // A typed class can publish fields from both its declaration and its initializer.
+    // Open annotations and index signatures are checked through their declared types.
+    let export_ty = match declared_ty.as_ref() {
+        Some(ty @ LuaType::TableConst(_)) => ty.clone(),
+        Some(ty) if is_export_class(&module_model, ty) => {
+            let Some(runtime) = export_table_type(module_file, module_facts) else {
+                return;
+            };
+            runtime
+        }
+        _ => return,
     };
     let Some(index_key) = index_expr.get_index_key() else {
         return;
@@ -154,6 +165,17 @@ fn check_index_expr(
         }
         _ => {}
     }
+}
+
+fn is_export_class(model: &SemanticModel, ty: &LuaType) -> bool {
+    let id = match ty {
+        LuaType::Ref(id) | LuaType::Def(id) => id.clone(),
+        LuaType::Generic(generic) => generic.get_base_type_id(),
+        _ => return false,
+    };
+    model
+        .type_def_of(&id)
+        .is_some_and(|def| def.kind == crate::TypeDefKind::Class && !model.is_std_file(def.file_id))
 }
 
 /// Accept the module's own members and declared class fields from other files.
