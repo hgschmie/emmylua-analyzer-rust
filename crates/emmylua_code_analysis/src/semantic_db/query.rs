@@ -406,16 +406,30 @@ pub(crate) fn resolve_member_id(
     member_use: &MemberUse,
 ) -> Option<SemanticId> {
     let receiver = member_use.receiver.as_ref()?;
-    let lexical_owner = db
-        .syntax_tree_of(facts.file_id)
-        .and_then(|tree| member_use.syntax.to_node_from_root(&tree.get_red_root()))
-        .and_then(LuaIndexExpr::cast)
-        .and_then(|index| implicit_self_reference_owner(facts, &index));
-    let lexical_receiver = lexical_owner.map(|root| AccessPath {
-        root,
-        ..receiver.clone()
+    // Only a direct self access needs its enclosing method and shadowing declarations.
+    let lexical_use = member_use.root_syntax.and_then(|root| {
+        let text = db.get_file_text(facts.file_id)?;
+        if !receiver.keys.is_empty()
+            || text
+                .get(usize::from(root.get_range().start())..usize::from(root.get_range().end()))?
+                != "self"
+        {
+            return None;
+        }
+        let tree = db.syntax_tree_of(facts.file_id)?;
+        let index = LuaIndexExpr::cast(member_use.syntax.to_node_from_root(&tree.get_red_root())?)?;
+        let owner = implicit_self_reference_owner(facts, &index)?;
+        Some(MemberUse {
+            receiver: Some(AccessPath {
+                root: owner.clone(),
+                ..receiver.clone()
+            }),
+            owner: Some(owner),
+            ..member_use.clone()
+        })
     });
-    let receiver = lexical_receiver.as_ref().unwrap_or(receiver);
+    let member_use = lexical_use.as_ref().unwrap_or(member_use);
+    let receiver = member_use.receiver.as_ref()?;
     if let Some(member) = facts.member_for_use(member_use)
         && (member.doc_type_syntax.is_some()
             || !matches!(
@@ -552,9 +566,10 @@ fn implicit_self_reference_owner(
         if let Some(member) = facts.member_by_value_syntax(closure.get_syntax_id())
             && member.is_method
         {
-            return decl
-                .is_none_or(|decl| decl.name_range.start() < closure.get_position())
-                .then(|| member.owner.clone());
+            if decl.is_some_and(|decl| decl.name_range.start() >= closure.get_position()) {
+                return None;
+            }
+            return Some(member.owner.clone());
         }
     }
     None

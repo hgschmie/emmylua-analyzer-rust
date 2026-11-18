@@ -45,12 +45,14 @@ fn search_member_implementations(
     };
     let member_model = SemanticModel::new(db, key.file_id);
     let mut ranges = member_reference_ranges(db, member, true);
-    // Include other definitions only when both the key and receiver identity match.
-    if let Some(target) = member_model.file_facts()?.member_by_id(member) {
+    // Include definitions on the same receiver or its declared class.
+    if let Some(facts) = member_model.file_facts()
+        && let Some(target) = facts.member_by_id(member)
+    {
         // Initializer fields also have a synthetic table owner; retain the
         // declaration owner of that same source field and its annotated type.
-        let owners: Vec<_> = member_model
-            .members()?
+        let owners: Vec<_> = facts
+            .members
             .iter()
             .filter(|candidate| candidate.id == *member)
             .flat_map(|candidate| implementation_owner_ids(&member_model, &candidate.owner))
