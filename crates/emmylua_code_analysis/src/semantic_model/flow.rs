@@ -5661,13 +5661,7 @@ fn filter_type_by_member_truthiness(
     };
     let mut kept = Vec::new();
     for component in components {
-        let unresolved = match &component {
-            LuaType::Any | LuaType::Unknown | LuaType::TplRef(_) => true,
-            LuaType::Ref(id) | LuaType::Def(id) => model.type_def_of(id).is_none(),
-            LuaType::Generic(generic) => model.type_def_of(&generic.get_base_type_id()).is_none(),
-            _ => false,
-        };
-        if unresolved {
+        if unresolved_receiver(model, &component) {
             kept.push(component);
             continue;
         }
@@ -5715,6 +5709,38 @@ fn filter_type_by_member_truthiness(
         0 => LuaType::Never,
         1 => kept.pop().expect("len checked"),
         _ => LuaType::Union(LuaUnionType::from_vec(kept).into()),
+    }
+}
+
+fn unresolved_receiver(model: &SemanticModel, ty: &LuaType) -> bool {
+    match ty {
+        LuaType::Any | LuaType::Unknown | LuaType::TplRef(_) => true,
+        LuaType::Ref(id) | LuaType::Def(id) => model.type_def_of(id).is_none(),
+        LuaType::Generic(generic) => model.type_def_of(&generic.get_base_type_id()).is_none(),
+        LuaType::Intersection(parts) => parts
+            .get_types()
+            .iter()
+            .any(|part| unresolved_receiver(model, part)),
+        _ => false,
+    }
+}
+
+#[test]
+fn unresolved_intersection_does_not_prove_absence_of_a_member() {
+    let mut ws = crate::VirtualWorkspace::new();
+    let file = ws.def("---@class Known");
+    let ty = ws.ty("Known & Unresolved");
+    let model = ws.analysis.semantic_model(file);
+    for truthy in [false, true] {
+        assert_eq!(
+            filter_type_by_member_truthiness(
+                &model,
+                ty.clone(),
+                &LuaMemberKey::from("flag"),
+                truthy
+            ),
+            ty
+        );
     }
 }
 
