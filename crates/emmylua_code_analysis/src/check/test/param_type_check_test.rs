@@ -4817,6 +4817,8 @@ mod callback_return_aliases {
             ("{1}", false),
             ("{'head', 'bad'}", false),
             ("{'head', 1, 2, 'bad'}", false),
+            ("{'head', [4] = 2}", true),
+            ("{'head', [4] = false}", false),
         ] {
             let mut ws = VirtualWorkspace::new_with_init_std_lib();
             let code = format!(

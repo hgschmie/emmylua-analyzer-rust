@@ -5,7 +5,7 @@ use emmylua_parser::{LuaAstNode, LuaIndexKey};
 
 use crate::semantic_model::table_constructor::{ConstructorValue, key_type};
 use crate::semantic_model::table_value::TableValue;
-use crate::{LuaMemberKey, LuaObjectType, LuaType, LuaTypeDeclId, VariadicType};
+use crate::{LuaMemberKey, LuaObjectType, LuaType, LuaTypeDeclId};
 
 use super::context::TypeCheckContext;
 use super::sub_type::{base_type_name, get_base_type_id, is_sub_type_of};
@@ -66,10 +66,10 @@ pub fn check_simple_type_compact(
                 let mut checks = RequiredChecks::default();
                 for (index, expected) in tuple.get_types().iter().enumerate() {
                     if let LuaType::Variadic(variadic) = expected
-                        && matches!(variadic.as_ref(), VariadicType::Base(_))
                         && index + 1 == tuple.len()
                     {
-                        // A repeated tuple tail may be empty; validate every present entry.
+                        // Lua integer keys start at 1. Each supplied tail element selects its
+                        // own slot in a finite pack, or the repeated type in an open pack.
                         for entry in table.field_entries() {
                             let (key, actual) = entry?;
                             let LuaType::IntegerConst(key) = key else {
