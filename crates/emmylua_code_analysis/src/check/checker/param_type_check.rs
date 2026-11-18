@@ -1191,3 +1191,33 @@ fn mismatch_message(
     )
     .to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::VirtualWorkspace;
+
+    #[test]
+    fn matching_tag_moves_a_later_overload_to_the_front() {
+        let mut ws = VirtualWorkspace::new();
+        let file = ws.def(
+            r#"
+            ---@param opts {kind: "first"}
+            ---@overload fun(opts: {kind: "second"})
+            local function add(opts) return opts end
+            add({["kind"] = "second"})
+        "#,
+        );
+        let call = ws.get_node::<LuaCallExpr>(file);
+        let model = ws.analysis.semantic_model(file);
+        let analysis = model.call_site_analysis(&call);
+        let args: Vec<_> = call.get_args_list().unwrap().get_args().collect();
+        let candidates: Vec<_> = analysis.candidates.iter().collect();
+
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(
+            preferred_table_overload(&model, &candidates, &args, false),
+            Some(1)
+        );
+    }
+}
