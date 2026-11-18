@@ -1382,3 +1382,56 @@ fn enum_runtime_cross_file_dynamic_and_conditional_keys() {
         eq(false)
     );
 }
+
+#[test]
+fn numeric_dictionary_keys_resolve_aliases_in_unions() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for domain in ["integer", "number", "EntityId"] {
+        for (key, valid) in [
+            ("EntityId?", true),
+            ("Label|EntityId", true),
+            ("EntityId|Label", true),
+            ("DocumentedKey", true),
+            ("RecursiveKey", true),
+            ("Label?", false),
+        ] {
+            let mut ws = VirtualWorkspace::new();
+            let source = format!(
+                "---@alias EntityId integer\n---@alias Label string\n---@alias DocumentedKey\n---| Label\n---| EntityId\n---@alias RecursiveKey RecursiveKey|EntityId\n---@param map table<{domain},string>\n---@param key {key}\nlocal function read(map, key) return map[key] end"
+            );
+            assert_eq!(
+                ws.has_no_diagnostic(DiagnosticCode::UndefinedField, &source),
+                valid,
+                "{domain}: {key}"
+            );
+        }
+    }
+}
+
+#[test]
+fn primitive_key_aliases_preserve_the_declared_domain() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for (domain, key, valid) in [
+        ("string", "string?", true),
+        ("string", "NestedKey", true),
+        ("string", "integer", false),
+        ("number", "number?", true),
+        ("\n---| number", "number", true),
+        ("\n---| number", "string", false),
+        ("1", "1", true),
+        ("1", "2", false),
+    ] {
+        let mut ws = VirtualWorkspace::new();
+        let mut config = ws.get_emmyrc();
+        config.strict.doc_base_const_match_base_type = false;
+        ws.update_emmyrc(config);
+        let source = format!(
+            "---@alias Domain {domain}\n---@alias NestedKey Domain\n---@param map table<Domain,string>\n---@param key {key}\nlocal function read(map, key) return map[key] end"
+        );
+        assert_eq!(
+            ws.has_no_diagnostic(DiagnosticCode::UndefinedField, &source),
+            valid,
+            "{domain}: {key}"
+        );
+    }
+}
