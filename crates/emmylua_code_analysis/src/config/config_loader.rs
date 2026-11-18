@@ -245,12 +245,39 @@ mod tests {
             "workspace.ignoreDir": ["dotted"],
             "workspace": {"ignoreDir": ["nested"], "library": ["library"]},
         });
+        // Traversal visits the nested workspace object first. The explicit
+        // dotted key then replaces the same flattened path within this layer.
         let expected = json!({
             "runtime": {"version": "Lua5.2"},
             "workspace": {"ignoreDir": ["dotted"], "library": ["library"]},
         });
         assert_eq!(merge(vec![layer.clone()]), expected);
         assert_eq!(merge(vec![layer, json!({})]), expected);
+    }
+
+    #[test]
+    fn dotted_child_survives_an_invalid_parent_repaired_by_a_later_layer() {
+        let result = merge(vec![
+            json!({"workspace": false, "workspace.ignoreDir": ["vendor"]}),
+            json!({"workspace": {"library": ["lib"]}}),
+        ]);
+        assert_eq!(
+            result,
+            json!({"workspace": {"ignoreDir": ["vendor"], "library": ["lib"]}})
+        );
+    }
+
+    #[test]
+    fn mixed_layers_keep_unknown_keys_and_duplicates_across_layers() {
+        let result = merge(vec![
+            json!({"unknown.foo": 1, "workspace.ignoreDir": ["same"]}),
+            json!({"unknown": {"bar": 2}, "workspace": {"ignoreDir": ["same", "new", "new"]}}),
+        ]);
+        assert_eq!(result["unknown"], json!({"foo": 1, "bar": 2}));
+        assert_eq!(
+            result["workspace"]["ignoreDir"],
+            json!(["same", "same", "new"])
+        );
     }
 
     #[test]
