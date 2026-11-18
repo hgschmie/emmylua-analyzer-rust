@@ -158,10 +158,10 @@ fn type_of_decl_read_at(
             || (!tree.is_loop_reachable(flow_id)
                 && declaration_is_in_query_closure(model, decl, offset))
     };
-    if let Some(decl_start) = decl_owner_syntax_start(model, decl)
-        && can_skip_assignment_trace()
-        && tree.latest_decl_assignment(decl, offset).is_none()
-        && !(if model
+    // A global can enter this closure through another path. Preserve the file-wide
+    // guard and assignment barriers when deciding whether its trace can be skipped.
+    let has_intervening_event = |decl_start| {
+        if model
             .file_facts()
             .and_then(|facts| facts.decl_by_id(decl))
             .is_some_and(|decl| matches!(decl.kind, crate::semantic_db::def::DeclKind::Global))
@@ -169,7 +169,12 @@ fn type_of_decl_read_at(
             tree.has_flow_event_between(decl_start, offset, true)
         } else {
             tree.has_flow_event_between_at(flow_id, decl_start, offset, true)
-        })
+        }
+    };
+    if let Some(decl_start) = decl_owner_syntax_start(model, decl)
+        && can_skip_assignment_trace()
+        && tree.latest_decl_assignment(decl, offset).is_none()
+        && !has_intervening_event(decl_start)
     {
         #[cfg(test)]
         flow_metrics::record_fast_decl_hit();

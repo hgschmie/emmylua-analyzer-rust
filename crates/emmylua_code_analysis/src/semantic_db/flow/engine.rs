@@ -650,15 +650,15 @@ impl<'a, 'b> BindEngine<'a, 'b> {
     }
 
     fn evaluate_while_stat(&mut self, while_stat: LuaWhileStat, current: FlowId) -> Step {
+        let Some(condition_expr) = while_stat.get_condition_expr() else {
+            return Step::Done(current);
+        };
         let pre_while_label = self.binder.create_loop_label(while_stat.get_syntax_id());
         let after_while_label = self.binder.create_branch_label();
         let pre_block_label = self.binder.create_branch_label();
         // Loop-entry transfer uses the first antecedent as the pre-loop seed;
         // register it before binding the body can append continue/back edges.
         self.binder.add_antecedent(pre_while_label, current);
-        let Some(condition_expr) = while_stat.get_condition_expr() else {
-            return Step::Done(current);
-        };
 
         let old_loop_label = self.binder.loop_label;
         let old_break_target_label = self.binder.break_target_label;
