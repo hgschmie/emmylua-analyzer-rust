@@ -38,7 +38,7 @@ pub fn load_resource_std(
     let mut files = files
         .into_iter()
         .filter_map(|file| {
-            if file.path.ends_with(".lua") {
+            if Path::new(&file.path).starts_with("std") && file.path.ends_with(".lua") {
                 let path = resoucres_dir
                     .join(&file.path)
                     .to_str()
@@ -183,4 +183,32 @@ fn get_std_dir(resources_dir: &Path) -> PathBuf {
         }
     }
     resources_dir.join("std")
+}
+
+#[cfg(test)]
+mod embedded_tests {
+    use super::*;
+
+    #[test]
+    fn embedded_lua_files_belong_to_the_registered_standard_library() {
+        for jit in [false, true] {
+            let (root, files) = load_resource_std(None, jit);
+            assert!(
+                files
+                    .iter()
+                    .any(|file| Path::new(&file.path) == root.join("global.lua"))
+            );
+            assert!(
+                files
+                    .iter()
+                    .all(|file| Path::new(&file.path).starts_with(&root))
+            );
+            assert_eq!(
+                files
+                    .iter()
+                    .any(|file| Path::new(&file.path) == root.join("jit.lua")),
+                jit
+            );
+        }
+    }
 }
