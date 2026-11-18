@@ -68,37 +68,53 @@ pub fn check_simple_type_compact(
                     if let LuaType::Variadic(variadic) = expected
                         && index + 1 == tuple.len()
                     {
-                        // Lua integer keys start at 1. Each supplied tail element selects its
-                        // own slot in a finite pack, or the repeated type in an open pack.
-                        for entry in table.field_entries() {
-                            let (key, actual) = entry?;
-                            let LuaType::IntegerConst(key) = key else {
-                                continue;
-                            };
-                            let Some(offset) = usize::try_from(key)
-                                .ok()
-                                .and_then(|key| key.checked_sub(index + 1))
-                            else {
-                                continue;
-                            };
+                        // A finite prefix has the same required slots as an ordinary tuple.
+                        let required = variadic.get_min_len().unwrap_or(0);
+                        for offset in 0..required {
                             if let Some(expected) = variadic.get_type(offset) {
-                                checks.require(check_constructor_value(
-                                    context,
-                                    identity.file_id,
-                                    Some(actual),
-                                    expected,
-                                ))?;
+                                let key = LuaMemberKey::Integer((index + offset + 1) as i64);
+                                let result = table.member_value(&key).and_then(|actual| {
+                                    check_constructor_value(
+                                        context,
+                                        identity.file_id,
+                                        actual,
+                                        expected,
+                                    )
+                                });
+                                checks.require(result)?;
+                            }
+                        }
+                        if variadic.get_max_len() != Some(required) {
+                            for entry in table.field_entries() {
+                                let result = entry.and_then(|(key, actual)| {
+                                    let LuaType::IntegerConst(key) = key else {
+                                        return Ok(());
+                                    };
+                                    // Lua position index + 1 is the first tail element.
+                                    if key <= (index + required) as i64 {
+                                        return Ok(());
+                                    }
+                                    let offset = key as usize - index - 1;
+                                    match variadic.get_type(offset) {
+                                        Some(expected) => check_constructor_value(
+                                            context,
+                                            identity.file_id,
+                                            Some(actual),
+                                            expected,
+                                        ),
+                                        None => Ok(()),
+                                    }
+                                });
+                                checks.require(result)?;
                             }
                         }
                         continue;
                     }
                     let key = LuaMemberKey::Integer(index as i64 + 1);
-                    checks.require(check_constructor_value(
-                        context,
-                        identity.file_id,
-                        table.member_value(&key)?,
-                        expected,
-                    ))?;
+                    let result = table.member_value(&key).and_then(|actual| {
+                        check_constructor_value(context, identity.file_id, actual, expected)
+                    });
+                    checks.require(result)?;
                 }
                 return checks.finish();
             }

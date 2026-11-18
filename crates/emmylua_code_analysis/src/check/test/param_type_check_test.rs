@@ -4809,6 +4809,31 @@ mod callback_return_aliases {
     }
 
     #[gtest]
+    fn finite_tuple_tail_matches_an_equivalent_fixed_tuple() {
+        for target in [
+            "[string, number, boolean]",
+            "[string, [number, boolean]...]",
+        ] {
+            for (value, valid) in [
+                ("{'x', 1, true}", true),
+                ("{'x', 1}", false),
+                ("{'x', 1, 'bad'}", false),
+                ("{'x', 1, false, 7}", true),
+            ] {
+                let mut ws = VirtualWorkspace::new_with_init_std_lib();
+                let source = format!(
+                    "---@param callback fun():{target}\nlocal function use(callback) end\nuse(function() return {value} end)"
+                );
+                assert_eq!(
+                    ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, &source),
+                    valid,
+                    "{target}: {value}"
+                );
+            }
+        }
+    }
+
+    #[gtest]
     fn tuple_tails_check_every_present_element() {
         for (value, valid) in [
             ("{'head'}", true),
