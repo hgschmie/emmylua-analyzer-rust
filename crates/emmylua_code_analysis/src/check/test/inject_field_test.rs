@@ -2686,7 +2686,7 @@ mod union_constructor_alternatives {
     fn deep_recursive_union_keeps_a_successful_sibling() {
         for (leaf, valid) in [("{text='ok'}", true), ("{text=1}", false)] {
             let mut value = leaf.to_string();
-            for _ in 0..128 {
+            for _ in 0..512 {
                 value = format!("{{value=1,next={value}}}");
             }
             let source = format!(

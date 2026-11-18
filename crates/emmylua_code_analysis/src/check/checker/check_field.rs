@@ -328,6 +328,21 @@ fn constructor_alternatives(
     {
         return vec![only.clone()];
     }
+    // For named-field constructors, a required key can distinguish plain records
+    // without type-checking the entire remaining subtree at each nesting level.
+    let plain_records = union.iter().all(|ty| {
+        matches!(ty, LuaType::Nil)
+            || matches!(ty, LuaType::Object(obj) if obj.get_index_access().is_empty())
+    }) && table
+        .get_fields_with_keys()
+        .iter()
+        .all(|(_, key)| key.is_name());
+    let ranked = plain_records.then(|| closest_record_shapes(model, union, table));
+    if let Some((0, shapes)) = &ranked
+        && shapes.len() == 1
+    {
+        return shapes.clone();
+    }
     let source = LuaType::TableConst(crate::InFiled::new(model.file_id(), table.get_range()));
     let compatible: Vec<_> = union
         .iter()
@@ -350,6 +365,16 @@ fn constructor_alternatives(
 
     // A value mismatch inside an otherwise matching record belongs to the
     // assignment or argument checker. Prefer that record to unrelated missing fields.
+    ranked
+        .unwrap_or_else(|| closest_record_shapes(model, union, table))
+        .1
+}
+
+fn closest_record_shapes(
+    model: &SemanticModel,
+    union: &crate::LuaUnionType,
+    table: &LuaTableExpr,
+) -> (usize, Vec<LuaType>) {
     let constructor = TableConstructor::new(model, table);
     let mut closest = Vec::new();
     let mut fewest_missing = usize::MAX;
@@ -378,7 +403,7 @@ fn constructor_alternatives(
             closest.push(component.clone());
         }
     }
-    closest
+    (fewest_missing, closest)
 }
 
 fn report_missing_fields(
