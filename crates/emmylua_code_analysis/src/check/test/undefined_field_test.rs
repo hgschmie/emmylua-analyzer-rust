@@ -5,6 +5,29 @@ mod test {
     use crate::{DiagnosticCode, VirtualWorkspace};
 
     #[test]
+    fn typed_dictionary_writes_check_the_key_type() {
+        let source = r#"
+            ---@param map table<string, number>
+            ---@param invalid integer
+            ---@param valid string
+            local function update(map, invalid, valid)
+                map[invalid] = 1
+                map[valid] = 2
+            end
+        "#;
+        let diagnostics = crate::check::test::check_source(source);
+        let mut undefined = diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::UndefinedField);
+        let diagnostic = undefined.next().expect("incompatible dictionary key");
+        assert_eq!(
+            &source[usize::from(diagnostic.range.start())..usize::from(diagnostic.range.end())],
+            "invalid"
+        );
+        assert!(undefined.next().is_none(), "{diagnostics:#?}");
+    }
+
+    #[test]
     fn test_1() {
         let mut ws = VirtualWorkspace::new();
         assert!(ws.has_no_diagnostic(
