@@ -768,11 +768,12 @@ impl<'db> SemanticModel<'db> {
         closure_syntax: LuaSyntaxId,
         param_index: usize,
     ) -> Option<LuaType> {
+        let signature = self.file_facts()?.signature_by_closure(closure_syntax)?;
         let expected_signatures = self.expected_member_signatures_for_closure(closure_syntax)?;
         // Project explicit docs in their function's generic scope before using
         // an available callback contract, including when the doc says unknown.
+        // Use the same first signature annotation as signature type projection.
         if !expected_signatures.is_empty()
-            && let Some(signature) = self.file_facts()?.signature_by_closure(closure_syntax)
             && let Some(name) = signature.param_names.get(param_index)
             && let Some(docs) = signature.docs.as_ref()
             && let Some((_, syntax)) = docs
@@ -795,9 +796,9 @@ impl<'db> SemanticModel<'db> {
         // a contract, field-level annotations follow table_field_signature_override.
         // Table-field docs are not necessarily attached to the closure's
         // signature. Their explicit @param still takes precedence over context.
-        if let Some(signature) = self.file_facts()?.signature_by_closure(closure_syntax)
-            && let Some(name) = signature.param_names.get(param_index)
-            && let Some(docs) = self.contextual_field_docs(self.file_id(), closure_syntax)
+        let field_docs = self.contextual_field_docs(self.file_id(), closure_syntax);
+        if let Some(name) = signature.param_names.get(param_index)
+            && let Some(docs) = &field_docs
             && let Some((_, syntax, nullable)) = docs
                 .params
                 .iter()
@@ -815,19 +816,12 @@ impl<'db> SemanticModel<'db> {
                 ty
             });
         }
-        if expected_signatures.is_empty()
-            && self
-                .contextual_field_docs(self.file_id(), closure_syntax)
-                .is_some_and(|docs| docs.typ.is_some())
-        {
+        if expected_signatures.is_empty() && field_docs.is_some_and(|docs| docs.typ.is_some()) {
             // Preserve the unconstrained formal of an explicitly non-callable
             // field, without borrowing parameters from its enclosing owner.
             return Some(LuaType::Any);
         }
-        let is_method = self
-            .file_facts()
-            .and_then(|facts| facts.signature_by_closure(closure_syntax))
-            .is_some_and(|sig| sig.is_method);
+        let is_method = signature.is_method;
         let mut types = Vec::new();
         for expected_fun in expected_signatures {
             let has_self_in_expected = expected_fun
@@ -1183,16 +1177,14 @@ impl<'db> SemanticModel<'db> {
 
     fn contextual_callback_signatures(&self, ty: &LuaType) -> Vec<LuaFunctionType> {
         let ty = self.contextual_alias_target(ty);
-        let types = match ty {
-            LuaType::Union(union) => union.into_vec(),
-            ty => vec![ty],
-        };
-        types
-            .iter()
-            .flat_map(|ty| {
-                infer::vm::expand_callable_types_in_model(self, &self.contextual_alias_target(ty))
-            })
-            .collect()
+        // Alias expansion already visited the outer union and each branch.
+        match ty {
+            LuaType::Union(union) => union
+                .iter()
+                .flat_map(|branch| infer::vm::expand_callable_types_in_model(self, branch))
+                .collect(),
+            ty => infer::vm::expand_callable_types_in_model(self, &ty),
+        }
     }
 
     fn contextual_table_value(&self, owner: &LuaType, key: &LuaMemberKey) -> Option<LuaType> {
