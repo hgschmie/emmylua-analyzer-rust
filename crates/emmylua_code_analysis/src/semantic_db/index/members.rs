@@ -93,8 +93,6 @@ impl OwnerMembers {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorkspaceMemberIndex {
     owners: HashMap<SemanticId, OwnerMembers>,
-    directional_key_counts: HashMap<LuaMemberKey, usize>,
-    directional_keys_by_file: HashMap<FileId, Vec<LuaMemberKey>>,
     /// Canonical `OwnerId` buckets. Module export / require alias members attach
     /// here so `require("mod").extra` can see members contributed by other files.
     owners_by_id: HashMap<OwnerId, OwnerMembers>,
@@ -175,21 +173,7 @@ impl WorkspaceMemberIndex {
             .and_then(|bucket| bucket.named(name))
     }
 
-    pub(crate) fn has_directional_key(&self, key: &LuaMemberKey) -> bool {
-        self.directional_key_counts.contains_key(key)
-    }
-
     pub(crate) fn remove_file(&mut self, file_id: FileId) {
-        if let Some(keys) = self.directional_keys_by_file.remove(&file_id) {
-            for key in keys {
-                if let Some(count) = self.directional_key_counts.get_mut(&key) {
-                    *count -= 1;
-                    if *count == 0 {
-                        self.directional_key_counts.remove(&key);
-                    }
-                }
-            }
-        }
         let mut touched_paths = HashSet::new();
         if let Some(entries) = self.by_file_paths.remove(&file_id) {
             for (key, member_id) in entries {
@@ -248,16 +232,6 @@ impl WorkspaceMemberIndex {
         let mut canonical_keys = Vec::new();
         let mut path_keys = Vec::new();
         for member in &exports.members {
-            if member.access != crate::MemberAccess::ReadWrite {
-                *self
-                    .directional_key_counts
-                    .entry(member.key.clone())
-                    .or_default() += 1;
-                self.directional_keys_by_file
-                    .entry(member.file_id)
-                    .or_default()
-                    .push(member.key.clone());
-            }
             let member_id = member.member.clone();
             let member_ref = MemberRef {
                 file_id: member.file_id,

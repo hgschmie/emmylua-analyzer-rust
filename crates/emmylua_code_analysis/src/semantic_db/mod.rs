@@ -252,13 +252,6 @@ impl SemanticDatabase {
             .map(|cache| cache.deprecated.as_ref())
     }
 
-    pub(crate) fn has_directional_key(&self, key: &LuaMemberKey) -> bool {
-        self.workspace_index
-            .members
-            .values()
-            .any(|index| index.has_directional_key(key))
-    }
-
     pub(crate) fn workspace_index_cache(&self) -> &query::WorkspaceIndexCache {
         &self.workspace_index
     }

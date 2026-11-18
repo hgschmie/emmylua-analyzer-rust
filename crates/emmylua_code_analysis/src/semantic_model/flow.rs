@@ -6302,27 +6302,7 @@ fn merge_directional_read_paths(mut results: Vec<LuaType>) -> LuaType {
     LuaType::from_vec(results)
 }
 
-/// Direct setters can resolve to a different declaration than the getter.
-/// Compare the receiver and key for a direct property write.
-fn assigns_directional_property(
-    model: &SemanticModel,
-    assignment: &LuaAssignStat,
-    owner: &SemanticId,
-    key: &LuaMemberKey,
-) -> bool {
-    assignment.get_var_and_expr_list().0.iter().any(|var| {
-        let emmylua_parser::LuaVarExpr::IndexExpr(target) = var else {
-            return false;
-        };
-        member_key_from_index_expr(model, target).as_ref() == Some(key)
-            && model
-                .resolve_member(target)
-                .is_some_and(|resolved| &resolved.owner == owner)
-    })
-}
-
-/// Cap the total CFG nodes per read so branch-heavy code cannot multiply the work
-/// across paths. Once exhausted, unfinished paths still contribute their narrowed getter.
+/// Bound the total backward traversal across all paths of one directional read.
 const DIRECTIONAL_READ_FLOW_BUDGET: usize = 512;
 
 /// Directional assignments invalidate earlier guards but never substitute the
@@ -6342,35 +6322,53 @@ fn directional_read_at(
     let mut pending = vec![(start, PathState::default(), HashSet::new())];
     let mut results = Vec::new();
     let mut budget = DIRECTIONAL_READ_FLOW_BUDGET;
-    'paths: while let Some((mut current, mut path, mut seen)) = pending.pop() {
+    while let Some((mut current, mut path, mut seen)) = pending.pop() {
         loop {
-            if budget == 0 || !seen.insert(current) {
+            if budget == 0 {
+                // Preserve completed results and modifiers already seen on every
+                // unfinished path; default only the unseen prefix to the getter.
+                results.push(finalize(model, read.typ.clone(), &path));
+                results.extend(
+                    pending
+                        .into_iter()
+                        .map(|(_, path, _)| finalize(model, read.typ.clone(), &path)),
+                );
+                return Some(merge_directional_read_paths(results));
+            }
+            if !seen.insert(current) {
+                results.push(finalize(model, read.typ.clone(), &path));
                 break;
             }
             budget -= 1;
-            let Some(node) = tree.get_flow_node(current) else {
-                break;
-            };
+            let node = tree.get_flow_node(current)?;
             match &node.kind {
                 FlowNodeKind::Assignment(ptr) => {
-                    let Some(assignment) = ptr.to_node(&root) else {
+                    let assignment = ptr.to_node(&root)?;
+                    if assignment.get_range().end() <= offset
+                        && (assignment.get_var_and_expr_list().0.iter().any(|var| {
+                            let emmylua_parser::LuaVarExpr::IndexExpr(target) = var else {
+                                return false;
+                            };
+                            member_key_from_index_expr(model, target).as_ref() == Some(&read.key)
+                                && model
+                                    .resolve_member(target)
+                                    .is_some_and(|resolved| resolved.owner == owner)
+                        }) || member_write_match(
+                            model,
+                            tree,
+                            current,
+                            member,
+                            Some(index),
+                            None,
+                        ) != MemberWrite::Unrelated)
+                    {
+                        results.push(finalize(model, read.typ.clone(), &path));
                         break;
-                    };
-                    if assignment.get_range().end() <= offset {
-                        // A setter, an alias write or replacement of a receiver invalidates the guard.
-                        if assigns_directional_property(model, &assignment, &owner, &read.key)
-                            || member_write_match(model, tree, current, member, Some(index), None)
-                                != MemberWrite::Unrelated
-                        {
-                            break;
-                        }
                     }
                 }
                 FlowNodeKind::TrueCondition(cond) | FlowNodeKind::FalseCondition(cond) => {
                     // Match receiver paths, including stable aliases, before narrowing.
-                    let Some(expr) = cond.to_node(&root) else {
-                        break;
-                    };
+                    let expr = cond.to_node(&root)?;
                     let relevant = std::iter::once(expr.syntax().clone())
                         .chain(expr.syntax().descendants())
                         .filter_map(LuaIndexExpr::cast)
@@ -6397,23 +6395,17 @@ fn directional_read_at(
             match &node.antecedent {
                 Some(FlowAntecedent::Single(next)) => current = *next,
                 Some(FlowAntecedent::Multiple(id)) => {
-                    let Some(predecessors) = tree.get_multi_antecedents(*id) else {
-                        break;
-                    };
-                    if predecessors.is_empty() {
-                        break;
-                    }
-                    for next in predecessors {
+                    for next in tree.get_multi_antecedents(*id)? {
                         pending.push((*next, path.clone_path(), seen.clone()));
                     }
-                    continue 'paths;
+                    break;
                 }
-                None => break,
+                None => {
+                    results.push(finalize(model, read.typ.clone(), &path));
+                    break;
+                }
             }
         }
-        // Every path either schedules predecessors or contributes its getter with
-        // the modifiers already seen, even for incomplete flow or exhausted budget.
-        results.push(finalize(model, read.typ.clone(), &path));
     }
     Some(merge_directional_read_paths(results))
 }

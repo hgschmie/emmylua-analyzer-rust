@@ -222,19 +222,36 @@ fn asymmetric_fields_reindex_and_incomplete_directions() {
 }
 
 #[test]
-fn asymmetric_fields_directional_keys_follow_file_updates() {
+fn asymmetric_fields_unresolved_setter_does_not_use_getter() {
+    use crate::semantic_model::cache::CacheEntry;
+    use emmylua_parser::{LuaAstNode, LuaExpr, LuaIndexExpr};
+
     let mut ws = VirtualWorkspace::new();
-    let key = crate::LuaMemberKey::Name("value".into());
-    let declarations =
-        |class: &str, flag: &str| format!("---@class {class}\n---@field {flag} value number");
-    ws.def_file("a.lua", &declarations("A", "(read)"));
-    ws.def_file("b.lua", &declarations("B", "(write)"));
-    ws.def_file("a.lua", &declarations("A", ""));
-    assert!(ws.analysis.db.has_directional_key(&key));
-    ws.def_file("b.lua", &declarations("B", ""));
-    assert!(!ws.analysis.db.has_directional_key(&key));
-    ws.def_file("a.lua", &declarations("A", "(write)"));
-    assert!(ws.analysis.db.has_directional_key(&key));
+    let file = ws.def("---@class Box\n---@field (read) value boolean\n---@field (write) value string\n---@param box Box\nlocal function set(box) box.value = 'ok' end");
+    let model = ws.analysis.semantic_model(file);
+    let index = model
+        .chunk()
+        .unwrap()
+        .descendants::<LuaIndexExpr>()
+        .next()
+        .unwrap();
+    let writer = model
+        .file_facts()
+        .unwrap()
+        .members
+        .iter()
+        .find(|field| field.access == crate::MemberAccess::Write)
+        .unwrap();
+    // A recursive query can read the getter while the setter is still being inferred.
+    model
+        .cache
+        .borrow_mut()
+        .member_type
+        .insert((file, writer.id.clone()), CacheEntry::InProgress);
+    assert_eq!(
+        model.assignment_target_type(&LuaExpr::IndexExpr(index)),
+        LuaType::Unknown
+    );
 }
 
 #[test]
