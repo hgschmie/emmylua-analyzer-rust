@@ -486,23 +486,6 @@ fn string_key_expanded(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> bool
     false
 }
 
-fn numeric_key(ty: &LuaType) -> bool {
-    match ty {
-        LuaType::Number
-        | LuaType::Integer
-        | LuaType::IntegerConst(_)
-        | LuaType::FloatConst(_)
-        | LuaType::DocIntegerConst(_) => true,
-        LuaType::Union(union) => union.into_vec().iter().any(numeric_key),
-        LuaType::MultiLineUnion(union) => match union.to_union() {
-            LuaType::Union(union) => union.into_vec().iter().any(numeric_key),
-            _ => false,
-        },
-        LuaType::Ref(_) | LuaType::Def(_) => false,
-        _ => false,
-    }
-}
-
 /// Numeric key after alias expansion (`IntegerPartIndex = 1|2`, `NewKey: integer`).
 fn numeric_key_expanded(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> bool {
     numeric_key_expanded_inner(semantic_model, ty, &mut Vec::new())
@@ -513,16 +496,30 @@ fn numeric_key_expanded_inner(
     ty: &LuaType,
     visited: &mut Vec<LuaTypeDeclId>,
 ) -> bool {
-    if numeric_key(ty) {
-        return true;
-    }
-    let Some(def) = named_type_def(semantic_model, ty) else {
-        return false;
-    };
     let id = match ty {
+        LuaType::Number
+        | LuaType::Integer
+        | LuaType::IntegerConst(_)
+        | LuaType::FloatConst(_)
+        | LuaType::DocIntegerConst(_) => return true,
+        LuaType::Union(union) => {
+            return union
+                .iter()
+                .any(|part| numeric_key_expanded_inner(semantic_model, part, visited));
+        }
+        LuaType::MultiLineUnion(union) => {
+            return union
+                .iter()
+                .any(|part| numeric_key_expanded_inner(semantic_model, part, visited));
+        }
         LuaType::Ref(id) | LuaType::Def(id) => id,
         _ => return false,
     };
+    let Some(def) = semantic_model.type_def_of(id) else {
+        return false;
+    };
+    // A union only needs one numeric member. Visiting each definition once across
+    // all branches finds that member and stops cycles.
     if visited.contains(id) {
         return false;
     }
@@ -535,7 +532,6 @@ fn numeric_key_expanded_inner(
             .base_types(&def.type_decl_id())
             .iter()
             .any(|ty| matches!(ty, LuaType::Integer | LuaType::Number)),
-        // An enum's values determine whether it can index a numeric collection.
         TypeDefKind::Enum => is_compatible(semantic_model, ty, &LuaType::Number),
     }
 }
@@ -561,7 +557,13 @@ fn key_matches(semantic_model: &SemanticModel<'_>, key: &LuaType, table_key: &Lu
             .iter()
             .any(|k| key_matches(semantic_model, key, k)),
         LuaType::Ref(_) | LuaType::Def(_) => {
-            // Alias / class inheritance: recursive target or parent chain is handled by type_check.
+            // An alias of a primitive key domain follows the same rule as that primitive.
+            if let Some(domain @ (LuaType::Number | LuaType::Integer | LuaType::String)) =
+                expand_alias_type(semantic_model, table_key)
+            {
+                return key_matches(semantic_model, key, &domain);
+            }
+            // Literal domains must still match their value, and classes use their declared compatibility.
             is_compatible(semantic_model, key, table_key)
         }
         _ => true,
