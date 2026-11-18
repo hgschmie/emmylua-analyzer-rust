@@ -205,6 +205,46 @@ return items
         }
     }
 
+    #[test]
+    fn tagged_overload_still_checks_the_complete_call() {
+        let api = r#"
+            ---@param opts {kind: "one", first: integer}
+            ---@overload fun(opts: {kind: "two", second: string})
+            local function add(opts) return opts end
+        "#;
+        for call in [
+            r#"add({kind="one", first=1})"#,
+            r#"add({kind="two", second="ok"})"#,
+            r#"add({["kind"]="two", second="ok"})"#,
+        ] {
+            assert!(check_source(&format!("{api}\n{call}")).is_empty(), "{call}");
+        }
+        let diagnostics = check_source(&format!(
+            r#"{api}
+            add({{kind="two"}})"#
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0].code, DiagnosticCode::MissingFields);
+        assert!(diagnostics[0].message.contains("first"), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn tagged_overload_falls_back_to_an_untagged_signature() {
+        let diagnostics = check_source(
+            r#"
+            ---@class Widget
+            local Widget = {}
+            ---@param opts {kind: "button", enabled: boolean}
+            ---@overload fun(self: Widget, opts: {kind: string, text: string})
+            function Widget:add(opts) return self, opts end
+            local widget = Widget
+            widget:add({kind="label", text="hello"})
+            widget.add(widget, {kind="button", enabled=true})
+        "#,
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
     mod generic_tables {
         use super::*;
 
