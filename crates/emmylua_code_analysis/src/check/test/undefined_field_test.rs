@@ -1413,6 +1413,7 @@ fn primitive_key_aliases_preserve_the_declared_domain() {
     use crate::{DiagnosticCode, VirtualWorkspace};
     for (domain, key, valid) in [
         ("string", "string?", true),
+        ("string", "NestedKey", true),
         ("string", "integer", false),
         ("number", "number?", true),
         ("\n---| number", "number", true),
@@ -1425,7 +1426,7 @@ fn primitive_key_aliases_preserve_the_declared_domain() {
         config.strict.doc_base_const_match_base_type = false;
         ws.update_emmyrc(config);
         let source = format!(
-            "---@alias Domain {domain}\n---@param map table<Domain,string>\n---@param key {key}\nlocal function read(map, key) return map[key] end"
+            "---@alias Domain {domain}\n---@alias NestedKey Domain\n---@param map table<Domain,string>\n---@param key {key}\nlocal function read(map, key) return map[key] end"
         );
         assert_eq!(
             ws.has_no_diagnostic(DiagnosticCode::UndefinedField, &source),
