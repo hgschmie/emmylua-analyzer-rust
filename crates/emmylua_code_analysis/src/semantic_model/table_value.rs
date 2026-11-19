@@ -2,7 +2,9 @@
 //!
 //! Field flow affects field reads, not the structural type of the whole table.
 
-use emmylua_parser::{LuaAstNode, LuaCallExpr, LuaTableExpr};
+use emmylua_parser::{
+    LuaAstNode, LuaCallExpr, LuaExpr, LuaLocalStat, LuaSyntaxKind, LuaSyntaxNode, LuaTableExpr,
+};
 use hashbrown::HashSet;
 use rowan::TextRange;
 
@@ -20,6 +22,7 @@ pub(crate) struct TableValue<'db> {
     identity: InFiled<TextRange>,
     constructor: TableConstructor,
     is_constructor: bool,
+    argument_only: bool,
 }
 
 impl<'db> TableValue<'db> {
@@ -46,31 +49,19 @@ impl<'db> TableValue<'db> {
                     .ancestors::<LuaCallExpr>()
                     .any(|call| expr.value.contains_range(call.get_range()))
         });
+        let argument_only = !is_constructor && table_is_argument_only(&model, &table);
         let constructor = TableConstructor::new(&model, &table);
         Ok(Self {
             model,
             identity: identity.clone(),
             constructor,
             is_constructor,
+            argument_only,
         })
     }
 
     pub(crate) fn is_constructor(&self) -> bool {
         self.is_constructor
-    }
-
-    fn has_no_member_write(&self, key: &LuaMemberKey) -> bool {
-        let Some(facts) = self.model.file_facts() else {
-            return false;
-        };
-        let table = LuaType::TableConst(self.identity.clone());
-        !facts.possible_write_receivers(key).any(|syntax| {
-            let receiver = self
-                .model
-                .type_of_expr_at(syntax, syntax.get_range().start());
-            receiver == table
-                || matches!(receiver, LuaType::Union(types) if types.iter().any(|ty| ty == &table))
-        })
     }
 
     fn own_member_value(
@@ -81,16 +72,20 @@ impl<'db> TableValue<'db> {
         if self.is_constructor {
             return Ok(initial);
         }
-        // A constructor tag retains its literal value until the table can be written
-        // through that key (including a local alias or a computed key).
-        if let Some(value) = &initial
+        // These literals discriminate tagged records. Preserve the stable field contract for
+        // annotated values or tables that also serve as storage.
+        if self.argument_only
+            && let Some(value) = &initial
             && matches!(
                 value.typ,
                 LuaType::StringConst(_) | LuaType::BooleanConst(_)
             )
-            && self
-                .model
-                .require_complete(|| self.has_no_member_write(key))?
+            && let Some(expr) = value.expr
+            && self.model.file_facts().is_some_and(|facts| {
+                facts
+                    .member_by_value_syntax(expr.get_syntax_id())
+                    .is_none_or(|field| field.doc_type_syntax.is_none())
+            })
         {
             return Ok(initial);
         }
@@ -267,4 +262,46 @@ fn push_present_types(types: &mut Vec<LuaType>, typ: &LuaType) {
         LuaType::Nil => {}
         typ => types.push(typ.clone()),
     }
+}
+
+/// Skip only grouping and containing constructors. Storing, indexing, returning
+/// or aliasing the enclosing table all require its ordinary mutable contract.
+fn enclosing_argument_value(mut node: LuaSyntaxNode) -> LuaSyntaxNode {
+    while let Some(parent) = node.parent() {
+        match parent.kind().into() {
+            LuaSyntaxKind::ParenExpr
+            | LuaSyntaxKind::TableFieldAssign
+            | LuaSyntaxKind::TableFieldValue
+            | LuaSyntaxKind::TableArrayExpr
+            | LuaSyntaxKind::TableObjectExpr => node = parent,
+            _ => break,
+        }
+    }
+    node
+}
+
+fn table_is_argument_only(model: &SemanticModel, table: &LuaTableExpr) -> bool {
+    let value = enclosing_argument_value(table.syntax().clone());
+    let Some(parent) = value.parent() else {
+        return false;
+    };
+    if parent.kind() == LuaSyntaxKind::CallArgList.into() {
+        return true;
+    }
+    let Some(decl) = LuaLocalStat::cast(parent)
+        .and_then(|local| local.get_local_name_by_value(LuaExpr::cast(value)?))
+        .and_then(|name| model.file_facts()?.decl_at_offset(name.get_position()))
+    else {
+        return false;
+    };
+    let Some(tree) = model.syntax_tree() else {
+        return false;
+    };
+    let root = tree.get_red_root();
+    model.decl_references(&decl.id).iter().all(|syntax| {
+        syntax
+            .to_node_from_root(&root)
+            .and_then(|node| enclosing_argument_value(node).parent())
+            .is_some_and(|parent| parent.kind() == LuaSyntaxKind::CallArgList.into())
+    })
 }

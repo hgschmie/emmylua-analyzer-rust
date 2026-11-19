@@ -90,7 +90,6 @@ pub struct FileFacts {
     /// All index-expression use sites in the file (`a.b` / `arr[1]` / `t[k]`).
     /// For on-demand cross-file reference index resolution, avoiding cross-file resolve during FileFacts.
     pub member_uses: Vec<MemberUse>,
-    member_write_receivers: HashMap<LuaMemberKey, Vec<LuaSyntaxId>>,
     pub signatures: Vec<Signature>,
     pub module_export: ModuleExport,
     /// Module export visibility (`---@meta no-require` → Hide; export target `---@internal/@public` tags).
@@ -259,19 +258,6 @@ impl FileFacts {
             };
             reference.is_some() && self.name_reference(key) == reference
         })
-    }
-
-    /// Receivers of writes to this key, including writes through a computed key.
-    pub(crate) fn possible_write_receivers(
-        &self,
-        key: &LuaMemberKey,
-    ) -> impl Iterator<Item = LuaSyntaxId> {
-        self.member_write_receivers
-            .get(key)
-            .into_iter()
-            .chain(self.member_write_receivers.get(&LuaMemberKey::None))
-            .flatten()
-            .copied()
     }
 
     pub fn member_receiver(&self, member: &Member) -> Option<&AccessPath> {
@@ -646,7 +632,6 @@ pub struct FactsBuilder {
     members: Vec<Member>,
     name_uses: Vec<NameUse>,
     member_uses: Vec<MemberUse>,
-    member_write_receivers: HashMap<LuaMemberKey, Vec<LuaSyntaxId>>,
     member_use_by_syntax: HashMap<LuaSyntaxId, usize>,
     signatures: Vec<Signature>,
     module_export: ModuleExport,
@@ -923,7 +908,6 @@ impl FactsBuilder {
             members: Vec::new(),
             name_uses: Vec::new(),
             member_uses: Vec::new(),
-            member_write_receivers: HashMap::new(),
             member_use_by_syntax: HashMap::new(),
             signatures: Vec::new(),
             module_export: ModuleExport::None,
@@ -1158,7 +1142,6 @@ impl FactsBuilder {
             members: self.members,
             name_uses: self.name_uses,
             member_uses: self.member_uses,
-            member_write_receivers: self.member_write_receivers,
             signatures: self.signatures,
             module_export: self.module_export,
             module_visibility: self.module_visibility,
@@ -2059,12 +2042,6 @@ impl FactsBuilder {
     ) {
         let use_index = self.collect_member_use(index_expr);
         let member_use = &self.member_uses[use_index];
-        if let Some(receiver) = index_expr.get_prefix_expr() {
-            self.member_write_receivers
-                .entry(member_use.key.clone())
-                .or_default()
-                .push(receiver.get_syntax_id());
-        }
         if member_use.key.is_none() {
             return;
         }

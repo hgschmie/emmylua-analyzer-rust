@@ -4678,5 +4678,14 @@ mod test {
                 "{invalid}"
             );
         }
+        ws.def_file("shared.lua", "return {filter = 'type', type = 'stop'}");
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            "local f = require('shared'); f.filter = 'bogus'; register({f})"
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            "local f = {filter = 'type', type = 'stop'}; function f:change() self.filter = 'bogus' end; f:change(); register({f})"
+        ));
     }
 }
