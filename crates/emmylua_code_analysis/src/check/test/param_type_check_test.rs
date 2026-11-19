@@ -4968,6 +4968,127 @@ mod test {
             "local f = {filter = 'type', type = 'stop'}; function f:change() self.filter = 'bogus' end; f:change(); register({f})"
         ));
     }
+
+    #[test]
+    fn record_dictionary_arguments_check_fields() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def(
+            r#"
+        ---@class (exact) NamedRecord
+        ---@field name string
+        ---@field count integer
+        local NamedRecord = {}
+        ---@generic T:table<string,any>
+        ---@param value T?
+        ---@return T
+        function copy_record(value) return assert(value) end
+        ---@param value table<string,integer>
+        function counts(value) end
+        ---@param value table<"count",integer>
+        function only_count(value) end
+        ---@class (exact) NumericKeyRecord
+        ---@field [1] integer
+        local NumericKeyRecord = {}
+        ---@type NamedRecord
+        named_record = {}
+        ---@type NumericKeyRecord
+        numeric_record = {}
+        ---@class CountsBase
+        ---@field count integer
+        local CountsBase = {}
+        ---@class (exact) DerivedCounts: CountsBase
+        local DerivedCounts = {}
+        ---@type DerivedCounts
+        derived_counts = {}
+        ---@class IndexedCounts
+        ---@field [string] integer
+        local IndexedCounts = {}
+        ---@type IndexedCounts
+        indexed_counts = {}
+        ---@class (exact) OptionalCounts
+        ---@field count? integer
+        local OptionalCounts = {}
+        ---@type OptionalCounts
+        optional_counts = {}
+        ---@class (exact) EmptyRecord
+        local EmptyRecord = {}
+        ---@type EmptyRecord
+        empty_record = {}
+        ---@class OpenCounts
+        ---@field value integer
+        local OpenCounts = {}
+        ---@type OpenCounts
+        open_counts = {}
+        ---@class Opaque
+        local Opaque = {}
+        ---@type Opaque
+        opaque = {}
+        ---@class (exact) TextHandle: string
+        ---@field count integer
+        local TextHandle = {}
+        ---@type TextHandle
+        text_handle = {}
+        ---@class (exact) Handle: userdata
+        ---@field count integer
+        local Handle = {}
+        ---@type Handle
+        handle = {}
+"#,
+        );
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+        ---@param record NamedRecord
+        local function use(record) return copy_record(record) end
+"#
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+        ---@param record NamedRecord
+        local function use(record) counts(record) end
+"#
+        ));
+        assert_eq!(
+            ws.expr_ty("copy_record(named_record)"),
+            ws.ty("NamedRecord")
+        );
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            "copy_record(numeric_record)"
+        ));
+        assert!(!ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, "copy_record(42)"));
+        assert!(ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, "counts(optional_counts)"));
+        for invalid in [
+            "counts(opaque)",
+            "counts(open_counts)",
+            "counts(handle)",
+            "counts(text_handle)",
+        ] {
+            assert!(
+                !ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, invalid),
+                "{invalid}"
+            );
+        }
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            "only_count(derived_counts)"
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            "only_count(indexed_counts)"
+        ));
+        for valid in [
+            "counts(derived_counts)",
+            "counts(indexed_counts)",
+            "counts(empty_record)",
+        ] {
+            assert!(
+                ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, valid),
+                "{valid}"
+            );
+        }
+    }
 }
 #[cfg(test)]
 mod nominal_enum_members {

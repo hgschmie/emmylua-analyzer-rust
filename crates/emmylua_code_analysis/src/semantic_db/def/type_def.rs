@@ -33,6 +33,8 @@ pub enum TypeDefKind {
 /// Type definition flags
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct TypeDefFlags {
+    /// A class with an exhaustive set of declared fields.
+    pub exact: bool,
     /// `---@class Foo(partial)`.
     pub partial: bool,
     /// `---@class Foo(constructor)`.

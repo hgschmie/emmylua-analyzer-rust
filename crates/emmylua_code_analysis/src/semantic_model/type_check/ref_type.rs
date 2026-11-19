@@ -94,6 +94,84 @@ fn check_ref_enum(
     Err(context.mismatch(&LuaType::Ref(source_id.clone()), compact_type))
 }
 
+fn builtin_dictionary<'a>(
+    context: &TypeCheckContext,
+    generic: &'a LuaGenericType,
+) -> Result<Option<(&'a LuaType, &'a LuaType)>, super::TypeCheckFailReason> {
+    let [key, value] = generic.get_params().as_slice() else {
+        return Ok(None);
+    };
+    let id = generic.get_base_type_id();
+    if id != LuaTypeDeclId::global("table") {
+        return Ok(None);
+    }
+    // Without library declarations the global table name still denotes the built-in dictionary.
+    let builtin = context.require_complete(|| {
+        context
+            .type_def_of(&id)
+            .is_none_or(|def| context.model.is_std_file(def.file_id))
+    })?;
+    Ok(builtin.then_some((key, value)))
+}
+
+fn check_record_dictionary(
+    context: &TypeCheckContext,
+    source_id: &LuaTypeDeclId,
+    expected: &LuaType,
+    key: &LuaType,
+    value: &LuaType,
+) -> TypeCheckResult {
+    let source = LuaType::Ref(source_id.clone());
+    // Primitive-backed classes can expose fields without supporting table iteration.
+    if context.require_complete(|| {
+        super::sub_type::is_sub_type_matching(context, source_id, |id| {
+            matches!(id.get_id(), crate::LuaTypeIdentifier::Global(name)
+                if matches!(name.as_str(), "userdata" | "function" | "string" | "number" | "integer" | "boolean" | "thread"))
+        })
+    })? {
+        return Err(context.mismatch(&source, expected));
+    }
+    let fields = context
+        .require_complete(|| crate::semantic_model::member::class_fields(context.model, &source))?;
+    // A class with neither an exact field set nor an index contract may carry
+    // additional keys or values outside the target dictionary's domain.
+    if fields.get_index_access().is_empty()
+        && !context.require_complete(|| {
+            context
+                .type_def_of(source_id)
+                .is_some_and(|def| def.flags.exact)
+        })?
+    {
+        return Err(context.mismatch(&source, expected));
+    }
+    // A broad string or number cannot establish membership in a literal key domain.
+    let mut field_context = TypeCheckContext {
+        strict_literals: true,
+        ..context.clone()
+    };
+    // Lua removes a key when its value is nil, so optional fields can be absent.
+    let value_or_nil = LuaType::from_vec(vec![value.clone(), LuaType::Nil]);
+    let entries = fields
+        .get_fields()
+        .iter()
+        .map(|(k, v)| (k.to_index_type(), v))
+        .chain(
+            fields
+                .get_index_access()
+                .iter()
+                .map(|(k, v)| (Some(k.clone()), v)),
+        );
+    super::check_all(entries.map(|(actual_key, actual_value)| {
+        let Some(actual_key) = actual_key else {
+            return Err(field_context.mismatch(&source, expected));
+        };
+        let key_check = check_general_type_compact(&mut field_context, &actual_key, key);
+        let value_check =
+            check_general_type_compact(&mut field_context, actual_value, &value_or_nil);
+        super::check_all([key_check, value_check])
+    }))
+}
+
 fn check_ref_class(
     context: &mut TypeCheckContext,
     source_id: &LuaTypeDeclId,
@@ -123,6 +201,14 @@ fn check_ref_class(
         ),
         LuaType::Table => Ok(()),
         LuaType::Generic(generic) => {
+            if let Some((key, value)) = builtin_dictionary(context, generic)? {
+                if context
+                    .require_complete(|| is_sub_type_of_generic(context, source_id, generic))?
+                {
+                    return Ok(());
+                }
+                return check_record_dictionary(context, source_id, compact_type, key, value);
+            }
             let base_type_id = generic.get_base_type_id();
             if (context.strict_subtype
                 && context
