@@ -4922,6 +4922,52 @@ mod test {
         "#
         ));
     }
+
+    #[test]
+    fn tagged_record_arguments_keep_matching_fields() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def(
+            r#"
+        ---@class (exact) TypeFilter
+        ---@field filter "type"
+        ---@field type string
+        local TypeFilter = {}
+        ---@class (exact) RollingFilter
+        ---@field filter "rolling-stock"
+        local RollingFilter = {}
+        ---@param filters (TypeFilter|RollingFilter)[]?
+        function register(filters) end
+"#,
+        );
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+        local filters = {{filter = 'type', type = 'train-stop'}, {filter = 'rolling-stock'}}
+        register(filters)
+"#
+        ));
+        for invalid in [
+            "local f = {filter = 'type'}; register({f})",
+            "local f = {filter = 'type', type = 'stop'}; local key = 'filter'; f[key] = 'bogus'; register({f})",
+            "local f = {filter = 'bogus'}; register({f})",
+            "local f = {filter = 'type', type = 'train-stop'}; f.filter = 'bogus'; register({f})",
+            "local f = {filter = 'type', type = 'train-stop'}; local alias = f; alias.filter = 'bogus'; register({f})",
+        ] {
+            assert!(
+                !ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, invalid),
+                "{invalid}"
+            );
+        }
+        ws.def_file("shared.lua", "return {filter = 'type', type = 'stop'}");
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            "local f = require('shared'); f.filter = 'bogus'; register({f})"
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            "local f = {filter = 'type', type = 'stop'}; function f:change() self.filter = 'bogus' end; f:change(); register({f})"
+        ));
+    }
 }
 #[cfg(test)]
 mod nominal_enum_members {
