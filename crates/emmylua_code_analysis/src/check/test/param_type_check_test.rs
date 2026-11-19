@@ -4646,12 +4646,22 @@ mod test {
     #[test]
     fn mapped_patch_keeps_generic_key_domain() {
         let mut ws = VirtualWorkspace::new_with_init_std_lib();
-        ws.def(
+        let file = ws.def(
             r#"
         ---@class (exact) Record
         ---@field label string
         ---@field count integer
         local Record = {}
+        ---@class (exact) OtherRecord
+        ---@field enabled boolean
+        local OtherRecord = {}
+        ---@class OpenRecord
+        ---@field label string
+        ---@field [string] string
+        local OpenRecord = {}
+        ---@type OpenRecord
+        open_record = {}
+        ---@alias OptionalFields<T> {[K in keyof T]?: T[K]}
         ---@alias Patch<T> T|{[K in keyof T]?: T[K]}
         ---@generic T
         ---@param target T
@@ -4696,6 +4706,43 @@ mod test {
         assert!(!ws.has_no_diagnostic(
             DiagnosticCode::ParamTypeMismatch,
             "update_concrete({count = 'bad'})"
+        ));
+        for (record_type, expected) in [
+            ("OptionalFields<Record>", vec!["count", "label"]),
+            ("OptionalFields<OtherRecord>", vec!["enabled"]),
+        ] {
+            let ty = ws.ty(record_type);
+            let model = ws.analysis.semantic_model(file);
+            let expanded = crate::semantic_model::type_eval::expand_alias_generic(&model, &ty);
+            let LuaType::Object(object) = expanded else {
+                panic!("{record_type}: {expanded:?}")
+            };
+            let mut keys: Vec<_> = object
+                .get_fields()
+                .keys()
+                .filter_map(|key| key.get_name())
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(keys, expected);
+            assert!(object.get_index_access().is_empty());
+        }
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            "local missing = record.missing"
+        ));
+        for code in [
+            "update_record(record, {missing = 1})",
+            "update_inline(record, {missing = 1})",
+            "update_concrete({missing = 1})",
+        ] {
+            assert!(
+                !ws.has_no_diagnostic(DiagnosticCode::InjectField, code),
+                "{code}"
+            );
+        }
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::InjectField,
+            "update_inline(open_record, {extension = 'ok'})"
         ));
     }
 }

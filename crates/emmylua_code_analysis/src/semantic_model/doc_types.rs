@@ -163,6 +163,26 @@ impl<'db> SemanticModel<'db> {
     }
 
     /// 投影组合类型时保留声明所属的泛型作用域.
+    fn project_mapped_key(&self, constraint: &LuaDocType, scope: &DocTypeScope) -> LuaType {
+        // Preserve the operand as well as its keys. Instantiation binds generic operands
+        // and can distinguish a closed record from a class with an index signature.
+        if let LuaDocType::Unary(unary) = constraint
+            && unary
+                .get_op_token()
+                .is_some_and(|op| op.get_op() == LuaTypeUnaryOperator::Keyof)
+            && let Some(operand) = unary.get_type()
+        {
+            let operand = self.project_doc_type_impl(&operand, scope);
+            if !matches!(operand, LuaType::Unknown) {
+                return LuaType::Call(Rc::new(LuaAliasCallType::new(
+                    LuaAliasCallKind::KeyOf,
+                    vec![operand],
+                )));
+            }
+        }
+        self.project_doc_type_impl(constraint, scope)
+    }
+
     fn project_doc_type_impl(&self, doc_ty: &LuaDocType, scope: &DocTypeScope) -> LuaType {
         let file_id = scope.file_id;
         let generics = scope.params;
@@ -205,20 +225,7 @@ impl<'db> SemanticModel<'db> {
                             param_name = token.get_name_text().to_string();
                         }
                         if let Some(constraint) = decl.get_constraint_type() {
-                            // Keep keyof symbolic until the enclosing call or alias binds T.
-                            key_ty = if let LuaDocType::Unary(unary) = &constraint
-                                && unary
-                                    .get_op_token()
-                                    .is_some_and(|op| op.get_op() == LuaTypeUnaryOperator::Keyof)
-                                && let Some(operand) = unary.get_type()
-                            {
-                                LuaType::Call(Rc::new(LuaAliasCallType::new(
-                                    LuaAliasCallKind::KeyOf,
-                                    vec![self.project_doc_type_impl(&operand, scope)],
-                                )))
-                            } else {
-                                self.project_doc_type_impl(&constraint, scope)
-                            };
+                            key_ty = self.project_mapped_key(&constraint, scope);
                         }
                     }
                 }

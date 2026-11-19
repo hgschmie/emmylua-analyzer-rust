@@ -251,6 +251,8 @@ pub enum LuaIndexAccessKey {
 pub struct LuaObjectType {
     fields: HashMap<LuaMemberKey, LuaType>,
     index_access: Vec<(LuaType, LuaType)>,
+    /// Fresh table arguments must use a declared key when mapped from a closed record.
+    closed_keys: bool,
     hash: OnceCell<NonZeroU64>,
 }
 
@@ -275,6 +277,7 @@ impl LuaObjectType {
         Self {
             fields,
             index_access,
+            closed_keys: false,
             hash: OnceCell::new(),
         }
     }
@@ -286,6 +289,34 @@ impl LuaObjectType {
         Self {
             fields,
             index_access,
+            closed_keys: false,
+            hash: OnceCell::new(),
+        }
+    }
+
+    pub(crate) fn with_closed_keys(mut self) -> Self {
+        self.closed_keys = true;
+        self.hash = OnceCell::new();
+        self
+    }
+
+    pub(crate) fn has_closed_keys(&self) -> bool {
+        self.closed_keys
+    }
+
+    pub(crate) fn map_types<'a>(&'a self, mut map: impl FnMut(&'a LuaType) -> LuaType) -> Self {
+        Self {
+            fields: self
+                .fields
+                .iter()
+                .map(|(key, value)| (key.clone(), map(value)))
+                .collect(),
+            index_access: self
+                .index_access
+                .iter()
+                .map(|(key, value)| (map(key), map(value)))
+                .collect(),
+            closed_keys: self.closed_keys,
             hash: OnceCell::new(),
         }
     }
@@ -354,7 +385,9 @@ impl PartialEq for LuaObjectType {
         {
             return false;
         }
-        self.fields == other.fields && self.index_access == other.index_access
+        self.closed_keys == other.closed_keys
+            && self.fields == other.fields
+            && self.index_access == other.index_access
     }
 }
 
@@ -368,7 +401,12 @@ impl Hash for LuaObjectType {
                 let fields_hash = self.fields.iter().fold(0u64, |hash, field| {
                     hash.wrapping_add(FxBuildHasher.hash_one(field))
                 });
-                cached_type_hash((self.fields.len(), fields_hash, &self.index_access))
+                cached_type_hash((
+                    self.fields.len(),
+                    fields_hash,
+                    &self.index_access,
+                    self.closed_keys,
+                ))
             })
             .hash(state);
     }

@@ -338,12 +338,14 @@ fn sanitize_generic_param(model: &SemanticModel, ty: &LuaType) -> LuaType {
 /// Expand a mapped type into `Object` (when keys are literals).
 pub fn expand_mapped(model: &SemanticModel, mapped: &LuaMappedType) -> Option<LuaType> {
     let constr = mapped.param.1.constraint.as_ref()?;
-    let keys = match constr {
+    let (keys, closed) = match constr {
         LuaType::Call(call) if call.get_call_kind() == LuaAliasCallKind::KeyOf => {
             let ty = call.get_operands().first()?;
-            keyof_keys(model, ty)
+            let closed = matches!(ty, LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_))
+                && model.index_infos(ty).is_empty();
+            (keyof_keys(model, ty), closed)
         }
-        _ => literal_keys(constr),
+        _ => (literal_keys(constr), false),
     };
     if keys.is_empty() {
         return None;
@@ -362,10 +364,12 @@ pub fn expand_mapped(model: &SemanticModel, mapped: &LuaMappedType) -> Option<Lu
         }
         fields.insert(key, value);
     }
-    Some(LuaType::Object(Rc::new(LuaObjectType::new_with_fields(
-        fields,
-        Vec::new(),
-    ))))
+    let object = LuaObjectType::new_with_fields(fields, Vec::new());
+    Some(LuaType::Object(Rc::new(if closed {
+        object.with_closed_keys()
+    } else {
+        object
+    })))
 }
 
 /// Build a mapping from class generic names to arguments (`T -> string`) from a receiver generic instance (`Box<string>`).
@@ -494,18 +498,7 @@ fn map_alias_children<'a>(
         Intersection(intersection) => Intersection(Rc::new(LuaIntersectionType::new(
             intersection.get_types().iter().map(&mut *map).collect(),
         ))),
-        Object(object) => Object(Rc::new(LuaObjectType::new_with_fields(
-            object
-                .get_fields()
-                .iter()
-                .map(|(k, v)| (k.clone(), map(v)))
-                .collect(),
-            object
-                .get_index_access()
-                .iter()
-                .map(|(k, v)| (map(k), map(v)))
-                .collect(),
-        ))),
+        Object(object) => Object(Rc::new(object.map_types(map))),
         DocFunction(fun) => DocFunction(Rc::new(LuaFunctionType::new(
             fun.get_async_state(),
             fun.is_colon_define(),
