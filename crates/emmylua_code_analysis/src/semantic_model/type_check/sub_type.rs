@@ -13,7 +13,15 @@ pub fn is_sub_type_of(
     sub: &LuaTypeDeclId,
     sup: &LuaTypeDeclId,
 ) -> bool {
-    if sub == sup {
+    is_sub_type_matching(context, sub, |id| id == sup)
+}
+
+pub(super) fn is_sub_type_matching(
+    context: &TypeCheckContext,
+    sub: &LuaTypeDeclId,
+    matches: impl Fn(&LuaTypeDeclId) -> bool,
+) -> bool {
+    if matches(sub) {
         return true;
     }
     let mut stack = vec![sub.clone()];
@@ -39,7 +47,7 @@ pub fn is_sub_type_of(
                     None => continue,
                 },
             };
-            if &super_id == sup {
+            if matches(&super_id) {
                 return true;
             }
             if visited.insert(super_id.clone()) {
