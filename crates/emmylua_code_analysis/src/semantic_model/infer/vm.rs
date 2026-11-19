@@ -3455,23 +3455,9 @@ pub(crate) fn replace_self_type(ty: &LuaType, self_ty: &LuaType) -> LuaType {
             replace_self_type(fun.get_ret(), self_ty),
             Some(fun.get_generic_params().to_vec()),
         ))),
-        Object(object) => Object(Rc::new(LuaObjectType::new_with_fields(
-            object
-                .get_fields()
-                .iter()
-                .map(|(key, ty)| (key.clone(), replace_self_type(ty, self_ty)))
-                .collect(),
-            object
-                .get_index_access()
-                .iter()
-                .map(|(key, ty)| {
-                    (
-                        replace_self_type(key, self_ty),
-                        replace_self_type(ty, self_ty),
-                    )
-                })
-                .collect(),
-        ))),
+        Object(object) => Object(Rc::new(
+            object.map_types(|ty| replace_self_type(ty, self_ty)),
+        )),
         Union(union) => Union(Rc::new(LuaUnionType::from_vec(
             union
                 .into_vec()
@@ -4737,26 +4723,9 @@ pub(crate) fn bind_signature_generics(ty: &LuaType, generics: &[GenericTpl]) -> 
                     .collect(),
             )))
         }
-        LuaType::Object(object) => {
-            let fields = object
-                .get_fields()
-                .iter()
-                .map(|(key, value)| (key.clone(), bind_signature_generics(value, generics)))
-                .collect();
-            LuaType::Object(Rc::new(LuaObjectType::new_with_fields(
-                fields,
-                object
-                    .get_index_access()
-                    .iter()
-                    .map(|(key, value)| {
-                        (
-                            bind_signature_generics(key, generics),
-                            bind_signature_generics(value, generics),
-                        )
-                    })
-                    .collect(),
-            )))
-        }
+        LuaType::Object(object) => LuaType::Object(Rc::new(
+            object.map_types(|ty| bind_signature_generics(ty, generics)),
+        )),
         LuaType::Union(union) => LuaType::Union(Rc::new(LuaUnionType::from_vec(
             union
                 .into_vec()

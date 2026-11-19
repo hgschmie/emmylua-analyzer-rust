@@ -227,7 +227,7 @@ fn check_table_head(
     }
     let class;
     let (shape, closed) = if let LuaType::Object(object) = target {
-        (object.as_ref(), false)
+        (object.as_ref(), object.has_closed_keys())
     } else {
         let Some(def) = target_def(semantic_model, target) else {
             return;

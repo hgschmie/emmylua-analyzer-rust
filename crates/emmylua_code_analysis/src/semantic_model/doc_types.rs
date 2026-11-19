@@ -34,53 +34,7 @@ impl<'db> SemanticModel<'db> {
     }
     pub(crate) fn alias_target_uncached(&self, def: &TypeDef) -> Option<LuaType> {
         let syntax = def.alias_type?;
-        let mut ty = self.project_doc_type(def.file_id, syntax, &def.generic_params);
-        // When the shell layer cannot lower generic `keyof T`, rich projection drops the mapped constraint to None,
-        // making it impossible to expand after instantiation. Here we restore the generic keyof constraint on alias targets from the AST;
-        // normal doc/completion paths do not go through this restoration, so `keyof T` constraints still display as Unknown there.
-        if let LuaType::Mapped(mapped) = &ty {
-            if mapped.param.1.constraint.is_none()
-                && let Some(tree) = self.syntax_tree_of(def.file_id)
-                && let Some(node) = syntax.to_node_from_root(&tree.get_red_root())
-                && let Some(doc_ty) = LuaDocType::cast(node)
-                && let LuaDocType::Mapped(mapped_doc) = doc_ty
-                && let Some(key) = mapped_doc.get_key()
-                && let Some(decl) = key
-                    .syntax()
-                    .children()
-                    .find_map(emmylua_parser::LuaDocGenericDecl::cast)
-                && let Some(constr) = decl.get_constraint_type()
-                && let LuaDocType::Unary(unary) = constr
-                && unary
-                    .get_op_token()
-                    .is_some_and(|op| op.get_op() == LuaTypeUnaryOperator::Keyof)
-                && let Some(target) = unary.get_type()
-                && let LuaDocType::Name(name_ty) = target
-                && let Some(name) = name_ty.get_name_text()
-            {
-                let key_ty = LuaType::Ref(LuaTypeDeclId::global(&name));
-                let call = LuaType::Call(Rc::new(LuaAliasCallType::new(
-                    LuaAliasCallKind::KeyOf,
-                    vec![key_ty],
-                )));
-                let param = (
-                    mapped.param.0,
-                    GenericParam::new(
-                        mapped.param.1.name.clone(),
-                        Some(call),
-                        mapped.param.1.default.clone(),
-                        mapped.param.1.is_const,
-                        mapped.param.1.attributes.clone(),
-                    ),
-                );
-                ty = LuaType::Mapped(Rc::new(LuaMappedType::new(
-                    param,
-                    mapped.value.clone(),
-                    mapped.is_readonly,
-                    mapped.is_optional,
-                )));
-            }
-        }
+        let ty = self.project_doc_type(def.file_id, syntax, &def.generic_params);
         // `unknown` is a valid alias target. Do not discard it just because Unknown is also
         // used as the failure sentinel for unresolved type names.
         if matches!(ty, LuaType::Unknown)
@@ -208,6 +162,26 @@ impl<'db> SemanticModel<'db> {
         bind_signature_generics(&ty, &scope.templates)
     }
 
+    fn project_mapped_key(&self, constraint: &LuaDocType, scope: &DocTypeScope) -> LuaType {
+        // Preserve the operand as well as its keys. Instantiation binds generic operands
+        // and can distinguish a closed record from a class with an index signature.
+        if let LuaDocType::Unary(unary) = constraint
+            && unary
+                .get_op_token()
+                .is_some_and(|op| op.get_op() == LuaTypeUnaryOperator::Keyof)
+            && let Some(operand) = unary.get_type()
+        {
+            let operand = self.project_doc_type_impl(&operand, scope);
+            if !matches!(operand, LuaType::Unknown) {
+                return LuaType::Call(Rc::new(LuaAliasCallType::new(
+                    LuaAliasCallKind::KeyOf,
+                    vec![operand],
+                )));
+            }
+        }
+        self.project_doc_type_impl(constraint, scope)
+    }
+
     /// 投影组合类型时保留声明所属的泛型作用域.
     fn project_doc_type_impl(&self, doc_ty: &LuaDocType, scope: &DocTypeScope) -> LuaType {
         let file_id = scope.file_id;
@@ -251,7 +225,7 @@ impl<'db> SemanticModel<'db> {
                             param_name = token.get_name_text().to_string();
                         }
                         if let Some(constraint) = decl.get_constraint_type() {
-                            key_ty = self.project_doc_type_impl(&constraint, scope);
+                            key_ty = self.project_mapped_key(&constraint, scope);
                         }
                     }
                 }
