@@ -341,8 +341,15 @@ pub fn expand_mapped(model: &SemanticModel, mapped: &LuaMappedType) -> Option<Lu
     let (keys, closed) = match constr {
         LuaType::Call(call) if call.get_call_kind() == LuaAliasCallKind::KeyOf => {
             let ty = call.get_operands().first()?;
-            let closed = matches!(ty, LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_))
-                && model.index_infos(ty).is_empty();
+            // An ordinary structural object permits extra fields. A nominal record
+            // without an index signature, or another closed mapped object, does not.
+            let closed = match ty {
+                LuaType::Object(object) => object.has_closed_keys(),
+                LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_) => {
+                    model.index_infos(ty).is_empty()
+                }
+                _ => false,
+            };
             (keyof_keys(model, ty), closed)
         }
         _ => (literal_keys(constr), false),

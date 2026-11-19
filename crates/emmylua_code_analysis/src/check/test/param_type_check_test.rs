@@ -4673,6 +4673,8 @@ mod test {
         function update_inline(target, patch) end
         ---@param patch {[K in keyof Record]?: Record[K]}
         function update_concrete(patch) end
+        ---@param patch OptionalFields<OptionalFields<Record>>
+        function update_nested(patch) end
         ---@type Record
         record = {}
 "#,
@@ -4734,6 +4736,7 @@ mod test {
             "update_record(record, {missing = 1})",
             "update_inline(record, {missing = 1})",
             "update_concrete({missing = 1})",
+            "update_nested({missing = 1})",
         ] {
             assert!(
                 !ws.has_no_diagnostic(DiagnosticCode::InjectField, code),

@@ -251,7 +251,7 @@ pub enum LuaIndexAccessKey {
 pub struct LuaObjectType {
     fields: HashMap<LuaMemberKey, LuaType>,
     index_access: Vec<(LuaType, LuaType)>,
-    /// Fresh table arguments must use a declared key when mapped from a closed record.
+    /// The named fields exhaust the allowed keys of this mapped record.
     closed_keys: bool,
     hash: OnceCell<NonZeroU64>,
 }
