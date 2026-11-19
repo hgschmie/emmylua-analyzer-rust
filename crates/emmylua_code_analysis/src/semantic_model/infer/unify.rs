@@ -11,8 +11,8 @@ use hashbrown::HashMap;
 use crate::{
     GenericParam, GenericTplId, LuaAliasCallType, LuaArrayType, LuaConditionalType,
     LuaFunctionType, LuaGenericType, LuaInstanceType, LuaIntersectionType, LuaMappedType,
-    LuaMultiLineUnion, LuaObjectType, LuaStringTplType, LuaTupleStatus, LuaTupleType, LuaType,
-    LuaUnionType, VariadicType,
+    LuaMultiLineUnion, LuaStringTplType, LuaTupleStatus, LuaTupleType, LuaType, LuaUnionType,
+    VariadicType,
 };
 
 pub type TplBindings = HashMap<GenericTplId, LuaType>;
@@ -325,22 +325,7 @@ pub fn substitute(ty: &LuaType, bindings: &TplBindings) -> LuaType {
                 .map(|t| substitute(t, bindings))
                 .collect(),
         ))),
-        Object(object) => {
-            let fields = object
-                .get_fields()
-                .iter()
-                .map(|(key, ty)| (key.clone(), substitute(ty, bindings)))
-                .collect();
-            let index_access = object
-                .get_index_access()
-                .iter()
-                .map(|(key, ty)| (substitute(key, bindings), substitute(ty, bindings)))
-                .collect();
-            Object(Rc::new(LuaObjectType::new_with_fields(
-                fields,
-                index_access,
-            )))
-        }
+        Object(object) => Object(Rc::new(object.map_types(|ty| substitute(ty, bindings)))),
         Intersection(intersection) => Intersection(Rc::new(LuaIntersectionType::new(
             intersection
                 .get_types()

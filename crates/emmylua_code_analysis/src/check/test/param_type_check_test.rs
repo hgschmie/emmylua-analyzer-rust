@@ -5089,6 +5089,121 @@ mod test {
             );
         }
     }
+
+    #[test]
+    fn mapped_patch_keeps_generic_key_domain() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(
+            r#"
+        ---@class (exact) Record
+        ---@field label string
+        ---@field count integer
+        local Record = {}
+        ---@class OtherRecord
+        ---@field enabled boolean
+        local OtherRecord = {}
+        ---@class OpenRecord
+        ---@field label string
+        ---@field [string] string
+        local OpenRecord = {}
+        ---@type OpenRecord
+        open_record = {}
+        ---@alias OptionalFields<T> {[K in keyof T]?: T[K]}
+        ---@alias Patch<T> T|{[K in keyof T]?: T[K]}
+        ---@generic T
+        ---@param target T
+        ---@param patch Patch<T>
+        function update_record(target, patch) end
+        ---@generic T
+        ---@param target T
+        ---@param patch {[K in keyof T]?: T[K]}
+        function update_inline(target, patch) end
+        ---@param patch {[K in keyof Record]?: Record[K]}
+        function update_concrete(patch) end
+        ---@param patch OptionalFields<OptionalFields<Record>>
+        function update_nested(patch) end
+        ---@param patch OptionalFields<OtherRecord>
+        function update_other(patch) end
+        ---@param patch {[K in "a"|"b"]?: integer}
+        function update_literal(patch) end
+        ---@type Record
+        record = {}
+"#,
+        );
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+        local update = {label = 'yes'}
+        update_record(record, update)
+"#
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+        local update = {count = 'bad'}
+        update_record(record, update)
+"#
+        ));
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            "update_inline(record, {label = 'yes'})"
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            "update_inline(record, {count = 'bad'})"
+        ));
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            "update_concrete({label = 'yes'})"
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            "update_concrete({count = 'bad'})"
+        ));
+        for (record_type, expected) in [
+            ("OptionalFields<Record>", vec!["count", "label"]),
+            ("OptionalFields<OtherRecord>", vec!["enabled"]),
+        ] {
+            let ty = ws.ty(record_type);
+            let model = ws.analysis.semantic_model(file);
+            let expanded = crate::semantic_model::type_eval::expand_alias_generic(&model, &ty);
+            let LuaType::Object(object) = expanded else {
+                panic!("{record_type}: {expanded:?}")
+            };
+            let mut keys: Vec<_> = object
+                .get_fields()
+                .keys()
+                .filter_map(|key| key.get_name())
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(keys, expected);
+            assert!(object.get_index_access().is_empty());
+        }
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            "local missing = record.missing"
+        ));
+        for code in [
+            "update_record(record, {missing = 1})",
+            "update_inline(record, {missing = 1})",
+            "update_concrete({missing = 1})",
+            "update_nested({missing = 1})",
+            "update_other({missing = 1})",
+        ] {
+            assert!(
+                !ws.has_no_diagnostic(DiagnosticCode::InjectField, code),
+                "{code}"
+            );
+        }
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::InjectField,
+            "update_inline(open_record, {extension = 'ok'})"
+        ));
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::InjectField,
+            "update_literal({extension = 1})"
+        ));
+    }
 }
 #[cfg(test)]
 mod nominal_enum_members {
