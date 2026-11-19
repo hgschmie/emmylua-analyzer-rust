@@ -59,12 +59,39 @@ impl<'db> TableValue<'db> {
         self.is_constructor
     }
 
+    fn has_no_member_write(&self, key: &LuaMemberKey) -> bool {
+        let Some(facts) = self.model.file_facts() else {
+            return false;
+        };
+        let table = LuaType::TableConst(self.identity.clone());
+        !facts.possible_write_receivers(key).any(|syntax| {
+            let receiver = self
+                .model
+                .type_of_expr_at(syntax, syntax.get_range().start());
+            receiver == table
+                || matches!(receiver, LuaType::Union(types) if types.iter().any(|ty| ty == &table))
+        })
+    }
+
     fn own_member_value(
         &self,
         key: &LuaMemberKey,
     ) -> Result<Option<ConstructorValue<'_>>, TypeCheckFailReason> {
         let initial = self.constructor.member_value(key)?;
         if self.is_constructor {
+            return Ok(initial);
+        }
+        // A constructor tag retains its literal value until the table can be written
+        // through that key (including a local alias or a computed key).
+        if let Some(value) = &initial
+            && matches!(
+                value.typ,
+                LuaType::StringConst(_) | LuaType::BooleanConst(_)
+            )
+            && self
+                .model
+                .require_complete(|| self.has_no_member_write(key))?
+        {
             return Ok(initial);
         }
         let has_initial = initial.as_ref().is_some_and(|value| !value.typ.is_nil());
