@@ -4642,4 +4642,53 @@ mod test {
         "#
         ));
     }
+
+    #[test]
+    fn record_dictionary_arguments_check_fields() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def(
+            r#"
+        ---@class (exact) NamedRecord
+        ---@field name string
+        ---@field count integer
+        local NamedRecord = {}
+        ---@generic T:table<string,any>
+        ---@param value T?
+        ---@return T
+        function copy_record(value) return assert(value) end
+        ---@param value table<string,integer>
+        function counts(value) end
+        ---@class (exact) NumericKeyRecord
+        ---@field [1] integer
+        local NumericKeyRecord = {}
+        ---@type NamedRecord
+        named_record = {}
+        ---@type NumericKeyRecord
+        numeric_record = {}
+"#,
+        );
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+        ---@param record NamedRecord
+        local function use(record) return copy_record(record) end
+"#
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+        ---@param record NamedRecord
+        local function use(record) counts(record) end
+"#
+        ));
+        assert_eq!(
+            ws.expr_ty("copy_record(named_record)"),
+            ws.ty("NamedRecord")
+        );
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            "copy_record(numeric_record)"
+        ));
+        assert!(!ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, "copy_record(42)"));
+    }
 }

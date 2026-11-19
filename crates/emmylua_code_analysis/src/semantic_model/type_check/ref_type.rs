@@ -93,6 +93,47 @@ fn check_ref_enum(
     Err(context.mismatch(&LuaType::Ref(source_id.clone()), compact_type))
 }
 
+fn check_record_dictionary(
+    context: &TypeCheckContext,
+    source_id: &LuaTypeDeclId,
+    target: &LuaType,
+    key: &LuaType,
+    value: &LuaType,
+) -> TypeCheckResult {
+    let source = LuaType::Ref(source_id.clone());
+    if context.require_complete(|| {
+        is_sub_type_of(context, source_id, &LuaTypeDeclId::global("userdata"))
+    })? {
+        return Err(context.mismatch(&source, target));
+    }
+    let fields = context
+        .require_complete(|| crate::semantic_model::member::class_fields(context.model, &source))?;
+    if fields.get_fields().is_empty() && fields.get_index_access().is_empty() {
+        return Err(context.mismatch(&source, target));
+    }
+    let mut context = TypeCheckContext {
+        strict_literals: true,
+        ..context.clone()
+    };
+    let value = LuaType::from_vec(vec![value.clone(), LuaType::Nil]);
+    let entries = fields
+        .get_fields()
+        .iter()
+        .filter_map(|(k, v)| Some((k.to_index_type()?, v)))
+        .chain(
+            fields
+                .get_index_access()
+                .iter()
+                .map(|(k, v)| (k.clone(), v)),
+        );
+    super::check_all(entries.map(|(actual_key, actual_value)| {
+        super::check_all([
+            check_general_type_compact(&mut context, &actual_key, key),
+            check_general_type_compact(&mut context, actual_value, &value),
+        ])
+    }))
+}
+
 fn check_ref_class(
     context: &mut TypeCheckContext,
     source_id: &LuaTypeDeclId,
@@ -124,6 +165,18 @@ fn check_ref_class(
             check_general_type_compact(context, &value, array.get_base())
         }
         LuaType::Table => Ok(()),
+        LuaType::Generic(generic)
+            if generic.get_base_type_id() == LuaTypeDeclId::global("table")
+                && context
+                    .type_def_of(&generic.get_base_type_id())
+                    .is_none_or(|def| context.model.is_std_file(def.file_id))
+                && let [key, value] = generic.get_params().as_slice() =>
+        {
+            if context.require_complete(|| is_sub_type_of_generic(context, source_id, generic))? {
+                return Ok(());
+            }
+            check_record_dictionary(context, source_id, compact_type, key, value)
+        }
         LuaType::Generic(generic) => {
             let base_type_id = generic.get_base_type_id();
             if (context.strict_subtype
