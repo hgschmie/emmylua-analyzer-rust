@@ -4665,6 +4665,18 @@ mod test {
         named_record = {}
         ---@type NumericKeyRecord
         numeric_record = {}
+        ---@class CountsBase
+        ---@field count integer
+        local CountsBase = {}
+        ---@class DerivedCounts: CountsBase
+        local DerivedCounts = {}
+        ---@type DerivedCounts
+        derived_counts = {}
+        ---@class IndexedCounts
+        ---@field [string] integer
+        local IndexedCounts = {}
+        ---@type IndexedCounts
+        indexed_counts = {}
         ---@class OptionalCounts
         ---@field count? integer
         local OptionalCounts = {}
@@ -4709,6 +4721,12 @@ mod test {
             assert!(
                 !ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, invalid),
                 "{invalid}"
+            );
+        }
+        for valid in ["counts(derived_counts)", "counts(indexed_counts)"] {
+            assert!(
+                ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, valid),
+                "{valid}"
             );
         }
     }

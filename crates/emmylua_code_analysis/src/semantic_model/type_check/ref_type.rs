@@ -113,12 +113,13 @@ fn check_record_dictionary(
     if fields.get_fields().is_empty() && fields.get_index_access().is_empty() {
         return Err(context.mismatch(&source, target));
     }
+    // A dictionary with a literal key domain excludes other keys of the same primitive type.
     let mut field_context = TypeCheckContext {
         strict_literals: true,
         ..context.clone()
     };
     // Lua removes a key when its value is nil, so optional fields can be absent.
-    let value = LuaType::from_vec(vec![value.clone(), LuaType::Nil]);
+    let value_or_nil = LuaType::from_vec(vec![value.clone(), LuaType::Nil]);
     let entries = fields
         .get_fields()
         .iter()
@@ -134,7 +135,8 @@ fn check_record_dictionary(
             return Err(field_context.mismatch(&source, target));
         };
         let key_check = check_general_type_compact(&mut field_context, &actual_key, key);
-        let value_check = check_general_type_compact(&mut field_context, actual_value, &value);
+        let value_check =
+            check_general_type_compact(&mut field_context, actual_value, &value_or_nil);
         super::check_all([key_check, value_check])
     }))
 }
@@ -170,6 +172,8 @@ fn check_ref_class(
             check_general_type_compact(context, &value, array.get_base())
         }
         LuaType::Table => Ok(()),
+        // Without standard-library declarations the built-in table name still denotes a dictionary.
+        // A user-defined generic of the same name keeps nominal semantics.
         LuaType::Generic(generic)
             if generic.get_base_type_id() == LuaTypeDeclId::global("table")
                 && context
