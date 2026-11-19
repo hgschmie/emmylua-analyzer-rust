@@ -93,25 +93,50 @@ fn check_ref_enum(
     Err(context.mismatch(&LuaType::Ref(source_id.clone()), compact_type))
 }
 
+fn builtin_dictionary<'a>(
+    context: &TypeCheckContext,
+    generic: &'a LuaGenericType,
+) -> Result<Option<(&'a LuaType, &'a LuaType)>, super::TypeCheckFailReason> {
+    let [key, value] = generic.get_params().as_slice() else {
+        return Ok(None);
+    };
+    let id = generic.get_base_type_id();
+    if id != LuaTypeDeclId::global("table") {
+        return Ok(None);
+    }
+    // Without library declarations the global table name still denotes the built-in dictionary.
+    let builtin = context.require_complete(|| {
+        context
+            .type_def_of(&id)
+            .is_none_or(|def| context.model.is_std_file(def.file_id))
+    })?;
+    Ok(builtin.then_some((key, value)))
+}
+
 fn check_record_dictionary(
     context: &TypeCheckContext,
     source_id: &LuaTypeDeclId,
-    target: &LuaType,
+    expected: &LuaType,
     key: &LuaType,
     value: &LuaType,
 ) -> TypeCheckResult {
     let source = LuaType::Ref(source_id.clone());
-    // Userdata can expose named properties without supporting table iteration.
+    // Primitive-backed classes can expose fields without supporting table iteration.
     if context.require_complete(|| {
-        is_sub_type_of(context, source_id, &LuaTypeDeclId::global("userdata"))
+        super::sub_type::is_sub_type_matching(context, source_id, |id| {
+            matches!(
+                id.get_name(),
+                "userdata" | "function" | "string" | "number" | "integer" | "boolean" | "thread"
+            ) && *id == LuaTypeDeclId::global(id.get_name())
+        })
     })? {
-        return Err(context.mismatch(&source, target));
+        return Err(context.mismatch(&source, expected));
     }
     let fields = context
         .require_complete(|| crate::semantic_model::member::class_fields(context.model, &source))?;
     // Without a declared field or index signature an opaque class gives no evidence of a dictionary.
     if fields.get_fields().is_empty() && fields.get_index_access().is_empty() {
-        return Err(context.mismatch(&source, target));
+        return Err(context.mismatch(&source, expected));
     }
     // A dictionary with a literal key domain excludes other keys of the same primitive type.
     let mut field_context = TypeCheckContext {
@@ -132,7 +157,7 @@ fn check_record_dictionary(
         );
     super::check_all(entries.map(|(actual_key, actual_value)| {
         let Some(actual_key) = actual_key else {
-            return Err(field_context.mismatch(&source, target));
+            return Err(field_context.mismatch(&source, expected));
         };
         let key_check = check_general_type_compact(&mut field_context, &actual_key, key);
         let value_check =
@@ -172,21 +197,15 @@ fn check_ref_class(
             check_general_type_compact(context, &value, array.get_base())
         }
         LuaType::Table => Ok(()),
-        // Without standard-library declarations the built-in table name still denotes a dictionary.
-        // A user-defined generic of the same name keeps nominal semantics.
-        LuaType::Generic(generic)
-            if generic.get_base_type_id() == LuaTypeDeclId::global("table")
-                && context
-                    .type_def_of(&generic.get_base_type_id())
-                    .is_none_or(|def| context.model.is_std_file(def.file_id))
-                && let [key, value] = generic.get_params().as_slice() =>
-        {
-            if context.require_complete(|| is_sub_type_of_generic(context, source_id, generic))? {
-                return Ok(());
-            }
-            check_record_dictionary(context, source_id, compact_type, key, value)
-        }
         LuaType::Generic(generic) => {
+            if let Some((key, value)) = builtin_dictionary(context, generic)? {
+                if context
+                    .require_complete(|| is_sub_type_of_generic(context, source_id, generic))?
+                {
+                    return Ok(());
+                }
+                return check_record_dictionary(context, source_id, compact_type, key, value);
+            }
             let base_type_id = generic.get_base_type_id();
             if (context.strict_subtype
                 && context

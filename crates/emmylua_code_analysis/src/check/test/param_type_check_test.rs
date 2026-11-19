@@ -4686,6 +4686,11 @@ mod test {
         local Opaque = {}
         ---@type Opaque
         opaque = {}
+        ---@class TextHandle: string
+        ---@field count integer
+        local TextHandle = {}
+        ---@type TextHandle
+        text_handle = {}
         ---@class Handle: userdata
         ---@field count integer
         local Handle = {}
@@ -4717,7 +4722,7 @@ mod test {
         ));
         assert!(!ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, "copy_record(42)"));
         assert!(ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, "counts(optional_counts)"));
-        for invalid in ["counts(opaque)", "counts(handle)"] {
+        for invalid in ["counts(opaque)", "counts(handle)", "counts(text_handle)"] {
             assert!(
                 !ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, invalid),
                 "{invalid}"
