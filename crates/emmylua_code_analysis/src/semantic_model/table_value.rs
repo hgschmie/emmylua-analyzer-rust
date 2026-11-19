@@ -72,8 +72,8 @@ impl<'db> TableValue<'db> {
         if self.is_constructor {
             return Ok(initial);
         }
-        // These literals discriminate tagged records. Preserve the stable field contract for
-        // annotated values or tables that also serve as storage.
+        // An unannotated string or boolean can distinguish union alternatives.
+        // Keep its literal type when the enclosing table is used only as an argument.
         if self.argument_only
             && let Some(value) = &initial
             && matches!(
@@ -298,10 +298,12 @@ fn table_is_argument_only(model: &SemanticModel, table: &LuaTableExpr) -> bool {
         return false;
     };
     let root = tree.get_red_root();
-    model.decl_references(&decl.id).iter().all(|syntax| {
-        syntax
-            .to_node_from_root(&root)
-            .and_then(|node| enclosing_argument_value(node).parent())
-            .is_some_and(|parent| parent.kind() == LuaSyntaxKind::CallArgList.into())
-    })
+    let references = model.decl_references(&decl.id);
+    !references.is_empty()
+        && references.iter().all(|syntax| {
+            syntax
+                .to_node_from_root(&root)
+                .and_then(|node| enclosing_argument_value(node).parent())
+                .is_some_and(|parent| parent.kind() == LuaSyntaxKind::CallArgList.into())
+        })
 }
