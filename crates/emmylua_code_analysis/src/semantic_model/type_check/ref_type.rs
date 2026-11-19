@@ -132,8 +132,15 @@ fn check_record_dictionary(
     }
     let fields = context
         .require_complete(|| crate::semantic_model::member::class_fields(context.model, &source))?;
-    // Without a declared field or index signature an opaque class gives no evidence of a dictionary.
-    if fields.get_fields().is_empty() && fields.get_index_access().is_empty() {
+    // A class with neither an exact field set nor an index contract may carry
+    // additional keys or values outside the target dictionary's domain.
+    if fields.get_index_access().is_empty()
+        && !context.require_complete(|| {
+            context
+                .type_def_of(source_id)
+                .is_some_and(|def| def.flags.exact)
+        })?
+    {
         return Err(context.mismatch(&source, expected));
     }
     // A broad string or number cannot establish membership in a literal key domain.

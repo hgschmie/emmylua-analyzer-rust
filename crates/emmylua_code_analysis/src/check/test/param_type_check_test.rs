@@ -4670,7 +4670,7 @@ mod test {
         ---@class CountsBase
         ---@field count integer
         local CountsBase = {}
-        ---@class DerivedCounts: CountsBase
+        ---@class (exact) DerivedCounts: CountsBase
         local DerivedCounts = {}
         ---@type DerivedCounts
         derived_counts = {}
@@ -4679,21 +4679,30 @@ mod test {
         local IndexedCounts = {}
         ---@type IndexedCounts
         indexed_counts = {}
-        ---@class OptionalCounts
+        ---@class (exact) OptionalCounts
         ---@field count? integer
         local OptionalCounts = {}
         ---@type OptionalCounts
         optional_counts = {}
+        ---@class (exact) EmptyRecord
+        local EmptyRecord = {}
+        ---@type EmptyRecord
+        empty_record = {}
+        ---@class OpenCounts
+        ---@field value integer
+        local OpenCounts = {}
+        ---@type OpenCounts
+        open_counts = {}
         ---@class Opaque
         local Opaque = {}
         ---@type Opaque
         opaque = {}
-        ---@class TextHandle: string
+        ---@class (exact) TextHandle: string
         ---@field count integer
         local TextHandle = {}
         ---@type TextHandle
         text_handle = {}
-        ---@class Handle: userdata
+        ---@class (exact) Handle: userdata
         ---@field count integer
         local Handle = {}
         ---@type Handle
@@ -4724,7 +4733,12 @@ mod test {
         ));
         assert!(!ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, "copy_record(42)"));
         assert!(ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, "counts(optional_counts)"));
-        for invalid in ["counts(opaque)", "counts(handle)", "counts(text_handle)"] {
+        for invalid in [
+            "counts(opaque)",
+            "counts(open_counts)",
+            "counts(handle)",
+            "counts(text_handle)",
+        ] {
             assert!(
                 !ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, invalid),
                 "{invalid}"
@@ -4738,7 +4752,11 @@ mod test {
             DiagnosticCode::ParamTypeMismatch,
             "only_count(indexed_counts)"
         ));
-        for valid in ["counts(derived_counts)", "counts(indexed_counts)"] {
+        for valid in [
+            "counts(derived_counts)",
+            "counts(indexed_counts)",
+            "counts(empty_record)",
+        ] {
             assert!(
                 ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, valid),
                 "{valid}"
