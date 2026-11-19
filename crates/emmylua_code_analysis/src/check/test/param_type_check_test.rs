@@ -4658,6 +4658,8 @@ mod test {
         function copy_record(value) return assert(value) end
         ---@param value table<string,integer>
         function counts(value) end
+        ---@param value table<"count",integer>
+        function only_count(value) end
         ---@class (exact) NumericKeyRecord
         ---@field [1] integer
         local NumericKeyRecord = {}
@@ -4728,6 +4730,14 @@ mod test {
                 "{invalid}"
             );
         }
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            "only_count(derived_counts)"
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            "only_count(indexed_counts)"
+        ));
         for valid in ["counts(derived_counts)", "counts(indexed_counts)"] {
             assert!(
                 ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, valid),

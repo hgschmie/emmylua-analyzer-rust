@@ -124,10 +124,8 @@ fn check_record_dictionary(
     // Primitive-backed classes can expose fields without supporting table iteration.
     if context.require_complete(|| {
         super::sub_type::is_sub_type_matching(context, source_id, |id| {
-            matches!(
-                id.get_name(),
-                "userdata" | "function" | "string" | "number" | "integer" | "boolean" | "thread"
-            ) && *id == LuaTypeDeclId::global(id.get_name())
+            matches!(id.get_id(), crate::LuaTypeIdentifier::Global(name)
+                if matches!(name.as_str(), "userdata" | "function" | "string" | "number" | "integer" | "boolean" | "thread"))
         })
     })? {
         return Err(context.mismatch(&source, expected));
@@ -138,7 +136,7 @@ fn check_record_dictionary(
     if fields.get_fields().is_empty() && fields.get_index_access().is_empty() {
         return Err(context.mismatch(&source, expected));
     }
-    // A dictionary with a literal key domain excludes other keys of the same primitive type.
+    // A broad string or number cannot establish membership in a literal key domain.
     let mut field_context = TypeCheckContext {
         strict_literals: true,
         ..context.clone()
