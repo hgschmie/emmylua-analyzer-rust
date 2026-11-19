@@ -4661,6 +4661,8 @@ mod test {
         ---@param target T
         ---@param patch {[K in keyof T]?: T[K]}
         function update_inline(target, patch) end
+        ---@param patch {[K in keyof Record]?: Record[K]}
+        function update_concrete(patch) end
         ---@type Record
         record = {}
 "#,
@@ -4686,6 +4688,14 @@ mod test {
         assert!(!ws.has_no_diagnostic(
             DiagnosticCode::ParamTypeMismatch,
             "update_inline(record, {count = 'bad'})"
+        ));
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            "update_concrete({label = 'yes'})"
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            "update_concrete({count = 'bad'})"
         ));
     }
 }
