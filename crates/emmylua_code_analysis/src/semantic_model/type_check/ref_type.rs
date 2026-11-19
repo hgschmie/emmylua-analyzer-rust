@@ -101,6 +101,7 @@ fn check_record_dictionary(
     value: &LuaType,
 ) -> TypeCheckResult {
     let source = LuaType::Ref(source_id.clone());
+    // Userdata can expose named properties without supporting table iteration.
     if context.require_complete(|| {
         is_sub_type_of(context, source_id, &LuaTypeDeclId::global("userdata"))
     })? {
@@ -108,29 +109,33 @@ fn check_record_dictionary(
     }
     let fields = context
         .require_complete(|| crate::semantic_model::member::class_fields(context.model, &source))?;
+    // Without a declared field or index signature an opaque class gives no evidence of a dictionary.
     if fields.get_fields().is_empty() && fields.get_index_access().is_empty() {
         return Err(context.mismatch(&source, target));
     }
-    let mut context = TypeCheckContext {
+    let mut field_context = TypeCheckContext {
         strict_literals: true,
         ..context.clone()
     };
+    // Lua removes a key when its value is nil, so optional fields can be absent.
     let value = LuaType::from_vec(vec![value.clone(), LuaType::Nil]);
     let entries = fields
         .get_fields()
         .iter()
-        .filter_map(|(k, v)| Some((k.to_index_type()?, v)))
+        .map(|(k, v)| (k.to_index_type(), v))
         .chain(
             fields
                 .get_index_access()
                 .iter()
-                .map(|(k, v)| (k.clone(), v)),
+                .map(|(k, v)| (Some(k.clone()), v)),
         );
     super::check_all(entries.map(|(actual_key, actual_value)| {
-        super::check_all([
-            check_general_type_compact(&mut context, &actual_key, key),
-            check_general_type_compact(&mut context, actual_value, &value),
-        ])
+        let Some(actual_key) = actual_key else {
+            return Err(field_context.mismatch(&source, target));
+        };
+        let key_check = check_general_type_compact(&mut field_context, &actual_key, key);
+        let value_check = check_general_type_compact(&mut field_context, actual_value, &value);
+        super::check_all([key_check, value_check])
     }))
 }
 

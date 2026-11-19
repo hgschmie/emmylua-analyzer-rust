@@ -4665,6 +4665,20 @@ mod test {
         named_record = {}
         ---@type NumericKeyRecord
         numeric_record = {}
+        ---@class OptionalCounts
+        ---@field count? integer
+        local OptionalCounts = {}
+        ---@type OptionalCounts
+        optional_counts = {}
+        ---@class Opaque
+        local Opaque = {}
+        ---@type Opaque
+        opaque = {}
+        ---@class Handle: userdata
+        ---@field count integer
+        local Handle = {}
+        ---@type Handle
+        handle = {}
 "#,
         );
         assert!(ws.has_no_diagnostic(
@@ -4690,5 +4704,12 @@ mod test {
             "copy_record(numeric_record)"
         ));
         assert!(!ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, "copy_record(42)"));
+        assert!(ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, "counts(optional_counts)"));
+        for invalid in ["counts(opaque)", "counts(handle)"] {
+            assert!(
+                !ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, invalid),
+                "{invalid}"
+            );
+        }
     }
 }
