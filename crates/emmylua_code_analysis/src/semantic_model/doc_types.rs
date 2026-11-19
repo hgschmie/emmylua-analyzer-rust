@@ -162,7 +162,6 @@ impl<'db> SemanticModel<'db> {
         bind_signature_generics(&ty, &scope.templates)
     }
 
-    /// 投影组合类型时保留声明所属的泛型作用域.
     fn project_mapped_key(&self, constraint: &LuaDocType, scope: &DocTypeScope) -> LuaType {
         // Preserve the operand as well as its keys. Instantiation binds generic operands
         // and can distinguish a closed record from a class with an index signature.
@@ -183,6 +182,7 @@ impl<'db> SemanticModel<'db> {
         self.project_doc_type_impl(constraint, scope)
     }
 
+    /// 投影组合类型时保留声明所属的泛型作用域.
     fn project_doc_type_impl(&self, doc_ty: &LuaDocType, scope: &DocTypeScope) -> LuaType {
         let file_id = scope.file_id;
         let generics = scope.params;

@@ -4652,7 +4652,7 @@ mod test {
         ---@field label string
         ---@field count integer
         local Record = {}
-        ---@class (exact) OtherRecord
+        ---@class OtherRecord
         ---@field enabled boolean
         local OtherRecord = {}
         ---@class OpenRecord
@@ -4675,6 +4675,10 @@ mod test {
         function update_concrete(patch) end
         ---@param patch OptionalFields<OptionalFields<Record>>
         function update_nested(patch) end
+        ---@param patch OptionalFields<OtherRecord>
+        function update_other(patch) end
+        ---@param patch {[K in "a"|"b"]?: integer}
+        function update_literal(patch) end
         ---@type Record
         record = {}
 "#,
@@ -4737,6 +4741,7 @@ mod test {
             "update_inline(record, {missing = 1})",
             "update_concrete({missing = 1})",
             "update_nested({missing = 1})",
+            "update_other({missing = 1})",
         ] {
             assert!(
                 !ws.has_no_diagnostic(DiagnosticCode::InjectField, code),
@@ -4746,6 +4751,10 @@ mod test {
         assert!(ws.has_no_diagnostic(
             DiagnosticCode::InjectField,
             "update_inline(open_record, {extension = 'ok'})"
+        ));
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::InjectField,
+            "update_literal({extension = 1})"
         ));
     }
 }

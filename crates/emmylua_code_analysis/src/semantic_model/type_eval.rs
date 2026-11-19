@@ -352,6 +352,7 @@ pub fn expand_mapped(model: &SemanticModel, mapped: &LuaMappedType) -> Option<Lu
             };
             (keyof_keys(model, ty), closed)
         }
+        // Literal key lists describe structural fields and carry no nominal record contract.
         _ => (literal_keys(constr), false),
     };
     if keys.is_empty() {
