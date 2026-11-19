@@ -4642,4 +4642,50 @@ mod test {
         "#
         ));
     }
+
+    #[test]
+    fn mapped_patch_keeps_generic_key_domain() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def(
+            r#"
+        ---@class (exact) Record
+        ---@field label string
+        ---@field count integer
+        local Record = {}
+        ---@alias Patch<T> T|{[K in keyof T]?: T[K]}
+        ---@generic T
+        ---@param target T
+        ---@param patch Patch<T>
+        function update_record(target, patch) end
+        ---@generic T
+        ---@param target T
+        ---@param patch {[K in keyof T]?: T[K]}
+        function update_inline(target, patch) end
+        ---@type Record
+        record = {}
+"#,
+        );
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+        local update = {label = 'yes'}
+        update_record(record, update)
+"#
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+        local update = {count = 'bad'}
+        update_record(record, update)
+"#
+        ));
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            "update_inline(record, {label = 'yes'})"
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            "update_inline(record, {count = 'bad'})"
+        ));
+    }
 }
